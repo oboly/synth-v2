@@ -116,6 +116,7 @@ def test_get_order_by_client_order_id_sends_expected_param(monkeypatch: pytest.M
     captured: dict[str, Any] = {}
 
     def _fake_get(url: str, **kwargs: Any) -> _Response:
+        captured["url"] = url
         captured["params"] = kwargs["params"]
         return _Response({"orderId": "abc-123", "status": "open"})
 
@@ -123,15 +124,37 @@ def test_get_order_by_client_order_id_sends_expected_param(monkeypatch: pytest.M
 
     result = client.get_order_by_client_order_id("BTC-EUR", "cid-1")
     assert result == {"orderId": "abc-123", "status": "open"}
-    assert captured["params"] == {"clientOrderId": "cid-1"}
+    assert captured["url"] == "https://api.bitvavo.com/v2/order"
+    assert captured["params"] == {"market": "BTC-EUR", "clientOrderId": "cid-1"}
 
 
 def test_get_order_404_raises_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _readable_client(monkeypatch)
-    monkeypatch.setattr("requests.get", lambda *_a, **_k: _Response({}, status_code=404))
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *_a, **_k: _Response({"errorCode": 240}, status_code=404),
+    )
 
     with pytest.raises(BitvavoOrderNotFoundError):
         client.get_order_by_client_order_id("BTC-EUR", "cid-missing")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"errorCode": 510, "error": "unsafe raw body"}, {}, "malformed"],
+)
+def test_get_order_other_404_is_ambiguous_not_absent(
+    monkeypatch: pytest.MonkeyPatch, payload: object
+) -> None:
+    client = _readable_client(monkeypatch)
+    monkeypatch.setattr(
+        "requests.get", lambda *_a, **_k: _Response(payload, status_code=404)
+    )
+
+    with pytest.raises(BitvavoOrderRequestError) as caught:
+        client.get_order_by_client_order_id("BTC-EUR", "cid-1")
+    assert caught.value.status_code == 404
+    assert "unsafe raw body" not in str(caught.value)
 
 
 def test_get_order_network_error_propagates_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -24,6 +24,7 @@ class CredentialScopeBinding:
     credential_source: str
     allowed_order_write: bool
     allowed_withdrawal: bool
+    binding_status: str = BINDING_STATUS_ACTIVE
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
     from src.common.db import db_cursor
@@ -35,7 +36,7 @@ def _unwrap_cursor(db_obj: Any) -> Any:
 _SCOPE_SELECT: Final[str] = '''
 SELECT binding.executor_credential_binding_id, binding.trading_account_credential_id,
  binding.trading_account_id, binding.venue, binding.permission_scope,
- binding.executor_identity, binding.runtime_owner,
+ binding.executor_identity, binding.runtime_owner, binding.binding_status,
  credential.trading_account_id AS credential_trading_account_id,
  credential.venue AS credential_venue, credential.permission_scope AS credential_permission_scope,
  credential.credential_status, credential.credential_source,

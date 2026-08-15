@@ -194,7 +194,10 @@ class TestFindOrderByClientOrderId:
         )
         client = BitvavoClient.for_private_read(api_key="k", api_secret="s")
         adapter = LiveBitvavoOrderAdapter(client=client)
-        monkeypatch.setattr("requests.get", lambda *_a, **_k: _Response({}, status_code=404))
+        monkeypatch.setattr(
+            "requests.get",
+            lambda *_a, **_k: _Response({"errorCode": 240}, status_code=404),
+        )
         assert adapter.find_order_by_client_order_id(market="BTC-EUR", client_order_id="cid-1") is None
 
     def test_network_timeout_is_ambiguous(self, monkeypatch: pytest.MonkeyPatch) -> None:

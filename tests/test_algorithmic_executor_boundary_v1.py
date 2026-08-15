@@ -11,6 +11,8 @@ CANONICAL_MODULES = (
     "execution_leg_v1.py",
     "broker_ack_classification_v1.py",
     "execution_submission_orchestrator_v1.py",
+    "execution_order_reconciliation_v1.py",
+    "bitvavo_order_adapter_v1.py",
     "stub_order_adapter_v1.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (

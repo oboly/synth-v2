@@ -42,6 +42,9 @@ class ExecutionLegV1:
     quantity: Decimal
     state: str = PREPARED
     broker_order_id: str | None = None
+    broker_raw_status: str | None = None
+    restatement_reason: str | None = None
+    last_reconciled_ts_utc: Any | None = None
 
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
@@ -70,6 +73,13 @@ def _row_to_leg(row: Any) -> ExecutionLegV1:
         broker_order_id=(
             None if row.get("broker_order_id") is None else str(row["broker_order_id"])
         ),
+        broker_raw_status=(
+            None if row.get("broker_raw_status") is None else str(row["broker_raw_status"])
+        ),
+        restatement_reason=(
+            None if row.get("restatement_reason") is None else str(row["restatement_reason"])
+        ),
+        last_reconciled_ts_utc=row.get("last_reconciled_ts_utc"),
     )
 
 
@@ -161,7 +171,19 @@ class ExecutionLegRepositoryV1:
         return self._transition(leg_id, PREPARED, SUBMISSION_UNCERTAIN)
 
     def mark_reconciliation_required(self, leg_id: int) -> ExecutionLegV1:
-        leg, won = self._transition(leg_id, SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED)
+        now = trusted_clock.utc_now()
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_leg SET state=%s, "
+                "last_reconciled_ts_utc=%s, updated_ts_utc=%s "
+                "WHERE executor_execution_leg_id=%s AND state=%s",
+                [RECONCILIATION_REQUIRED, now, now, leg_id, SUBMISSION_UNCERTAIN],
+            )
+            won = cursor.rowcount == 1
+        leg = self.find(leg_id)
+        if leg is None:
+            raise LookupError("EXECUTION_LEG_NOT_FOUND")
         if won or leg.state == RECONCILIATION_REQUIRED:
             return leg
         raise ExecutionLegConflictError("RECONCILIATION_REQUIRED_TRANSITION_CONFLICT")
@@ -174,21 +196,104 @@ class ExecutionLegRepositoryV1:
             raise ExecutionLegConflictError("SUBMISSION_UNCERTAIN_TRANSITION_CONFLICT")
         return leg
 
-    def persist_accepted(self, leg_id: int, state: str, broker_order_id: str) -> ExecutionLegV1:
+    def persist_accepted(
+        self,
+        leg_id: int,
+        state: str,
+        broker_order_id: str,
+        *,
+        broker_raw_status: str | None = None,
+        restatement_reason: str | None = None,
+        from_reconciliation: bool = False,
+    ) -> ExecutionLegV1:
         if state not in ACCEPTED_STATES or not isinstance(broker_order_id, str) or not broker_order_id.strip():
             raise ValueError("accepted acknowledgement requires state and broker_order_id")
-        return self._resolved_transition(leg_id, state, broker_order_id)
+        return self._resolved_transition(
+            leg_id, state, broker_order_id,
+            broker_raw_status=broker_raw_status,
+            restatement_reason=restatement_reason,
+            from_reconciliation=from_reconciliation,
+        )
 
-    def persist_closed(self, leg_id: int, state: str, broker_order_id: str | None = None) -> ExecutionLegV1:
+    def persist_closed(
+        self,
+        leg_id: int,
+        state: str,
+        broker_order_id: str | None = None,
+        *,
+        broker_raw_status: str | None = None,
+        restatement_reason: str | None = None,
+        from_reconciliation: bool = False,
+    ) -> ExecutionLegV1:
         if state not in CLOSED_STATES and state != FAILED:
             raise ValueError("not a closed state")
-        return self._resolved_transition(leg_id, state, broker_order_id)
+        return self._resolved_transition(
+            leg_id, state, broker_order_id,
+            broker_raw_status=broker_raw_status,
+            restatement_reason=restatement_reason,
+            from_reconciliation=from_reconciliation,
+        )
 
-    def _resolved_transition(self, leg_id: int, state: str, broker_order_id: str | None) -> ExecutionLegV1:
-        leg, won = self._transition(leg_id, SUBMISSION_UNCERTAIN, state, broker_order_id)
+    def _resolved_transition(
+        self,
+        leg_id: int,
+        state: str,
+        broker_order_id: str | None,
+        *,
+        broker_raw_status: str | None,
+        restatement_reason: str | None,
+        from_reconciliation: bool,
+    ) -> ExecutionLegV1:
+        old_states = (
+            (SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED)
+            if from_reconciliation
+            else (SUBMISSION_UNCERTAIN,)
+        )
+        leg, won = self._resolved_transition_from(
+            leg_id,
+            old_states,
+            state,
+            broker_order_id,
+            broker_raw_status,
+            restatement_reason,
+            from_reconciliation,
+        )
         if won or leg.state == state:
             return leg
         raise ExecutionLegConflictError("EXECUTION_LEG_RESOLUTION_CONFLICT")
+
+    def _resolved_transition_from(
+        self,
+        leg_id: int,
+        old_states: tuple[str, ...],
+        new_state: str,
+        broker_order_id: str | None,
+        broker_raw_status: str | None,
+        restatement_reason: str | None,
+        from_reconciliation: bool,
+    ) -> tuple[ExecutionLegV1, bool]:
+        placeholders = ",".join(["%s"] * len(old_states))
+        reconciled_ts = trusted_clock.utc_now() if from_reconciliation else None
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_leg SET state=%s, "
+                "broker_order_id=COALESCE(%s, broker_order_id), "
+                "broker_raw_status=%s, restatement_reason=%s, "
+                "last_reconciled_ts_utc=COALESCE(%s, last_reconciled_ts_utc), "
+                "updated_ts_utc=%s WHERE executor_execution_leg_id=%s "
+                f"AND state IN ({placeholders})",
+                [
+                    new_state, broker_order_id, broker_raw_status,
+                    restatement_reason, reconciled_ts, trusted_clock.utc_now(),
+                    leg_id, *old_states,
+                ],
+            )
+            won = cursor.rowcount == 1
+        leg = self.find(leg_id)
+        if leg is None:
+            raise LookupError("EXECUTION_LEG_NOT_FOUND")
+        return leg, won
 
     def _transition(self, leg_id: int, old: str, new: str, broker_order_id: str | None = None) -> tuple[ExecutionLegV1, bool]:
         with self.cursor_factory(commit=True) as db_obj:
@@ -233,4 +338,7 @@ def replace_leg_id(leg: ExecutionLegV1, leg_id: int) -> ExecutionLegV1:
         quantity=leg.quantity,
         state=leg.state,
         broker_order_id=leg.broker_order_id,
+        broker_raw_status=leg.broker_raw_status,
+        restatement_reason=leg.restatement_reason,
+        last_reconciled_ts_utc=leg.last_reconciled_ts_utc,
     )

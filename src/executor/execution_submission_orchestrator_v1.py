@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol
 
-from src.executor.broker_ack_classification_v1 import ACCEPTED_ACK_STATES, CLOSED_ACK_STATES, BrokerAckStateV1, OrderAckV1
+from src.executor.broker_ack_classification_v1 import OrderAckV1
 from src.executor.execution_client_order_id_v1 import derive_execution_client_order_id
 from src.executor.execution_handoff_v1 import ExecutionHandoffRepositoryV1, ExecutionHandoffV1
 from src.executor.execution_leg_v1 import (
@@ -18,6 +18,7 @@ from src.executor.execution_leg_v1 import (
     ExecutionLegV1,
 )
 from src.executor.execution_plan_reference_v1 import ApprovedExecutionPlanV1
+from src.executor.execution_order_reconciliation_v1 import persist_order_ack, reconcile_execution_leg
 
 
 class OrderPlacementAdapter(Protocol):
@@ -108,16 +109,10 @@ def submit_execution_plan(
 
 
 def _resolve_leg(leg: ExecutionLegV1, adapter: OrderPlacementAdapter, repository: ExecutionLegRepositoryV1) -> ExecutionLegV1:
-    if leg.state == RECONCILIATION_REQUIRED or leg.state in ACCEPTED_STATES:
+    if leg.state in ACCEPTED_STATES:
         return leg
-    if leg.state == SUBMISSION_UNCERTAIN:
-        try:
-            found = adapter.find_order_by_client_order_id(market=leg.market, client_order_id=leg.client_order_id)
-        except Exception:
-            return repository.mark_uncertain(leg.execution_leg_id or 0)
-        if found is None:
-            return repository.mark_reconciliation_required(leg.execution_leg_id or 0)
-        return _persist_ack(leg, found, repository)
+    if leg.state in {SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED}:
+        return reconcile_execution_leg(leg=leg, adapter=adapter, repository=repository)
     if leg.state != PREPARED:
         return leg
     leg, won = repository.claim_submission(leg.execution_leg_id or 0)
@@ -141,7 +136,7 @@ def _resolve_leg(leg: ExecutionLegV1, adapter: OrderPlacementAdapter, repository
                 return current
             raise
     try:
-        return _persist_ack(leg, ack, repository)
+        return persist_order_ack(leg=leg, ack=ack, repository=repository)
     except ExecutionLegConflictError:
         # A concurrent invocation is required to reconcile any persisted
         # SUBMISSION_UNCERTAIN leg. If its authoritative lookup reports no
@@ -152,15 +147,3 @@ def _resolve_leg(leg: ExecutionLegV1, adapter: OrderPlacementAdapter, repository
         if current is not None and current.state == RECONCILIATION_REQUIRED:
             return current
         raise
-
-
-def _persist_ack(leg: ExecutionLegV1, ack: object, repository: ExecutionLegRepositoryV1) -> ExecutionLegV1:
-    if not isinstance(ack, OrderAckV1) or not isinstance(ack.state, BrokerAckStateV1):
-        return repository.mark_uncertain(leg.execution_leg_id or 0)
-    if ack.state in ACCEPTED_ACK_STATES:
-        if not isinstance(ack.broker_order_id, str) or not ack.broker_order_id.strip():
-            return repository.mark_uncertain(leg.execution_leg_id or 0)
-        return repository.persist_accepted(leg.execution_leg_id or 0, ack.state.value, ack.broker_order_id)
-    if ack.state in CLOSED_ACK_STATES:
-        return repository.persist_closed(leg.execution_leg_id or 0, ack.state.value, ack.broker_order_id)
-    return repository.mark_uncertain(leg.execution_leg_id or 0)
