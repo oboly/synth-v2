@@ -3,6 +3,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.decision_gate.account_protection_contract_v1 import (
+    ACTION_BUY,
+    ACTION_EXIT,
+    ACTION_REDUCE,
     AccountProtectionContractError,
     LOCK_FACT_CONTRACT_VERSION,
     LOCK_STATE_ACTIVE,
@@ -25,6 +28,7 @@ from src.decision_gate.account_protection_contract_v1 import (
     STATE_PERMITTED,
     account_protection_lock_event_id_v1,
     account_protection_lock_lifecycle_id_v1,
+    resolve_account_protection_state_for_action_v1,
     resolve_account_protection_state_v1,
 )
 
@@ -71,6 +75,21 @@ def _resolve(facts, **changes):
     )
     values.update(changes)
     return resolve_account_protection_state_v1(**values)
+
+
+def _resolve_action(facts, *, action=ACTION_BUY, **changes):
+    values: dict[str, object] = dict(
+        facts=facts,
+        trading_account_id=ACCOUNT_ID,
+        sleeve_code=None,
+        asset_id=42,
+        requested_action=action,
+        account_state_observed_ts_utc=NOW,
+        account_state_fresh=True,
+        at=NOW,
+    )
+    values.update(changes)
+    return resolve_account_protection_state_for_action_v1(**values)
 
 
 def test_permitted_when_no_locks():
@@ -272,3 +291,76 @@ def test_lifecycle_transitions_are_distinct_append_only_events():
 def test_duplicate_event_identity_is_rejected():
     with pytest.raises(AccountProtectionContractError, match="DUPLICATE_PROTECTION_LOCK_EVENT_ID"):
         _resolve((_lock(), _lock()))
+
+
+@pytest.mark.parametrize(
+    "protection_code,scope_type,scope_id",
+    [
+        (PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK, SCOPE_ACCOUNT, str(ACCOUNT_ID)),
+        (PROTECTION_DAILY_REALIZED_LOSS_BLOCK, SCOPE_ACCOUNT, str(ACCOUNT_ID)),
+        (PROTECTION_REPEATED_STOPLOSS_BLOCK, SCOPE_ASSET, "42"),
+        (PROTECTION_LOW_PROFIT_ASSET_COOLDOWN, SCOPE_ASSET, "42"),
+        (PROTECTION_POST_CLOSE_REENTRY_COOLDOWN, SCOPE_ASSET, "42"),
+    ],
+)
+def test_risk_increase_protections_block_buy_but_allow_reduce_and_exit(protection_code, scope_type, scope_id):
+    lock = _lock(protection_code=protection_code, scope_type=scope_type, scope_id=scope_id)
+    assert _resolve_action((lock,), action=ACTION_BUY).decision_state == STATE_BLOCKED
+    assert _resolve_action((lock,), action=ACTION_REDUCE).decision_state == STATE_PERMITTED
+    assert _resolve_action((lock,), action=ACTION_EXIT).decision_state == STATE_PERMITTED
+
+
+@pytest.mark.parametrize("action", [ACTION_BUY, ACTION_REDUCE, ACTION_EXIT])
+def test_manual_lock_blocks_every_action(action):
+    lock = _lock(protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK)
+    assert _resolve_action((lock,), action=action).decision_state == STATE_BLOCKED
+
+
+def test_unsupported_action_is_rejected_fail_closed():
+    with pytest.raises(AccountProtectionContractError, match="UNSUPPORTED_PROTECTION_ACTION"):
+        _resolve_action((), action="SELL")
+
+
+def test_precedence_applies_after_action_filter():
+    drawdown = _lock(protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK)
+    cooldown = _lock(protection_code=PROTECTION_LOW_PROFIT_ASSET_COOLDOWN, scope_type=SCOPE_ASSET, scope_id="42")
+    assert _resolve_action((drawdown, cooldown), action=ACTION_EXIT).decision_state == STATE_PERMITTED
+    buy = _resolve_action((drawdown, cooldown), action=ACTION_BUY)
+    assert buy.protection_code == PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK
+    manual = _lock(protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK)
+    exit_result = _resolve_action((manual, drawdown), action=ACTION_EXIT)
+    assert exit_result.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
+
+
+def test_action_resolution_preserves_account_and_asset_isolation():
+    cooldown = _lock(protection_code=PROTECTION_LOW_PROFIT_ASSET_COOLDOWN, scope_type=SCOPE_ASSET, scope_id="42")
+    assert _resolve_action((cooldown,), asset_id=99).decision_state == STATE_PERMITTED
+    foreign = _lock(trading_account_id=ACCOUNT_ID + 1)
+    with pytest.raises(AccountProtectionContractError, match="CROSS_ACCOUNT_EVIDENCE_LEAKAGE"):
+        _resolve_action((foreign,))
+
+
+def test_stale_evidence_blocks_independently_of_action():
+    for action in (ACTION_BUY, ACTION_REDUCE, ACTION_EXIT):
+        result = _resolve_action((), action=action, account_state_fresh=False)
+        assert result.decision_state == STATE_BLOCKED
+
+
+def test_ambiguous_same_lifecycle_timestamp_is_rejected():
+    original = _lock(lifecycle_id="same", event_id="event-a")
+    contradictory = _lock(lifecycle_id="same", event_id="event-b")
+    with pytest.raises(AccountProtectionContractError, match="AMBIGUOUS_PROTECTION_LIFECYCLE_EVENT"):
+        _resolve_action((original, contradictory))
+
+
+def test_lifecycle_identity_cannot_change_across_append_only_events():
+    active = _lock(lifecycle_id="same", event_id="active", triggered_ts_utc=NOW - timedelta(minutes=1))
+    invalid_clear = _lock(
+        lifecycle_id="same",
+        event_id="clear",
+        triggered_ts_utc=NOW,
+        lock_state=LOCK_STATE_RECOVERED,
+        configuration_version="different-policy",
+    )
+    with pytest.raises(AccountProtectionContractError, match="CONTRADICTORY_PROTECTION_LIFECYCLE_IDENTITY"):
+        _resolve_action((active, invalid_clear))

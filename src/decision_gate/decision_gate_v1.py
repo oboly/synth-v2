@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
+
+from src.decision_gate.account_protection_contract_v1 import (
+    AccountProtectionContractError,
+    AccountProtectionEvaluationV1,
+    STATE_BLOCKED as PROTECTION_STATE_BLOCKED,
+    validate_account_protection_evaluation_binding_v1,
+)
+
 from src.decision_gate.models import (
     ACTIVE_SLEEVE_STATUSES,
     BUY_READY_SELECTION_STATE,
@@ -84,7 +94,7 @@ def _watchlist_block_reason(row: SelectionInputRow) -> str:
     return f"TRADE_SETUP_FILTER_{reason}"
 
 
-def evaluate_selection_for_account(
+def _evaluate_selection_for_account_base(
     row: SelectionInputRow,
     account_id: int,
     sleeve_code: str,
@@ -273,3 +283,76 @@ def evaluate_selection_for_account(
         duplicate_state=duplicate_state,
         sleeve_state=sleeve_state,
     )
+
+
+def _compose_protection(
+    result: DecisionResult,
+    protection: AccountProtectionEvaluationV1 | None,
+    protection_evaluation_ts_utc: datetime | None,
+) -> DecisionResult:
+    """Logical-AND composition: protection can only remove permission."""
+    if protection is None:
+        return result
+    try:
+        validate_account_protection_evaluation_binding_v1(
+            protection,
+            trading_account_id=result.account_id,
+            requested_action="BUY",
+            sleeve_code=result.sleeve_code,
+            asset_id=result.asset_id,
+            evaluation_ts_utc=protection_evaluation_ts_utc,
+        )
+    except AccountProtectionContractError:
+        if result.execution_intent == "NONE":
+            return result
+        return replace(
+            result,
+            protection_decision_state="BLOCKED",
+            protection_reason_code="INVALID_PROTECTION_EVALUATION_BINDING",
+            decision_state="BLOCKED_PROTECTION",
+            decision_reason="INVALID_PROTECTION_EVALUATION_BINDING",
+            execution_intent="NONE",
+        )
+    enriched = replace(
+        result,
+        protection_decision_state=protection.decision_state,
+        protection_reason_code=protection.reason_code,
+        protection_code=protection.protection_code,
+    )
+    if protection.decision_state != PROTECTION_STATE_BLOCKED or result.execution_intent == "NONE":
+        return enriched
+    return replace(
+        enriched,
+        decision_state="BLOCKED_PROTECTION",
+        decision_reason=protection.reason_code,
+        execution_intent="NONE",
+    )
+
+
+def evaluate_selection_for_account(
+    row: SelectionInputRow,
+    account_id: int,
+    sleeve_code: str,
+    sleeve_state: SleeveState | None,
+    duplicate_state: DuplicateState,
+    config: DecisionGateConfig,
+    has_open_order: bool = False,
+    protection_evaluation: AccountProtectionEvaluationV1 | None = None,
+    protection_evaluation_ts_utc: datetime | None = None,
+) -> DecisionResult:
+    """Evaluate BUY selection permission plus an optional P2 protection result.
+
+    Callers that enable account protections must first use the action-aware P2
+    evaluator with ``BUY`` and pass its result here. Legacy callers remain
+    unchanged until they supply that explicit permission evidence.
+    """
+    base = _evaluate_selection_for_account_base(
+        row=row,
+        account_id=account_id,
+        sleeve_code=sleeve_code,
+        sleeve_state=sleeve_state,
+        duplicate_state=duplicate_state,
+        config=config,
+        has_open_order=has_open_order,
+    )
+    return _compose_protection(base, protection_evaluation, protection_evaluation_ts_utc)
