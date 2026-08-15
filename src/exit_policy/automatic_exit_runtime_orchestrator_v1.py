@@ -60,7 +60,8 @@ class RuntimeItemOutcomeV1:
     audit_outcome: str  # inserted | idempotent_existing
 
 
-def _source_evidence(item: RuntimeItemV1) -> dict[str, Any]:
+def build_automatic_exit_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any]:
+    """Canonical immutable source identity used by runtime audit and Phase 5."""
     return {
         "trading_account_id": item.trading_account_id,
         "position_reference": item.position_reference,
@@ -88,7 +89,7 @@ def evaluate_automatic_exit_runtime_item_v1(
     config: AutomaticExitPolicyConfigV1 = AutomaticExitPolicyConfigV1(),
 ) -> RuntimeItemOutcomeV1:
     """Evaluate one held position and append exactly one audit row."""
-    evidence = _source_evidence(item)
+    evidence = build_automatic_exit_source_evidence_v1(item)
     idempotency_key = automatic_exit_idempotency_key_v1(evidence)
     # Logical evidence is immutable source/replay identity only. Runtime
     # provenance belongs in the audit column, so runtime upgrades do not make
