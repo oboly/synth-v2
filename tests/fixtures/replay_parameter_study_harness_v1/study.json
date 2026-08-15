@@ -1,0 +1,14 @@
+{
+  "study_id": "toy_field_threshold_study_v1",
+  "study_version": "v1",
+  "feature_versions": {"toy_field": "v1"},
+  "missing_data_policy": "FAIL_CLOSED",
+  "decision_fn_id": "demo_field_threshold_decision",
+  "evaluation_fn_id": "demo_field_threshold_evaluation",
+  "parameter_grid": {
+    "dimensions": [
+      {"name": "field_name", "values": ["value"]},
+      {"name": "threshold", "values": [1.0, 5.0, 20.0]}
+    ]
+  }
+}
