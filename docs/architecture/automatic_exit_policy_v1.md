@@ -216,7 +216,8 @@ different outcome for the same immutable evidence.
 one account-bound `account_asset -> venue_market` row scoped to the runtime
 account, venue, and base asset. This binding supplies only the canonical market
 identity; it never reads account-asset strategy flags and does not grant
-permission. Zero or multiple usable bindings fail closed. The exact canonical
+permission. Zero or multiple structural bindings fail closed; venue
+tradeability does not alter identity or resolve ambiguity. The exact canonical
 market is used for price, profile, constraint, conflict, candidate, gate,
 planner, idempotency, and audit inputs; the runtime never constructs a market
 from a symbol or assumes an EUR quote.

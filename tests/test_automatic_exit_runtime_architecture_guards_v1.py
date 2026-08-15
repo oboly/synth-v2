@@ -106,3 +106,10 @@ def test_repository_uses_no_hardcoded_quote_or_selection_dependency() -> None:
     assert "selection_engine" not in text
     for strategy_flag in ("is_candidate_enabled", "is_portfolio_member", "is_order_proposal_enabled"):
         assert strategy_flag not in text
+
+
+def test_position_market_identity_does_not_reference_tradeability() -> None:
+    text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
+    start = text.index("def resolve_position_market_v1(")
+    end = text.index("\ndef load_latest_market_price(", start)
+    assert "is_tradeable" not in text[start:end]

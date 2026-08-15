@@ -110,6 +110,18 @@ def test_position_market_uses_single_exact_account_binding() -> None:
     assert identity.market == "BTC-EUR"
 
 
+def test_position_market_retains_nontradeable_bound_market_identity() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    venue_market_id = insert_venue_market(conn, is_tradeable=False)
+    bind_account_market(conn, venue_market_id=venue_market_id)
+    identity = resolve_position_market_v1(
+        conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC",
+    )
+    assert identity.venue_market_id == venue_market_id
+    assert identity.market == "BTC-EUR"
+
+
 def test_position_market_does_not_guess_quote_when_other_quote_exists() -> None:
     conn = FakeConnection()
     seed_happy_path(conn)
@@ -123,7 +135,9 @@ def test_position_market_does_not_guess_quote_when_other_quote_exists() -> None:
 def test_position_market_multiple_account_bindings_fail_closed() -> None:
     conn = FakeConnection()
     seed_happy_path(conn)
-    bind_account_market(conn, venue_market_id=insert_venue_market(conn, market="BTC-USDC", quote_currency="USDC"))
+    bind_account_market(conn, venue_market_id=insert_venue_market(
+        conn, market="BTC-USDC", quote_currency="USDC", is_tradeable=False,
+    ))
     with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_AMBIGUOUS"):
         resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC")
 

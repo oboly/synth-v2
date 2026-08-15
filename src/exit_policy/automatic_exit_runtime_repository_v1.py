@@ -367,11 +367,10 @@ def resolve_position_market_v1(
     WHERE aa.trading_account_id = %s
       AND vm.venue = %s
       AND vm.base_asset_id = %s
-      AND vm.is_tradeable = %s
     ORDER BY vm.venue_market_id
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (trading_account_id, venue, asset_id, 1))
+        cur.execute(sql, (trading_account_id, venue, asset_id))
         rows = _fetch_all(cur)
     _reject(len(rows) == 0, "POSITION_MARKET_IDENTITY_MISSING")
     _reject(len(rows) > 1, "POSITION_MARKET_IDENTITY_AMBIGUOUS")
