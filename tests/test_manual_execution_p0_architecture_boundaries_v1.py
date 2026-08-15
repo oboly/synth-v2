@@ -159,6 +159,8 @@ class TestExecutorHandoffBoundary:
     never call a broker directly."""
 
     _FORBIDDEN_HANDOFF_MODULES = (
+        "src.executor.execution_handoff_v1",
+        "src.executor.execution_credential_scope_v1",
         "src.executor.manual_execution_handoff_v1",
         "src.executor.manual_execution_credential_scope_v1",
     )
@@ -193,19 +195,40 @@ class TestExecutorHandoffBoundary:
             "src.market_data.bitvavo_public_client_v1",
             "src.market_rules.bitvavo_venue_adapter_v1",
         )
-        for filename in ("manual_execution_handoff_v1.py", "manual_execution_credential_scope_v1.py"):
+        for filename in (
+            "execution_handoff_v1.py",
+            "execution_credential_scope_v1.py",
+            "manual_execution_handoff_v1.py",
+            "manual_execution_credential_scope_v1.py",
+        ):
             path = _REPO_ROOT / "src" / "executor" / filename
             imported = _imported_module_names(path)
             for forbidden in forbidden_modules:
                 assert forbidden not in imported, f"{filename} must not import {forbidden}"
 
     def test_credential_scope_resolver_never_selects_secret_columns(self) -> None:
-        path = _REPO_ROOT / "src" / "executor" / "manual_execution_credential_scope_v1.py"
-        text = path.read_text()
-        sql_block = text.split('_SCOPE_SELECT: Final[str] = """', 1)[1].split('"""', 1)[0]
+        path = _REPO_ROOT / "src" / "executor" / "execution_credential_scope_v1.py"
+        tree = ast.parse(path.read_text())
+        sql_block = None
+        for node in tree.body:
+            if (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "_SCOPE_SELECT"
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                sql_block = node.value.value
+                break
+        assert sql_block is not None, "canonical credential scope SELECT must be statically defined"
         forbidden_columns = ("encrypted_envelope", "credential_fingerprint", "api_key", "api_secret", "key_version")
         for column in forbidden_columns:
-            assert column not in sql_block, f"credential scope SELECT must never read {column}"
+                assert column not in sql_block, f"credential scope SELECT must never read {column}"
+
+    def test_manual_credential_scope_is_compatibility_only(self) -> None:
+        path = _REPO_ROOT / "src" / "executor" / "manual_execution_credential_scope_v1.py"
+        imported = _imported_module_names(path)
+        assert imported == {"src.executor.execution_credential_scope_v1"}
 
     def test_migration_denies_live_and_enforces_single_writer(self) -> None:
         migration = (
