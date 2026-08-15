@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oboly/synth-v2/deploy/ownership/account_runtime_capability_ownership_v1.schema.json",
+  "title": "Synth account-runtime capability ownership registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_version", "authoritative_doc", "capabilities"],
+  "properties": {
+    "schema_version": {"const": "account_runtime_capability_ownership_schema_v1"},
+    "contract_version": {"const": "v1"},
+    "authoritative_doc": {"type": "string", "minLength": 1},
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "capability_id", "owner_host", "runtime_entrypoint", "lock_scope",
+          "private_read_authority", "broker_writes", "order_submission", "live_orders",
+          "activation_status"
+        ],
+        "properties": {
+          "capability_id": {"type": "string", "minLength": 1},
+          "owner_host": {"enum": ["odroid", "gurkdb", "devlap", "UNASSIGNED"]},
+          "runtime_entrypoint": {"type": "string", "minLength": 1},
+          "lock_scope": {"type": "string", "minLength": 1},
+          "private_read_authority": {"type": "string", "minLength": 1},
+          "broker_writes": {"const": 0},
+          "order_submission": {"const": 0},
+          "live_orders": {"const": 0},
+          "activation_status": {"enum": ["EXISTING_RUNTIME", "UNASSIGNED", "PLANNED"]}
+        }
+      }
+    }
+  }
+}

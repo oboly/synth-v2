@@ -377,6 +377,7 @@ def write_position_rows(
     account: TradingAccount,
     snapshot_ts_utc: Any,
     rows: list[PositionRow],
+    commit: bool = True,
 ) -> list[WriteResult]:
     select_sql = """
     SELECT account_position_snapshot_id
@@ -458,8 +459,71 @@ def write_position_rows(
                 )
             )
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return results
+
+
+def write_positions_from_balance_snapshot(
+    conn: Any,
+    *,
+    account: TradingAccount,
+    balance_source_name: str,
+    balance_snapshot_ts_utc: Any,
+    interval_code: str = DEFAULT_INTERVAL,
+    commit: bool = True,
+) -> tuple[list[WriteResult], list[str]]:
+    """Derive persisted positions from one exact persisted balance snapshot.
+
+    The caller supplies the account and balance identity, so a coordinating
+    account-state producer can keep this write inside its own transaction.
+    This function performs no broker call and does not create execution intent.
+    """
+    balances = fetch_balances(
+        conn,
+        account=account,
+        source_name=balance_source_name,
+        snapshot_ts_utc=balance_snapshot_ts_utc,
+    )
+    symbols = sorted(balances.keys())
+    if not symbols:
+        return write_position_rows(
+            conn,
+            account=account,
+            snapshot_ts_utc=balance_snapshot_ts_utc,
+            rows=[],
+            commit=commit,
+        ), []
+
+    ts_col, price_col = detect_candle_columns(conn)
+    asset_ids = fetch_asset_ids(conn, symbols=symbols)
+    prices = fetch_prices(
+        conn,
+        venue=account.venue,
+        interval_code=interval_code,
+        symbols=symbols,
+        ts_col=ts_col,
+        price_col=price_col,
+    )
+    position_rows, skipped_symbols = build_position_rows(
+        balances=balances,
+        asset_ids=asset_ids,
+        prices=prices,
+        account=account,
+        balance_snapshot_ts_utc=balance_snapshot_ts_utc,
+    )
+    if skipped_symbols:
+        raise RuntimeError(
+            "POSITION_SNAPSHOT_INCOMPLETE: missing asset identity for "
+            + ",".join(skipped_symbols)
+        )
+    return write_position_rows(
+        conn,
+        account=account,
+        snapshot_ts_utc=balance_snapshot_ts_utc,
+        rows=position_rows,
+        commit=commit,
+    ), skipped_symbols
 
 
 def fetch_latest_written_summary(

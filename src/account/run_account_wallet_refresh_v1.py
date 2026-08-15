@@ -34,15 +34,27 @@ from src.account.account_snapshot_models_v1 import (
     WalletOpenOrderRow,
     WalletRefreshResult,
 )
+from src.account.account_state_snapshot_alignment_v1 import (
+    ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+    AccountStateSnapshotRunV1,
+    verify_persisted_component_counts,
+    write_complete_account_state_snapshot_run,
+    write_complete_open_order_snapshot_run,
+)
 from src.account.private_read_credential_resolver_v1 import (
     PrivateReadCredentialResolutionError,
     resolve_private_read_bitvavo_client_from_env,
 )
 from src.common.db import get_db_connection
+from src.operations.run_broker_account_position_snapshot_writer_v1 import (
+    SOURCE_NAME as POSITION_SNAPSHOT_SOURCE_NAME,
+    fetch_trading_account as fetch_position_snapshot_account,
+    write_positions_from_balance_snapshot,
+)
 
 
 RUNNER_NAME = "account_wallet_refresh_v1"
-RUNNER_VERSION = "0.3"
+RUNNER_VERSION = "0.4"
 DEFAULT_VENUE = "bitvavo"
 
 _PROFILE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -230,17 +242,8 @@ def write_open_order_snapshot(
     orders: list[WalletOpenOrderRow],
     snapshot_ts_utc: datetime,
 ) -> int:
-    # Gracefully skip if account_open_order_snapshot table does not exist yet.
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM account_open_order_snapshot LIMIT 0")
-    except Exception:
-        print(
-            "[warn] account_open_order_snapshot table not found; "
-            "run migration 20260603_account_open_order_snapshot_v1.sql",
-            file=sys.stderr,
-        )
-        return 0
+    if len({order.broker_order_id for order in orders}) != len(orders):
+        raise RuntimeError("OPEN_ORDER_SNAPSHOT_DUPLICATE_BROKER_ORDER_ID")
 
     sql = """
     INSERT INTO account_open_order_snapshot (
@@ -282,6 +285,95 @@ def write_open_order_snapshot(
             )
             written += 1
     return written
+
+
+def write_aligned_account_state_snapshot(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    account_code: str,
+    venue: str,
+    balances: list[WalletBalanceRow],
+    orders: list[WalletOpenOrderRow],
+    refresh_started_ts_utc: datetime,
+    snapshot_ts_utc: datetime,
+) -> AccountStateSnapshotRunV1:
+    """Persist one COMPLETE account-state bundle in the caller transaction.
+
+    The caller has already performed the canonical two private reads.  This
+    helper performs only local DB work and rolls nothing forward itself: a
+    failure leaves its enclosing transaction to be rolled back by the wallet
+    refresh runner, so no partial result is represented as COMPLETE evidence.
+    """
+    account = fetch_position_snapshot_account(
+        conn,
+        account_code=account_code,
+        venue=venue,
+    )
+    if account.trading_account_id != trading_account_id:
+        raise RuntimeError("ACCOUNT_STATE_SNAPSHOT_IDENTITY_MISMATCH")
+
+    balance_writes = write_balance_snapshot(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        balances=balances,
+        snapshot_ts_utc=snapshot_ts_utc,
+        source_name=RUNNER_NAME,
+    )
+    position_results, skipped_symbols = write_positions_from_balance_snapshot(
+        conn,
+        account=account,
+        balance_source_name=RUNNER_NAME,
+        balance_snapshot_ts_utc=snapshot_ts_utc,
+        commit=False,
+    )
+    if skipped_symbols:
+        raise RuntimeError("POSITION_SNAPSHOT_INCOMPLETE")
+    order_writes = write_open_order_snapshot(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        orders=orders,
+        snapshot_ts_utc=snapshot_ts_utc,
+    )
+    if order_writes != len(orders):
+        raise RuntimeError("OPEN_ORDER_SNAPSHOT_COUNT_MISMATCH")
+
+    verify_persisted_component_counts(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        snapshot_ts_utc=snapshot_ts_utc,
+        position_source_name=POSITION_SNAPSHOT_SOURCE_NAME,
+        expected_position_count=len(position_results),
+        balance_source_name=RUNNER_NAME,
+        expected_balance_count=balance_writes,
+        expected_open_order_count=order_writes,
+    )
+
+    open_order_run_id = write_complete_open_order_snapshot_run(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        source_name=RUNNER_NAME,
+        snapshot_ts_utc=snapshot_ts_utc,
+        open_order_count=order_writes,
+    )
+    return write_complete_account_state_snapshot_run(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+        refresh_started_ts_utc=refresh_started_ts_utc,
+        snapshot_ts_utc=snapshot_ts_utc,
+        completed_ts_utc=utc_now_naive(),
+        position_source_name=POSITION_SNAPSHOT_SOURCE_NAME,
+        position_snapshot_count=len(position_results),
+        balance_source_name=RUNNER_NAME,
+        balance_snapshot_count=balance_writes,
+        account_open_order_snapshot_run_id=open_order_run_id,
+    )
 
 
 def discover_account_assets(
@@ -438,6 +530,7 @@ def main() -> int:
         print(f"validation_state={resolved.profile.validation_state}")
         print("[INFO] private read-only; no broker writes; no order submission")
 
+        refresh_started_ts_utc = utc_now_naive()
         try:
             raw_balances = client.get_balance()
         except PermissionError as exc:
@@ -458,35 +551,33 @@ def main() -> int:
         order_writes = 0
         aa_inserted = 0
         aa_existing = 0
+        account_state_run: AccountStateSnapshotRunV1 | None = None
 
         if args.write_db:
-            aa_inserted, aa_existing = discover_account_assets(
-                conn,
-                trading_account_id=trading_account_id,
-                venue=args.venue,
-                balances=balances,
-                orders=orders,
-            )
-            conn.commit()
-
-            balance_writes = write_balance_snapshot(
-                conn,
-                trading_account_id=trading_account_id,
-                venue=args.venue,
-                balances=balances,
-                snapshot_ts_utc=snapshot_ts_utc,
-                source_name=RUNNER_NAME,
-            )
-            conn.commit()
-
-            order_writes = write_open_order_snapshot(
-                conn,
-                trading_account_id=trading_account_id,
-                venue=args.venue,
-                orders=orders,
-                snapshot_ts_utc=snapshot_ts_utc,
-            )
-            conn.commit()
+            try:
+                aa_inserted, aa_existing = discover_account_assets(
+                    conn,
+                    trading_account_id=trading_account_id,
+                    venue=args.venue,
+                    balances=balances,
+                    orders=orders,
+                )
+                account_state_run = write_aligned_account_state_snapshot(
+                    conn,
+                    trading_account_id=trading_account_id,
+                    account_code=account_code,
+                    venue=args.venue,
+                    balances=balances,
+                    orders=orders,
+                    refresh_started_ts_utc=refresh_started_ts_utc,
+                    snapshot_ts_utc=snapshot_ts_utc,
+                )
+                balance_writes = account_state_run.balance_snapshot_count
+                order_writes = len(orders)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         result = WalletRefreshResult(
             profile=args.account_profile,
@@ -509,6 +600,11 @@ def main() -> int:
                 print(f"account_asset_existing={result.account_asset_existing}")
                 print(f"balance_snapshot_writes={balance_writes}")
                 print(f"order_snapshot_writes={order_writes}")
+                assert account_state_run is not None
+                print(
+                    "account_state_snapshot_run_id="
+                    f"{account_state_run.account_state_snapshot_run_id}"
+                )
             else:
                 print("[DRY_RUN] --write-db not set; no DB writes performed")
             print("broker_private_calls=2")
