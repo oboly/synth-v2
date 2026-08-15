@@ -1,0 +1,255 @@
+# Account protection contract V1
+
+## Status
+
+Issue [#227 — Design account-aware drawdown, loss, and cooldown protection
+contract](https://github.com/oboly/synth-v2/issues/227), P1 scope: contract
+design only. This document and
+`src/decision_gate/account_protection_contract_v1.py` are the accepted
+artifacts for that scope.
+
+Runtime implementation — deriving lock facts from canonical account truth
+(equity curves, realized PnL, stoploss/fill history) and wiring evaluation
+into the live `decision_gate` permission path — is out of scope here and
+belongs to the separately gated Issue
+[#318 — Implement P2 minimal account-protection runtime inside
+decision_gate](https://github.com/oboly/synth-v2/issues/318). Its runtime
+owner is `UNASSIGNED`; this document grants it no private-read, database, or
+execution authority.
+
+Historical design context: `docs/todo/decision_gate_account_protections_v1.md`
+(candidate `NEW-10`, frozen legacy/reference file; this document and Issue
+#227 are the live spec).
+
+## Why `docs/architecture/`
+
+This is a permanent, versioned system contract describing a `decision_gate`
+subsystem's inputs, outputs, and invariants — the same category as
+`docs/architecture/automatic_exit_policy_v1.md`, which documents the sibling
+`exit_policy` -> `decision_gate` -> `execution_planner` contract chain. It is
+not an operational runbook (`docs/ops/`) and not raw research
+(`docs/research/`), so `docs/architecture/` is the correct canonical home,
+matching the Issue #392 Phase 4A delivery precedent.
+
+## Boundary
+
+`decision_gate` is the sole owner of account-aware protection locks.
+
+```text
+selection_engine        = unchanged, market-only, no protection awareness
+sector rotation          = unchanged, market-only
+decision_gate            = account-aware protection owner (this contract)
+execution_planner        = unchanged
+executor                 = unchanged
+broker_private_calls     = 0
+broker_writes            = 0
+order_submission         = 0
+live_orders               = 0
+runtime_activation        = 0
+```
+
+A protection may only reduce or block permission. It can never raise market
+rank, create a candidate, force an entry or exit, size an order, or submit an
+order. `selection_engine` and `trade_setup_filter` must not import this
+module or hold any protection state — they remain market-only and
+account-agnostic.
+
+## What this module is (and is not)
+
+`src/decision_gate/account_protection_contract_v1.py` is a pure,
+schema/contract-only module:
+
+- typed, versioned dataclasses for the lock fact and the evaluation outcome;
+- a pure resolver, `resolve_account_protection_state_v1`, that composes
+  caller-assembled `ProtectionLockFactV1` rows into one permission signal;
+- an idempotency-key helper for deterministic restart/audit semantics.
+
+It has no database, broker, credential, scheduler, execution_planner, or
+executor import, and it does not compute drawdown, daily realized loss, or a
+stop-loss streak from raw account data. That derivation — reading the
+point-in-time equity curve, realized-PnL ledger, and stoploss/fill history
+and turning them into `ProtectionLockFactV1` rows — is P2/Issue #318's
+runtime responsibility. This mirrors
+`src/exit_policy/automatic_exit_runtime_contract_v1.py` (Phase 4A): pure
+resolution over caller-supplied facts, not live evaluation.
+
+## Protection codes and scope
+
+```text
+MAX_ACCOUNT_DRAWDOWN_BLOCK      scope: ACCOUNT
+DAILY_REALIZED_LOSS_BLOCK       scope: ACCOUNT
+REPEATED_STOPLOSS_BLOCK         scope: ACCOUNT | ASSET
+LOW_PROFIT_ASSET_COOLDOWN       scope: ASSET
+POST_CLOSE_REENTRY_COOLDOWN     scope: ASSET
+MANUAL_ACCOUNT_LOCK             scope: ACCOUNT | SLEEVE | ASSET
+```
+
+Scope types are `ACCOUNT`, `SLEEVE`, `ASSET`, matching
+`docs/todo/decision_gate_account_protections_v1.md`'s "Required lock
+contract". `PROTECTION_ALLOWED_SCOPES` in the module enforces the legal
+`(protection_code, scope_type)` pairs; a mismatched pairing is a contract
+violation (`AccountProtectionContractError`), not a runtime data-quality
+issue, and fails loudly rather than silently evaluating.
+
+`MANUAL_ACCOUNT_LOCK` is included even though Issue #227's summary lists five
+capabilities (drawdown, daily loss, stop streak, cooldown, expiry/recovery),
+because the source TODO's lock contract explicitly requires "explicit manual
+lock/unlock authority" as part of the same P1 design, and manual authority
+needs a protection code to participate in precedence like any other lock.
+
+## Typed inputs and outputs
+
+`ProtectionLockFactV1` is the immutable, append-only fact:
+
+```text
+protection_code            one of the six codes above
+protection_version         "1" (LOCK_FACT_CONTRACT_VERSION)
+trading_account_id         int, > 0
+scope_type                 ACCOUNT | SLEEVE | ASSET
+scope_id                   str; ACCOUNT -> str(trading_account_id),
+                            SLEEVE -> sleeve_code, ASSET -> str(asset_id)
+observed_from_ts_utc       tz-aware UTC, start of the observation window
+observed_to_ts_utc         tz-aware UTC, > observed_from_ts_utc
+triggered_ts_utc           tz-aware UTC, when this fact became authoritative
+expires_ts_utc             tz-aware UTC or None (no natural expiry); if set,
+                            must be > triggered_ts_utc
+reason_code                free-text evidence reason (human-readable)
+evidence_refs              tuple[str, ...] of evidence pointers
+configuration_version      str, versions the threshold/window configuration
+lock_state                 ACTIVE | EXPIRED | RECOVERED | MANUALLY_CLEARED
+```
+
+`lock_state` is the persisted-fact lifecycle vocabulary and is intentionally
+distinct from the evaluation `decision_state` vocabulary below — a
+`ProtectionLockFactV1` with `lock_state=ACTIVE` is a candidate to block, but
+whether it currently blocks also depends on its trigger/expiry window versus
+the evaluation instant.
+
+`AccountProtectionEvaluationV1` is the pure evaluation outcome:
+
+```text
+evaluation_contract_version   "1"
+decision_state                PERMITTED | BLOCKED   (no third neutral state)
+reason_code                   OK, or a *_TRIGGERED / *_ACTIVE /
+                               ACCOUNT_STATE_EVIDENCE_* code
+trading_account_id
+protection_code               winning protection, or None when PERMITTED
+scope_type / scope_id         winning lock's scope, or None when PERMITTED
+expires_ts_utc                winning lock's expiry, or None
+contributing_lock_facts        all currently in-force matching locks
+                               (evidence trail; not only the winner)
+evaluated_ts_utc
+```
+
+## Reason codes
+
+```text
+OK
+MAX_ACCOUNT_DRAWDOWN_TRIGGERED
+DAILY_REALIZED_LOSS_TRIGGERED
+REPEATED_STOPLOSS_TRIGGERED
+LOW_PROFIT_ASSET_COOLDOWN_ACTIVE
+POST_CLOSE_REENTRY_COOLDOWN_ACTIVE
+MANUAL_ACCOUNT_LOCK_ACTIVE
+ACCOUNT_STATE_EVIDENCE_STALE
+ACCOUNT_STATE_EVIDENCE_MISSING
+```
+
+Malformed caller input (bad account id, invalid fact shape, cross-account
+fact leakage, naive timestamps) raises `AccountProtectionContractError`
+rather than returning a reason code — that is a caller/integration bug, not
+routine account-data uncertainty.
+
+## Precedence
+
+When more than one lock is simultaneously in force for a lookup, the
+resolver returns exactly one winner (the surfaced `protection_code` /
+`reason_code`) but preserves every in-force lock in
+`contributing_lock_facts` so no evidence is lost for audit/reporting.
+Precedence, highest first:
+
+```text
+1. MANUAL_ACCOUNT_LOCK        human operator authority always dominates
+2. MAX_ACCOUNT_DRAWDOWN_BLOCK  hardest automated capital-preservation cap
+3. DAILY_REALIZED_LOSS_BLOCK   second account-level circuit breaker
+4. REPEATED_STOPLOSS_BLOCK     systematic pattern signal, narrower impact
+5. POST_CLOSE_REENTRY_COOLDOWN temporary, asset-scoped
+6. LOW_PROFIT_ASSET_COOLDOWN   temporary, asset-scoped, least severe
+```
+
+## Freshness and fail-closed behavior
+
+The resolver takes an explicit `account_state_observed_ts_utc`,
+`account_state_fresh` flag, and `max_account_state_age_seconds` (default 15
+minutes, matching the automatic-exit contract's default). If
+`account_state_fresh` is `False`, or the observed timestamp is stale or in
+the future relative to the evaluation instant `at`, the result is always
+`BLOCKED` with `ACCOUNT_STATE_EVIDENCE_MISSING` or
+`ACCOUNT_STATE_EVIDENCE_STALE` — never `PERMITTED`. This is enforced before
+any lock facts are considered, so uncertain, stale, or missing account state
+blocks unconditionally rather than silently permitting.
+
+This freshness flag/timestamp is a placeholder the P2 runtime must populate
+from the real account-state snapshot pipeline (e.g. the
+`account_state_snapshot_run_v1` bundle used by the automatic-exit contract);
+this document does not define how that snapshot is produced.
+
+## Account isolation
+
+Every `ProtectionLockFactV1` carries an explicit `trading_account_id`. The
+resolver raises `AccountProtectionContractError("CROSS_ACCOUNT_EVIDENCE_LEAKAGE")`
+if any fact in the caller-supplied iterable belongs to a different account
+than the one being evaluated — it never silently filters foreign-account
+facts, because silently dropping them could mask an upstream query bug that
+already leaked cross-account data into the process. Scope matching within one
+account (`ACCOUNT` vs `SLEEVE` vs `ASSET`) further restricts which locks can
+apply to a given lookup: an `ASSET`-scoped lock for asset 99 never affects an
+evaluation for asset 42, and a `SLEEVE`-scoped lock only applies when the
+caller's `sleeve_code` matches.
+
+## Deterministic restart semantics
+
+Lock facts are append-only. Recovery or expiry before a lock's natural
+`expires_ts_utc` is recorded by appending a *new* fact that shares the same
+idempotency identity (protection code, scope, observation window,
+configuration version — see `account_protection_lock_idempotency_key_v1`)
+with a later `triggered_ts_utc` and a non-`ACTIVE` `lock_state`
+(`RECOVERED` or `MANUALLY_CLEARED`). The resolver always collapses the full
+fact history to the single latest-triggered fact per idempotency identity
+before evaluating; a process restart that reloads the same persisted fact
+history reconstructs identical state regardless of restart timing or the
+order facts are read in. Nothing is held in memory between evaluations — the
+resolver is pure and stateless.
+
+`account_protection_lock_idempotency_key_v1` hashes only the immutable
+identity fields (protection code, version, account, scope, observation
+window, configuration version) — deliberately excluding `triggered_ts_utc`,
+`expires_ts_utc`, `reason_code`, and `evidence_refs` — so a future P2 writer
+can re-derive the same key for the same underlying observation window and
+upsert rather than duplicate a row after a restart or re-run.
+
+## Composition with existing `decision_gate` permission evaluation
+
+This contract is an **additional required check**, not a replacement for
+`decision_gate.decision_gate_v1.evaluate_selection_for_account`. A future P2
+runtime must combine both with a logical AND: execution intent may proceed
+only if the existing selection/sleeve/balance/duplicate evaluation allows it
+**and** `resolve_account_protection_state_v1` returns `STATE_PERMITTED`. A
+`BLOCKED` protection result always overrides an otherwise-allowed selection
+decision; the existing evaluation is never given authority to override an
+active protection lock. `decision_gate_v1.py` is unmodified by this Issue —
+no call site is wired yet, so today this contract cannot affect any live or
+paper decision.
+
+## Non-goals
+
+- No Freqtrade code copy or dependency.
+- No derivation of drawdown/realized-loss/streak values from raw account
+  data (P2/Issue #318).
+- No persistence, repository, or database migration (P2/Issue #318).
+- No wiring into `decision_gate_v1.py`'s existing evaluation function
+  (P2/Issue #318).
+- No market-regime classification or `selection_engine` change.
+- No automatic sell or liquidation path.
+- No dashboard-owned risk logic or unlock authority.
+- No live trading activation.
