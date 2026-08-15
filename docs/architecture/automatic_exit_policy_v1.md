@@ -237,6 +237,34 @@ setting because they are not canonical runtime lock locations. A second
 concurrent invocation observes the held lock, performs no evaluation, and
 fails the cycle (`result=lock_unavailable`, nonzero exit).
 
+## Phase 5 — AUTOMATIC_EXIT_ACCEPTANCE_DRY_RUN
+
+Phase 5 is decision/planning acceptance only, not executor DRY_RUN. Its exact
+terminal boundary is the immutable staged `AutomaticExitPlanV1`; it never
+imports an executor, resolves credentials, calls a broker, submits an order,
+or grants LIVE authority.
+
+`DB_CURRENT` resolves one current persisted runtime item through the Phase 4B
+repository and then calls the existing Phase 4B orchestrator. `REPLAY` rebuilds
+that same `RuntimeItemV1` from a separate value-level acceptance input and calls
+the same orchestrator again. The Phase 4B audit's source-evidence JSON contains
+identity only and is deliberately not stretched into replay data.
+
+The replay input captures the already-resolved held/free quantities, account
+flags, conflict fact, source timestamps, market price, profile facts, and venue
+constraints. It does not duplicate candidate, gate, planner, rounding, or
+ladder mechanics. Canonical JSON SHA-256 hashes cover source identity and the
+immutable staged plan; `runtime_version` is not part of either logical hash.
+
+Golden acceptance covers target reduce, invalidation exit, no action, denied
+permission/conflict, stale evidence, and planner rejection paths using isolated
+fixtures. Safety markers are fixed at `broker_private_calls_by_phase5=0`,
+`broker_writes=0`, `order_submission=0`, `live_orders=0`, `executor_calls=0`,
+and `credential_resolution_calls=0`. A process environment that marks broker
+write or LIVE permission `GRANTED` is rejected. No CLI or acceptance table is
+needed in V1: the contract is deterministic test acceptance and creates no
+additional persistence.
+
 **Item vs cycle failures**: one cycle enumerates every enabled, venue-matching
 `trading_account` and, per account, its latest fresh `COMPLETE` bundle and
 positive positions. A single item's evidence-loading or evaluation failure
