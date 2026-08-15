@@ -121,3 +121,23 @@ def test_stale_venue_metadata_and_changed_evidence_change_acceptance_identity() 
     assert second.planner_state == "REJECTED"
     assert second.immutable_plan_hash is None
     assert first.source_evidence_hash != second.source_evidence_hash
+
+
+def test_stale_market_and_profile_are_non_actionable_without_plan() -> None:
+    for field in ("market_price_observed_ts_utc",):
+        conn = FakeConnection(); item = replace(_actionable(conn), **{field: TS - timedelta(hours=1)})
+        result = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=acceptance.build_replay_input_v1(item=item, evaluation_ts_utc=NOW))
+        assert (result.candidate_state, result.candidate_reason_code, result.immutable_plan_hash) == ("NON_ACTIONABLE", "EXIT_CONTEXT_STALE", None)
+
+
+def test_replay_matches_invalidation_denial_and_planner_rejection() -> None:
+    cases = []
+    conn = FakeConnection(); cases.append(replace(_actionable(conn), current_price=Decimal("40000")))
+    conn = FakeConnection(); cases.append(replace(_actionable(conn), automatic_exit_execution_enabled=False))
+    conn = FakeConnection(); cases.append(replace(_actionable(conn), free_quantity_base=Decimal("0.00001")))
+    for item in cases:
+        conn = FakeConnection(); item = _actionable(conn) if item is cases[0] else item
+        packet = acceptance.build_replay_input_v1(item=item, evaluation_ts_utc=NOW)
+        first = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
+        second = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
+        assert (first.candidate_state, first.candidate_action, first.candidate_reason_code, first.gate_state, first.gate_reason_code, first.planner_state, first.planner_reason_code, first.immutable_plan_hash, first.source_evidence_hash) == (second.candidate_state, second.candidate_action, second.candidate_reason_code, second.gate_state, second.gate_reason_code, second.planner_state, second.planner_reason_code, second.immutable_plan_hash, second.source_evidence_hash)
