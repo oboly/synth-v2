@@ -62,9 +62,12 @@ class BitvavoOrderRequestError(RuntimeError):
 
 
 class BitvavoOrderNotFoundError(LookupError):
-    """The broker definitively confirmed no such order exists (e.g. HTTP
-    404). Distinct from network-level ambiguity, where the exception
-    propagates unchanged instead of being translated to this type."""
+    """Get Order cannot resolve the requested order (Bitvavo 404/240).
+
+    Bitvavo defines this as either nonexistent or no longer active. It is not
+    proof that the order was never created. Network-level ambiguity propagates
+    unchanged instead of being translated to this type.
+    """
 
 
 class BitvavoClient:
@@ -392,9 +395,10 @@ class BitvavoClient:
         headers = self._headers("GET", signed_path, "")
 
         # As in place_order, network-level exceptions propagate unchanged
-        # (ambiguous). Only Bitvavo's documented 404/errorCode=240 order-
-        # absence response is translated to BitvavoOrderNotFoundError. Other
-        # HTTP errors are not confident "does not exist" answers.
+        # (ambiguous). Bitvavo's documented 404/errorCode=240 means the order
+        # does not exist or is no longer active. It is therefore translated
+        # only to a Get Order resolution failure, never proof that the order
+        # was not created. Other HTTP errors remain ambiguous.
         response = requests.get(
             url,
             headers=headers,
@@ -410,7 +414,9 @@ class BitvavoClient:
                 isinstance(error_payload, dict)
                 and error_payload.get("errorCode") == 240
             ):
-                raise BitvavoOrderNotFoundError("BITVAVO_ORDER_NOT_FOUND")
+                raise BitvavoOrderNotFoundError(
+                    "BITVAVO_ORDER_NOT_RESOLVABLE_BY_GET_ORDER"
+                )
             raise BitvavoOrderRequestError(
                 action="get_order",
                 status_code=response.status_code,
@@ -420,9 +426,9 @@ class BitvavoClient:
 
     def get_order_by_client_order_id(self, market: str, client_order_id: str) -> dict[str, Any]:
         """Reconciliation-only lookup used by executor orchestrators.
-        Raises BitvavoOrderNotFoundError if the broker
-        definitively confirms no such order exists; propagates
-        network-level exceptions unchanged (ambiguous)."""
+        Raises BitvavoOrderNotFoundError for documented 404/errorCode=240
+        (nonexistent or no longer active); propagates network-level exceptions
+        unchanged (ambiguous)."""
         return self.get_order(market, client_order_id=client_order_id)
 
     def cancel_order(self, market: str, order_id: str) -> dict[str, Any]:

@@ -28,7 +28,10 @@ from src.executor.execution_credential_scope_v1 import (
     CredentialScopeDeniedError,
     ExecutorCredentialScopeRepository,
 )
-from src.executor.execution_handoff_v1 import ExecutionHandoffV1
+from src.executor.execution_handoff_v1 import (
+    ExecutionHandoffRepositoryV1,
+    ExecutionHandoffV1,
+)
 
 
 _BITVAVO_STATUS_MAP = {
@@ -128,6 +131,50 @@ def _assert_dormant_live_handoff(handoff: ExecutionHandoffV1) -> None:
         raise BitvavoAdapterUnavailableError("BITVAVO_ADAPTER_VENUE_MISMATCH")
 
 
+_HANDOFF_IDENTITY_FIELDS = (
+    "handoff_id",
+    "plan_source",
+    "plan_reference_id",
+    "plan_content_hash",
+    "trading_account_id",
+    "venue",
+    "market",
+    "side",
+    "executor_mode",
+    "executor_identity",
+    "runtime_owner",
+    "executor_credential_binding_id",
+)
+
+
+def _assert_canonical_persisted_handoff(
+    handoff: ExecutionHandoffV1,
+    repository: ExecutionHandoffRepositoryV1,
+) -> None:
+    _assert_dormant_live_handoff(handoff)
+    if handoff.handoff_id is None:  # guarded above; explicit for optimized Python
+        raise BitvavoAdapterUnavailableError("BITVAVO_HANDOFF_NOT_PERSISTED")
+    try:
+        persisted = repository.find(handoff.handoff_id)
+    except Exception:
+        raise BitvavoAdapterUnavailableError(
+            "BITVAVO_PERSISTED_HANDOFF_VERIFICATION_FAILED"
+        ) from None
+    if persisted is None:
+        raise BitvavoAdapterUnavailableError("BITVAVO_PERSISTED_HANDOFF_NOT_FOUND")
+    if not isinstance(persisted, ExecutionHandoffV1):
+        raise BitvavoAdapterUnavailableError(
+            "BITVAVO_PERSISTED_HANDOFF_IDENTITY_MISMATCH"
+        )
+    if any(
+        getattr(persisted, field_name) != getattr(handoff, field_name)
+        for field_name in _HANDOFF_IDENTITY_FIELDS
+    ):
+        raise BitvavoAdapterUnavailableError(
+            "BITVAVO_PERSISTED_HANDOFF_IDENTITY_MISMATCH"
+        )
+
+
 @dataclass(repr=False)
 class BitvavoOrderAdapterV1:
     """Shared side-neutral adapter; each operation re-resolves credentials."""
@@ -137,11 +184,12 @@ class BitvavoOrderAdapterV1:
     master_key_bytes: bytes = field(repr=False)
     cred_repo_factory: Any = field(repr=False)
     credential_scope_repository: ExecutorCredentialScopeRepository = field(repr=False)
+    handoff_repository: ExecutionHandoffRepositoryV1 = field(repr=False)
     credential_loader: Callable[..., Any] = field(default=load_account_credential_by_id, repr=False)
     client_factory: Callable[..., _BitvavoClientProtocol] = field(default=BitvavoClient.for_private_write, repr=False)
 
     def _fresh_client(self) -> _BitvavoClientProtocol:
-        _assert_dormant_live_handoff(self.handoff)
+        _assert_canonical_persisted_handoff(self.handoff, self.handoff_repository)
         try:
             binding = self.credential_scope_repository.resolve(
                 trading_account_id=self.handoff.trading_account_id,
@@ -240,6 +288,7 @@ class BitvavoOrderAdapterV1:
             response,
             market=market,
             client_order_id=client_order_id,
+            side=self.handoff.side,
         )
 
 
@@ -250,11 +299,16 @@ def build_bitvavo_order_adapter_v1(
     master_key_bytes: bytes,
     cred_repo_factory: Any,
     credential_scope_repository: ExecutorCredentialScopeRepository | None = None,
+    handoff_repository: ExecutionHandoffRepositoryV1 | None = None,
     credential_loader: Callable[..., Any] = load_account_credential_by_id,
     client_factory: Callable[..., _BitvavoClientProtocol] = BitvavoClient.for_private_write,
 ) -> BitvavoOrderAdapterV1:
     """Build the dormant boundary without granting or activating LIVE mode."""
     _assert_dormant_live_handoff(handoff)
+    canonical_handoff_repository = handoff_repository or ExecutionHandoffRepositoryV1(
+        cursor_factory=lambda **_kwargs: conn.cursor()
+    )
+    _assert_canonical_persisted_handoff(handoff, canonical_handoff_repository)
     return BitvavoOrderAdapterV1(
         handoff=handoff,
         conn=conn,
@@ -263,6 +317,7 @@ def build_bitvavo_order_adapter_v1(
         credential_scope_repository=(
             credential_scope_repository or ExecutorCredentialScopeRepository()
         ),
+        handoff_repository=canonical_handoff_repository,
         credential_loader=credential_loader,
         client_factory=client_factory,
     )

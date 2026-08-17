@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
-from types import SimpleNamespace
 import traceback
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -19,6 +19,8 @@ from src.executor.bitvavo_order_adapter_v1 import (
 from src.executor.broker_ack_classification_v1 import BrokerAckStateV1
 from src.executor.execution_credential_scope_v1 import CredentialScopeBinding
 from src.executor.execution_handoff_v1 import ExecutionHandoffV1
+from src.executor.execution_leg_v1 import RECONCILIATION_REQUIRED, ExecutionLegV1
+from src.executor.execution_order_reconciliation_v1 import persist_order_ack
 
 
 def _handoff(mode: str = "LIVE", side: str = "BUY") -> ExecutionHandoffV1:
@@ -64,6 +66,16 @@ class _Scope:
     def resolve(self, **kwargs):
         self.calls.append(kwargs)
         return self.binding
+
+
+class _HandoffRepository:
+    def __init__(self, persisted: ExecutionHandoffV1 | None) -> None:
+        self.persisted = persisted
+        self.calls: list[int] = []
+
+    def find(self, handoff_id: int) -> ExecutionHandoffV1 | None:
+        self.calls.append(handoff_id)
+        return self.persisted
 
 
 class _Client:
@@ -113,6 +125,7 @@ def _adapter(
         master_key_bytes=b"x" * 32,
         cred_repo_factory=object(),
         credential_scope_repository=scope,
+        handoff_repository=_HandoffRepository(_handoff(side=side)),
         credential_loader=lambda *_a, **_k: SimpleNamespace(api_key="key", api_secret="secret"),
         client_factory=lambda **_kwargs: client,
     )
@@ -200,6 +213,75 @@ def test_lookup_response_identity_mismatch_is_ambiguous(response: object) -> Non
     )
     assert ack is not None
     assert ack.state is BrokerAckStateV1.AMBIGUOUS
+
+
+@pytest.mark.parametrize(
+    ("handoff_side", "response_side"),
+    [("BUY", "sell"), ("SELL", "buy")],
+)
+def test_lookup_response_opposite_side_is_ambiguous(
+    handoff_side: str, response_side: str
+) -> None:
+    adapter, _ = _adapter(
+        _Client(lookup=_order_response("new", side=response_side)),
+        side=handoff_side,
+    )
+    ack = adapter.find_order_by_client_order_id(
+        market="BTC-EUR", client_order_id="cid"
+    )
+    assert ack is not None
+    assert ack.state is BrokerAckStateV1.AMBIGUOUS
+
+    leg = ExecutionLegV1(
+        execution_leg_id=3,
+        handoff_id=1,
+        leg_index=1,
+        trading_account_id=17,
+        venue="bitvavo",
+        market="BTC-EUR",
+        side=handoff_side,
+        client_order_id="cid",
+        operator_id=1,
+        price=Decimal("1"),
+        quantity=Decimal("1"),
+        state=RECONCILIATION_REQUIRED,
+    )
+
+    class NoResolutionRepository:
+        def find(self, _leg_id):
+            return leg
+
+        def persist_accepted(self, *_args, **_kwargs):
+            raise AssertionError("wrong-side order must not resolve state")
+
+        def persist_closed(self, *_args, **_kwargs):
+            raise AssertionError("wrong-side order must not resolve state")
+
+    resolved = persist_order_ack(
+        leg=leg,
+        ack=ack,
+        repository=NoResolutionRepository(),
+        from_reconciliation=True,
+    )
+    assert resolved.state == RECONCILIATION_REQUIRED
+
+
+@pytest.mark.parametrize(
+    ("status", "canonical"),
+    [
+        ("new", BrokerAckStateV1.ACTIVE),
+        ("canceled", BrokerAckStateV1.CANCELED),
+    ],
+)
+def test_lookup_correct_side_resolves_canonical_state(
+    status: str, canonical: BrokerAckStateV1
+) -> None:
+    adapter, _ = _adapter(_Client(lookup=_order_response(status, side="buy")))
+    ack = adapter.find_order_by_client_order_id(
+        market="BTC-EUR", client_order_id="cid"
+    )
+    assert ack is not None
+    assert ack.state is canonical
 
 
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
@@ -377,6 +459,7 @@ def test_builder_does_not_turn_paper_handoff_into_live() -> None:
         build_bitvavo_order_adapter_v1(
             handoff=_handoff("PAPER"), conn=object(), master_key_bytes=b"x" * 32,
             cred_repo_factory=object(), credential_scope_repository=_Scope(_binding()),
+            handoff_repository=_HandoffRepository(_handoff("PAPER")),
         )
 
 
@@ -388,6 +471,7 @@ def test_direct_adapter_cannot_bypass_live_handoff_requirement() -> None:
         master_key_bytes=b"x" * 32,
         cred_repo_factory=object(),
         credential_scope_repository=_Scope(_binding()),
+        handoff_repository=_HandoffRepository(_handoff("PAPER")),
         credential_loader=lambda *_a, **_k: SimpleNamespace(
             api_key="key", api_secret="secret"
         ),
@@ -403,3 +487,118 @@ def test_direct_adapter_cannot_bypass_live_handoff_requirement() -> None:
             operator_id=1,
         )
     assert client.requests == []
+
+
+def test_fabricated_live_handoff_is_denied_before_private_boundary() -> None:
+    calls = {"credential_loader": 0, "client_factory": 0}
+    scope = _Scope(_binding())
+
+    def credential_loader(*_args, **_kwargs):
+        calls["credential_loader"] += 1
+        return SimpleNamespace(api_key="key", api_secret="secret")
+
+    def client_factory(**_kwargs):
+        calls["client_factory"] += 1
+        return _Client(create=_order_response("new"))
+
+    with pytest.raises(BitvavoAdapterUnavailableError, match="NOT_FOUND"):
+        build_bitvavo_order_adapter_v1(
+            handoff=_handoff(),
+            conn=object(),
+            master_key_bytes=b"x" * 32,
+            cred_repo_factory=object(),
+            credential_scope_repository=scope,
+            handoff_repository=_HandoffRepository(None),
+            credential_loader=credential_loader,
+            client_factory=client_factory,
+        )
+    assert calls == {"credential_loader": 0, "client_factory": 0}
+    assert scope.calls == []
+
+
+def test_persisted_handoff_missing_at_operation_fails_closed() -> None:
+    scope = _Scope(_binding())
+    repository = _HandoffRepository(_handoff())
+    adapter = BitvavoOrderAdapterV1(
+        handoff=_handoff(),
+        conn=object(),
+        master_key_bytes=b"x" * 32,
+        cred_repo_factory=object(),
+        credential_scope_repository=scope,
+        handoff_repository=repository,
+        credential_loader=lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("credential loader must not run")
+        ),
+        client_factory=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("client factory must not run")
+        ),
+    )
+    repository.persisted = None
+    with pytest.raises(BitvavoAdapterUnavailableError, match="NOT_FOUND"):
+        adapter.find_order_by_client_order_id(
+            market="BTC-EUR", client_order_id="cid"
+        )
+    assert scope.calls == []
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    [
+        ("handoff_id", 2),
+        ("plan_source", "other-source"),
+        ("plan_reference_id", "other-reference"),
+        ("plan_content_hash", "b" * 64),
+        ("trading_account_id", 18),
+        ("venue", "other-venue"),
+        ("market", "ETH-EUR"),
+        ("side", "SELL"),
+        ("executor_mode", "PAPER"),
+        ("executor_identity", "other-executor"),
+        ("runtime_owner", "other-owner"),
+        ("executor_credential_binding_id", 10),
+    ],
+)
+def test_persisted_handoff_identity_mismatch_fails_before_private_boundary(
+    field_name: str, replacement: object
+) -> None:
+    supplied = _handoff()
+    persisted = replace(supplied, **{field_name: replacement})
+    calls = {"credential_loader": 0, "client_factory": 0}
+    scope = _Scope(_binding())
+
+    def credential_loader(*_args, **_kwargs):
+        calls["credential_loader"] += 1
+        return SimpleNamespace(api_key="key", api_secret="secret")
+
+    def client_factory(**_kwargs):
+        calls["client_factory"] += 1
+        return _Client(create=_order_response("new"))
+
+    with pytest.raises(BitvavoAdapterUnavailableError, match="IDENTITY_MISMATCH"):
+        build_bitvavo_order_adapter_v1(
+            handoff=supplied,
+            conn=object(),
+            master_key_bytes=b"x" * 32,
+            cred_repo_factory=object(),
+            credential_scope_repository=scope,
+            handoff_repository=_HandoffRepository(persisted),
+            credential_loader=credential_loader,
+            client_factory=client_factory,
+        )
+    assert calls == {"credential_loader": 0, "client_factory": 0}
+    assert scope.calls == []
+
+
+def test_exact_persisted_handoff_reaches_only_injected_client() -> None:
+    client = _Client(create=_order_response("new"))
+    adapter, _ = _adapter(client)
+    ack = adapter.place_order(
+        market="BTC-EUR",
+        side="BUY",
+        price=Decimal("1"),
+        quantity=Decimal("1"),
+        client_order_id="cid",
+        operator_id=1,
+    )
+    assert ack.state is BrokerAckStateV1.ACTIVE
+    assert len(client.requests) == 1

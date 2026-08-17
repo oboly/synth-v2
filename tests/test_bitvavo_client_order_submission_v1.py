@@ -128,14 +128,17 @@ def test_get_order_by_client_order_id_sends_expected_param(monkeypatch: pytest.M
     assert captured["params"] == {"market": "BTC-EUR", "clientOrderId": "cid-1"}
 
 
-def test_get_order_404_raises_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_order_404_240_is_not_resolvable(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _readable_client(monkeypatch)
     monkeypatch.setattr(
         "requests.get",
         lambda *_a, **_k: _Response({"errorCode": 240}, status_code=404),
     )
 
-    with pytest.raises(BitvavoOrderNotFoundError):
+    with pytest.raises(
+        BitvavoOrderNotFoundError,
+        match="BITVAVO_ORDER_NOT_RESOLVABLE_BY_GET_ORDER",
+    ):
         client.get_order_by_client_order_id("BTC-EUR", "cid-missing")
 
 
