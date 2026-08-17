@@ -65,22 +65,60 @@ immutable `AutomaticExitPlanV1` and #206's shared executor substrate:
   correct until a real adapter module is deliberately introduced and its own
   guard test updated to permit exactly one crossing point.
 
-**Exactly one explicit adapter/intake boundary is still required**: a new
-module (not created by this audit) that reads an already-approved
-`AutomaticExitPlanV1`, maps it field-for-field into `ApprovedExecutionPlanV1`
-(`plan_source`, `plan_reference_id`, `trading_account_id`, `venue`, `market`,
-`side`, `legs`), and calls the existing `ExecutionHandoffRepositoryV1.intake`
-(DRY_RUN/PAPER) or `.intake_live_authorized` (LIVE). `tests/
-test_automatic_exit_plan_shared_handoff_compatibility_v1.py` (added by this
-audit) proves the field mapping is lossless and side/price/quantity/leg-count
-preserving for both REDUCE and EXIT — i.e. the two contracts are compatible —
-without adding that production adapter. It also documents a real, minor
-contract note: `ApprovedExecutionPlanV1`'s content hash intentionally carries
-no REDUCE/EXIT or evidence provenance (only account/venue/market/side/legs),
-so a real adapter must derive `plan_reference_id` from evidence that is
-already unique per evaluation cycle (e.g. `evidence_id`) to preserve
-idempotency/audit traceability; it must not rely on the shared content hash
-for that purpose.
+**Exactly one explicit adapter/intake boundary is still required, and it must
+be a typed, in-process application/runtime seam, not a persistence-mediated
+one.** The canonical future topology is:
+
+```text
+canonical persisted evidence
+-> #392 runtime evaluation
+-> exit_policy candidate
+-> decision_gate
+-> execution_planner AutomaticExitPlanV1
+-> explicit #392 execution-handoff adapter
+-> #206 ExecutionHandoffRepositoryV1
+-> authority / kill switch / credential
+-> executor
+```
+
+The adapter (not created by this audit) must consume the already-produced
+in-memory typed `AutomaticExitPlanV1` object at the deliberate runtime
+boundary — i.e. it is called directly, in the same evaluation cycle, by
+whatever orchestrates candidate -> gate -> planner -> handoff — and map it
+field-for-field into `ApprovedExecutionPlanV1` (`plan_source`,
+`plan_reference_id`, `trading_account_id`, `venue`, `market`, `side`, `legs`)
+before calling the existing `ExecutionHandoffRepositoryV1.intake`
+(DRY_RUN/PAPER) or `.intake_live_authorized` (LIVE). It must **not** obtain
+its input by polling `automatic_exit_evaluation_audit_v1`, parsing
+`immutable_plan_json` back out of that table, or otherwise reconstructing
+planner intent from audit/reporting persistence — the append-only Phase 4B
+audit table is runtime/audit evidence for replay and provenance only and must
+never silently become an executor input queue. If crash/restart durability is
+required between planner output and executor intake (e.g. the process dies
+after planning but before handoff), that must be designed explicitly as part
+of the future adapter/runtime task using canonical typed, idempotent handoff
+semantics of its own — not by repurposing the Phase 4B audit table for it.
+This is stated explicitly here so a future implementation does not casually
+default to "read the STAGED audit row" as the path of least resistance.
+
+`tests/test_automatic_exit_plan_shared_handoff_compatibility_v1.py` (added by
+this audit) proves the field mapping is lossless and
+side/price/quantity/leg-count preserving for both REDUCE and EXIT — i.e. the
+two contracts are compatible — using the in-memory `AutomaticExitPlanV1`
+object directly, without adding that production adapter and without touching
+audit/reporting persistence. It also documents a real, minor contract note:
+`ApprovedExecutionPlanV1`'s content hash intentionally carries no REDUCE/EXIT
+or evidence provenance (only account/venue/market/side/legs), so the future
+adapter must derive `plan_reference_id` from a canonical immutable #392
+logical-evaluation identity that is (a) deterministic across retry/restart,
+(b) different whenever the logical execution intent differs, and (c) traces
+back to #392 evidence. This audit does not prescribe `evidence_id` or any
+other field as that identity source, and does not invent a new ID scheme:
+the exact identity source must be finalized by the adapter implementation
+task itself, after auditing whether an existing #392 idempotency/evaluation
+key (e.g. the Phase 4B audit table's own idempotency key derivation in
+`automatic_exit_runtime_contract_v1.py`) already satisfies these three
+properties or needs its own dedicated key.
 
 **A second, independently blocking finding**: even with that adapter built,
 `src/decision_gate/automatic_exit_gate_v1.py`
@@ -204,13 +242,21 @@ duplicate-claim (`claim_submission`) protections are already shared.
   therefore no competing owner and no duplicate scheduler today, but also no
   registered LIVE executor runtime owner to activate against.
 - Intended activation topology (documentation only, nothing enabled):
-  `gurkdb` runs the #392 policy runtime on its planned cadence, writing only
-  to the append-only Phase 4B audit table. A future, separately owned
-  executor-invocation runtime (owner TBD, likely `gurkdb` for symmetry with
-  its DB-local read model, but not yet decided) would poll `STAGED` audit
-  rows, run them through the new adapter into `ExecutionHandoffRepositoryV1`,
-  and only that runtime would ever hold TRADE_EXECUTION credentials or call
-  Bitvavo.
+  `gurkdb` runs the #392 policy runtime on its planned cadence. Each
+  evaluation cycle still writes its append-only Phase 4B audit row for
+  replay/provenance, exactly as today, and separately — in the same
+  in-process cycle, not via a second process reading that table back — calls
+  the future typed #392 execution-handoff adapter directly with the
+  in-memory `AutomaticExitPlanV1` it just produced, which then calls
+  `ExecutionHandoffRepositoryV1`. There is exactly one runtime process per
+  cycle, not a producer/consumer pair connected through the audit table.
+  Owner of that combined runtime is TBD (likely `gurkdb` for symmetry with
+  its DB-local read model, but not yet decided); only that runtime would ever
+  hold TRADE_EXECUTION credentials or call Bitvavo. A future design may still
+  split candidate/gate/planner evaluation from handoff/execution into two
+  processes, but if so the hand-off between them must be its own explicit,
+  typed, idempotent contract designed for that purpose (see the adapter note
+  above) — not the Phase 4B audit table repurposed as a queue.
 
 ## Production prerequisite checklist (Phase J)
 
@@ -358,19 +404,50 @@ timer_activation=0
 
 ## Go-live determination
 
-`GO_LIVE_READY = NO`. Blocking, in priority order:
+`GO_LIVE_READY = NO`.
 
-1. No adapter/intake boundary exists between #392's planner output and
-   #206's shared executor handoff (Phase B).
-2. `automatic_exit_gate_v1` is a DRY_RUN/PAPER-only contract by construction
-   today (`REASON_LIVE_EXECUTION_NOT_GRANTED` on any non-paper mode); it
-   cannot approve a LIVE candidate until deliberately extended.
-3. #318 account protections are not wired into the real #392 runtime path
-   (contract and pure evaluator both exist and are tested in isolation, but
-   nothing calls the evaluator or supplies it to the gate context today).
-4. No #392 SELL LIVE authority row exists (correctly — none was created by
-   this audit) and no executor-invocation runtime owner is registered.
-5. No LIVE service/timer exists for either lane.
+Three actual Phase 6 blockers, each its own explicitly authorized, reviewed
+implementation task — none resolvable by a documentation or test-only change:
 
-None of items 1-3 can be resolved by a documentation or test-only change;
-each requires its own explicitly authorized, reviewed implementation task.
+- **A. #392 -> #206 typed adapter / runtime seam.** No adapter/intake
+  boundary exists between #392's in-memory planner output and #206's shared
+  executor handoff (Phase B). It must be the typed, in-process seam described
+  above — not a persistence-mediated one built on top of the Phase 4B audit
+  table.
+- **B. Reviewed LIVE-capable extension of the automatic-exit `decision_gate`.**
+  `automatic_exit_gate_v1` is a DRY_RUN/PAPER-only contract by construction
+  today (`REASON_LIVE_EXECUTION_NOT_GRANTED` on any non-paper mode); it
+  cannot approve a LIVE candidate until deliberately extended.
+- **C. Real #318 account-protection producer/configuration wiring into the
+  #392 runtime.** The contract and pure evaluator both exist and are tested
+  in isolation, but nothing in the real #392 runtime orchestrator calls the
+  evaluator or supplies its result to the gate context today.
+
+Required dependency ordering — each step depends on the previous one being
+merged and reviewed, and no step authorizes skipping ahead:
+
+1. Account-protection producer/wiring (blocker C) — establishes the real
+   permission signal the gate will need before it can be trusted to approve
+   anything at all, LIVE or otherwise.
+2. LIVE-capable gate contract (blocker B) — only once account-protection
+   composition is real should the gate's paper-only restriction be
+   deliberately extended for LIVE.
+3. Typed planner -> shared-handoff adapter/runtime seam (blocker A) — only
+   once the gate can correctly produce a LIVE-eligible `APPROVED` decision
+   does connecting the planner's output to #206 become meaningful; building
+   the adapter first, against a gate that can never approve LIVE, would
+   invite exactly the kind of premature/implicit coupling this audit warns
+   against.
+4. Final repository-level integrated non-broker acceptance — an end-to-end
+   DRY_RUN/PAPER exercise of candidate -> gate (with real protections) ->
+   planner -> adapter -> handoff, still with zero broker calls, zero
+   authority rows, zero credentials.
+5. Only then: work through the Phase J production activation checklist and a
+   separately authorized LIVE activation decision. No step in this ordering
+   authorizes LIVE by itself, including this one.
+
+Additionally, and independent of that ordering: no #392 SELL LIVE authority
+row exists (correctly — none was created by this audit), no
+executor-invocation runtime owner is registered, and no LIVE service/timer
+exists for either lane. Those remain Phase J/K activation-time concerns, not
+implementation blockers in themselves.
