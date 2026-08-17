@@ -23,3 +23,5 @@ CLOSED_ACK_STATES = frozenset({BrokerAckStateV1.CANCELED, BrokerAckStateV1.EXPIR
 class OrderAckV1:
     broker_order_id: str | None
     state: BrokerAckStateV1
+    broker_raw_status: str | None = None
+    restatement_reason: str | None = None

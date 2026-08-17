@@ -106,26 +106,35 @@ class MemoryLegRepository:
             return leg
 
     def persist_accepted(
-        self, leg_id: int, state: str, broker_order_id: str
+        self, leg_id: int, state: str, broker_order_id: str, **evidence
     ) -> ExecutionLegV1:
         assert state in ACCEPTED_STATES
-        return self._resolve(leg_id, state, broker_order_id)
+        return self._resolve(leg_id, state, broker_order_id, **evidence)
 
     def persist_closed(
-        self, leg_id: int, state: str, broker_order_id: str | None = None
+        self, leg_id: int, state: str, broker_order_id: str | None = None, **evidence
     ) -> ExecutionLegV1:
-        return self._resolve(leg_id, state, broker_order_id)
+        return self._resolve(leg_id, state, broker_order_id, **evidence)
 
     def _resolve(
-        self, leg_id: int, state: str, broker_order_id: str | None
+        self, leg_id: int, state: str, broker_order_id: str | None, **evidence
     ) -> ExecutionLegV1:
         with self.lock:
             leg = self.rows[leg_id]
             if leg.state == state:
                 return leg
-            if leg.state != SUBMISSION_UNCERTAIN:
+            allowed = {SUBMISSION_UNCERTAIN}
+            if evidence.get("from_reconciliation"):
+                allowed.add(RECONCILIATION_REQUIRED)
+            if leg.state not in allowed:
                 raise ExecutionLegConflictError("EXECUTION_LEG_RESOLUTION_CONFLICT")
-            resolved = replace(leg, state=state, broker_order_id=broker_order_id)
+            resolved = replace(
+                leg,
+                state=state,
+                broker_order_id=broker_order_id,
+                broker_raw_status=evidence.get("broker_raw_status"),
+                restatement_reason=evidence.get("restatement_reason"),
+            )
             self.rows[leg_id] = resolved
             return resolved
 
@@ -331,8 +340,64 @@ def test_confirmed_absent_requires_reconciliation_and_never_posts_again() -> Non
     lookups_after_absence = adapter.lookup_call_count
     assert submit(plan, repository, adapter).stopped_reason == RECONCILIATION_REQUIRED
     assert adapter.place_call_count == 1
-    assert adapter.lookup_call_count == lookups_after_absence
+    assert adapter.lookup_call_count == lookups_after_absence + 1
     assert len(repository.rows) == 1
+
+
+@pytest.mark.parametrize("found_state", [BrokerAckStateV1.ACTIVE, BrokerAckStateV1.CANCELED])
+def test_reconciliation_required_later_found_resolves_without_post(
+    found_state: BrokerAckStateV1,
+) -> None:
+    plan = make_plan(leg_count=1)
+    repository = MemoryLegRepository()
+
+    class TimeoutAbsentThenFound(StubOrderPlacementAdapterV1):
+        def place_order(self, **kwargs):
+            self.place_call_count += 1
+            raise TimeoutError("ambiguous post")
+
+        def find_order_by_client_order_id(self, **kwargs):
+            self.lookup_call_count += 1
+            if self.lookup_call_count == 1:
+                return None
+            return OrderAckV1(
+                "original-order",
+                found_state,
+                broker_raw_status=("new" if found_state is BrokerAckStateV1.ACTIVE else "canceled"),
+            )
+
+    adapter = TimeoutAbsentThenFound()
+    assert submit(plan, repository, adapter).stopped_reason == SUBMISSION_UNCERTAIN
+    assert submit(plan, repository, adapter).stopped_reason == RECONCILIATION_REQUIRED
+    result = submit(plan, repository, adapter)
+    assert result.leg_states[0] == found_state.value
+    assert adapter.place_call_count == 1
+    assert adapter.lookup_call_count == 2
+    if found_state is BrokerAckStateV1.CANCELED:
+        assert result.stopped_reason == CANCELED
+
+
+def test_reconciliation_required_ambiguous_stays_required_without_post() -> None:
+    plan = make_plan()
+    repository = MemoryLegRepository()
+
+    class TimeoutAbsentThenAmbiguous(StubOrderPlacementAdapterV1):
+        def place_order(self, **kwargs):
+            self.place_call_count += 1
+            raise TimeoutError("ambiguous post")
+
+        def find_order_by_client_order_id(self, **kwargs):
+            self.lookup_call_count += 1
+            if self.lookup_call_count == 1:
+                return None
+            raise TimeoutError("ambiguous lookup")
+
+    adapter = TimeoutAbsentThenAmbiguous()
+    submit(plan, repository, adapter)
+    submit(plan, repository, adapter)
+    result = submit(plan, repository, adapter)
+    assert result.stopped_reason == RECONCILIATION_REQUIRED
+    assert adapter.place_call_count == 1
 
 
 def test_repeated_or_concurrent_invocation_cannot_post_twice() -> None:

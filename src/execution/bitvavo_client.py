@@ -53,19 +53,21 @@ class BitvavoOrderRequestError(RuntimeError):
     rejection from network-level ambiguity without parsing message text.
     Never includes credential material."""
 
-    def __init__(self, *, action: str, status_code: int, response_text: str) -> None:
+    def __init__(self, *, action: str, status_code: int, response_text: str = "") -> None:
         self.action = action
         self.status_code = status_code
-        self.response_text = response_text
-        super().__init__(
-            f"Bitvavo {action} failed. status_code={status_code} response_text={response_text}"
-        )
+        # response_text is deliberately discarded: raw broker bodies are not
+        # safe exception or persistence evidence.
+        super().__init__(f"Bitvavo {action} failed. status_code={status_code}")
 
 
 class BitvavoOrderNotFoundError(LookupError):
-    """The broker definitively confirmed no such order exists (e.g. HTTP
-    404). Distinct from network-level ambiguity, where the exception
-    propagates unchanged instead of being translated to this type."""
+    """Get Order cannot resolve the requested order (Bitvavo 404/240).
+
+    Bitvavo defines this as either nonexistent or no longer active. It is not
+    proof that the order was never created. Network-level ambiguity propagates
+    unchanged instead of being translated to this type.
+    """
 
 
 class BitvavoClient:
@@ -181,11 +183,11 @@ class BitvavoClient:
 
         Endpoint paths inside this client use:
             /balance
-            /{market}/order
+            /order
 
         Therefore the signed path must become:
             /v2/balance
-            /v2/{market}/order
+            /v2/order
         """
         rest_path = urlparse(self.rest_url).path.rstrip("/")
 
@@ -351,9 +353,8 @@ class BitvavoClient:
 
         # No retry loop here: any network-level exception (timeout,
         # connection drop) propagates to the caller unchanged, since only a
-        # caller that knows about crash-safe per-leg reconciliation
-        # (src.executor.manual_execution_submission_orchestrator_v1) may
-        # decide it is safe to query-before-resubmit. A caught
+        # caller that knows about crash-safe per-leg reconciliation may
+        # resolve the outcome. A caught
         # requests.HTTPError below means a real HTTP response was received,
         # which is a definitive (non-ambiguous) broker outcome.
         response = requests.post(
@@ -384,19 +385,20 @@ class BitvavoClient:
         if bool(order_id) == bool(client_order_id):
             raise ValueError("get_order requires exactly one of order_id or client_order_id")
 
-        path = f"/{market}/order"
+        path = "/order"
         url = f"{self.rest_url}{path}"
 
-        params = {"orderId": order_id} if order_id else {"clientOrderId": client_order_id}
+        params = {"market": market}
+        params.update({"orderId": order_id} if order_id else {"clientOrderId": client_order_id})
         query_string = urlencode(params)
         signed_path = f"{path}?{query_string}"
         headers = self._headers("GET", signed_path, "")
 
         # As in place_order, network-level exceptions propagate unchanged
-        # (ambiguous). A 404 here is a definitive "no such order" answer and
-        # is translated to BitvavoOrderNotFoundError; any other HTTP error
-        # status is left as requests.HTTPError, since it is not a confident
-        # "does not exist" answer.
+        # (ambiguous). Bitvavo's documented 404/errorCode=240 means the order
+        # does not exist or is no longer active. It is therefore translated
+        # only to a Get Order resolution failure, never proof that the order
+        # was not created. Other HTTP errors remain ambiguous.
         response = requests.get(
             url,
             headers=headers,
@@ -404,18 +406,29 @@ class BitvavoClient:
             timeout=self.timeout_seconds,
         )
         if response.status_code == 404:
-            raise BitvavoOrderNotFoundError(
-                f"order not found: market={market} order_id={order_id} client_order_id={client_order_id}"
+            try:
+                error_payload = response.json()
+            except (TypeError, ValueError):
+                error_payload = None
+            if (
+                isinstance(error_payload, dict)
+                and error_payload.get("errorCode") == 240
+            ):
+                raise BitvavoOrderNotFoundError(
+                    "BITVAVO_ORDER_NOT_RESOLVABLE_BY_GET_ORDER"
+                )
+            raise BitvavoOrderRequestError(
+                action="get_order",
+                status_code=response.status_code,
             )
         response.raise_for_status()
         return response.json()
 
     def get_order_by_client_order_id(self, market: str, client_order_id: str) -> dict[str, Any]:
-        """Reconciliation-only lookup used by the manual submission
-        orchestrator to resolve SUBMISSION_UNCERTAIN legs before ever
-        resubmitting. Raises BitvavoOrderNotFoundError if the broker
-        definitively confirms no such order exists; propagates
-        network-level exceptions unchanged (ambiguous)."""
+        """Reconciliation-only lookup used by executor orchestrators.
+        Raises BitvavoOrderNotFoundError for documented 404/errorCode=240
+        (nonexistent or no longer active); propagates network-level exceptions
+        unchanged (ambiguous)."""
         return self.get_order(market, client_order_id=client_order_id)
 
     def cancel_order(self, market: str, order_id: str) -> dict[str, Any]:
@@ -443,6 +456,6 @@ class BitvavoClient:
         except requests.HTTPError as exc:
             raise RuntimeError(
                 "Bitvavo cancel_order failed. "
-                f"status_code={response.status_code} response_text={response.text}"
+                f"status_code={response.status_code}"
             ) from exc
         return response.json()
