@@ -139,6 +139,14 @@ def _validated_window(start: datetime, end: datetime) -> tuple[datetime, datetim
     return start_utc, end_utc
 
 
+def _validated_revocation_timestamp(value: datetime, now: datetime) -> datetime:
+    revoked_utc = _normalize_utc_datetime(value, "revoked_ts_utc")
+    now_utc = _normalize_utc_datetime(now, "current_ts_utc")
+    if revoked_utc > now_utc:
+        raise ValueError("revoked_ts_utc cannot be in the future")
+    return revoked_utc
+
+
 def _row_to_grant(row: Any) -> ExecutionLiveAuthorityGrantV1:
     try:
         grant = ExecutionLiveAuthorityGrantV1(
@@ -344,9 +352,13 @@ class ExecutionLiveAuthorityRepositoryV1:
         revoked_by = _required_text(revoked_by, "revoked_by")
         revocation_reason = _required_text(revocation_reason, "revocation_reason")
         timestamp_was_explicit = revoked_ts_utc is not None
-        revoked_ts_utc = _normalize_utc_datetime(
-            revoked_ts_utc or trusted_clock.utc_now(),
-            "revoked_ts_utc",
+        current_ts_utc = _normalize_utc_datetime(
+            trusted_clock.utc_now(),
+            "current_ts_utc",
+        )
+        revoked_ts_utc = _validated_revocation_timestamp(
+            revoked_ts_utc or current_ts_utc,
+            current_ts_utc,
         )
 
         with self.cursor_factory(commit=True) as db_obj:
