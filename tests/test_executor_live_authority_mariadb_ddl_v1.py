@@ -135,6 +135,10 @@ def test_authority_migration_executes_and_enforces_immutability() -> None:
                 "executor_live_authority_grant",
                 "chk_elag_finite_window",
             ) in constraints
+            assert (
+                "executor_live_authority_revocation",
+                "chk_elar_not_future",
+            ) in constraints
             assert ("executor_kill_switch_event", "chk_ekse_state") in constraints
             cursor.execute(
                 """
@@ -176,7 +180,7 @@ def test_authority_migration_executes_and_enforces_immutability() -> None:
                 INSERT INTO executor_live_authority_revocation (
                     executor_live_authority_grant_id, revoked_ts_utc,
                     revoked_by, revocation_reason
-                ) VALUES (%s, '2026-08-18 00:00:00', 'operator-v1', 'stop')
+                ) VALUES (%s, '2026-08-17 01:00:00', 'operator-v1', 'stop')
                 """,
                 [grant_id],
             )
@@ -229,5 +233,49 @@ def test_authority_migration_rejects_unbounded_window_and_invalid_state() -> Non
                     "INSERT INTO executor_kill_switch_event "
                     "(state, actor, reason, created_ts_utc) "
                     "VALUES ('UNKNOWN', 'operator-v1', 'invalid', '2026-08-18 00:00:00')"
+                )
+        conn.rollback()
+
+
+def test_authority_migration_rejects_future_revocation_fact() -> None:
+    from pymysql.err import OperationalError
+
+    with _schema() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO executor_live_authority_grant (
+                    trading_account_id, venue, side, market, executor_identity,
+                    runtime_owner, effective_from_ts_utc, effective_until_ts_utc,
+                    authorized_by, authorization_reason
+                ) VALUES (
+                    7, 'bitvavo', 'BUY', 'BTC-EUR', 'executor-v1', 'host-v1',
+                    '2026-08-17 00:00:00', '2026-08-24 00:00:00',
+                    'operator-v1', 'bounded test'
+                )
+                """
+            )
+            grant_id = int(cursor.lastrowid)
+        conn.commit()
+
+        with pytest.raises(OperationalError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO executor_live_authority_revocation (
+                        executor_live_authority_grant_id,
+                        revoked_ts_utc,
+                        revoked_by,
+                        revocation_reason,
+                        created_ts_utc
+                    ) VALUES (
+                        %s,
+                        '2026-08-18 00:00:00.000001',
+                        'operator-v1',
+                        'future invalid',
+                        '2026-08-18 00:00:00'
+                    )
+                    """,
+                    [grant_id],
                 )
         conn.rollback()
