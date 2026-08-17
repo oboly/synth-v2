@@ -101,6 +101,8 @@ _DECISION_COMPARISON_FIELDS = (
     "gate_reason_code",
     "approved_fraction_candidate",
     "approved_quantity_ceiling_base",
+    "protection_code",
+    "protection_reason_code",
     "planner_state",
     "planner_reason_code",
     "immutable_plan_json",
@@ -137,6 +139,8 @@ def write_automatic_exit_evaluation_audit_v1(
     immutable_plan_json: dict[str, Any] | None,
     evaluation_ts_utc: datetime,
     planning_ts_utc: datetime | None,
+    protection_code: str | None = None,
+    protection_reason_code: str | None = None,
 ) -> AuditWriteResultV1:
     """Append one audit row, or confirm an existing row records the same decision."""
     source_evidence_text = canonical_json(source_evidence_json)
@@ -147,6 +151,7 @@ def write_automatic_exit_evaluation_audit_v1(
            candidate_action, candidate_reason_code, candidate_evidence_id,
            exit_profile_id, exit_profile_version, gate_state, gate_reason_code,
            approved_fraction_candidate, approved_quantity_ceiling_base,
+           protection_code, protection_reason_code,
            planner_state, planner_reason_code, immutable_plan_json
     FROM automatic_exit_evaluation_audit_v1
     WHERE idempotency_key = %s
@@ -169,6 +174,8 @@ def write_automatic_exit_evaluation_audit_v1(
         "gate_reason_code": gate_reason_code,
         "approved_fraction_candidate": (str(approved_fraction_candidate) if approved_fraction_candidate is not None else None),
         "approved_quantity_ceiling_base": (str(approved_quantity_ceiling_base) if approved_quantity_ceiling_base is not None else None),
+        "protection_code": protection_code,
+        "protection_reason_code": protection_reason_code,
         "planner_state": planner_state,
         "planner_reason_code": planner_reason_code,
         "immutable_plan_json": immutable_plan_text,
@@ -191,6 +198,8 @@ def write_automatic_exit_evaluation_audit_v1(
             "approved_quantity_ceiling_base": (
                 str(existing["approved_quantity_ceiling_base"]) if existing["approved_quantity_ceiling_base"] is not None else None
             ),
+            "protection_code": existing["protection_code"],
+            "protection_reason_code": existing["protection_reason_code"],
             "planner_state": existing["planner_state"],
             "planner_reason_code": existing["planner_reason_code"],
             "immutable_plan_json": existing["immutable_plan_json"],
@@ -210,10 +219,11 @@ def write_automatic_exit_evaluation_audit_v1(
         candidate_state, candidate_action, candidate_reason_code, candidate_evidence_id,
         exit_profile_id, exit_profile_version,
         gate_state, gate_reason_code, approved_fraction_candidate, approved_quantity_ceiling_base,
+        protection_code, protection_reason_code,
         planner_state, planner_reason_code, immutable_plan_json,
         evaluation_ts_utc, planning_ts_utc
     ) VALUES (
-        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
     )
     """
     with conn.cursor() as cur:
@@ -225,6 +235,7 @@ def write_automatic_exit_evaluation_audit_v1(
                 candidate_state, candidate_action, candidate_reason_code, candidate_evidence_id,
                 exit_profile_id, exit_profile_version,
                 gate_state, gate_reason_code, approved_fraction_candidate, approved_quantity_ceiling_base,
+                protection_code, protection_reason_code,
                 planner_state, planner_reason_code, immutable_plan_text,
                 evaluation_ts_utc, planning_ts_utc,
             ),

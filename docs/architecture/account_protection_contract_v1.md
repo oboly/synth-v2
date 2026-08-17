@@ -19,6 +19,14 @@ Historical design context: `docs/todo/decision_gate_account_protections_v1.md`
 (candidate `NEW-10`, frozen legacy/reference file; this document and Issue
 #227 are the live spec).
 
+Issue #392 Phase 6 blocker C wires this P2 boundary into the real
+automatic-exit runtime (see "Real #392 wiring" below) and adds a durable
+account-scoped policy-configuration contract. No metric-fact producer for
+`MAX_ACCOUNT_DRAWDOWN` / `DAILY_REALIZED_LOSS` / `REPEATED_STOPLOSS_STREAK`
+exists yet; see `docs/status/issue_392_phase6_sell_live_readiness_v1.md` for
+current Phase 6 readiness state. No LIVE trading, executor, or broker
+authority is granted by this wiring.
+
 ## Why `docs/architecture/`
 
 This is a permanent, versioned system contract describing a `decision_gate`
@@ -233,10 +241,10 @@ the future relative to the evaluation instant `at`, the result is always
 any lock facts are considered, so uncertain, stale, or missing account state
 blocks unconditionally rather than silently permitting.
 
-This freshness flag/timestamp is a placeholder the P2 runtime must populate
-from the real account-state snapshot pipeline (e.g. the
-`account_state_snapshot_run_v1` bundle used by the automatic-exit contract);
-this document does not define how that snapshot is produced.
+On the real #392 path this flag/timestamp is populated from the same
+`account_state_snapshot_run_v1`-derived bundle the automatic-exit runtime
+already loaded for the candidate/gate evaluation (see "Real #392 wiring"
+below) — never a second snapshot query and never an implicit `True`.
 
 ## Account isolation
 
@@ -326,11 +334,62 @@ reporting evidence. Reporting has no create, unlock, expiry, broker, planner,
 or executor authority. Automatic-exit candidates provide `REDUCE` or `EXIT`
 to the same action-aware evaluator before their existing gate composition;
 `exit_policy`, `execution_planner`, and `executor` do not inspect protection
-internals. This is a non-activated decision-gate composition seam: the
-current #392 orchestrator is not wired to a protection producer because no
-reviewed canonical policy/fact-source activation exists. A later activation
-must supply an action-bound evaluation through `decision_gate`; it must not
-embed protection logic in `exit_policy`.
+internals.
+
+### Real #392 wiring (Issue #392 Phase 6 blocker C)
+
+`src/decision_gate/account_protection_evaluation_v1.py` is the single
+composition seam that wires the real automatic-exit runtime to this P2
+boundary. `src/exit_policy/automatic_exit_runtime_orchestrator_v1.py` calls
+`evaluate_account_protection_for_automatic_exit_v1` for every candidate
+before building `AutomaticExitGateContextV1`, and always supplies its
+`AccountProtectionEvaluationV1` result to
+`AutomaticExitGateContextV1.account_protection_evaluation` — the field never
+stays `None` on the real path anymore. `requested_action` is mapped directly
+from `candidate.candidate_action` (`REDUCE`/`EXIT`); `sleeve_code` is always
+`None`, matching the automatic-exit domain's lack of a sleeve concept.
+`account_state_fresh` is computed explicitly from the same aligned
+`account_state_snapshot_run_v1`-derived timestamp the automatic-exit runtime
+already loaded (`item.account_state_observed_ts_utc`) against a 15-minute
+default bound — never an implicit `True`.
+
+Durable, account-scoped configuration (`AccountProtectionPolicyV1` thresholds)
+now has a canonical persistence contract:
+`src/decision_gate/account_protection_policy_contract_v1.py` (pure,
+versioned resolver) and
+`src/decision_gate/account_protection_policy_repository_v1.py` (DB reads),
+backed by the append-only `account_protection_policy_config_v1` table
+(migration artifact only: `db/migrations/20260817_account_protection_policy_config_v1.sql`,
+not applied). No effective row for the account, more than one simultaneously
+effective row, or an unsupported `config_version` all resolve to
+`AccountProtectionPolicyConfigError` and the composition seam converts that
+to a typed `BLOCKED` evaluation (`PROTECTION_CONFIGURATION_UNRESOLVED`) —
+**an account with no protection policy row cannot reach an `APPROVED`
+automatic-exit gate decision.** Provisioning at least a permissive
+(all-thresholds-`None`) config row is therefore an operational prerequisite
+before any account's automatic-exit candidates can stage a plan again.
+
+`MAX_ACCOUNT_DRAWDOWN`, `DAILY_REALIZED_LOSS`, and `REPEATED_STOPLOSS_STREAK`
+still have **no canonical metric-fact producer**: the composition seam always
+supplies an empty `metric_facts` tuple. If a future durable config ever
+enables one of those thresholds without a producer wired into the seam, the
+existing P2 evaluator fails closed on its own
+(`REQUIRED_PROTECTION_METRIC_MISSING`) rather than the seam inventing a
+value; this remains a real, tracked blocker, not silently worked around.
+Persisted `MANUAL_ACCOUNT_LOCK` and cooldown facts (and, if a future producer
+appends a metric-derived lock directly, `MAX_ACCOUNT_DRAWDOWN_BLOCK` /
+`DAILY_REALIZED_LOSS_BLOCK` / `REPEATED_STOPLOSS_BLOCK` rows) already flow
+correctly end-to-end today through
+`account_protection_repository_v1.load_protection_lock_facts_for_account_v1`.
+
+`exit_policy` and `execution_planner` still do not embed protection logic;
+`automatic_exit_runtime_orchestrator_v1` only calls the seam and forwards its
+typed result. The append-only `automatic_exit_evaluation_audit_v1` table
+gained two nullable provenance columns, `protection_code` and
+`protection_reason_code`, populated from the gate decision on every write
+(including permitted evaluations, where they record `NULL`/`OK`) — audit/
+review evidence only, never an executor input or protection configuration
+source.
 
 ## Non-goals
 

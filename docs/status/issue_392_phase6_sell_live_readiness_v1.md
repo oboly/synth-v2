@@ -3,6 +3,14 @@
 Date: 2026-08-17
 Status: audit only; no LIVE activation performed or authorized by this document.
 
+**Update (2026-08-17, same date, follow-on change):** blocker C (real #318
+account-protection producer/configuration wiring) is now RESOLVED — see
+"Account protection (#318) wiring (Phase C finding)" below, which is
+rewritten in place to describe the real wiring rather than the gap. Blockers
+A and B are unchanged and still block `GO_LIVE_READY`. No LIVE activation,
+executor change, or broker authority was introduced by that follow-on
+change; see its own safety markers where noted below.
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)
@@ -158,19 +166,87 @@ level:
   prove exactly REDUCE->REDUCE, EXIT->EXIT mapping with no protection logic
   inside `exit_policy` or `execution_planner`.
 
-However, **the real runtime path never populates this evaluation**:
-`AutomaticExitGateContextV1.account_protection_evaluation` defaults to `None`,
-and `src/exit_policy/automatic_exit_runtime_orchestrator_v1.py` constructs
-`AutomaticExitGateContextV1` without ever setting that field.
-`grep -rn "account_protection" src/exit_policy/` returns no matches, and
-`grep -rln "evaluate_account_protection_runtime_v1"` matches only
-`src/decision_gate/account_protection_runtime_v1.py` itself and its own test
-file. `RuntimeItemV1` (`automatic_exit_runtime_repository_v1.py`) has no
-protection-fact fields at all. **#318 protections are therefore not enforced
-on the real #392 path today** even though the contract and the pure runtime
-evaluator both exist and are independently tested. Wiring a metric-fact/lock-fact
-producer into the Phase 4B runtime is separate implementation work, not
-performed by this audit.
+**RESOLVED (2026-08-17 follow-on change).** `src/decision_gate/account_protection_evaluation_v1.py`
+is now the single composition seam:
+`src/exit_policy/automatic_exit_runtime_orchestrator_v1.py::evaluate_automatic_exit_runtime_item_v1`
+calls `evaluate_account_protection_for_automatic_exit_v1(conn, ...)` for
+every candidate before constructing `AutomaticExitGateContextV1`, and always
+passes the typed `AccountProtectionEvaluationV1` result into
+`AutomaticExitGateContextV1.account_protection_evaluation` — the field no
+longer stays `None` on the real path. `requested_action` maps directly from
+`candidate.candidate_action`; `sleeve_code` is always `None`; account-state
+freshness is derived explicitly from the same aligned
+`item.account_state_observed_ts_utc` the runtime already loaded (no second
+snapshot query, no implicit `fresh=True`).
+
+This closes two previously-open sub-gaps:
+
+- **Configuration ownership.** No durable, versioned, account-scoped
+  protection-configuration persistence existed before this change. It now
+  does: `src/decision_gate/account_protection_policy_contract_v1.py` (pure
+  resolver) + `src/decision_gate/account_protection_policy_repository_v1.py`
+  (DB reads) + the append-only `account_protection_policy_config_v1` table
+  (migration artifact only, not applied:
+  `db/migrations/20260817_account_protection_policy_config_v1.sql`). No
+  effective row, an ambiguous overlap, or an unsupported `config_version` all
+  resolve to a typed `BLOCKED` evaluation
+  (`PROTECTION_CONFIGURATION_UNRESOLVED`) rather than raising or silently
+  permitting. **Operational consequence:** an account with no provisioned
+  policy config row can no longer reach an `APPROVED` automatic-exit gate
+  decision at all — provisioning at least a permissive (all-thresholds-`None`)
+  config row per account is now a prerequisite for automatic-exit candidates
+  to stage a plan, in addition to the existing automatic-exit planning
+  permission row.
+- **Persisted lock facts.** `account_protection_repository_v1.load_protection_lock_facts_for_account_v1`
+  is called for exactly the candidate's `trading_account_id`; manual locks and
+  cooldowns already flow correctly end-to-end.
+
+**Still open, deliberately not addressed by this change:** no canonical
+metric-fact producer exists for `MAX_ACCOUNT_DRAWDOWN`, `DAILY_REALIZED_LOSS`,
+or `REPEATED_STOPLOSS_STREAK`. The composition seam always supplies an empty
+`metric_facts` tuple; if a future config row enables one of those thresholds
+without a producer, the existing P2 evaluator fails closed on its own
+(`REQUIRED_PROTECTION_METRIC_MISSING`) rather than this seam fabricating a
+value. Building that producer (and, if desired, deriving metric-based locks)
+remains separate implementation work and a real remaining item, tracked here
+rather than silently worked around.
+
+Audit provenance: the append-only `automatic_exit_evaluation_audit_v1` table
+gained two nullable columns, `protection_code` and `protection_reason_code`
+(migration artifact only, not applied, same file as above), populated on
+every audit write from the gate decision's own protection fields — review
+evidence only, never an executor input, never protection configuration truth,
+and never a mutation of the table's append-only/idempotency semantics
+(`gate_state`/`gate_reason_code` already carried the decisive outcome; these
+two columns close the smallest deterministic provenance gap: which protection,
+if any, evaluated and permitted an otherwise-approved decision).
+
+Tests added: `tests/test_account_protection_policy_contract_v1.py`,
+`tests/test_account_protection_policy_repository_v1.py`,
+`tests/test_account_protection_evaluation_v1.py`, plus real-wiring cases
+appended to `tests/test_automatic_exit_runtime_orchestrator_v1.py` (REDUCE/EXIT
+with no active protection, drawdown-lock permits REDUCE/EXIT, manual lock
+denies REDUCE/EXIT, unresolved config fails closed, missing metric producer
+fails closed, cross-account isolation, real gate context populated, no
+executor/broker imports) and a binding-mismatch case appended to
+`tests/test_automatic_exit_gate_v1.py`.
+
+Safety markers for this follow-on change:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+production_db_mutation=0
+production_migration_apply=0
+executor_adapter=0
+executor_calls=0
+credential_provisioning=0
+live_authority_provisioning=0
+service_activation=0
+timer_activation=0
+```
 
 ## LIVE authority / kill switch (Phase D/E) — verified sufficient
 
@@ -272,7 +348,7 @@ verifies repository-level state only.
 | 4 | Automatic-exit planning permission exists (fresh) | NOT VERIFIED — runtime-dependent, not a static repo fact |
 | 5 | Fresh automatic-exit profile exists | NOT VERIFIED — runtime-dependent |
 | 6 | Fresh aligned account evidence exists | NOT VERIFIED — runtime-dependent |
-| 7 | Account protection producer/configuration state resolved | **NO** — no producer wires `account_protection_runtime_v1` into the #392 runtime path (see Phase C finding); this alone is a hard blocker |
+| 7 | Account protection producer/configuration state resolved | **PARTIAL** — the real #392 path now wires `account_protection_runtime_v1` via `account_protection_evaluation_v1.py` and a durable config contract exists (see Phase C finding, RESOLVED 2026-08-17), but no policy config row is provisioned on any production account yet (NOT VERIFIED — runtime-dependent) and no metric-fact producer exists for `MAX_ACCOUNT_DRAWDOWN`/`DAILY_REALIZED_LOSS`/`REPEATED_STOPLOSS_STREAK`; a missing config row now fails closed rather than silently permitting |
 | 8 | TRADE_EXECUTION credential exists and exact binding verified | NOT PROVISIONED (by design/prohibition of this audit); contract verified sufficient |
 | 9 | #392 SELL LIVE authority row exists and is effective | **NO** — zero authority rows exist or are authorized by this audit; also blocked by missing adapter and gate's paper-only contract |
 | 10 | Kill switch state authoritative and clear | NOT VERIFIED — runtime-dependent; mechanism verified fail-closed |
@@ -406,8 +482,10 @@ timer_activation=0
 
 `GO_LIVE_READY = NO`.
 
-Three actual Phase 6 blockers, each its own explicitly authorized, reviewed
-implementation task — none resolvable by a documentation or test-only change:
+Three actual Phase 6 blockers were identified. Blocker C is now RESOLVED (see
+Phase C finding above); blockers A and B remain open, each its own explicitly
+authorized, reviewed implementation task — neither resolvable by a
+documentation or test-only change:
 
 - **A. #392 -> #206 typed adapter / runtime seam.** No adapter/intake
   boundary exists between #392's in-memory planner output and #206's shared
@@ -418,17 +496,28 @@ implementation task — none resolvable by a documentation or test-only change:
   `automatic_exit_gate_v1` is a DRY_RUN/PAPER-only contract by construction
   today (`REASON_LIVE_EXECUTION_NOT_GRANTED` on any non-paper mode); it
   cannot approve a LIVE candidate until deliberately extended.
-- **C. Real #318 account-protection producer/configuration wiring into the
-  #392 runtime.** The contract and pure evaluator both exist and are tested
-  in isolation, but nothing in the real #392 runtime orchestrator calls the
-  evaluator or supplies its result to the gate context today.
+- ~~**C. Real #318 account-protection producer/configuration wiring into the
+  #392 runtime.**~~ **RESOLVED 2026-08-17.** The real #392 runtime
+  orchestrator now calls the P2 evaluator through
+  `account_protection_evaluation_v1.py` and supplies its result to the gate
+  context on every evaluation; a durable, versioned, account-scoped
+  configuration contract now exists and fails closed when unresolved. No
+  metric-fact producer exists yet for `MAX_ACCOUNT_DRAWDOWN`/
+  `DAILY_REALIZED_LOSS`/`REPEATED_STOPLOSS_STREAK` — tracked as a real
+  remaining item (see Phase C finding), but it does not block manual-lock/
+  cooldown protection from being enforced today, and it fails closed rather
+  than silently permitting if a future config ever enables it without a
+  producer.
 
 Required dependency ordering — each step depends on the previous one being
 merged and reviewed, and no step authorizes skipping ahead:
 
-1. Account-protection producer/wiring (blocker C) — establishes the real
-   permission signal the gate will need before it can be trusted to approve
-   anything at all, LIVE or otherwise.
+1. ~~Account-protection producer/wiring (blocker C)~~ — DONE. Establishes the
+   real permission signal the gate needs before it can be trusted to approve
+   anything at all, LIVE or otherwise. Provisioning a policy config row per
+   production account (and, if wanted, a metric-fact producer) remains a
+   prerequisite operational/implementation step before automatic-exit
+   candidates on those accounts can reach `APPROVED` again.
 2. LIVE-capable gate contract (blocker B) — only once account-protection
    composition is real should the gate's paper-only restriction be
    deliberately extended for LIVE.

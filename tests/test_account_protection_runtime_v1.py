@@ -132,6 +132,16 @@ def test_malformed_nonfinite_or_fractional_streak_metric_fails_closed():
     assert evaluate_account_protection_runtime_v1(policy=streak_policy, inputs=_inputs(metrics=(malformed_ts,)), requested_action=ACTION_BUY).decision_state == STATE_BLOCKED
 
 
+def test_metric_fact_tagged_for_another_account_fails_closed():
+    """Issue #392 Phase 6 blocker C fail-closed matrix: wrong-account metric fact must never be honored."""
+    policy = AccountProtectionPolicyV1("policy-1", max_account_drawdown=Decimal("10"))
+    wrong_account_metric = _metric(METRIC_MAX_ACCOUNT_DRAWDOWN, "10", account_id=ACCOUNT_B)
+    result = evaluate_account_protection_runtime_v1(
+        policy=policy, inputs=_inputs(account_id=ACCOUNT_A, metrics=(wrong_account_metric,)), requested_action=ACTION_BUY,
+    )
+    assert result.decision_state == STATE_BLOCKED
+
+
 def test_manual_lock_blocks_all_actions_and_is_account_isolated():
     policy = AccountProtectionPolicyV1("policy-1")
     lock = _lock(PROTECTION_MANUAL_ACCOUNT_LOCK, SCOPE_ACCOUNT, str(ACCOUNT_A))

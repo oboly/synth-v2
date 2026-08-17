@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
+from src.decision_gate.account_protection_evaluation_v1 import (
+    evaluate_account_protection_for_automatic_exit_v1,
+)
 from src.decision_gate.automatic_exit_gate_v1 import (
     STATE_APPROVED,
     AutomaticExitGateContextV1,
@@ -157,6 +160,15 @@ def evaluate_automatic_exit_runtime_item_v1(
     assert evaluation.candidate is not None
     candidate = evaluation.candidate
 
+    account_protection_evaluation = evaluate_account_protection_for_automatic_exit_v1(
+        conn,
+        trading_account_id=item.trading_account_id,
+        asset_id=item.asset_id,
+        requested_action=candidate.candidate_action,
+        account_state_observed_ts_utc=item.account_state_observed_ts_utc,
+        evaluation_ts_utc=evaluation_ts_utc,
+    )
+
     gate_context = AutomaticExitGateContextV1(
         trading_account_id=item.trading_account_id,
         position_reference=item.position_reference,
@@ -175,6 +187,7 @@ def evaluate_automatic_exit_runtime_item_v1(
         live_trading_enabled=item.live_trading_enabled,
         blocking_conflict=item.blocking_conflict,
         evaluation_ts_utc=evaluation_ts_utc,
+        account_protection_evaluation=account_protection_evaluation,
     )
     decision = evaluate_automatic_exit_candidate_permission_v1(candidate=candidate, context=gate_context)
 
@@ -192,6 +205,8 @@ def evaluate_automatic_exit_runtime_item_v1(
             gate_reason_code=decision.reason_code,
             approved_fraction_candidate=decision.approved_fraction_candidate,
             approved_quantity_ceiling_base=decision.approved_quantity_ceiling_base,
+            protection_code=decision.protection_code,
+            protection_reason_code=decision.protection_reason_code,
             planner_state=planner_state,
             planner_reason_code=planner_reason_code,
             immutable_plan_json=None,
@@ -231,6 +246,8 @@ def evaluate_automatic_exit_runtime_item_v1(
         gate_reason_code=decision.reason_code,
         approved_fraction_candidate=decision.approved_fraction_candidate,
         approved_quantity_ceiling_base=decision.approved_quantity_ceiling_base,
+        protection_code=decision.protection_code,
+        protection_reason_code=decision.protection_reason_code,
         planner_state=PLANNER_STATE_STAGED,
         planner_reason_code=None,
         immutable_plan_json=build_immutable_plan_json(plan),
