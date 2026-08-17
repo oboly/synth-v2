@@ -51,6 +51,7 @@ CREATE TABLE executor_live_authority_revocation (
     CONSTRAINT fk_elar_grant FOREIGN KEY (executor_live_authority_grant_id)
         REFERENCES executor_live_authority_grant (executor_live_authority_grant_id)
         ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_elar_not_future CHECK (revoked_ts_utc <= created_ts_utc),
     CONSTRAINT chk_elar_required_text CHECK (
         CHAR_LENGTH(TRIM(revoked_by)) > 0
         AND CHAR_LENGTH(TRIM(revocation_reason)) > 0
