@@ -6,11 +6,18 @@ after their own decision-gate permission and execution-planner work. The
 executor performs no selection, strategy, sizing, allocation, or account
 permission decision.
 
-Intake permits `DRY_RUN` and `PAPER` only. `LIVE` is represented in schema
-vocabulary for future compatibility but is denied by application intake. A
-credential binding is resolved for the exact account, venue, executor identity
-and runtime owner; it must be ACTIVE, TRADE_EXECUTION, order-write enabled and
-withdrawal disabled. No secret material is read or stored.
+Ordinary intake permits `DRY_RUN` and `PAPER` only; `LIVE` is denied. The same
+canonical handoff repository has one explicit LIVE-authorized
+intake method. It requires current operational LIVE authority before it may
+persist `executor_mode=LIVE` into the existing `executor_execution_handoff`
+table. Both intake forms preserve the same immutable identity, credential
+binding, duplicate, and idempotency rules; there is no second handoff table or
+executor path.
+
+A credential binding is resolved for the exact account, venue, executor
+identity and runtime owner; it must be ACTIVE, TRADE_EXECUTION, order-write
+enabled and withdrawal disabled. The binding contains metadata, not LIVE
+authority, and operational authority contains no credential. Both are required.
 
 Before a placement adapter call, the executor persists `SUBMISSION_UNCERTAIN`.
 Each persisted leg binds immutable handoff, leg, account, venue, market, side,
@@ -35,15 +42,57 @@ The dormant adapter first verifies every supplied handoff identity field
 against the canonical persisted `executor_execution_handoff` row. A non-null
 handoff ID alone is not persistence proof. A missing or mismatched row fails
 closed before credential loading, client construction, or a private operation.
-This persisted-identity check is not LIVE authority. Future activation must
-insert the separately reviewed PR3 authority boundary after exact credential
-binding and before the venue operation; PR2 adds no such permission.
+This persisted-identity check is not LIVE authority.
 The adapter then preserves the immutable executor market, side, price,
 quantity, client order ID, and operator ID in a passive limit/post-only order.
 It performs a fresh exact TRADE_EXECUTION credential-scope resolution for the
 handoff account, venue, executor identity, runtime owner, and binding ID before
-each private operation. The merged intake still denies LIVE, and this adapter
-does not grant LIVE authority or activate a runtime.
+each private operation. It then performs the canonical composed LIVE-authority
+check before credential decryption, private-client construction, or a broker
+operation. The authority identity comes only from the canonical handoff; only
+the authority grant's market field may use the defined wildcard semantics.
+
+## Operational LIVE authority
+
+The executor's LIVE authority answers only whether an exact account, venue,
+side, optional market, executor identity, and runtime owner may submit LIVE at
+the current time. It is deny-by-default, finite, and revocable. Grants are
+immutable, last no longer than seven days, and are revoked by separate
+append-only facts. Exact-market authority deterministically overrides wildcard
+market authority; overlapping matches at the selected specificity fail closed.
+
+The global kill switch is an append-only event stream. Its latest monotonic
+event ID is authoritative, an engaged state overrides every grant, and a
+disengaged state never grants authority. Read failures in either repository
+fail closed.
+
+This operational gate does not repeat or interpret strategy or account-risk
+permission. The #410/#318 account protections remain solely owned by
+`decision_gate`; the approved immutable plan is the upstream evidence that
+those protections and planner responsibilities have already run.
+
+The canonical private-operation order is:
+
+```text
+approved immutable plan
+-> explicit LIVE-authorized canonical handoff
+-> exact TRADE_EXECUTION credential binding metadata
+-> fresh composed LIVE authority + global kill switch
+-> credential decrypt / private-client construction
+-> broker operation
+-> shared reconciliation
+```
+
+Handoff creation does not guarantee later broker permission. Before every
+private placement or client-order-ID lookup, the adapter re-verifies the exact
+persisted LIVE handoff, freshly resolves its exact credential binding, and
+freshly evaluates the composed authority gate. Expiry, revocation, ambiguity,
+an engaged kill switch, or a read failure therefore denies the operation before
+secret loading and the private boundary.
+
+Repository acceptance remains non-live. This phase creates schema and dormant
+code only: it creates no authority rows or credentials, applies no production
+migration, activates no service or timer, and makes no broker call.
 
 The current Bitvavo REST order statuses map as follows:
 
