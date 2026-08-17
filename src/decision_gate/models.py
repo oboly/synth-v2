@@ -109,3 +109,9 @@ class DecisionResult:
 
     summary_text: str | None
     regime_label_4h: str | None
+
+    # Read-only account-protection provenance. It is populated only by the
+    # decision-gate composition wrapper and never grants permission.
+    protection_decision_state: str | None = None
+    protection_reason_code: str | None = None
+    protection_code: str | None = None

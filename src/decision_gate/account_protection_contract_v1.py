@@ -32,6 +32,16 @@ EVALUATION_CONTRACT_VERSION: Final[str] = "1"
 
 DEFAULT_MAX_ACCOUNT_STATE_AGE_SECONDS: Final[int] = 15 * 60
 
+# Permission actions are deliberately owned here, not by execution planning.
+# They describe exposure direction only; no quantity, order, or ladder
+# semantics are attached to them.
+ACTION_BUY: Final[str] = "BUY"
+ACTION_REDUCE: Final[str] = "REDUCE"
+ACTION_EXIT: Final[str] = "EXIT"
+SUPPORTED_PROTECTION_ACTIONS: Final[frozenset[str]] = frozenset({
+    ACTION_BUY, ACTION_REDUCE, ACTION_EXIT,
+})
+
 
 class AccountProtectionContractError(ValueError):
     """Raised for malformed/inconsistent caller input (a caller bug), not for
@@ -75,6 +85,8 @@ PROTECTION_ALLOWED_SCOPES: Final[dict[str, frozenset[str]]] = {
     PROTECTION_REPEATED_STOPLOSS_BLOCK: frozenset({SCOPE_ACCOUNT, SCOPE_ASSET}),
     PROTECTION_LOW_PROFIT_ASSET_COOLDOWN: frozenset({SCOPE_ASSET}),
     PROTECTION_POST_CLOSE_REENTRY_COOLDOWN: frozenset({SCOPE_ASSET}),
+    # Retained for V1 compatibility. P2 administrative manual-lock producers
+    # emit ACCOUNT scope only; legacy narrower facts remain parseable.
     PROTECTION_MANUAL_ACCOUNT_LOCK: frozenset({SCOPE_ACCOUNT, SCOPE_SLEEVE, SCOPE_ASSET}),
 }
 
@@ -90,6 +102,19 @@ PROTECTION_PRECEDENCE_ORDER: Final[tuple[str, ...]] = (
     PROTECTION_POST_CLOSE_REENTRY_COOLDOWN,
     PROTECTION_LOW_PROFIT_ASSET_COOLDOWN,
 )
+
+# Canonical #227 action applicability. The first five protections prevent
+# risk increase only; they must not trap a held position by denying a
+# risk-reducing action. A manual lock is explicit administrative authority
+# over all decision-gate execution actions (not an executor kill switch).
+PROTECTION_BLOCKED_ACTIONS: Final[dict[str, frozenset[str]]] = {
+    PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK: frozenset({ACTION_BUY}),
+    PROTECTION_DAILY_REALIZED_LOSS_BLOCK: frozenset({ACTION_BUY}),
+    PROTECTION_REPEATED_STOPLOSS_BLOCK: frozenset({ACTION_BUY}),
+    PROTECTION_LOW_PROFIT_ASSET_COOLDOWN: frozenset({ACTION_BUY}),
+    PROTECTION_POST_CLOSE_REENTRY_COOLDOWN: frozenset({ACTION_BUY}),
+    PROTECTION_MANUAL_ACCOUNT_LOCK: frozenset({ACTION_BUY, ACTION_REDUCE, ACTION_EXIT}),
+}
 
 # ---------------------------------------------------------------------------
 # Lock fact lifecycle state (persisted-fact vocabulary; distinct from the
@@ -122,6 +147,7 @@ REASON_POST_CLOSE_REENTRY_COOLDOWN_ACTIVE: Final[str] = "POST_CLOSE_REENTRY_COOL
 REASON_MANUAL_ACCOUNT_LOCK_ACTIVE: Final[str] = "MANUAL_ACCOUNT_LOCK_ACTIVE"
 REASON_ACCOUNT_STATE_EVIDENCE_STALE: Final[str] = "ACCOUNT_STATE_EVIDENCE_STALE"
 REASON_ACCOUNT_STATE_EVIDENCE_MISSING: Final[str] = "ACCOUNT_STATE_EVIDENCE_MISSING"
+REASON_PROTECTION_EVIDENCE_INVALID: Final[str] = "PROTECTION_EVIDENCE_INVALID"
 
 # protection_code -> reason_code surfaced when that protection is the
 # highest-precedence active block.
@@ -190,6 +216,9 @@ class AccountProtectionEvaluationV1:
     expires_ts_utc: datetime | None
     contributing_lock_facts: tuple[ProtectionLockFactV1, ...]
     evaluated_ts_utc: datetime
+    requested_action: str | None = None
+    sleeve_code: str | None = None
+    asset_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +226,7 @@ class AccountProtectionEvaluationV1:
 # ---------------------------------------------------------------------------
 
 def _is_aware(value: datetime) -> bool:
-    return value.tzinfo is not None and value.utcoffset() is not None
+    return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
 
 
 def _is_nonempty_string(value: object) -> bool:
@@ -215,6 +244,9 @@ def _validate_fact_shape(fact: ProtectionLockFactV1) -> None:
         or fact.scope_type not in PROTECTION_ALLOWED_SCOPES[fact.protection_code]
         or not _is_nonempty_string(fact.scope_id)
         or not _is_nonempty_string(fact.reason_code)
+        or not isinstance(fact.evidence_refs, tuple)
+        or not fact.evidence_refs
+        or not all(_is_nonempty_string(ref) for ref in fact.evidence_refs)
         or not _is_nonempty_string(fact.configuration_version)
         or fact.lock_state not in SUPPORTED_LOCK_STATES
         or not _is_aware(fact.observed_from_ts_utc)
@@ -225,6 +257,35 @@ def _validate_fact_shape(fact: ProtectionLockFactV1) -> None:
         or (fact.expires_ts_utc is not None and fact.expires_ts_utc <= fact.triggered_ts_utc)
     ):
         raise AccountProtectionContractError("INVALID_PROTECTION_LOCK_FACT")
+
+
+def validate_protection_lock_fact_v1(fact: ProtectionLockFactV1) -> None:
+    """Validate one immutable fact before persistence at a trusted boundary."""
+    _validate_fact_shape(fact)
+
+
+def validate_account_protection_evaluation_binding_v1(
+    evaluation: AccountProtectionEvaluationV1,
+    *,
+    trading_account_id: int,
+    requested_action: str,
+    sleeve_code: str | None,
+    asset_id: int | None,
+    evaluation_ts_utc: datetime,
+) -> None:
+    """Reject reuse of an evaluation for another account/action/scope."""
+    if (
+        evaluation.evaluation_contract_version != EVALUATION_CONTRACT_VERSION
+        or evaluation.decision_state not in SUPPORTED_DECISION_STATES
+        or evaluation.trading_account_id != trading_account_id
+        or evaluation.requested_action != requested_action
+        or evaluation.sleeve_code != sleeve_code
+        or evaluation.asset_id != asset_id
+        or not isinstance(evaluation_ts_utc, datetime)
+        or not _is_aware(evaluation.evaluated_ts_utc)
+        or evaluation.evaluated_ts_utc != evaluation_ts_utc
+    ):
+        raise AccountProtectionContractError("INVALID_PROTECTION_EVALUATION_BINDING")
 
 
 def _scope_matches(
@@ -262,10 +323,29 @@ def _authoritative_facts_by_identity(
     for fact in facts:
         key = fact.lifecycle_id
         current = latest_by_key.get(key)
+        if current is not None and (
+            fact.protection_code != current.protection_code
+            or fact.protection_version != current.protection_version
+            or fact.trading_account_id != current.trading_account_id
+            or fact.scope_type != current.scope_type
+            or fact.scope_id != current.scope_id
+            or fact.observed_from_ts_utc != current.observed_from_ts_utc
+            or fact.observed_to_ts_utc != current.observed_to_ts_utc
+            or fact.configuration_version != current.configuration_version
+        ):
+            raise AccountProtectionContractError("CONTRADICTORY_PROTECTION_LIFECYCLE_IDENTITY")
+        if current is not None and fact.triggered_ts_utc == current.triggered_ts_utc:
+            # Two different immutable transitions at the same authoritative
+            # instant cannot be ordered safely. Refuse to invent authority.
+            if fact.event_id != current.event_id:
+                raise AccountProtectionContractError("AMBIGUOUS_PROTECTION_LIFECYCLE_EVENT")
         if current is None or (fact.triggered_ts_utc, fact.event_id) > (current.triggered_ts_utc, current.event_id):
             latest_by_key[key] = fact
     # Deterministic ordering for reproducible test/audit output.
-    return tuple(sorted(latest_by_key.values(), key=lambda f: (f.protection_code, f.scope_type, f.scope_id)))
+    return tuple(sorted(
+        latest_by_key.values(),
+        key=lambda f: (f.protection_code, f.scope_type, f.scope_id, f.lifecycle_id, f.event_id),
+    ))
 
 
 def _stale(observed: datetime, at: datetime, max_age_seconds: int) -> bool:
@@ -368,7 +448,110 @@ def resolve_account_protection_state_v1(
     )
 
 
-def _blocked(*, trading_account_id: int, reason: str, at: datetime) -> AccountProtectionEvaluationV1:
+def resolve_account_protection_state_for_action_v1(
+    facts: Iterable[ProtectionLockFactV1],
+    *,
+    trading_account_id: int,
+    sleeve_code: str | None,
+    asset_id: int | None,
+    requested_action: str,
+    account_state_observed_ts_utc: datetime,
+    account_state_fresh: bool,
+    at: datetime,
+    max_account_state_age_seconds: int = DEFAULT_MAX_ACCOUNT_STATE_AGE_SECONDS,
+    require_account_state_evidence: bool = True,
+) -> AccountProtectionEvaluationV1:
+    """Resolve final account-protection permission for one explicit action.
+
+    New decision-gate runtime callers must use this action-aware entrypoint.
+    The legacy resolver above remains generic lock-state composition only for
+    compatibility; it is not final permission for an execution action.
+    """
+    if requested_action not in SUPPORTED_PROTECTION_ACTIONS:
+        raise AccountProtectionContractError("UNSUPPORTED_PROTECTION_ACTION")
+    if not isinstance(require_account_state_evidence, bool):
+        raise AccountProtectionContractError("INVALID_ACCOUNT_STATE_EVIDENCE_REQUIREMENT")
+    if (
+        trading_account_id <= 0
+        or not _is_aware(at)
+        or not _is_aware(account_state_observed_ts_utc)
+        or max_account_state_age_seconds < 0
+        or (sleeve_code is not None and not _is_nonempty_string(sleeve_code))
+        or (asset_id is not None and asset_id <= 0)
+    ):
+        raise AccountProtectionContractError("INVALID_EVALUATION_INPUT")
+
+    materialized = tuple(facts)
+    event_ids: set[str] = set()
+    for fact in materialized:
+        if fact.trading_account_id != trading_account_id:
+            raise AccountProtectionContractError("CROSS_ACCOUNT_EVIDENCE_LEAKAGE")
+        _validate_fact_shape(fact)
+        if fact.event_id in event_ids:
+            raise AccountProtectionContractError("DUPLICATE_PROTECTION_LOCK_EVENT_ID")
+        event_ids.add(fact.event_id)
+
+    if require_account_state_evidence:
+        if not account_state_fresh:
+            return _blocked(
+                trading_account_id=trading_account_id, reason=REASON_ACCOUNT_STATE_EVIDENCE_MISSING, at=at,
+                requested_action=requested_action, sleeve_code=sleeve_code, asset_id=asset_id,
+            )
+        if _stale(account_state_observed_ts_utc, at, max_account_state_age_seconds):
+            return _blocked(
+                trading_account_id=trading_account_id, reason=REASON_ACCOUNT_STATE_EVIDENCE_STALE, at=at,
+                requested_action=requested_action, sleeve_code=sleeve_code, asset_id=asset_id,
+            )
+
+    authoritative = _authoritative_facts_by_identity(materialized)
+    active = tuple(
+        fact for fact in authoritative
+        if _scope_matches(fact, trading_account_id=trading_account_id, sleeve_code=sleeve_code, asset_id=asset_id)
+        and _in_force(fact, at=at)
+        and requested_action in PROTECTION_BLOCKED_ACTIONS[fact.protection_code]
+    )
+    if not active:
+        return AccountProtectionEvaluationV1(
+            evaluation_contract_version=EVALUATION_CONTRACT_VERSION,
+            decision_state=STATE_PERMITTED,
+            reason_code=REASON_OK,
+            trading_account_id=trading_account_id,
+            protection_code=None,
+            scope_type=None,
+            scope_id=None,
+            expires_ts_utc=None,
+            contributing_lock_facts=(),
+            evaluated_ts_utc=at,
+            requested_action=requested_action,
+            sleeve_code=sleeve_code,
+            asset_id=asset_id,
+        )
+
+    winner = min(active, key=lambda fact: (
+        PROTECTION_PRECEDENCE_ORDER.index(fact.protection_code),
+        fact.protection_code, fact.scope_type, fact.scope_id, fact.lifecycle_id, fact.event_id,
+    ))
+    return AccountProtectionEvaluationV1(
+        evaluation_contract_version=EVALUATION_CONTRACT_VERSION,
+        decision_state=STATE_BLOCKED,
+        reason_code=_PROTECTION_TRIGGERED_REASON[winner.protection_code],
+        trading_account_id=trading_account_id,
+        protection_code=winner.protection_code,
+        scope_type=winner.scope_type,
+        scope_id=winner.scope_id,
+        expires_ts_utc=winner.expires_ts_utc,
+        contributing_lock_facts=active,
+        evaluated_ts_utc=at,
+        requested_action=requested_action,
+        sleeve_code=sleeve_code,
+        asset_id=asset_id,
+    )
+
+
+def _blocked(
+    *, trading_account_id: int, reason: str, at: datetime,
+    requested_action: str | None = None, sleeve_code: str | None = None, asset_id: int | None = None,
+) -> AccountProtectionEvaluationV1:
     return AccountProtectionEvaluationV1(
         evaluation_contract_version=EVALUATION_CONTRACT_VERSION,
         decision_state=STATE_BLOCKED,
@@ -380,6 +563,9 @@ def _blocked(*, trading_account_id: int, reason: str, at: datetime) -> AccountPr
         expires_ts_utc=None,
         contributing_lock_facts=(),
         evaluated_ts_utc=at,
+        requested_action=requested_action,
+        sleeve_code=sleeve_code,
+        asset_id=asset_id,
     )
 
 

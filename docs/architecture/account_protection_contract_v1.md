@@ -8,14 +8,12 @@ design only. This document and
 `src/decision_gate/account_protection_contract_v1.py` are the accepted
 artifacts for that scope.
 
-Runtime implementation — deriving lock facts from canonical account truth
-(equity curves, realized PnL, stoploss/fill history) and wiring evaluation
-into the live `decision_gate` permission path — is out of scope here and
-belongs to the separately gated Issue
+Runtime implementation belongs to the separately gated Issue
 [#318 — Implement P2 minimal account-protection runtime inside
-decision_gate](https://github.com/oboly/synth-v2/issues/318). Its runtime
-owner is `UNASSIGNED`; this document grants it no private-read, database, or
-execution authority.
+decision_gate](https://github.com/oboly/synth-v2/issues/318). P2 supplies
+typed pre-derived account-risk facts, append-only lifecycle persistence, and
+decision-gate composition. It grants no broker, executor, planner, or live
+activation authority.
 
 Historical design context: `docs/todo/decision_gate_account_protections_v1.md`
 (candidate `NEW-10`, frozen legacy/reference file; this document and Issue
@@ -82,7 +80,7 @@ DAILY_REALIZED_LOSS_BLOCK       scope: ACCOUNT
 REPEATED_STOPLOSS_BLOCK         scope: ACCOUNT | ASSET
 LOW_PROFIT_ASSET_COOLDOWN       scope: ASSET
 POST_CLOSE_REENTRY_COOLDOWN     scope: ASSET
-MANUAL_ACCOUNT_LOCK             scope: ACCOUNT | SLEEVE | ASSET
+MANUAL_ACCOUNT_LOCK             scope: ACCOUNT | SLEEVE | ASSET (V1 compatibility)
 ```
 
 Scope types are `ACCOUNT`, `SLEEVE`, `ASSET`, matching
@@ -97,6 +95,42 @@ capabilities (drawdown, daily loss, stop streak, cooldown, expiry/recovery),
 because the source TODO's lock contract explicitly requires "explicit manual
 lock/unlock authority" as part of the same P1 design, and manual authority
 needs a protection code to participate in precedence like any other lock.
+P2 administrative manual-lock producers emit `ACCOUNT` scope only. The
+historical narrower V1 scopes remain valid for backward-compatible replay;
+they do not create a global lock.
+
+## Action applicability
+
+Protection evaluation is always for one explicit decision-gate permission
+action:
+
+```text
+BUY     increases or adds market exposure
+REDUCE  decreases a held position without fully closing it
+EXIT    fully closes a held position
+```
+
+These are permission semantics only. `decision_gate` does not calculate
+quantity, ladders, or orders. The action matrix is canonical in
+`PROTECTION_BLOCKED_ACTIONS` in
+`src/decision_gate/account_protection_contract_v1.py`; it is contract
+configuration, not duplicated onto persisted lock facts.
+
+```text
+protection                         BUY       REDUCE    EXIT
+MAX_ACCOUNT_DRAWDOWN_BLOCK         BLOCK     ALLOW     ALLOW
+DAILY_REALIZED_LOSS_BLOCK          BLOCK     ALLOW     ALLOW
+REPEATED_STOPLOSS_BLOCK            BLOCK     ALLOW     ALLOW
+LOW_PROFIT_ASSET_COOLDOWN          BLOCK     ALLOW     ALLOW
+POST_CLOSE_REENTRY_COOLDOWN        BLOCK     ALLOW     ALLOW
+MANUAL_ACCOUNT_LOCK                BLOCK     BLOCK     BLOCK
+```
+
+The first five protections are risk-increase protections. They must not trap
+an existing position by denying a risk-reducing `REDUCE` or `EXIT`.
+`MANUAL_ACCOUNT_LOCK` is explicit administrative trading authority and blocks
+all three actions. It is not an executor/runtime kill switch: shared
+execution kill authority remains owned by Issue #206.
 
 ## Typed inputs and outputs
 
@@ -182,6 +216,11 @@ Precedence, highest first:
 6. LOW_PROFIT_ASSET_COOLDOWN   temporary, asset-scoped, least severe
 ```
 
+For final permission, precedence applies only after filtering active,
+in-scope locks to the protections that block the requested action. Thus a
+drawdown lock and cooldown do not block `EXIT`, while a simultaneous manual
+lock does.
+
 ## Freshness and fail-closed behavior
 
 The resolver takes an explicit `account_state_observed_ts_utc`,
@@ -230,8 +269,9 @@ duplicate event identity rather than treating it as permission to mutate a
 prior event.
 
 The resolver deterministically collapses complete immutable event history to
-the latest authoritative event per `lifecycle_id` (timestamp, then event id
-as deterministic tie-breaker) before evaluating. A process restart that
+the latest authoritative event per `lifecycle_id` before evaluating. Distinct
+events for one lifecycle at the same authoritative timestamp are ambiguous
+and rejected fail-closed rather than arbitrarily ordered. A process restart that
 reloads the same history reconstructs identical state regardless of input
 order. Nothing is held in memory between evaluations — the resolver is pure
 and stateless.
@@ -242,21 +282,61 @@ This contract is an **additional required check**, not a replacement for
 `decision_gate.decision_gate_v1.evaluate_selection_for_account`. A future P2
 runtime must combine both with a logical AND: execution intent may proceed
 only if the existing selection/sleeve/balance/duplicate evaluation allows it
-**and** `resolve_account_protection_state_v1` returns `STATE_PERMITTED`. A
+**and** `resolve_account_protection_state_for_action_v1` returns
+`STATE_PERMITTED`. A
 `BLOCKED` protection result always overrides an otherwise-allowed selection
 decision; the existing evaluation is never given authority to override an
-active protection lock. `decision_gate_v1.py` is unmodified by this Issue —
-no call site is wired yet, so today this contract cannot affect any live or
-paper decision.
+active protection lock. P2 callers must supply `requested_action`; the
+original `resolve_account_protection_state_v1` remains a compatibility surface
+for generic lock-state composition only, not final action permission.
+Unsupported actions are rejected fail-closed as caller contract errors.
+Account-state freshness is required only when the configured protection
+requires current account-state evidence; persisted manual locks and cooldowns
+do not require unrelated balance/position evidence.
+
+## P2 runtime, fact ownership, and reporting
+
+Issue #318 implements the pure P2 boundary in
+`src/decision_gate/account_protection_runtime_v1.py`:
+
+```text
+canonical/pre-derived account-risk metric
+-> typed protection trigger fact
+-> action-aware #227 resolver
+-> existing decision_gate permission AND protection permission
+```
+
+The runtime accepts typed pre-derived drawdown, daily-realized-loss, and
+stoploss-streak metrics with their observation window and provenance. It does
+not create a second balance, realized-PnL, position, fill, or equity ledger.
+`account_state_snapshot_run_v1` remains the reusable source for current
+account-state freshness only. A configured metric missing, malformed, stale,
+or contradictory evidence fails closed; facts for an unconfigured protection
+are not required.
+
+Manual locks and cooldown lifecycle facts are durable in the migration-only
+append-only `account_protection_lock_fact_v1` table. An unlock/recovery is a
+new `MANUALLY_CLEARED`, `RECOVERED`, or `EXPIRED` event with the same lifecycle
+identity, never deletion or update. The reader loads complete account-scoped
+history, so restart replays the same immutable events and cannot clear or
+duplicate an active lock. The action matrix is not persisted per row.
+
+Decision results retain protection state/reason/code as read-only audit and
+reporting evidence. Reporting has no create, unlock, expiry, broker, planner,
+or executor authority. Automatic-exit candidates provide `REDUCE` or `EXIT`
+to the same action-aware evaluator before their existing gate composition;
+`exit_policy`, `execution_planner`, and `executor` do not inspect protection
+internals. This is a non-activated decision-gate composition seam: the
+current #392 orchestrator is not wired to a protection producer because no
+reviewed canonical policy/fact-source activation exists. A later activation
+must supply an action-bound evaluation through `decision_gate`; it must not
+embed protection logic in `exit_policy`.
 
 ## Non-goals
 
 - No Freqtrade code copy or dependency.
-- No derivation of drawdown/realized-loss/streak values from raw account
-  data (P2/Issue #318).
-- No persistence, repository, or database migration (P2/Issue #318).
-- No wiring into `decision_gate_v1.py`'s existing evaluation function
-  (P2/Issue #318).
+- No ad hoc derivation of drawdown/realized-loss/streak values from raw
+  account data; a canonical producer must supply the typed pre-derived metric.
 - No market-regime classification or `selection_engine` change.
 - No automatic sell or liquidation path.
 - No dashboard-owned risk logic or unlock authority.

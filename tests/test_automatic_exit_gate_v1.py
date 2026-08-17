@@ -25,6 +25,16 @@ from src.decision_gate.automatic_exit_gate_v1 import (
     AutomaticExitGateContextV1,
     evaluate_automatic_exit_candidate_permission_v1,
 )
+from src.decision_gate.account_protection_contract_v1 import (
+    ACTION_EXIT,
+    ACTION_REDUCE,
+    LOCK_FACT_CONTRACT_VERSION,
+    PROTECTION_MANUAL_ACCOUNT_LOCK,
+    PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+    SCOPE_ACCOUNT,
+    ProtectionLockFactV1,
+    resolve_account_protection_state_for_action_v1,
+)
 from src.exit_policy import POLICY_NAME, POLICY_VERSION
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
 
@@ -62,6 +72,22 @@ def _evaluate(**changes: object):
     return evaluate_automatic_exit_candidate_permission_v1(candidate=_candidate(), context=_context(**changes))
 
 
+def _protection(action: str, *, manual: bool = False):
+    code = PROTECTION_MANUAL_ACCOUNT_LOCK if manual else PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK
+    lock = ProtectionLockFactV1(
+        lifecycle_id=f"lifecycle-{code}", event_id=f"event-{code}", protection_code=code,
+        protection_version=LOCK_FACT_CONTRACT_VERSION, trading_account_id=7,
+        scope_type=SCOPE_ACCOUNT, scope_id="7", observed_from_ts_utc=NOW - timedelta(minutes=1),
+        observed_to_ts_utc=NOW, triggered_ts_utc=NOW, expires_ts_utc=None,
+        reason_code="TEST", evidence_refs=("canonical:lock:1",), configuration_version="policy-1",
+    )
+    return resolve_account_protection_state_for_action_v1(
+        (lock,), trading_account_id=7, sleeve_code=None, asset_id=42,
+        requested_action=action, account_state_observed_ts_utc=NOW,
+        account_state_fresh=True, at=NOW,
+    )
+
+
 def test_healthy_candidate_is_approved_with_account_safe_ceiling_and_preserved_provenance() -> None:
     candidate = _candidate()
     result = evaluate_automatic_exit_candidate_permission_v1(candidate=candidate, context=_context())
@@ -69,6 +95,29 @@ def test_healthy_candidate_is_approved_with_account_safe_ceiling_and_preserved_p
     assert result.candidate is candidate
     assert result.approved_fraction_candidate == Decimal("0.25")
     assert result.approved_quantity_ceiling_base == Decimal("2.50")
+
+
+def test_risk_increase_protection_does_not_deny_reduce_or_exit() -> None:
+    reduce = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="REDUCE"),
+        context=_context(account_protection_evaluation=_protection(ACTION_REDUCE)),
+    )
+    exit = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="EXIT"),
+        context=_context(account_protection_evaluation=_protection(ACTION_EXIT)),
+    )
+    assert reduce.state == STATE_APPROVED
+    assert exit.state == STATE_APPROVED
+
+
+def test_manual_lock_denies_reduce_and_exit_without_exit_policy_awareness() -> None:
+    for action in (ACTION_REDUCE, ACTION_EXIT):
+        result = evaluate_automatic_exit_candidate_permission_v1(
+            candidate=_candidate(candidate_action=action),
+            context=_context(account_protection_evaluation=_protection(action, manual=True)),
+        )
+        assert result.state == STATE_DENIED
+        assert result.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
 
 
 def test_stale_account_is_non_actionable() -> None:

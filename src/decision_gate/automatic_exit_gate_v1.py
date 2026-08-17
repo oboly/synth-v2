@@ -8,11 +8,17 @@ REDUCE/EXIT choice.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
+from src.decision_gate.account_protection_contract_v1 import (
+    AccountProtectionContractError,
+    AccountProtectionEvaluationV1,
+    STATE_BLOCKED as PROTECTION_STATE_BLOCKED,
+    validate_account_protection_evaluation_binding_v1,
+)
 from src.exit_policy import POLICY_NAME, POLICY_VERSION
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
 
@@ -76,6 +82,9 @@ class AutomaticExitGateContextV1:
     # account evidence has no additional cap, not that planner may bypass
     # the candidate/free-quantity bounds.
     max_automatic_exit_quantity_base: Decimal | None = None
+    # P2 supplies an action-aware evaluation from decision_gate. Exit policy
+    # remains unaware of protection internals.
+    account_protection_evaluation: AccountProtectionEvaluationV1 | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +94,8 @@ class AutomaticExitGateDecisionV1:
     candidate: AutomaticExitCandidateV1
     approved_fraction_candidate: Decimal | None
     approved_quantity_ceiling_base: Decimal | None
+    protection_reason_code: str | None = None
+    protection_code: str | None = None
 
 
 def _is_aware(value: datetime) -> bool:
@@ -110,7 +121,7 @@ def _decision(state: str, reason: str, candidate: AutomaticExitCandidateV1, *, c
     )
 
 
-def evaluate_automatic_exit_candidate_permission_v1(
+def _evaluate_automatic_exit_candidate_permission_base_v1(
     *, candidate: AutomaticExitCandidateV1, context: AutomaticExitGateContextV1
 ) -> AutomaticExitGateDecisionV1:
     """Fail-closed permission decision for an already-selected exit candidate.
@@ -189,3 +200,52 @@ def evaluate_automatic_exit_candidate_permission_v1(
     if ceiling <= 0:
         return _decision(STATE_DENIED, REASON_RISK_BOUND_UNRESOLVED, candidate)
     return _decision(STATE_APPROVED, REASON_OK, candidate, ceiling=ceiling)
+
+
+def evaluate_automatic_exit_candidate_permission_v1(
+    *, candidate: AutomaticExitCandidateV1, context: AutomaticExitGateContextV1
+) -> AutomaticExitGateDecisionV1:
+    """Compose existing SELL permission with explicit P2 action evidence.
+
+    A protection may only turn an otherwise approved gate result into denied.
+    `REDUCE` and `EXIT` action semantics are resolved before this boundary by
+    the account-protection runtime; this gate never inspects protection rules.
+    """
+    base = _evaluate_automatic_exit_candidate_permission_base_v1(candidate=candidate, context=context)
+    protection = context.account_protection_evaluation
+    if protection is None:
+        return base
+    try:
+        validate_account_protection_evaluation_binding_v1(
+            protection,
+            trading_account_id=candidate.trading_account_id,
+            requested_action=candidate.candidate_action,
+            sleeve_code=None,
+            asset_id=candidate.asset_id,
+            evaluation_ts_utc=context.evaluation_ts_utc,
+        )
+    except AccountProtectionContractError:
+        if base.state != STATE_APPROVED:
+            return base
+        return replace(
+            base,
+            state=STATE_DENIED,
+            reason_code="INVALID_PROTECTION_EVALUATION_BINDING",
+            approved_fraction_candidate=None,
+            approved_quantity_ceiling_base=None,
+            protection_reason_code="INVALID_PROTECTION_EVALUATION_BINDING",
+        )
+    enriched = replace(
+        base,
+        protection_reason_code=protection.reason_code,
+        protection_code=protection.protection_code,
+    )
+    if protection.decision_state != PROTECTION_STATE_BLOCKED or base.state != STATE_APPROVED:
+        return enriched
+    return replace(
+        enriched,
+        state=STATE_DENIED,
+        reason_code=protection.reason_code,
+        approved_fraction_candidate=None,
+        approved_quantity_ceiling_base=None,
+    )
