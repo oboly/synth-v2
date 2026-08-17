@@ -1,8 +1,8 @@
-"""Dormant Bitvavo venue boundary for the shared BUY/SELL executor path.
+"""Bitvavo venue boundary for the shared BUY/SELL executor path.
 
-This module does not grant LIVE authority.  Its builder only accepts a
-persisted LIVE handoff; PR1 intake rejects LIVE, so a separately reviewed
-authority phase is required before this adapter can become reachable.
+This module grants no permission. Every private operation verifies the exact
+persisted LIVE handoff, credential metadata, and current operational gate
+before loading secret material or constructing a private client.
 """
 from __future__ import annotations
 
@@ -31,6 +31,12 @@ from src.executor.execution_credential_scope_v1 import (
 from src.executor.execution_handoff_v1 import (
     ExecutionHandoffRepositoryV1,
     ExecutionHandoffV1,
+)
+from src.executor.execution_kill_switch_v1 import ExecutionKillSwitchRepositoryV1
+from src.executor.execution_live_authority_v1 import (
+    ExecutionLiveAuthorityDeniedError,
+    ExecutionLiveAuthorityRepositoryV1,
+    require_execution_live_authority_v1,
 )
 
 
@@ -185,6 +191,8 @@ class BitvavoOrderAdapterV1:
     cred_repo_factory: Any = field(repr=False)
     credential_scope_repository: ExecutorCredentialScopeRepository = field(repr=False)
     handoff_repository: ExecutionHandoffRepositoryV1 = field(repr=False)
+    live_authority_repository: ExecutionLiveAuthorityRepositoryV1 = field(repr=False)
+    kill_switch_repository: ExecutionKillSwitchRepositoryV1 = field(repr=False)
     credential_loader: Callable[..., Any] = field(default=load_account_credential_by_id, repr=False)
     client_factory: Callable[..., _BitvavoClientProtocol] = field(default=BitvavoClient.for_private_write, repr=False)
 
@@ -202,6 +210,21 @@ class BitvavoOrderAdapterV1:
                 "BITVAVO_CREDENTIAL_SCOPE_DENIED"
             ) from None
         _assert_exact_binding(binding, self.handoff)
+        try:
+            require_execution_live_authority_v1(
+                trading_account_id=self.handoff.trading_account_id,
+                venue=self.handoff.venue,
+                side=self.handoff.side,
+                market=self.handoff.market,
+                executor_identity=self.handoff.executor_identity,
+                runtime_owner=self.handoff.runtime_owner,
+                authority_repository=self.live_authority_repository,
+                kill_switch_repository=self.kill_switch_repository,
+            )
+        except ExecutionLiveAuthorityDeniedError:
+            raise BitvavoAdapterUnavailableError(
+                "BITVAVO_EXECUTION_LIVE_AUTHORITY_DENIED"
+            ) from None
         credential = self.credential_loader(
             self.conn,
             trading_account_credential_id=binding.trading_account_credential_id,
@@ -300,10 +323,12 @@ def build_bitvavo_order_adapter_v1(
     cred_repo_factory: Any,
     credential_scope_repository: ExecutorCredentialScopeRepository | None = None,
     handoff_repository: ExecutionHandoffRepositoryV1 | None = None,
+    live_authority_repository: ExecutionLiveAuthorityRepositoryV1 | None = None,
+    kill_switch_repository: ExecutionKillSwitchRepositoryV1 | None = None,
     credential_loader: Callable[..., Any] = load_account_credential_by_id,
     client_factory: Callable[..., _BitvavoClientProtocol] = BitvavoClient.for_private_write,
 ) -> BitvavoOrderAdapterV1:
-    """Build the dormant boundary without granting or activating LIVE mode."""
+    """Build the boundary without granting or activating LIVE mode."""
     _assert_dormant_live_handoff(handoff)
     canonical_handoff_repository = handoff_repository or ExecutionHandoffRepositoryV1(
         cursor_factory=lambda **_kwargs: conn.cursor()
@@ -318,6 +343,12 @@ def build_bitvavo_order_adapter_v1(
             credential_scope_repository or ExecutorCredentialScopeRepository()
         ),
         handoff_repository=canonical_handoff_repository,
+        live_authority_repository=(
+            live_authority_repository or ExecutionLiveAuthorityRepositoryV1()
+        ),
+        kill_switch_repository=(
+            kill_switch_repository or ExecutionKillSwitchRepositoryV1()
+        ),
         credential_loader=credential_loader,
         client_factory=client_factory,
     )

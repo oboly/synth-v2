@@ -19,6 +19,7 @@ from src.executor.bitvavo_order_adapter_v1 import (
 from src.executor.broker_ack_classification_v1 import BrokerAckStateV1
 from src.executor.execution_credential_scope_v1 import CredentialScopeBinding
 from src.executor.execution_handoff_v1 import ExecutionHandoffV1
+from src.executor.execution_live_authority_v1 import ExecutionLiveAuthorityDeniedError
 from src.executor.execution_leg_v1 import RECONCILIATION_REQUIRED, ExecutionLegV1
 from src.executor.execution_order_reconciliation_v1 import persist_order_ack
 
@@ -59,38 +60,77 @@ def _binding(**changes) -> CredentialScopeBinding:
 
 
 class _Scope:
-    def __init__(self, binding: CredentialScopeBinding) -> None:
+    def __init__(self, binding: CredentialScopeBinding, events: list[str] | None = None) -> None:
         self.binding = binding
+        self.events = events
         self.calls: list[dict] = []
 
     def resolve(self, **kwargs):
         self.calls.append(kwargs)
+        if self.events is not None:
+            self.events.append("credential_binding")
         return self.binding
 
 
+class _Authority:
+    def __init__(self, *, permitted: bool = True, events: list[str] | None = None) -> None:
+        self.permitted = permitted
+        self.events = events
+        self.calls: list[dict] = []
+
+    def resolve_effective(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.events is not None:
+            self.events.append("authority")
+        if not self.permitted:
+            raise ExecutionLiveAuthorityDeniedError("authority denied")
+        return object()
+
+
+class _KillSwitch:
+    def __init__(self, *, engaged: bool = False, events: list[str] | None = None) -> None:
+        self.engaged = engaged
+        self.events = events
+        self.calls = 0
+
+    def is_engaged(self) -> bool:
+        self.calls += 1
+        if self.events is not None:
+            self.events.append("kill_switch")
+        return self.engaged
+
+
 class _HandoffRepository:
-    def __init__(self, persisted: ExecutionHandoffV1 | None) -> None:
+    def __init__(self, persisted: ExecutionHandoffV1 | None, events: list[str] | None = None) -> None:
         self.persisted = persisted
+        self.events = events
         self.calls: list[int] = []
 
     def find(self, handoff_id: int) -> ExecutionHandoffV1 | None:
         self.calls.append(handoff_id)
+        if self.events is not None:
+            self.events.append("handoff")
         return self.persisted
 
 
 class _Client:
-    def __init__(self, *, create=None, lookup=None) -> None:
+    def __init__(self, *, create=None, lookup=None, events: list[str] | None = None) -> None:
         self.create = create
         self.lookup = lookup
+        self.events = events
         self.requests = []
 
     def place_order(self, order):
         self.requests.append(order)
+        if self.events is not None:
+            self.events.append("private_operation")
         if isinstance(self.create, BaseException):
             raise self.create
         return self.create
 
     def get_order_by_client_order_id(self, market, client_order_id):
+        if self.events is not None:
+            self.events.append("private_operation")
         if isinstance(self.lookup, BaseException):
             raise self.lookup
         return self.lookup
@@ -117,6 +157,8 @@ def _adapter(
     binding: CredentialScopeBinding | None = None,
     *,
     side: str = "BUY",
+    authority: _Authority | None = None,
+    kill_switch: _KillSwitch | None = None,
 ):
     scope = _Scope(binding or _binding())
     adapter = build_bitvavo_order_adapter_v1(
@@ -126,6 +168,8 @@ def _adapter(
         cred_repo_factory=object(),
         credential_scope_repository=scope,
         handoff_repository=_HandoffRepository(_handoff(side=side)),
+        live_authority_repository=authority or _Authority(),
+        kill_switch_repository=kill_switch or _KillSwitch(),
         credential_loader=lambda *_a, **_k: SimpleNamespace(api_key="key", api_secret="secret"),
         client_factory=lambda **_kwargs: client,
     )
@@ -472,6 +516,8 @@ def test_direct_adapter_cannot_bypass_live_handoff_requirement() -> None:
         cred_repo_factory=object(),
         credential_scope_repository=_Scope(_binding()),
         handoff_repository=_HandoffRepository(_handoff("PAPER")),
+        live_authority_repository=_Authority(),
+        kill_switch_repository=_KillSwitch(),
         credential_loader=lambda *_a, **_k: SimpleNamespace(
             api_key="key", api_secret="secret"
         ),
@@ -526,6 +572,8 @@ def test_persisted_handoff_missing_at_operation_fails_closed() -> None:
         cred_repo_factory=object(),
         credential_scope_repository=scope,
         handoff_repository=repository,
+        live_authority_repository=_Authority(),
+        kill_switch_repository=_KillSwitch(),
         credential_loader=lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("credential loader must not run")
         ),
@@ -602,3 +650,169 @@ def test_exact_persisted_handoff_reaches_only_injected_client() -> None:
     )
     assert ack.state is BrokerAckStateV1.ACTIVE
     assert len(client.requests) == 1
+
+
+@pytest.mark.parametrize("operation", ["place", "lookup"])
+@pytest.mark.parametrize("authority_state", ["revoked", "expired"])
+def test_each_private_operation_rechecks_fresh_authority_before_secrets(
+    operation: str, authority_state: str
+) -> None:
+    authority = _Authority()
+    kill_switch = _KillSwitch()
+    client = _Client(
+        create=_order_response("new"),
+        lookup=_order_response("new"),
+    )
+    calls = {"credential_loader": 0, "client_factory": 0}
+
+    def credential_loader(*_args, **_kwargs):
+        calls["credential_loader"] += 1
+        return SimpleNamespace(api_key="key", api_secret="secret")
+
+    def client_factory(**_kwargs):
+        calls["client_factory"] += 1
+        return client
+
+    adapter = build_bitvavo_order_adapter_v1(
+        handoff=_handoff(),
+        conn=object(),
+        master_key_bytes=b"x" * 32,
+        cred_repo_factory=object(),
+        credential_scope_repository=_Scope(_binding()),
+        handoff_repository=_HandoffRepository(_handoff()),
+        live_authority_repository=authority,
+        kill_switch_repository=kill_switch,
+        credential_loader=credential_loader,
+        client_factory=client_factory,
+    )
+    authority.permitted = False
+    with pytest.raises(BitvavoAdapterUnavailableError, match="LIVE_AUTHORITY_DENIED"):
+        if operation == "place":
+            adapter.place_order(
+                market="BTC-EUR",
+                side="BUY",
+                price=Decimal("1"),
+                quantity=Decimal("1"),
+                client_order_id="cid",
+                operator_id=1,
+            )
+        else:
+            adapter.find_order_by_client_order_id(
+                market="BTC-EUR", client_order_id="cid"
+            )
+    assert authority_state in {"revoked", "expired"}
+    assert calls == {"credential_loader": 0, "client_factory": 0}
+    assert client.requests == []
+    assert authority.calls[0]["trading_account_id"] == 17
+    assert authority.calls[0]["venue"] == "bitvavo"
+    assert authority.calls[0]["side"] == "BUY"
+    assert authority.calls[0]["market"] == "BTC-EUR"
+    assert authority.calls[0]["executor_identity"] == "shared-executor-v1"
+    assert authority.calls[0]["runtime_owner"] == "devlap"
+
+
+def test_kill_switch_engaged_after_handoff_creation_denies_before_secrets() -> None:
+    authority = _Authority()
+    kill_switch = _KillSwitch()
+    calls = {"credential_loader": 0, "client_factory": 0}
+    adapter = build_bitvavo_order_adapter_v1(
+        handoff=_handoff(),
+        conn=object(),
+        master_key_bytes=b"x" * 32,
+        cred_repo_factory=object(),
+        credential_scope_repository=_Scope(_binding()),
+        handoff_repository=_HandoffRepository(_handoff()),
+        live_authority_repository=authority,
+        kill_switch_repository=kill_switch,
+        credential_loader=lambda *_a, **_k: calls.__setitem__(
+            "credential_loader", calls["credential_loader"] + 1
+        ),
+        client_factory=lambda **_k: calls.__setitem__(
+            "client_factory", calls["client_factory"] + 1
+        ),
+    )
+    kill_switch.engaged = True
+    with pytest.raises(BitvavoAdapterUnavailableError, match="LIVE_AUTHORITY_DENIED"):
+        adapter.place_order(
+            market="BTC-EUR", side="BUY", price=Decimal("1"), quantity=Decimal("1"),
+            client_order_id="cid", operator_id=1,
+        )
+    assert calls == {"credential_loader": 0, "client_factory": 0}
+    assert authority.calls == []
+
+
+def test_revoked_credential_binding_denies_before_authority_and_secrets() -> None:
+    authority = _Authority()
+    calls = {"credential_loader": 0, "client_factory": 0}
+    adapter = build_bitvavo_order_adapter_v1(
+        handoff=_handoff(),
+        conn=object(),
+        master_key_bytes=b"x" * 32,
+        cred_repo_factory=object(),
+        credential_scope_repository=_Scope(_binding(binding_status="REVOKED")),
+        handoff_repository=_HandoffRepository(_handoff()),
+        live_authority_repository=authority,
+        kill_switch_repository=_KillSwitch(),
+        credential_loader=lambda *_a, **_k: calls.__setitem__(
+            "credential_loader", calls["credential_loader"] + 1
+        ),
+        client_factory=lambda **_k: calls.__setitem__(
+            "client_factory", calls["client_factory"] + 1
+        ),
+    )
+    with pytest.raises(BitvavoAdapterUnavailableError, match="BINDING_MISMATCH"):
+        adapter.place_order(
+            market="BTC-EUR", side="BUY", price=Decimal("1"), quantity=Decimal("1"),
+            client_order_id="cid", operator_id=1,
+        )
+    assert authority.calls == []
+    assert calls == {"credential_loader": 0, "client_factory": 0}
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_valid_private_operation_uses_exact_shared_ordering_for_both_sides(
+    side: str,
+) -> None:
+    events: list[str] = []
+    authority = _Authority(events=events)
+    kill_switch = _KillSwitch(events=events)
+    client = _Client(
+        create=_order_response("new", side=side.lower()),
+        events=events,
+    )
+
+    def credential_loader(*_args, **_kwargs):
+        events.append("credential_loader")
+        return SimpleNamespace(api_key="key", api_secret="secret")
+
+    def client_factory(**_kwargs):
+        events.append("client_factory")
+        return client
+
+    adapter = build_bitvavo_order_adapter_v1(
+        handoff=_handoff(side=side),
+        conn=object(),
+        master_key_bytes=b"x" * 32,
+        cred_repo_factory=object(),
+        credential_scope_repository=_Scope(_binding(), events),
+        handoff_repository=_HandoffRepository(_handoff(side=side), events),
+        live_authority_repository=authority,
+        kill_switch_repository=kill_switch,
+        credential_loader=credential_loader,
+        client_factory=client_factory,
+    )
+    events.clear()  # builder performs only the persisted-handoff verification
+    ack = adapter.place_order(
+        market="BTC-EUR", side=side, price=Decimal("1"), quantity=Decimal("1"),
+        client_order_id="cid", operator_id=1,
+    )
+    assert ack.state is BrokerAckStateV1.ACTIVE
+    assert events == [
+        "handoff",
+        "credential_binding",
+        "kill_switch",
+        "authority",
+        "credential_loader",
+        "client_factory",
+        "private_operation",
+    ]

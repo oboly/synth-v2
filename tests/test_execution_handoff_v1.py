@@ -14,6 +14,7 @@ from src.executor.execution_handoff_v1 import (
     ExecutionHandoffIdentityConflictError,
     ExecutionHandoffRepositoryV1,
 )
+from src.executor.execution_live_authority_v1 import ExecutionLiveAuthorityDeniedError
 from src.executor.execution_plan_reference_v1 import (
     ApprovedExecutionPlanV1,
     ExecutionPlanLegV1,
@@ -61,6 +62,28 @@ class CredentialRepository:
             allowed_order_write=True,
             allowed_withdrawal=False,
         )
+
+
+class LiveAuthorityRepository:
+    def __init__(self, *, permitted: bool = True) -> None:
+        self.permitted = permitted
+        self.calls: list[dict[str, object]] = []
+
+    def resolve_effective(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.permitted:
+            raise ExecutionLiveAuthorityDeniedError("EXECUTION_LIVE_AUTHORITY_NOT_GRANTED")
+        return object()
+
+
+class KillSwitchRepository:
+    def __init__(self, *, engaged: bool = False) -> None:
+        self.engaged = engaged
+        self.calls = 0
+
+    def is_engaged(self) -> bool:
+        self.calls += 1
+        return self.engaged
 
 
 class MemoryCursor:
@@ -138,11 +161,15 @@ class MemoryDatabase:
 def make_repository(
     database: MemoryDatabase | None = None,
     credentials: CredentialRepository | None = None,
+    authority: LiveAuthorityRepository | None = None,
+    kill_switch: KillSwitchRepository | None = None,
 ) -> ExecutionHandoffRepositoryV1:
     database = database or MemoryDatabase()
     return ExecutionHandoffRepositoryV1(
         cursor_factory=database.cursor_factory,
         credential_scope_repository=credentials or CredentialRepository(),
+        live_authority_repository=authority or LiveAuthorityRepository(),
+        kill_switch_repository=kill_switch or KillSwitchRepository(),
     )
 
 
@@ -183,9 +210,15 @@ def test_same_plan_reference_with_different_content_fails_closed() -> None:
         )
 
 
-def test_live_intake_is_unusable_in_pr1() -> None:
+def test_ordinary_live_intake_remains_denied_without_other_boundary_calls() -> None:
     credentials = CredentialRepository()
-    repository = make_repository(credentials=credentials)
+    authority = LiveAuthorityRepository()
+    kill_switch = KillSwitchRepository()
+    repository = make_repository(
+        credentials=credentials,
+        authority=authority,
+        kill_switch=kill_switch,
+    )
     with pytest.raises(ExecutionHandoffDeniedError, match="MODE_NOT_PERMITTED"):
         repository.intake(
             plan=make_plan(),
@@ -194,6 +227,33 @@ def test_live_intake_is_unusable_in_pr1() -> None:
             runtime_owner="devlap",
         )
     assert credentials.calls == []
+    assert authority.calls == []
+    assert kill_switch.calls == 0
+
+
+def test_internal_helper_cannot_bypass_authorized_live_intake() -> None:
+    database = MemoryDatabase()
+    credentials = CredentialRepository()
+    authority = LiveAuthorityRepository(permitted=False)
+    repository = make_repository(
+        database=database,
+        credentials=credentials,
+        authority=authority,
+    )
+    with pytest.raises(
+        ExecutionHandoffDeniedError,
+        match="LIVE_REQUIRES_AUTHORIZED_INTAKE",
+    ):
+        repository._intake_permitted(
+            plan=make_plan(),
+            executor_mode="LIVE",
+            executor_identity="shared-executor-v1",
+            runtime_owner="devlap",
+            require_live_authority=False,
+        )
+    assert credentials.calls == []
+    assert authority.calls == []
+    assert database.rows == {}
 
 
 def test_credential_scope_denial_is_a_handoff_denial() -> None:
@@ -222,3 +282,100 @@ def test_non_duplicate_database_failure_is_not_misclassified() -> None:
             executor_identity="shared-executor-v1",
             runtime_owner="devlap",
         )
+
+
+def test_live_authorized_intake_without_grant_persists_no_handoff() -> None:
+    database = MemoryDatabase()
+    repository = make_repository(
+        database,
+        authority=LiveAuthorityRepository(permitted=False),
+    )
+    with pytest.raises(ExecutionHandoffDeniedError, match="NOT_GRANTED"):
+        repository.intake_live_authorized(
+            plan=make_plan(),
+            executor_identity="shared-executor-v1",
+            runtime_owner="devlap",
+        )
+    assert database.rows == {}
+
+
+def test_live_authorized_intake_with_engaged_kill_switch_persists_no_handoff() -> None:
+    database = MemoryDatabase()
+    authority = LiveAuthorityRepository()
+    repository = make_repository(
+        database,
+        authority=authority,
+        kill_switch=KillSwitchRepository(engaged=True),
+    )
+    with pytest.raises(ExecutionHandoffDeniedError, match="KILL_SWITCH_ENGAGED"):
+        repository.intake_live_authorized(
+            plan=make_plan(),
+            executor_identity="shared-executor-v1",
+            runtime_owner="devlap",
+        )
+    assert database.rows == {}
+    assert authority.calls == []
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_live_authorized_intake_uses_canonical_handoff_path_for_both_sides(
+    side: str,
+) -> None:
+    database = MemoryDatabase()
+    authority = LiveAuthorityRepository()
+    repository = make_repository(database, authority=authority)
+    plan = make_plan()
+    if side == "SELL":
+        plan = ApprovedExecutionPlanV1(
+            plan_source=plan.plan_source,
+            plan_reference_id="sell-plan-1",
+            trading_account_id=plan.trading_account_id,
+            venue=plan.venue,
+            market=plan.market,
+            side="SELL",
+            legs=(
+                ExecutionPlanLegV1(
+                    leg_index=1,
+                    side="SELL",
+                    price=Decimal("100"),
+                    quantity=Decimal("0.1"),
+                ),
+            ),
+        )
+    handoff = repository.intake_live_authorized(
+        plan=plan,
+        executor_identity="shared-executor-v1",
+        runtime_owner="devlap",
+    )
+    assert handoff.executor_mode == "LIVE"
+    assert handoff.side == side
+    assert len(database.rows) == 1
+    authority_call = dict(authority.calls[0])
+    assert authority_call.pop("as_of_ts_utc", None) is not None
+    assert authority_call == {
+        "trading_account_id": 7,
+        "venue": "bitvavo",
+        "side": side,
+        "market": "BTC-EUR",
+        "executor_identity": "shared-executor-v1",
+        "runtime_owner": "devlap",
+    }
+
+
+def test_live_authorized_intake_retry_is_idempotent_and_changed_content_conflicts() -> None:
+    database = MemoryDatabase()
+    repository = make_repository(database)
+    kwargs = {
+        "executor_identity": "shared-executor-v1",
+        "runtime_owner": "devlap",
+    }
+    first = repository.intake_live_authorized(plan=make_plan(), **kwargs)
+    second = repository.intake_live_authorized(plan=make_plan(), **kwargs)
+    assert second == first
+    assert len(database.rows) == 1
+    with pytest.raises(ExecutionHandoffIdentityConflictError):
+        repository.intake_live_authorized(
+            plan=make_plan(price="101"),
+            **kwargs,
+        )
+    assert len(database.rows) == 1

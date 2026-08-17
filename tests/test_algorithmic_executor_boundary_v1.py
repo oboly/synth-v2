@@ -13,6 +13,8 @@ CANONICAL_MODULES = (
     "execution_submission_orchestrator_v1.py",
     "execution_order_reconciliation_v1.py",
     "bitvavo_order_adapter_v1.py",
+    "execution_live_authority_v1.py",
+    "execution_kill_switch_v1.py",
     "stub_order_adapter_v1.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
@@ -26,10 +28,14 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "src.executor.manual_execution_",
 )
 FORBIDDEN_EXECUTOR_TERMS = (
+    "drawdown",
+    "loss_limit",
+    "cooldown",
     "target_price",
     "invalidation",
     "allocation",
     "free_quantity",
+    "candidate",
     "ladder_spacing",
     "rounding",
     "market_ranking",
