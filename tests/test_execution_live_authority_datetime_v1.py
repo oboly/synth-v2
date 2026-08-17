@@ -1,9 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from src.executor.execution_live_authority_v1 import (
     _require_resolved_grant_match,
     _row_to_grant,
     _row_to_revocation,
+    _validated_revocation_timestamp,
 )
 
 
@@ -65,3 +68,18 @@ def test_mariadb_naive_revocation_timestamp_matches_aware_retry_identity() -> No
 
     assert revocation.revoked_ts_utc == AS_OF_UTC
     assert revocation.created_ts_utc == AS_OF_UTC
+
+
+def test_future_revocation_timestamp_is_rejected() -> None:
+    with pytest.raises(ValueError, match="cannot be in the future"):
+        _validated_revocation_timestamp(
+            AS_OF_UTC + timedelta(microseconds=1),
+            AS_OF_UTC,
+        )
+
+
+def test_naive_past_revocation_timestamp_is_normalized_and_allowed() -> None:
+    naive_past = datetime(2026, 8, 17, 11, 59, 59)
+    assert _validated_revocation_timestamp(naive_past, AS_OF_UTC) == datetime(
+        2026, 8, 17, 11, 59, 59, tzinfo=timezone.utc
+    )
