@@ -342,11 +342,18 @@ canonicalizes a malformed mode.
   account fact). It must always agree with `account_mode`; disagreement in
   either direction is inconsistent evidence and fails closed to
   `NON_ACTIONABLE` (`REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT`).
-- `automatic_exit_live_permission_evaluation.decision_state == GRANTED` and
-  its `trading_account_id` matches this context's account — the typed
-  decision-gate LIVE permission evaluation. `None`, a non-`GRANTED` state,
-  or an account mismatch all deny (`REASON_LIVE_EXECUTION_NOT_GRANTED` or, for
-  a mismatch, `REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH`); for
+- A validated `automatic_exit_live_permission_evaluation.decision_state == GRANTED`
+  — the typed decision-gate LIVE permission evaluation. `None` denies
+  outright (`REASON_LIVE_EXECUTION_NOT_GRANTED`). Otherwise the gate calls
+  `validate_automatic_exit_live_permission_evaluation_binding_v1` before
+  trusting the object: contract version, `trading_account_id` match,
+  supported `decision_state`, and `evaluated_ts_utc` timezone-aware and
+  exactly equal to this context's own `evaluation_ts_utc` (no stale reuse,
+  no future-dating); a `GRANTED` evaluation must also carry a positive
+  `permission_id`, the supported `permission_version`, and the canonical
+  `OK` reason code. Any binding failure denies with
+  `REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH`; a validated
+  non-`GRANTED` state denies with `REASON_LIVE_EXECUTION_NOT_GRANTED`. For
   `account_mode == "paper"` it is not consulted at all.
 
 Neither `account_mode == "live"` alone nor `live_trading_enabled == True`
@@ -396,9 +403,18 @@ semantics are resolved. It always returns a typed
 `AutomaticExitLivePermissionEvaluationV1` rather than a bare boolean or a
 raised exception -- missing or malformed/ambiguous evidence both resolve to
 a typed `DENIED` evaluation, never an uncaught exception that could abort a
-runtime cycle. `automatic_exit_runtime_orchestrator_v1.evaluate_automatic_exit_runtime_item_v1`
-calls this seam directly (alongside its existing account-protection call)
-and forwards the typed result unchanged into `AutomaticExitGateContextV1`.
+runtime cycle. The same module also owns
+`validate_automatic_exit_live_permission_evaluation_binding_v1`, called by
+`automatic_exit_gate_v1` before it will trust a supplied evaluation
+(mirroring `account_protection_contract_v1.validate_account_protection_evaluation_binding_v1`)
+-- the gate never re-resolves DB permission itself, but it also never trusts
+the typed evaluation object's own claims without independently checking its
+contract version, account binding, decision-state validity, exact
+timestamp binding, and (for a `GRANTED` evaluation) structural completeness.
+`automatic_exit_runtime_orchestrator_v1.evaluate_automatic_exit_runtime_item_v1`
+calls the evaluation function directly (alongside its existing
+account-protection call) and forwards the typed result unchanged into
+`AutomaticExitGateContextV1`.
 `automatic_exit_runtime_repository_v1.py` and `RuntimeItemV1` import nothing
 from and carry no field for decision-gate LIVE permission at all --
 `exit_policy` never resolves LIVE permission itself, matching its existing

@@ -85,9 +85,9 @@ def _evaluate(**changes: object):
 
 
 def _live_permission(
-    decision_state: str = LIVE_PERMISSION_GRANTED, *, trading_account_id: int = 7,
+    decision_state: str = LIVE_PERMISSION_GRANTED, *, trading_account_id: int = 7, **changes: object,
 ) -> AutomaticExitLivePermissionEvaluationV1:
-    return AutomaticExitLivePermissionEvaluationV1(
+    values: dict[str, object] = dict(
         evaluation_contract_version=LIVE_PERMISSION_EVALUATION_CONTRACT_VERSION,
         trading_account_id=trading_account_id,
         decision_state=decision_state,
@@ -96,6 +96,8 @@ def _live_permission(
         permission_version="1",
         evaluated_ts_utc=NOW,
     )
+    values.update(changes)
+    return AutomaticExitLivePermissionEvaluationV1(**values)  # type: ignore[arg-type]
 
 
 def _protection(action: str, *, manual: bool = False):
@@ -257,6 +259,74 @@ def test_live_mode_wrong_account_permission_evaluation_binding_is_denied() -> No
         automatic_exit_live_permission_evaluation=_live_permission(trading_account_id=999),
     )
     assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def _live_context_kwargs(**live_permission_changes: object) -> dict:
+    return dict(
+        account_mode="live", live_trading_enabled=True,
+        automatic_exit_live_permission_evaluation=_live_permission(**live_permission_changes),
+    )
+
+
+def test_live_mode_wrong_evaluation_contract_version_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(evaluation_contract_version="2"))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_evaluation_older_than_context_timestamp_is_denied() -> None:
+    """A stale, reused evaluation from an earlier cycle must not be accepted."""
+    result = _evaluate(**_live_context_kwargs(evaluated_ts_utc=NOW - timedelta(minutes=5)))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_evaluation_later_than_context_timestamp_is_denied() -> None:
+    """A future-dated evaluation must not be accepted."""
+    result = _evaluate(**_live_context_kwargs(evaluated_ts_utc=NOW + timedelta(minutes=5)))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_naive_evaluation_timestamp_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(evaluated_ts_utc=NOW.replace(tzinfo=None)))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_granted_with_missing_permission_id_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(permission_id=None))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_granted_with_non_positive_permission_id_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(permission_id=0))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_granted_with_unsupported_permission_version_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(permission_version="2"))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_granted_with_inconsistent_reason_code_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(reason_code="SOMETHING_ELSE"))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_unsupported_decision_state_is_denied() -> None:
+    result = _evaluate(**_live_context_kwargs(decision_state="REVOKED"))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH)
+
+
+def test_live_mode_canonical_granted_evaluation_still_approves() -> None:
+    """A fully valid GRANTED evaluation, bound exactly to this context, still approves otherwise-healthy LIVE evidence."""
+    result = _evaluate(**_live_context_kwargs())
+    assert result.state == STATE_APPROVED
+    assert result.reason_code == "OK"
+    assert result.approved_quantity_ceiling_base == Decimal("2.50")
+
+
+def test_live_mode_canonical_denied_evaluation_remains_denied() -> None:
+    """A well-formed but DENIED evaluation must never be transformed into permission."""
+    result = _evaluate(**_live_context_kwargs(decision_state=LIVE_PERMISSION_DENIED))
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED)
 
 
 def test_unsupported_account_mode_is_non_actionable() -> None:

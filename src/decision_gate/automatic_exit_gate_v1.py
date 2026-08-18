@@ -21,7 +21,9 @@ from src.decision_gate.account_protection_contract_v1 import (
 )
 from src.decision_gate.automatic_exit_live_permission_evaluation_v1 import (
     DECISION_GRANTED as LIVE_PERMISSION_DECISION_GRANTED,
+    AutomaticExitLivePermissionEvaluationError,
     AutomaticExitLivePermissionEvaluationV1,
+    validate_automatic_exit_live_permission_evaluation_binding_v1,
 )
 from src.exit_policy import POLICY_NAME, POLICY_VERSION
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
@@ -86,18 +88,31 @@ class AutomaticExitGateContextV1:
     LIVE permission evaluation (Issue #392 Phase 6 blocker B), composed by
     ``src/decision_gate/automatic_exit_live_permission_evaluation_v1.py``
     (the sole owner of LIVE permission resolution semantics) and forwarded
-    unchanged by the caller -- this gate never resolves permission evidence
+    unchanged by the caller -- this gate never re-resolves DB permission
     itself, matching how ``account_protection_evaluation`` is handled below.
     It is required, in addition to ``account_mode == "live"`` and
     ``live_trading_enabled == True``, before a LIVE candidate may reach
-    APPROVED: its ``trading_account_id`` must match this context's account,
-    and its ``decision_state`` must be ``GRANTED``. ``None``, an account
-    mismatch, or any non-``GRANTED`` state all deny. It is decision-gate
-    permission only: it grants no executor operational LIVE authority
-    (``src/executor/execution_live_authority_v1.py``), no kill-switch state,
-    and no credential/broker access -- those remain a wholly separate,
-    downstream gate. For ``account_mode == "paper"`` this field is not
-    consulted.
+    APPROVED. ``None`` denies outright. Otherwise this gate does not trust
+    the object's own claims blindly: it calls
+    ``validate_automatic_exit_live_permission_evaluation_binding_v1`` (same
+    pattern as ``validate_account_protection_evaluation_binding_v1`` below),
+    which independently checks the evaluation's contract version, that its
+    ``trading_account_id`` matches this context's account, that its
+    ``decision_state`` is a supported value, and that its
+    ``evaluated_ts_utc`` is timezone-aware and exactly equal to this
+    context's own ``evaluation_ts_utc`` -- rejecting a stale, reused,
+    future-dated, or forged evaluation. A ``GRANTED`` evaluation is
+    additionally required to carry a positive ``permission_id``, a
+    supported ``permission_version``, and the canonical ``OK`` reason code;
+    an evaluation failing any of these checks denies with
+    ``REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH``. Only a validated
+    ``decision_state == GRANTED`` evaluation may proceed; every other
+    outcome denies with ``REASON_LIVE_EXECUTION_NOT_GRANTED``. It is
+    decision-gate permission only: it grants no executor operational LIVE
+    authority (``src/executor/execution_live_authority_v1.py``), no
+    kill-switch state, and no credential/broker access -- those remain a
+    wholly separate, downstream gate. For ``account_mode == "paper"`` this
+    field is not consulted.
 
     ``blocking_conflict`` represents any active reservation/open-order state
     which cannot safely coexist with the proposed SELL.
@@ -255,7 +270,13 @@ def _evaluate_automatic_exit_candidate_permission_base_v1(
         live_permission = context.automatic_exit_live_permission_evaluation
         if live_permission is None:
             return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
-        if live_permission.trading_account_id != context.trading_account_id:
+        try:
+            validate_automatic_exit_live_permission_evaluation_binding_v1(
+                live_permission,
+                trading_account_id=context.trading_account_id,
+                evaluation_ts_utc=context.evaluation_ts_utc,
+            )
+        except AutomaticExitLivePermissionEvaluationError:
             return _decision(STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH, candidate)
         if live_permission.decision_state != LIVE_PERMISSION_DECISION_GRANTED:
             return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)

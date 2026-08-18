@@ -109,6 +109,31 @@ finding, RESOLVED)" below for the corrected shape):
    context — exit_policy never resolves LIVE permission itself, matching
    its existing relationship to `account_protection_evaluation`.
 
+**Update (2026-08-18, same branch, PR #426 second review fix):** a further
+review found the gate trusted the typed
+`AutomaticExitLivePermissionEvaluationV1` object's own claims too readily —
+it checked only `trading_account_id` and `decision_state`, which is
+insufficient for a safety-critical decision-gate permission artifact. A
+malformed, stale, future-dated, unsupported-version, or structurally
+incomplete `GRANTED` evaluation could reach the gate merely because its
+account id and `decision_state` happened to match. Fixed by adding a
+decision_gate-owned binding validator,
+`automatic_exit_live_permission_evaluation_v1.validate_automatic_exit_live_permission_evaluation_binding_v1`,
+mirroring `account_protection_contract_v1.validate_account_protection_evaluation_binding_v1`
+exactly: it independently checks the evaluation's `evaluation_contract_version`,
+that `trading_account_id` matches, that `decision_state` is a supported
+value, that `evaluated_ts_utc` is timezone-aware and *exactly* equal to the
+gate context's own `evaluation_ts_utc` (rejecting stale reuse and
+future-dating alike — no tolerance window), and — for a `GRANTED`
+evaluation specifically — that `permission_id` is present and positive,
+`permission_version` is the supported contract version, and `reason_code`
+is the canonical `OK` value. The gate calls this validator before accepting
+a LIVE permission evaluation; any failure denies with the existing
+`REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH` reason code. The gate
+still does not re-resolve DB permission and does not duplicate persistence
+logic — it validates the shape and binding of the object it was handed, the
+same division of responsibility the protection composition already uses.
+
 No LIVE activation, executor change, or broker authority was introduced by
 this fix; see its own safety markers where noted below.
 
@@ -266,13 +291,25 @@ weakening or removing that check:
   AutomaticExitLivePermissionEvaluationV1 | None`, carries the typed
   decision-gate LIVE permission evaluation. It is required, in addition to
   a consistent `account_mode == "live"` / `live_trading_enabled == True`
-  pair, before a LIVE candidate can reach `STATE_APPROVED`: its
-  `trading_account_id` must match the context's account (a mismatch denies
-  with `REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH`, defense in
-  depth against attaching the wrong account's evaluation), and its
-  `decision_state` must be `GRANTED`. `None` or any non-`GRANTED` state
-  denies with `REASON_LIVE_EXECUTION_NOT_GRANTED`; it is not consulted at
-  all for `account_mode == "paper"`.
+  pair, before a LIVE candidate can reach `STATE_APPROVED`. `None` denies
+  outright with `REASON_LIVE_EXECUTION_NOT_GRANTED`. Otherwise the gate does
+  not trust the object's own claims — it calls
+  `validate_automatic_exit_live_permission_evaluation_binding_v1` (added in
+  the second PR #426 review fix; see the update above), which independently
+  checks the evaluation's contract version, that `trading_account_id`
+  matches the context's account (defense in depth against attaching the
+  wrong account's evaluation), that `decision_state` is a supported value,
+  and that `evaluated_ts_utc` is timezone-aware and *exactly* equal to the
+  context's own `evaluation_ts_utc` — rejecting a stale reused evaluation, a
+  future-dated one, or a forged/malformed one, with no tolerance window. A
+  `GRANTED` evaluation is additionally required to carry a positive
+  `permission_id`, the supported `permission_version`, and the canonical
+  `OK` reason code — an incomplete or self-inconsistent `GRANTED` evaluation
+  is not trustworthy evidence of permission merely because its account and
+  timestamp line up. Any binding failure denies with
+  `REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH`; a validated
+  non-`GRANTED` state denies with `REASON_LIVE_EXECUTION_NOT_GRANTED`. Not
+  consulted at all for `account_mode == "paper"`.
 - All existing freshness, identity, conflict, free-quantity, risk-ceiling,
   and #318 account-protection checks apply identically to LIVE and PAPER —
   nothing about the LIVE path skips or weakens any existing check.
