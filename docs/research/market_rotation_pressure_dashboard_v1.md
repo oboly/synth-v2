@@ -10,7 +10,10 @@ Expose `market_rotation_pressure_v1` as a read-only operational research page wi
 
 - aggregate market pressure led by its persisted numeric value on a visibly
   fixed `-100 ... 0 ... +100` scale; direction is secondary interpretation;
-- a fixed-scale curve of prior persisted aggregate snapshots with a zero reference;
+- a curve of prior persisted aggregate snapshots with a `24h`/`7d`/`30d`/`all`
+  viewport selector (default `30d`), a chart scale showing the visible
+  window's own min/zero/max, and a `history: <window> · <cadence> snapshots`
+  label; the selector only changes what is rendered, never what is persisted;
 - zero to five evidence lights;
 - persisted OUT/MIXED/IN composition as one 100% stacked participation band;
 - acceleration, 24h/7d confirmation, and concentration;

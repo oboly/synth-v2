@@ -23,7 +23,13 @@ REQUIRED_TABLES = (
     "market_rotation_pressure_snapshot_v1",
     "market_rotation_pressure_observation_v1",
 )
-HISTORY_LIMIT = 168
+# Safety bound against an unbounded SELECT, not a UX window: viewport
+# windowing (24h/7d/30d/all) is applied at render time in
+# market_rotation_pressure_dashboard_v1 over the full result this fetches.
+# Issue #412: the prior 168-row cap silently truncated the "all" viewport to
+# ~7d of hourly snapshots; this bound is generous enough (~2y+ of hourly
+# snapshots) that the "all" viewport is expected to expose true full history.
+HISTORY_FETCH_SAFETY_LIMIT = 20000
 _OUTPUT_MODE = 0o644
 
 
@@ -109,7 +115,7 @@ def fetch_snapshot_observations(conn: Any, *, pressure_snapshot_id: int) -> list
 
 
 def fetch_pressure_history(
-    conn: Any, *, venue: str, model_version: str, limit: int = HISTORY_LIMIT
+    conn: Any, *, venue: str, model_version: str, limit: int = HISTORY_FETCH_SAFETY_LIMIT
 ) -> list[dict[str, Any]]:
     """Read persisted aggregate snapshots only; this runner never recomputes pressure."""
     with conn.cursor() as cur:
@@ -120,7 +126,13 @@ def fetch_pressure_history(
             "ORDER BY as_of_ts_utc DESC LIMIT %s",
             (venue, model_version, limit),
         )
-        return list(cur.fetchall())
+        rows = list(cur.fetchall())
+    if len(rows) == limit:
+        print(
+            f"[warn] rotation pressure history fetch hit safety bound limit={limit}; "
+            "the 'all' viewport may not reflect the complete persisted history"
+        )
+    return rows
 
 
 def main(argv: list[str] | None = None) -> int:

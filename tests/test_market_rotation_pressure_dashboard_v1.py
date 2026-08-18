@@ -4,12 +4,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
+    DEFAULT_HISTORY_VIEWPORT,
+    HISTORY_VIEWPORTS,
     PRESSURE_SCALE_MAX,
     PRESSURE_SCALE_MIN,
+    RotationPressureHistoryPoint,
     build_dashboard,
+    build_history_view,
     classify_freshness,
     dashboard_to_json_dict,
+    detect_snapshot_cadence,
+    format_cadence_label,
+    format_history_window_label,
     render_dashboard_html,
+    select_history_window,
 )
 
 
@@ -277,6 +285,162 @@ def test_dashboard_runner_history_is_read_only_and_bounded():
     text = Path("src/reporting/run_market_rotation_pressure_dashboard_v1.py").read_text(encoding="utf-8")
     assert "def fetch_pressure_history" in text
     assert "FROM market_rotation_pressure_snapshot_v1" in text
-    assert "HISTORY_LIMIT = 168" in text
+    assert "HISTORY_FETCH_SAFETY_LIMIT = 20000" in text
     assert "INSERT " not in text
     assert "UPDATE " not in text
+
+
+def _hourly_history(count: int, base: datetime = datetime(2026, 8, 10, 12, 0)):
+    """``count`` persisted points at a strict 1h cadence, oldest first, with
+    scores cycling through both signs so min/zero/max bounds are exercised."""
+    return tuple(
+        sorted(
+            (
+                RotationPressureHistoryPoint(
+                    pressure_snapshot_id=count - hours_ago,
+                    as_of_ts_utc=base - timedelta(hours=hours_ago),
+                    market_score=float((hours_ago % 5) - 2),
+                )
+                for hours_ago in range(count)
+            ),
+            key=lambda point: point.as_of_ts_utc,
+        )
+    )
+
+
+def test_select_history_window_24h_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "24h")
+    assert len(window) == 25
+    anchor = history[-1].as_of_ts_utc
+    assert all(point.as_of_ts_utc >= anchor - timedelta(hours=24) for point in window)
+    assert window[0].as_of_ts_utc == anchor - timedelta(hours=24)
+    assert window[-1] == history[-1]
+
+
+def test_select_history_window_7d_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "7d")
+    assert len(window) == 24 * 7 + 1
+
+
+def test_select_history_window_30d_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "30d")
+    assert len(window) == 24 * 30 + 1
+
+
+def test_select_history_window_all_exposes_full_persisted_history():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "all")
+    assert len(window) == len(history) == 24 * 40
+    assert window == history
+
+
+def test_select_history_window_rejects_unknown_viewport():
+    try:
+        select_history_window(_hourly_history(1), "12h")
+    except ValueError as exc:
+        assert "12h" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for unsupported viewport")
+
+
+def test_build_history_view_defaults_to_30d():
+    assert DEFAULT_HISTORY_VIEWPORT == "30d"
+    history = _hourly_history(24 * 40)
+    view = build_history_view(history)
+    assert view.viewport == "30d"
+    assert len(view.points) == 24 * 30 + 1
+    assert view.total_persisted_count == len(history)
+
+
+def test_build_history_view_visible_bounds_always_include_zero():
+    history = tuple(
+        RotationPressureHistoryPoint(
+            pressure_snapshot_id=index,
+            as_of_ts_utc=datetime(2026, 8, 10, 0, 0) + timedelta(hours=index),
+            market_score=score,
+        )
+        for index, score in enumerate([5.0, 12.0, 8.0])
+    )
+    view = build_history_view(history, "all")
+    assert view.visible_min == 0.0
+    assert view.visible_max == 12.0
+
+    negative_history = tuple(
+        RotationPressureHistoryPoint(
+            pressure_snapshot_id=index,
+            as_of_ts_utc=datetime(2026, 8, 10, 0, 0) + timedelta(hours=index),
+            market_score=score,
+        )
+        for index, score in enumerate([-30.0, -5.0, -18.0])
+    )
+    negative_view = build_history_view(negative_history, "all")
+    assert negative_view.visible_min == -30.0
+    assert negative_view.visible_max == 0.0
+
+
+def test_detect_snapshot_cadence_hourly():
+    history = _hourly_history(48)
+    assert detect_snapshot_cadence(history) == timedelta(hours=1)
+    assert format_cadence_label(detect_snapshot_cadence(history)) == "1h snapshots"
+
+
+def test_detect_snapshot_cadence_needs_two_points():
+    assert detect_snapshot_cadence(_hourly_history(1)) is None
+    assert format_cadence_label(None) == "cadence unknown"
+
+
+def test_detect_snapshot_cadence_is_robust_to_one_gap():
+    base = datetime(2026, 8, 10, 0, 0)
+    history = tuple(
+        RotationPressureHistoryPoint(pressure_snapshot_id=i, as_of_ts_utc=ts, market_score=0.0)
+        for i, ts in enumerate(
+            [base, base + timedelta(hours=1), base + timedelta(hours=2), base + timedelta(hours=9)]
+        )
+    )
+    assert detect_snapshot_cadence(history) == timedelta(hours=1)
+
+
+def test_format_history_window_label_states_span_and_cadence():
+    history = _hourly_history(24 * 40)
+    view = build_history_view(history, "30d")
+    assert format_history_window_label(view) == "history: 30d · 1h snapshots"
+
+
+def test_build_dashboard_preserves_full_persisted_history_row_count():
+    history_rows = [
+        {
+            "pressure_snapshot_id": i,
+            "as_of_ts_utc": datetime(2026, 7, 1, 0, 0) + timedelta(hours=i),
+            "market_score": 1.0,
+        }
+        for i in range(200)
+    ]
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=history_rows)
+    assert len(dashboard.history) == 200
+    all_view = build_history_view(dashboard.history, "all")
+    assert len(all_view.points) == 200
+
+
+def test_render_dashboard_has_all_viewport_buttons_and_defaults_to_30d():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 38.5},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    for viewport in HISTORY_VIEWPORTS:
+        assert f"data-viewport='{viewport}'" in rendered
+    assert "history-viewport-btn active' data-viewport='30d'" in rendered
+    assert "history-panel active' data-viewport='30d'" in rendered
+    assert "history: 30d ·" in rendered
+
+
+def test_render_dashboard_history_scale_reflects_visible_window_not_fixed_domain():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 12.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "<span>+0.0</span><span>0</span><span>+12.0</span>" in rendered

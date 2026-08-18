@@ -12,6 +12,17 @@ DIRECTIONS = {"ROTATION_IN", "ROTATION_OUT", "MIXED"}
 PRESSURE_SCALE_MIN = -100.0
 PRESSURE_SCALE_MAX = 100.0
 
+# Issue #412: rendered history viewport over the same persisted aggregate
+# history source. This never changes what is persisted -- it only bounds
+# what is drawn. "all" renders every persisted point handed to it.
+HISTORY_VIEWPORTS = ("24h", "7d", "30d", "all")
+DEFAULT_HISTORY_VIEWPORT = "30d"
+_HISTORY_VIEWPORT_WINDOWS = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+
 
 @dataclass(frozen=True)
 class RotationPressureHeader:
@@ -54,6 +65,26 @@ class RotationPressureHistoryPoint:
     pressure_snapshot_id: int
     as_of_ts_utc: datetime
     market_score: float
+
+
+@dataclass(frozen=True)
+class RotationPressureHistoryView:
+    """A deterministic, bounded viewport over the persisted history source.
+
+    ``points`` never exceeds ``total_persisted_count`` and is always a
+    subset of the ``history`` tuple it was built from -- no rows are
+    invented, dropped from the source, or recomputed here.
+    """
+
+    viewport: str
+    points: tuple[RotationPressureHistoryPoint, ...]
+    visible_min: float | None
+    visible_max: float | None
+    window_start_utc: datetime | None
+    window_end_utc: datetime | None
+    cadence: timedelta | None
+    cadence_label: str
+    total_persisted_count: int
 
 
 @dataclass(frozen=True)
@@ -166,6 +197,105 @@ def history_point_from_mapping(row: dict[str, Any]) -> RotationPressureHistoryPo
         pressure_snapshot_id=int(row["pressure_snapshot_id"]),
         as_of_ts_utc=_utc_naive(row["as_of_ts_utc"]),
         market_score=_require_pressure(row["market_score"], "history.market_score"),
+    )
+
+
+def select_history_window(
+    history: tuple[RotationPressureHistoryPoint, ...], viewport: str
+) -> tuple[RotationPressureHistoryPoint, ...]:
+    """Deterministic windowing over already-persisted timestamps.
+
+    ``history`` must be sorted ascending by ``as_of_ts_utc`` (as produced by
+    ``build_dashboard``). The window is anchored on the latest persisted
+    timestamp in ``history`` itself, not wall-clock time, so the same
+    persisted rows always produce the same view regardless of when this is
+    called.
+    """
+    if viewport not in HISTORY_VIEWPORTS:
+        raise ValueError(f"unsupported history viewport: {viewport}")
+    if viewport == "all" or not history:
+        return tuple(history)
+    anchor = history[-1].as_of_ts_utc
+    start = anchor - _HISTORY_VIEWPORT_WINDOWS[viewport]
+    return tuple(point for point in history if point.as_of_ts_utc >= start)
+
+
+def detect_snapshot_cadence(
+    history: tuple[RotationPressureHistoryPoint, ...]
+) -> timedelta | None:
+    """Median gap between consecutive persisted timestamps.
+
+    Detected from the full persisted history (not the rendered viewport) so
+    a narrow window with few points still gets a stable cadence reading.
+    Median rather than mean so one missed/duplicated snapshot doesn't skew
+    the label.
+    """
+    if len(history) < 2:
+        return None
+    deltas = sorted(
+        b.as_of_ts_utc - a.as_of_ts_utc for a, b in zip(history, history[1:])
+    )
+    deltas = [delta for delta in deltas if delta > timedelta(0)]
+    if not deltas:
+        return None
+    mid = len(deltas) // 2
+    if len(deltas) % 2:
+        return deltas[mid]
+    return (deltas[mid - 1] + deltas[mid]) / 2
+
+
+def format_cadence_label(cadence: timedelta | None) -> str:
+    if cadence is None:
+        return "cadence unknown"
+    total_seconds = int(cadence.total_seconds())
+    if total_seconds <= 0:
+        return "cadence unknown"
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days and not (hours or minutes or seconds):
+        return f"{days}d snapshots"
+    if hours and not (days or minutes or seconds):
+        return f"{hours}h snapshots"
+    if minutes and not (days or hours or seconds):
+        return f"{minutes}m snapshots"
+    if seconds and not (days or hours or minutes):
+        return f"{seconds}s snapshots"
+    parts = [f"{value}{unit}" for value, unit in ((days, "d"), (hours, "h"), (minutes, "m")) if value]
+    if not parts:
+        parts.append(f"{seconds}s")
+    return f"{''.join(parts)} snapshots"
+
+
+def format_history_window_label(view: RotationPressureHistoryView) -> str:
+    return f"history: {view.viewport} · {view.cadence_label}"
+
+
+def build_history_view(
+    history: tuple[RotationPressureHistoryPoint, ...],
+    viewport: str = DEFAULT_HISTORY_VIEWPORT,
+) -> RotationPressureHistoryView:
+    """Build a rendered viewport over ``history`` without mutating it.
+
+    ``visible_min``/``visible_max`` always include zero so the zero
+    reference is never clipped out of the presentation-only chart scale,
+    even when every visible score is on one side of zero.
+    """
+    points = select_history_window(history, viewport)
+    scores = [point.market_score for point in points]
+    visible_min = min([0.0, *scores]) if scores else None
+    visible_max = max([0.0, *scores]) if scores else None
+    cadence = detect_snapshot_cadence(history)
+    return RotationPressureHistoryView(
+        viewport=viewport,
+        points=points,
+        visible_min=visible_min,
+        visible_max=visible_max,
+        window_start_utc=points[0].as_of_ts_utc if points else None,
+        window_end_utc=points[-1].as_of_ts_utc if points else None,
+        cadence=cadence,
+        cadence_label=format_cadence_label(cadence),
+        total_persisted_count=len(history),
     )
 
 
@@ -324,23 +454,100 @@ def _composition_html(header: RotationPressureHeader) -> str:
     )
 
 
-def _pressure_curve_svg(history: tuple[RotationPressureHistoryPoint, ...]) -> str:
-    if not history:
-        return "<div class='curve-empty'>No prior persisted pressure snapshots</div>"
-    width, height, padding = 600, 140, 20
+def render_pressure_curve_svg(
+    points: tuple[RotationPressureHistoryPoint, ...],
+    *,
+    visible_min: float,
+    visible_max: float,
+    width: int = 600,
+    height: int = 140,
+    padding: int = 20,
+    svg_class: str | None = "pressure-curve",
+    line_class: str = "curve-line",
+    zero_class: str = "curve-zero",
+    empty_class: str = "curve-empty",
+    empty_message: str = "No prior persisted pressure snapshots",
+    aria_label: str = "Persisted aggregate pressure history, scaled to the visible window",
+) -> str:
+    """Presentation-only curve: coordinates are derived only from the caller's
+    ``visible_min``/``visible_max`` (the currently rendered window), never
+    from ``PRESSURE_SCALE_MIN``/``PRESSURE_SCALE_MAX``. Shared by the
+    dedicated dashboard and the Profit Plan rotation strip so both draw the
+    same way."""
+    if not points:
+        return f"<div class='{empty_class}'>{html.escape(empty_message)}</div>"
+    span = visible_max - visible_min
+    if span <= 0:
+        span = 1.0
     plot_height = height - (padding * 2)
-    count = len(history)
-    points = " ".join(
+    count = len(points)
+    coords = " ".join(
         f"{padding + (index * (width - 2 * padding) / max(count - 1, 1)):.1f},"
-        f"{padding + ((PRESSURE_SCALE_MAX - point.market_score) / 200 * plot_height):.1f}"
-        for index, point in enumerate(history)
+        f"{padding + ((visible_max - point.market_score) / span * plot_height):.1f}"
+        for index, point in enumerate(points)
     )
+    zero_line = ""
+    if visible_min <= 0.0 <= visible_max:
+        zero_y = padding + ((visible_max - 0.0) / span * plot_height)
+        zero_line = (
+            f"<line class='{zero_class}' x1='{padding}' y1='{zero_y:.1f}' "
+            f"x2='{width - padding}' y2='{zero_y:.1f}'></line>"
+        )
+    class_attr = f" class='{svg_class}'" if svg_class else ""
     return (
-        "<svg class='pressure-curve' viewBox='0 0 600 140' role='img' "
-        "aria-label='Persisted aggregate pressure history on a fixed minus 100 to plus 100 scale'>"
-        "<line class='curve-zero' x1='20' y1='70' x2='580' y2='70'></line>"
-        f"<polyline class='curve-line' points='{points}'></polyline>"
+        f"<svg{class_attr} viewBox='0 0 {width} {height}' role='img' "
+        f"aria-label='{html.escape(aria_label)}'>"
+        f"{zero_line}"
+        f"<polyline class='{line_class}' points='{coords}'></polyline>"
         "</svg>"
+    )
+
+
+def _pressure_curve_svg(view: RotationPressureHistoryView) -> str:
+    visible_min = view.visible_min if view.visible_min is not None else -1.0
+    visible_max = view.visible_max if view.visible_max is not None else 1.0
+    return render_pressure_curve_svg(
+        view.points,
+        visible_min=visible_min,
+        visible_max=visible_max,
+        aria_label=(
+            f"Persisted aggregate pressure history for the {view.viewport} "
+            "viewport, scaled to visible min, zero, and max"
+        ),
+    )
+
+
+def _history_viewport_controls_html(active_viewport: str) -> str:
+    buttons = "".join(
+        "<button type='button' class='history-viewport-btn"
+        f"{' active' if viewport == active_viewport else ''}' "
+        f"data-viewport='{viewport}' "
+        f"aria-pressed='{'true' if viewport == active_viewport else 'false'}'>"
+        f"{viewport.upper()}</button>"
+        for viewport in HISTORY_VIEWPORTS
+    )
+    return f"<div class='history-controls' role='group' aria-label='History viewport selector'>{buttons}</div>"
+
+
+def _history_panel_html(view: RotationPressureHistoryView, *, active: bool) -> str:
+    if view.points:
+        visible_min = view.visible_min if view.visible_min is not None else -1.0
+        visible_max = view.visible_max if view.visible_max is not None else 1.0
+        scale_html = (
+            "<div class='history-scale' aria-label='Visible chart scale for this viewport'>"
+            f"<span>{visible_min:+.1f}</span><span>0</span><span>{visible_max:+.1f}</span>"
+            "</div>"
+        )
+    else:
+        scale_html = ""
+    cls = "history-panel active" if active else "history-panel"
+    return (
+        f"<div class='{cls}' data-viewport='{view.viewport}'>"
+        f"{scale_html}"
+        f"{_pressure_curve_svg(view)}"
+        f"<p class='history-meta'>{html.escape(format_history_window_label(view))} · "
+        f"{len(view.points)} of {view.total_persisted_count} persisted snapshots shown</p>"
+        "</div>"
     )
 
 
@@ -355,6 +562,15 @@ def render_dashboard_html(dashboard: RotationPressureDashboard) -> str:
         title = "Rotation Pressure — unavailable"
     else:
         header = dashboard.header
+        history_views = {
+            viewport: build_history_view(dashboard.history, viewport)
+            for viewport in HISTORY_VIEWPORTS
+        }
+        history_panels = "".join(
+            _history_panel_html(history_views[viewport], active=(viewport == DEFAULT_HISTORY_VIEWPORT))
+            for viewport in HISTORY_VIEWPORTS
+        )
+        history_controls = _history_viewport_controls_html(DEFAULT_HISTORY_VIEWPORT)
         table_rows = "".join(
             "<tr>"
             f"<td>{html.escape(row.market)}</td>"
@@ -396,8 +612,8 @@ def render_dashboard_html(dashboard: RotationPressureDashboard) -> str:
   <p class='composition-note'>Persisted composition from {header.eligible_asset_count} eligible markets.</p>
 </section>
 <section class='pressure-history'>
-  <div><h2>Aggregate pressure history</h2><span class='scale-note'>Fixed scale −100 · 0 · +100</span></div>
-  {_pressure_curve_svg(dashboard.history)}
+  <div><h2>Aggregate pressure history</h2>{history_controls}</div>
+  {history_panels}
 </section>
 <section class='meta'>
   <span>Snapshot {_iso_z(header.as_of_ts_utc)}</span>
@@ -443,8 +659,15 @@ body {{ margin:0; padding:18px; background:linear-gradient(180deg,#081524,#050b1
 .composition-part {{ display:flex; justify-content:center; align-items:center; min-width:0; box-sizing:border-box; padding:6px; font-size:.78rem; font-weight:700; color:#06101c; }}
 .composition-part.composition-zero {{ padding:0; border:0; overflow:hidden; }}
 .composition-out {{ background:#ff6471; }} .composition-mixed {{ background:#f3c95f; }} .composition-in {{ background:#3ee08f; }}
-.composition-note,.scale-note,.curve-empty {{ color:#8fa5bf; font-size:.78rem; }}
-.pressure-history > div:first-child {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; }}
+.composition-note,.curve-empty {{ color:#8fa5bf; font-size:.78rem; }}
+.pressure-history > div:first-child {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }}
+.history-controls {{ display:flex; gap:6px; flex-wrap:wrap; }}
+.history-viewport-btn {{ padding:4px 10px; border-radius:999px; border:1px solid #2c435e; background:#101f31; color:#9fb4cc; font-size:.72rem; letter-spacing:.05em; cursor:pointer; }}
+.history-viewport-btn.active {{ background:#1c3a58; color:#e7eef8; border-color:#3f6690; }}
+.history-panel {{ display:none; margin-top:8px; }}
+.history-panel.active {{ display:block; }}
+.history-scale {{ display:flex; justify-content:space-between; font-size:.7rem; color:#8fa5bf; margin-bottom:4px; }}
+.history-meta {{ margin-top:6px; color:#8fa5bf; font-size:.75rem; }}
 .pressure-curve {{ width:100%; height:auto; margin-top:8px; background:#091524; border-radius:8px; }}
 .curve-zero {{ stroke:#8fa5bf; stroke-width:1; stroke-dasharray:4 4; }} .curve-line {{ fill:none; stroke:#62b6ff; stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }}
 .top-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }}
@@ -463,5 +686,24 @@ table {{ width:100%; border-collapse:collapse; min-width:1050px; }} th,td {{ pad
 <body>
 {main}
 <footer><small>Generated {_iso_z(dashboard.generated_at_utc)} · market-only · inferred rotation pressure, not verified fund flow</small></footer>
+<script>
+(function () {{
+  var buttons = document.querySelectorAll('.history-viewport-btn');
+  var panels = document.querySelectorAll('.history-panel');
+  buttons.forEach(function (btn) {{
+    btn.addEventListener('click', function () {{
+      var viewport = btn.getAttribute('data-viewport');
+      buttons.forEach(function (b) {{
+        var active = b === btn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      }});
+      panels.forEach(function (p) {{
+        p.classList.toggle('active', p.getAttribute('data-viewport') === viewport);
+      }});
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>"""
