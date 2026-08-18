@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable
 
+from src.account.account_trading_account_link_resolver_v1 import (
+    AccountTradingAccountLinkResolver,
+)
 from src.execution_planner.sell_authority_guard_v1 import (
     UnauthorizedManualExecutionCallError,
 )
@@ -41,6 +44,15 @@ class ExecutionPlannerRepository:
         repr=False,
         compare=False,
     )
+    account_link_resolver: AccountTradingAccountLinkResolver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.account_link_resolver is None:
+            self.account_link_resolver = AccountTradingAccountLinkResolver()
 
     @staticmethod
     def _validate_plan_contract(plan: PlannedExecution) -> None:
@@ -104,6 +116,7 @@ class ExecutionPlannerRepository:
         asset_id: int | None = None,
         symbol: str | None = None,
     ) -> OpenPositionForExit | None:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         clauses = [
             "pp.account_id = %s",
             "pp.sleeve_code = %s",
@@ -246,6 +259,9 @@ class ExecutionPlannerRepository:
         plan: PlannedExecution,
     ) -> int:
         self._validate_plan_contract(plan)
+        self.account_link_resolver.verify_account_trading_account_pair(
+            plan.account_id, plan.trading_account_id
+        )
         conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
@@ -271,6 +287,9 @@ class ExecutionPlannerRepository:
         plan: PlannedExecution,
     ) -> tuple[int, int]:
         self._validate_plan_contract(plan)
+        self.account_link_resolver.verify_account_trading_account_pair(
+            plan.account_id, plan.trading_account_id
+        )
         reserved_amount_eur = (
             _to_decimal(plan.max_notional_eur)
             if plan.max_notional_eur is not None
@@ -395,6 +414,7 @@ class ExecutionPlannerRepository:
         asset_id: int,
         venue: str,
     ) -> bool:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         placeholders = ",".join(["%s"] * len(ACTIVE_PLAN_STATES))
         sql = f"""
         SELECT 1
@@ -432,6 +452,7 @@ class ExecutionPlannerRepository:
         asset_id: int,
         venue: str,
     ) -> dict[str, Any] | None:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         placeholders = ",".join(["%s"] * len(ACTIVE_PLAN_STATES))
         sql = f"""
         SELECT *
@@ -469,6 +490,9 @@ class ExecutionPlannerRepository:
         plan: PlannedExecution,
     ) -> None:
         self._validate_plan_contract(plan)
+        self.account_link_resolver.verify_account_trading_account_pair(
+            plan.account_id, plan.trading_account_id
+        )
         if plan.execution_mode == "LIVE" and plan.valid_until_ts_utc is None:
             raise ValueError("LIVE_PLAN_EXPIRY_REQUIRED")
         sql = """

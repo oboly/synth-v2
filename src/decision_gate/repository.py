@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable
 
+from src.account.account_trading_account_link_resolver_v1 import (
+    AccountTradingAccountLinkResolver,
+)
 from src.decision_gate.models import (
     ACTIVE_PLAN_STATES,
     DuplicateState,
@@ -114,6 +117,17 @@ class DecisionGateRepository:
         repr=False,
         compare=False,
     )
+    account_link_resolver: AccountTradingAccountLinkResolver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if self.account_link_resolver is None:
+            self.account_link_resolver = AccountTradingAccountLinkResolver(
+                cursor_factory=self.cursor_factory
+            )
 
     def fetch_selection_rows(
         self,
@@ -219,6 +233,7 @@ class DecisionGateRepository:
         return result
 
     def fetch_sleeve_state(self, account_id: int, sleeve_code: str) -> SleeveState | None:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         sql = """
         SELECT
             account_id,
@@ -261,6 +276,7 @@ class DecisionGateRepository:
         asset_id: int,
         venue: str,
     ) -> DuplicateState:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         with self.cursor_factory() as db_obj:
             cursor = _unwrap_cursor(db_obj)
 
@@ -306,6 +322,7 @@ class DecisionGateRepository:
         asset_id: int,
         venue: str,
     ) -> bool:
+        account_id = self.account_link_resolver.resolve_account_id(account_id)
         sql = f"""
         SELECT EXISTS(
             SELECT 1
