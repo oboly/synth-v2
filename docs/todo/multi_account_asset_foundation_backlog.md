@@ -23,7 +23,8 @@ Section ownership:
   materially wrong.** `asset.is_portfolio` is the global, account-agnostic
   publication cohort selector consumed by the canonical Fib cohort query,
   Bitvavo sync, two reporting dashboards, and the held-market enrollment
-  chain. The corrected Phase 2 sequence is now tracked by Issues #371–#375.
+  chain. This doc correction is owned by Issue #370. The corrected Phase 2
+  sequence is now tracked by Issues #371–#375.
 - Phase 3 — `quote_asset` migration -> no Issue yet; same fresh-review
   requirement as Phase 2. Do not reuse the original 12-ref count without
   re-auditing.
@@ -89,9 +90,10 @@ Canonical `is_portfolio` boundary audit (supersedes the design doc's
 
 ## Phase 2 — `is_portfolio` migration (superseded plan — see below)
 
-**The original "low risk, 3 refs" framing and the steps that were here are
-withdrawn.** They instructed switching a handful of `src/research/` refs to
-`account_asset.is_portfolio_member` and then dropping `asset.is_portfolio`.
+**Correction owned by Issue #370.** The original "low risk, 3 refs" framing
+and the steps that were here are withdrawn. They instructed switching a
+handful of `src/research/` refs to `account_asset.is_portfolio_member` and
+then dropping `asset.is_portfolio`.
 Executing that as written would silently empty the canonical Fib publication
 cohort, because `asset.is_portfolio` is the global publication cohort
 selector, not per-account watchlist membership, and has real consumers in

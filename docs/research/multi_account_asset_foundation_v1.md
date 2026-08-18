@@ -1,6 +1,6 @@
 # Multi-Account Asset Foundation V1
 
-## Correction notice (2026-08-12)
+## Correction notice (2026-08-12, owned by Issue #370)
 
 Every claim in this document about `asset.is_portfolio` ref counts, risk
 level, and consumer set is **superseded and wrong**. It was written from a
