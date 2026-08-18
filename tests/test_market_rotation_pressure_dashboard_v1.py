@@ -19,6 +19,9 @@ from src.reporting.market_rotation_pressure_dashboard_v1 import (
     render_dashboard_html,
     select_history_window,
 )
+from src.reporting.run_market_rotation_pressure_dashboard_v1 import (
+    fetch_pressure_history,
+)
 
 
 NOW = datetime(2026, 7, 12, 20, 30, tzinfo=UTC)
@@ -285,9 +288,103 @@ def test_dashboard_runner_history_is_read_only_and_bounded():
     text = Path("src/reporting/run_market_rotation_pressure_dashboard_v1.py").read_text(encoding="utf-8")
     assert "def fetch_pressure_history" in text
     assert "FROM market_rotation_pressure_snapshot_v1" in text
-    assert "HISTORY_FETCH_SAFETY_LIMIT = 20000" in text
+    assert "HISTORY_FETCH_PAGE_SIZE = 2000" in text
     assert "INSERT " not in text
     assert "UPDATE " not in text
+
+
+class _PagedHistoryCursor:
+    """Fakes keyset-paginated reads: each ``fetchall`` returns the next
+    pre-baked page, regardless of the SQL/params passed to ``execute`` (the
+    stitching logic under test is exercised via the number/size of calls
+    made, not by re-implementing keyset filtering here)."""
+
+    def __init__(self, pages: list[list[dict[str, object]]]):
+        self._pages = list(pages)
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self.execute_calls.append((sql, params))
+
+    def fetchall(self) -> list[dict[str, object]]:
+        if self._pages:
+            return self._pages.pop(0)
+        return []
+
+
+class _PagedHistoryConn:
+    def __init__(self, cursor: _PagedHistoryCursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_fetch_pressure_history_has_no_overall_row_cap():
+    """Regression for the review-flagged truncation gap: the old
+    implementation issued one query with a fixed LIMIT, so persisted history
+    past that bound was silently dropped. The fix must keep reading pages
+    until a short page proves exhaustion, however many pages that takes --
+    proving there is no total-row cap, only a per-query page bound."""
+    page_size = 4
+    total_rows = 10 * page_size + 3  # deliberately not a multiple of page_size
+    all_rows = [
+        {
+            "pressure_snapshot_id": index,
+            "as_of_ts_utc": datetime(2026, 1, 1) + timedelta(hours=index),
+            "market_score": float((index % 9) - 4),
+        }
+        for index in range(total_rows)
+    ]
+    pages = [all_rows[start : start + page_size] for start in range(0, total_rows, page_size)]
+    cursor = _PagedHistoryCursor(pages)
+    conn = _PagedHistoryConn(cursor)
+
+    rows = fetch_pressure_history(conn, venue="bitvavo", model_version="1.0", page_size=page_size)
+
+    assert len(rows) == total_rows
+    assert [row["pressure_snapshot_id"] for row in rows] == list(range(total_rows))
+    # More round-trips than any single fixed-LIMIT read: proves the fetch
+    # kept paging instead of stopping at one bounded query.
+    assert len(cursor.execute_calls) == len(pages)
+    assert len(cursor.execute_calls) > 1
+    first_sql, first_params = cursor.execute_calls[0]
+    assert "as_of_ts_utc >" not in first_sql
+    assert first_params == ("bitvavo", "1.0", page_size)
+    second_sql, second_params = cursor.execute_calls[1]
+    assert "as_of_ts_utc >" in second_sql or "as_of_ts_utc = %s AND pressure_snapshot_id >" in second_sql
+    assert second_params[0:2] == ("bitvavo", "1.0")
+
+
+def test_fetch_pressure_history_stops_after_exact_multiple_with_empty_probe():
+    """When persisted history is an exact multiple of page_size, the loop
+    must issue one more (empty) page fetch to confirm exhaustion rather than
+    assuming completeness -- otherwise a coincidental multiple would look
+    truncated the same way the old fixed-LIMIT bound did."""
+    page_size = 5
+    total_rows = page_size * 3
+    all_rows = [
+        {
+            "pressure_snapshot_id": index,
+            "as_of_ts_utc": datetime(2026, 2, 1) + timedelta(hours=index),
+            "market_score": 0.0,
+        }
+        for index in range(total_rows)
+    ]
+    pages = [all_rows[start : start + page_size] for start in range(0, total_rows, page_size)]
+    cursor = _PagedHistoryCursor(pages)
+    conn = _PagedHistoryConn(cursor)
+
+    rows = fetch_pressure_history(conn, venue="bitvavo", model_version="1.0", page_size=page_size)
+
+    assert len(rows) == total_rows
+    assert len(cursor.execute_calls) == len(pages) + 1
 
 
 def _hourly_history(count: int, base: datetime = datetime(2026, 8, 10, 12, 0)):
