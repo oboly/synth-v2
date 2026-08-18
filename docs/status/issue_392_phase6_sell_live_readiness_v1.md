@@ -11,6 +11,27 @@ A and B are unchanged and still block `GO_LIVE_READY`. No LIVE activation,
 executor change, or broker authority was introduced by that follow-on
 change; see its own safety markers where noted below.
 
+**Update (2026-08-18, same branch, correctness fix):** the initial blocker-C
+migration made `account_protection_policy_config_v1` fully immutable
+(`BEFORE UPDATE` unconditionally rejected), which made the resolver's own
+supersession contract impossible to satisfy in practice — an open-ended
+(`effective_until_ts_utc IS NULL`) config row could never be closed, so any
+second row for the same account would overlap the first forever and the
+account would be permanently stuck failing closed
+(`AMBIGUOUS_PROTECTION_CONFIGURATION`) the moment a threshold needed to
+change. `db/migrations/20260817_account_protection_policy_config_v1.sql`'s
+update trigger now permits exactly one narrow transition — closing a
+still-open row's window, all other columns immutable, closeable only once —
+so a config update is: close the old open row's `effective_until_ts_utc` to
+the new row's `effective_from_ts_utc`, then insert the new row, in one
+transaction. See
+`docs/architecture/account_protection_contract_v1.md`'s "Real #392 wiring"
+section and `tests/test_account_protection_policy_config_mariadb_ddl_v1.py`
+(new, registered in `pr_mariadb_ddl_validation.yml`) for the corrected
+lifecycle proved against a disposable MariaDB schema. Migration remains an
+artifact only (not applied); no DB write, credential, authority, executor,
+or broker change.
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)

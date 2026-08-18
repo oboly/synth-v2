@@ -369,6 +369,23 @@ automatic-exit gate decision.** Provisioning at least a permissive
 (all-thresholds-`None`) config row is therefore an operational prerequisite
 before any account's automatic-exit candidates can stage a plan again.
 
+The table is append-only with two enforced triggers, but the update trigger
+permits exactly one narrow lifecycle transition: closing a still-open
+(`effective_until_ts_utc IS NULL`) row's window when it is superseded, with
+every other column byte-identical and a row closeable only once (any other
+edit, any second close, or any reopen is rejected). This is required, not
+incidental: the resolver demands exactly one row be effective at a given
+timestamp, and without a way to close an open-ended row, a second config row
+for the same account would overlap the first forever and the account would
+be permanently stuck at `AMBIGUOUS_PROTECTION_CONFIGURATION`. Superseding a
+config therefore means, in one transaction: `UPDATE
+account_protection_policy_config_v1 SET effective_until_ts_utc = <new row's
+effective_from_ts_utc> WHERE account_protection_policy_config_id = <old row>
+AND effective_until_ts_utc IS NULL`, then `INSERT` the new row. All other
+column values, including historical thresholds, remain immutable forever.
+`tests/test_account_protection_policy_config_mariadb_ddl_v1.py` proves this
+end-to-end against a disposable MariaDB schema.
+
 `MAX_ACCOUNT_DRAWDOWN`, `DAILY_REALIZED_LOSS`, and `REPEATED_STOPLOSS_STREAK`
 still have **no canonical metric-fact producer**: the composition seam always
 supplies an empty `metric_facts` tuple. If a future durable config ever
