@@ -120,8 +120,8 @@ def test_planner_rejection_is_audited_fail_closed() -> None:
     assert rows[0]["immutable_plan_json"] is None
 
 
-def test_runtime_cannot_bypass_gate_even_when_execution_enabled() -> None:
-    """Live-trading-enabled account still hits LIVE_EXECUTION_NOT_GRANTED at the gate."""
+def test_runtime_cannot_bypass_gate_via_legacy_live_flag_alone() -> None:
+    """A retained live_trading_enabled=True on a paper-mode account is inconsistent evidence, not a bypass."""
     conn = FakeConnection()
     seed_happy_path(conn)
     with conn.cursor() as cur:
@@ -130,8 +130,77 @@ def test_runtime_cannot_bypass_gate_even_when_execution_enabled() -> None:
     item = _build_item(conn)
     live_item = replace(item, live_trading_enabled=True)
     outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "NON_ACTIONABLE"
+    assert outcome.planner_state == "NOT_REACHED"
+
+
+def test_runtime_live_account_mode_alone_without_explicit_permission_is_denied() -> None:
+    """Issue #392 Phase 6 blocker B: account_mode=live alone is never sufficient."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    live_item = replace(item, account_mode="live", live_trading_enabled=True)
+    assert live_item.automatic_exit_live_permission_enabled is False
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
     assert outcome.gate_state == "DENIED"
     assert outcome.planner_state == "NOT_REACHED"
+
+
+def test_runtime_live_account_with_explicit_permission_reaches_staged_plan() -> None:
+    """Issue #392 Phase 6 blocker B: explicit decision-gate LIVE permission lets a LIVE candidate stage a plan."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    live_item = replace(
+        item, account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
+    )
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
+    rows = _audit_rows(conn)
+    assert rows[0]["immutable_plan_json"] is not None
+
+
+def test_runtime_live_account_manual_lock_denies() -> None:
+    """LIVE candidates still compose with #318 account protection identically to paper: manual lock denies."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    live_item = replace(
+        _build_item(conn), account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
+    )
+    insert_protection_lock_fact(
+        conn, lifecycle_id="manual-1", event_id="manual-event-1", protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK,
+    )
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "DENIED"
+    assert outcome.planner_state == "NOT_REACHED"
+
+
+def test_runtime_live_account_drawdown_protection_permits_reduce() -> None:
+    """LIVE candidates still compose with #318 account protection identically to paper: drawdown permits REDUCE."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    live_item = replace(
+        _build_item(conn), account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
+    )
+    insert_protection_lock_fact(
+        conn, lifecycle_id="drawdown-1", event_id="drawdown-event-1", protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+    )
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
 
 
 def test_rerun_same_evidence_is_idempotent_no_duplicate_row() -> None:

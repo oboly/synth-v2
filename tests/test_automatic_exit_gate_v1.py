@@ -6,6 +6,7 @@ from pathlib import Path
 from src.decision_gate.automatic_exit_gate_v1 import (
     REASON_ACCOUNT_EVIDENCE_STALE,
     REASON_ACCOUNT_DISABLED,
+    REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT,
     REASON_BLOCKING_CONFLICT,
     REASON_CANDIDATE_EVIDENCE_STALE,
     REASON_EXECUTION_PERMISSION_DISABLED,
@@ -18,6 +19,7 @@ from src.decision_gate.automatic_exit_gate_v1 import (
     REASON_NO_FREE_QUANTITY,
     REASON_POSITION_EVIDENCE_STALE,
     REASON_RISK_BOUND_UNRESOLVED,
+    REASON_UNSUPPORTED_ACCOUNT_MODE,
     REASON_UNSUPPORTED_POLICY_CONTRACT,
     STATE_APPROVED,
     STATE_DENIED,
@@ -62,7 +64,8 @@ def _context(**changes: object) -> AutomaticExitGateContextV1:
         free_quantity_base=Decimal("8"), account_observed_ts_utc=NOW,
         position_observed_ts_utc=NOW, free_quantity_observed_ts_utc=NOW,
         account_enabled=True, account_mode="paper", automatic_exit_execution_enabled=True,
-        live_trading_enabled=False, blocking_conflict=False, evaluation_ts_utc=NOW,
+        live_trading_enabled=False, automatic_exit_live_permission_enabled=False,
+        blocking_conflict=False, evaluation_ts_utc=NOW,
     )
     values.update(changes)
     return AutomaticExitGateContextV1(**values)  # type: ignore[arg-type]
@@ -176,10 +179,99 @@ def test_disabled_execution_permission_is_denied() -> None:
     assert (result.state, result.reason_code) == (STATE_DENIED, REASON_EXECUTION_PERMISSION_DISABLED)
 
 
-def test_account_disabled_live_enabled_and_non_paper_modes_are_denied() -> None:
+def test_account_disabled_is_denied() -> None:
     assert _evaluate(account_enabled=False).reason_code == REASON_ACCOUNT_DISABLED
-    assert _evaluate(live_trading_enabled=True).reason_code == REASON_LIVE_EXECUTION_NOT_GRANTED
-    assert _evaluate(account_mode="live").reason_code == REASON_LIVE_EXECUTION_NOT_GRANTED
+
+
+def test_paper_account_with_inconsistent_live_flag_is_non_actionable() -> None:
+    """account_mode=paper with live_trading_enabled=True is inconsistent evidence, not a LIVE candidate."""
+    result = _evaluate(live_trading_enabled=True)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT)
+
+
+def test_live_mode_without_live_trading_flag_is_non_actionable() -> None:
+    """account_mode=live alone, without the matching account-level live_trading_enabled fact, is inconsistent."""
+    result = _evaluate(account_mode="live", automatic_exit_live_permission_enabled=True)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT)
+
+
+def test_live_mode_without_explicit_live_permission_is_denied() -> None:
+    """account_mode=live alone (even with live_trading_enabled=True) is insufficient without explicit permission."""
+    result = _evaluate(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=False)
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED)
+
+
+def test_legacy_live_trading_flag_alone_is_insufficient_for_paper_mode() -> None:
+    """A retained live_trading_enabled=True flag never silently substitutes for explicit LIVE permission."""
+    result = _evaluate(
+        account_mode="paper", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
+    )
+    assert result.state != STATE_APPROVED
+    assert result.reason_code == REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT
+
+
+def test_live_mode_with_explicit_permission_and_healthy_evidence_is_approved() -> None:
+    result = _evaluate(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True)
+    assert result.state == STATE_APPROVED
+    assert result.reason_code == "OK"
+    assert result.approved_quantity_ceiling_base == Decimal("2.50")
+
+
+def test_live_mode_permission_revoked_is_denied() -> None:
+    result = _evaluate(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=False)
+    assert (result.state, result.reason_code) == (STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED)
+
+
+def test_unsupported_account_mode_is_non_actionable() -> None:
+    for mode in ("LIVE", "Paper", "demo", "", "sandbox"):
+        result = _evaluate(account_mode=mode)
+        assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE)
+
+
+def test_live_mode_still_enforces_manual_lock_and_risk_protection_reduce_exit() -> None:
+    """The #318 protection composition applies identically to LIVE as to paper."""
+    live_context_kwargs = dict(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True)
+    manual_reduce = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="REDUCE"),
+        context=_context(account_protection_evaluation=_protection(ACTION_REDUCE, manual=True), **live_context_kwargs),
+    )
+    manual_exit = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="EXIT"),
+        context=_context(account_protection_evaluation=_protection(ACTION_EXIT, manual=True), **live_context_kwargs),
+    )
+    drawdown_reduce = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="REDUCE"),
+        context=_context(account_protection_evaluation=_protection(ACTION_REDUCE), **live_context_kwargs),
+    )
+    drawdown_exit = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="EXIT"),
+        context=_context(account_protection_evaluation=_protection(ACTION_EXIT), **live_context_kwargs),
+    )
+    assert manual_reduce.state == STATE_DENIED and manual_reduce.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
+    assert manual_exit.state == STATE_DENIED and manual_exit.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
+    assert drawdown_reduce.state == STATE_APPROVED
+    assert drawdown_exit.state == STATE_APPROVED
+
+
+def test_live_mode_zero_free_quantity_and_invalid_risk_ceiling_fail_closed() -> None:
+    live_context_kwargs = dict(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True)
+    zero_free = _evaluate(free_quantity_base=Decimal("0"), **live_context_kwargs)
+    assert (zero_free.state, zero_free.reason_code) == (STATE_DENIED, REASON_NO_FREE_QUANTITY)
+    invalid_ceiling = _evaluate(max_automatic_exit_quantity_base=Decimal("-1"), **live_context_kwargs)
+    assert invalid_ceiling.state == STATE_NON_ACTIONABLE
+    assert invalid_ceiling.reason_code == REASON_RISK_BOUND_UNRESOLVED
+
+
+def test_live_mode_stale_evidence_and_blocking_conflict_are_denied_or_non_actionable() -> None:
+    live_context_kwargs = dict(account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True)
+    stale_account = _evaluate(account_observed_ts_utc=NOW - timedelta(minutes=16), **live_context_kwargs)
+    assert (stale_account.state, stale_account.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE)
+    stale_position = _evaluate(position_observed_ts_utc=NOW - timedelta(minutes=16), **live_context_kwargs)
+    assert (stale_position.state, stale_position.reason_code) == (STATE_NON_ACTIONABLE, REASON_POSITION_EVIDENCE_STALE)
+    stale_free = _evaluate(free_quantity_observed_ts_utc=NOW - timedelta(minutes=16), **live_context_kwargs)
+    assert (stale_free.state, stale_free.reason_code) == (STATE_NON_ACTIONABLE, REASON_FREE_QUANTITY_EVIDENCE_STALE)
+    conflict = _evaluate(blocking_conflict=True, **live_context_kwargs)
+    assert (conflict.state, conflict.reason_code) == (STATE_DENIED, REASON_BLOCKING_CONFLICT)
 
 
 def test_quantity_is_capped_but_fraction_is_never_rewritten() -> None:

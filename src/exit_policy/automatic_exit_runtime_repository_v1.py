@@ -19,6 +19,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Final
 
+from src.decision_gate.automatic_exit_live_permission_contract_v1 import (
+    resolve_automatic_exit_live_decision_gate_permission_v1,
+)
+from src.decision_gate.automatic_exit_live_permission_repository_v1 import (
+    load_automatic_exit_live_permission_history_v1,
+)
 from src.decision_gate.free_base_quantity_v1 import (
     STATUS_OK,
     WalletAvailableSnapshot,
@@ -159,6 +165,7 @@ class RuntimeItemV1:
     account_mode: str
     live_trading_enabled: bool
     automatic_exit_execution_enabled: bool
+    automatic_exit_live_permission_enabled: bool
     blocking_conflict: bool
     account_state_observed_ts_utc: datetime
     market_price_observed_ts_utc: datetime
@@ -605,6 +612,15 @@ def build_runtime_item_v1(
     )
     permission_id = _active_permission_id(permissions, trading_account_id=account.trading_account_id, at=now)
 
+    # Issue #392 Phase 6 blocker B: resolved for every account regardless of
+    # mode, matching automatic_exit_execution_enabled's own precedent. It is
+    # decision-gate LIVE permission evidence only and is not consulted by the
+    # gate for paper-mode accounts.
+    live_permissions = load_automatic_exit_live_permission_history_v1(conn, trading_account_id=account.trading_account_id)
+    live_execution_permission_enabled = resolve_automatic_exit_live_decision_gate_permission_v1(
+        live_permissions, trading_account_id=account.trading_account_id, at=now,
+    )
+
     venue_constraint_rows = load_constraints_from_db(conn, venue=bundle.venue, markets=[market])
     venue_constraints = resolve_venue_execution_constraints(
         venue=bundle.venue, market=market, db_rows=venue_constraint_rows, now=now,
@@ -626,6 +642,7 @@ def build_runtime_item_v1(
         account_mode=account.account_mode,
         live_trading_enabled=account.live_trading_enabled,
         automatic_exit_execution_enabled=execution_enabled,
+        automatic_exit_live_permission_enabled=live_execution_permission_enabled,
         blocking_conflict=blocking_conflict,
         account_state_observed_ts_utc=bundle.snapshot_ts_utc,
         market_price_observed_ts_utc=price_evidence.observed_ts_utc,

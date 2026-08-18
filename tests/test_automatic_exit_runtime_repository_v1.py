@@ -24,6 +24,7 @@ from tests.automatic_exit_runtime_fixtures_v1 import (
     bind_account_market,
     insert_complete_bundle,
     insert_exit_profile,
+    insert_live_permission,
     insert_market_price,
     insert_open_order,
     insert_permission,
@@ -338,6 +339,64 @@ def test_valid_enabled_permission_resolves() -> None:
     item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
     assert item.automatic_exit_execution_enabled is True
     assert isinstance(item.automatic_exit_permission_id, int)
+
+
+def test_live_permission_defaults_false_with_no_row() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    positions = load_positive_positions(conn, bundle=bundle)
+    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
+    assert item.automatic_exit_live_permission_enabled is False
+
+
+def test_live_permission_resolves_true_when_row_present() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_live_permission(conn, live_execution_permitted=True)
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    positions = load_positive_positions(conn, bundle=bundle)
+    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
+    assert item.automatic_exit_live_permission_enabled is True
+
+
+def test_live_permission_for_other_account_does_not_leak() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=7, account_code="account-a")
+    insert_trading_account(conn, account_id=9, account_code="account-b")
+    insert_live_permission(conn, account_id=9, live_execution_permitted=True)
+    bundle_ids = insert_complete_bundle(conn, account_id=7)
+    insert_position(conn, account_id=7)
+    venue_market_id = insert_venue_market(conn)
+    bind_account_market(conn, account_id=7, venue_market_id=venue_market_id)
+    insert_balance(conn, account_id=7)
+    insert_market_price(conn)
+    insert_exit_profile(conn)
+    insert_permission(conn, account_id=7)
+    insert_venue_constraint(conn)
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    account_a = next(a for a in accounts if a.trading_account_id == 7)
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    positions = load_positive_positions(conn, bundle=bundle)
+    item = build_runtime_item_v1(conn, account=account_a, bundle=bundle, position=positions[0], now=NOW)
+    assert item.automatic_exit_live_permission_enabled is False
+
+
+def test_conflicting_live_permission_rows_fail_closed() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_live_permission(conn, live_execution_permitted=True)
+    insert_live_permission(conn, live_execution_permitted=False)
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    positions = load_positive_positions(conn, bundle=bundle)
+    from src.decision_gate.automatic_exit_live_permission_contract_v1 import (
+        AutomaticExitLivePermissionContractError,
+    )
+    with pytest.raises(AutomaticExitLivePermissionContractError, match="CONFLICTING_AUTOMATIC_EXIT_LIVE_PERMISSION"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
 def test_missing_venue_constraints_fail_closed_without_synthetic_identity() -> None:

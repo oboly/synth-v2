@@ -185,6 +185,7 @@ def evaluate_automatic_exit_runtime_item_v1(
         account_mode=item.account_mode,
         automatic_exit_execution_enabled=item.automatic_exit_execution_enabled,
         live_trading_enabled=item.live_trading_enabled,
+        automatic_exit_live_permission_enabled=item.automatic_exit_live_permission_enabled,
         blocking_conflict=item.blocking_conflict,
         evaluation_ts_utc=evaluation_ts_utc,
         account_protection_evaluation=account_protection_evaluation,

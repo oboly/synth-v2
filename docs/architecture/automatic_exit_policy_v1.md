@@ -290,3 +290,102 @@ and immutable staged plan JSON using the audit writer serializer. Runtime
 version is audit provenance only and is excluded from logical evidence and
 both hashes. Replay is intentionally limited to immutable captured runtime
 items/audit evidence; no mutable latest-state replay or migration is implied.
+
+## Phase 6 blocker B: LIVE-capable decision-gate permission
+
+Issue #392 Phase 6 blocker B makes `decision_gate.automatic_exit_gate_v1`
+deliberately LIVE-*capable*, replacing its former unconditional
+`account_mode != "paper"` hard denial with explicit typed permission
+semantics. Full detail lives in
+`docs/status/issue_392_phase6_sell_live_readiness_v1.md`; this section
+records the resulting contract shape as canonical.
+
+**Critical invariant:** decision-gate LIVE permission is not executor
+operational LIVE authority.
+
+```text
+decision_gate LIVE permission
+!=
+executor operational LIVE authority
+```
+
+An `APPROVED` LIVE gate decision means only "this account/candidate is
+permitted to proceed as a LIVE automatic exit at the decision-gate layer." It
+does not mean "the executor is operationally authorized to submit this
+order." Executor LIVE authority, the kill switch, and TRADE_EXECUTION
+credential resolution (`src/executor/execution_live_authority_v1.py`,
+`src/executor/execution_kill_switch_v1.py`,
+`src/executor/execution_credential_scope_v1.py`) remain a wholly separate,
+downstream **Gate 2** that `decision_gate` and `exit_policy` never import,
+call, or bypass. This is the two-gate model:
+
+```text
+GATE 1 (this section): decision_gate automatic-exit LIVE permission
+GATE 2 (separate, downstream, unchanged): executor operational LIVE authority
+```
+
+Blocker A (the #392 -> #206 executor handoff adapter) remains the only path
+by which a Gate-1 `APPROVED` LIVE decision could ever reach Gate 2 at all,
+and blocker A is not implemented by this section.
+
+**Supported account modes**: exactly `"paper"` or `"live"`
+(`SUPPORTED_ACCOUNT_MODES`). Any other value is `NON_ACTIONABLE`
+(`REASON_UNSUPPORTED_ACCOUNT_MODE`); this gate never lowercases, guesses, or
+canonicalizes a malformed mode.
+
+**LIVE evidence, all required together, none alone sufficient**:
+
+- `account_mode == "live"`.
+- `live_trading_enabled == True`, mirrored from
+  `trading_account.live_trading_enabled` (the same column other
+  account-scoped modules already trust as the authoritative live/non-live
+  account fact). It must always agree with `account_mode`; disagreement in
+  either direction is inconsistent evidence and fails closed to
+  `NON_ACTIONABLE` (`REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT`).
+- `automatic_exit_live_permission_enabled == True` — the new, explicit,
+  separately persisted, account-scoped decision-gate LIVE permission fact.
+  Its absence or `False` denies (`REASON_LIVE_EXECUTION_NOT_GRANTED`); for
+  `account_mode == "paper"` it is not consulted at all.
+
+Neither `account_mode == "live"` alone nor `live_trading_enabled == True`
+alone (nor both together, without the explicit permission fact) is ever
+sufficient. All existing freshness, identity, conflict, free-quantity,
+risk-ceiling, and #318 account-protection checks apply identically to LIVE
+and PAPER; nothing about the LIVE path skips or weakens any existing check.
+
+**Permission contract and persistence**:
+`src/decision_gate/automatic_exit_live_permission_contract_v1.py`
+(`AutomaticExitLiveDecisionGatePermissionV1` /
+`resolve_automatic_exit_live_decision_gate_permission_v1`) mirrors this
+document's own `automatic_exit_account_permission_v1` /
+`resolve_automatic_exit_planning_enabled` pattern exactly: default-denied
+(no row means denied), account-scoped, versioned (`permission_version`), an
+explicit effective window, and fail-closed on any overlapping/ambiguous row,
+malformed window, cross-account leakage, or unsupported version. It lives in
+`decision_gate`, not `exit_policy`, because it is decision-gate permission —
+`exit_policy` does not own permission, matching this document's Phase 2
+boundary statement. DB reads live in
+`src/decision_gate/automatic_exit_live_permission_repository_v1.py`, backed
+by the append-only `automatic_exit_live_decision_gate_permission_v1` table
+(migration artifact only, not applied:
+`db/migrations/20260818_automatic_exit_live_decision_gate_permission_v1.sql`).
+
+**Real #392 wiring**: `automatic_exit_runtime_repository_v1.build_runtime_item_v1`
+resolves the permission fact for every account regardless of mode (matching
+`automatic_exit_execution_enabled`'s own precedent) and carries it on
+`RuntimeItemV1.automatic_exit_live_permission_enabled`;
+`automatic_exit_runtime_orchestrator_v1.evaluate_automatic_exit_runtime_item_v1`
+forwards it unchanged into `AutomaticExitGateContextV1`. The orchestrator
+makes no permission decision itself, matching its existing "sequence only"
+architecture.
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate=automatic_exit_gate_v1 (LIVE-capable, still never bypassed)
+execution_planner=unchanged
+executor=none
+live_gate_extension=1 (software contract support only, not activation)
+```
