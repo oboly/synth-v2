@@ -120,6 +120,18 @@ def test_manual_lock_denies_reduce_and_exit_without_exit_policy_awareness() -> N
         assert result.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
 
 
+def test_protection_evaluation_binding_mismatch_denies_an_otherwise_approved_candidate() -> None:
+    """Issue #392 Phase 6 blocker C fail-closed matrix: a protection evaluation computed for a
+    different requested_action than the candidate's own action must never be silently accepted."""
+    mismatched = _protection(ACTION_EXIT)  # evaluated for EXIT, but the candidate below requests REDUCE
+    result = evaluate_automatic_exit_candidate_permission_v1(
+        candidate=_candidate(candidate_action="REDUCE"),
+        context=_context(account_protection_evaluation=mismatched),
+    )
+    assert result.state == STATE_DENIED
+    assert result.reason_code == "INVALID_PROTECTION_EVALUATION_BINDING"
+
+
 def test_stale_account_is_non_actionable() -> None:
     result = _evaluate(account_observed_ts_utc=NOW - timedelta(minutes=16))
     assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE)

@@ -7,6 +7,12 @@ from decimal import Decimal
 import pytest
 
 import src.exit_policy.automatic_exit_runtime_orchestrator_v1 as orchestrator_module
+from src.decision_gate.account_protection_contract_v1 import (
+    PROTECTION_MANUAL_ACCOUNT_LOCK,
+    PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+    REASON_OK,
+    REASON_PROTECTION_CONFIGURATION_UNRESOLVED,
+)
 from src.exit_policy.automatic_exit_runtime_audit_writer_v1 import IdempotencyPayloadConflictError
 from src.exit_policy.automatic_exit_runtime_orchestrator_v1 import evaluate_automatic_exit_runtime_item_v1
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
@@ -19,6 +25,8 @@ from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
     insert_market_price,
+    insert_protection_lock_fact,
+    insert_protection_policy_config,
     seed_happy_path,
 )
 
@@ -198,3 +206,237 @@ def test_same_evidence_with_changed_decision_fails_closed() -> None:
             item=replace(item, current_price=Decimal("65000")),
             evaluation_ts_utc=NOW + timedelta(minutes=1),
         )
+
+
+# --- Issue #392 Phase 6 blocker C: real #318 account-protection wiring -----
+
+
+def test_reduce_with_no_active_protection_matches_prior_behavior() -> None:
+    """Issue #392 Phase 6 blocker C, case 1: REDUCE + no active protection -> existing behavior."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))  # above target -> REDUCE candidate
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
+    row = _audit_rows(conn)[0]
+    assert row["protection_code"] is None
+    assert row["protection_reason_code"] == REASON_OK
+
+
+def test_exit_with_no_active_protection_matches_prior_behavior() -> None:
+    """Issue #392 Phase 6 blocker C, case 2: EXIT + no active protection -> existing behavior."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("35000"))  # below invalidation -> EXIT candidate
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.candidate_state == "CANDIDATE"
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
+    row = _audit_rows(conn)[0]
+    assert row["protection_code"] is None
+    assert row["protection_reason_code"] == REASON_OK
+
+
+def test_drawdown_protection_permits_reduce_via_real_wiring() -> None:
+    """Case 3: REDUCE + drawdown protection -> protection itself permits (risk-reducing action)."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_protection_lock_fact(
+        conn, lifecycle_id="lc-dd", event_id="ev-dd", protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
+    row = _audit_rows(conn)[0]
+    assert row["protection_code"] is None  # protection permitted -> gate's own reason (OK) is recorded, not a block
+    assert row["protection_reason_code"] == REASON_OK
+
+
+def test_drawdown_protection_permits_exit_via_real_wiring() -> None:
+    """Case 4: EXIT + drawdown protection -> protection itself permits (risk-reducing action)."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_protection_lock_fact(
+        conn, lifecycle_id="lc-dd", event_id="ev-dd", protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("35000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "APPROVED"
+    assert outcome.planner_state == "STAGED"
+
+
+def test_manual_lock_denies_reduce_via_real_wiring() -> None:
+    """Case 5: REDUCE + manual account lock -> gate denies."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_protection_lock_fact(
+        conn, lifecycle_id="lc-manual", event_id="ev-manual", protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK,
+    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "DENIED"
+    assert outcome.planner_state == "NOT_REACHED"
+    row = _audit_rows(conn)[0]
+    assert row["protection_code"] == PROTECTION_MANUAL_ACCOUNT_LOCK
+    assert row["immutable_plan_json"] is None
+
+
+def test_manual_lock_denies_exit_via_real_wiring() -> None:
+    """Case 6: EXIT + manual account lock -> gate denies."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_protection_lock_fact(
+        conn, lifecycle_id="lc-manual", event_id="ev-manual", protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK,
+    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("35000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "DENIED"
+    assert outcome.planner_state == "NOT_REACHED"
+
+
+def test_missing_protection_config_fails_closed_and_planner_not_reached() -> None:
+    """Case 7 (config variant of the fail-closed matrix): no resolvable protection config blocks approval."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM account_protection_policy_config_v1")
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "DENIED"
+    assert outcome.planner_state == "NOT_REACHED"
+    row = _audit_rows(conn)[0]
+    assert row["gate_reason_code"] == REASON_PROTECTION_CONFIGURATION_UNRESOLVED
+    assert row["immutable_plan_json"] is None
+
+
+def test_missing_configured_metric_producer_fails_closed() -> None:
+    """Case 7: a configured metric threshold with no wired producer must block, not silently permit."""
+    conn = FakeConnection()
+    seed_happy_path(conn, account_id=7)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM account_protection_policy_config_v1")
+    insert_protection_policy_config(conn, account_id=7, max_account_drawdown=Decimal("10"))
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert outcome.gate_state == "DENIED"
+    assert outcome.planner_state == "NOT_REACHED"
+
+
+def test_account_a_protection_lock_does_not_affect_account_b() -> None:
+    """Case 14: Account A protection does not affect Account B."""
+    from tests.automatic_exit_runtime_fixtures_v1 import (
+        bind_account_market,
+        insert_balance,
+        insert_complete_bundle,
+        insert_permission,
+        insert_position,
+        insert_trading_account,
+    )
+
+    conn = FakeConnection()
+    seed_happy_path(conn, account_id=7)
+    # Account B reuses the same shared venue_market/venue_constraint rows
+    # (both UNIQUE on (venue, market)) instead of re-seeding them.
+    insert_trading_account(conn, account_id=8)
+    insert_complete_bundle(conn, account_id=8)
+    insert_position(conn, account_id=8)
+    bind_account_market(conn, account_id=8, venue_market_id=1)
+    insert_balance(conn, account_id=8)
+    insert_permission(conn, account_id=8)
+    insert_protection_policy_config(conn, account_id=8)
+    insert_protection_lock_fact(
+        conn, lifecycle_id="lc-manual-a", event_id="ev-manual-a", protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK,
+        account_id=7,
+    )
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    bundle_a = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    positions_a = load_positive_positions(conn, bundle=bundle_a)
+    item_a = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle_a, position=positions_a[0], now=NOW)
+
+    bundle_b = load_latest_complete_account_state_bundle(conn, trading_account_id=8, venue="bitvavo", now=NOW)
+    positions_b = load_positive_positions(conn, bundle=bundle_b)
+    account_b = next(a for a in accounts if a.trading_account_id == 8)
+    item_b = build_runtime_item_v1(conn, account=account_b, bundle=bundle_b, position=positions_b[0], now=NOW)
+
+    outcome_a = evaluate_automatic_exit_runtime_item_v1(conn, item=item_a, evaluation_ts_utc=NOW)
+    outcome_b = evaluate_automatic_exit_runtime_item_v1(conn, item=item_b, evaluation_ts_utc=NOW)
+    assert outcome_a.gate_state == "DENIED"
+    assert outcome_b.gate_state == "APPROVED"
+
+
+def test_real_gate_context_receives_populated_protection_evaluation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Case 15: protection result is actually populated into the real #392 gate context, not left None."""
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM market_price_snapshot")
+    insert_market_price(conn, price=Decimal("65000"))
+    item = _build_item(conn)
+
+    captured = {}
+    real_evaluate = orchestrator_module.evaluate_automatic_exit_candidate_permission_v1
+
+    def _spy(*, candidate, context):
+        captured["account_protection_evaluation"] = context.account_protection_evaluation
+        return real_evaluate(candidate=candidate, context=context)
+
+    monkeypatch.setattr(orchestrator_module, "evaluate_automatic_exit_candidate_permission_v1", _spy)
+    evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    assert captured["account_protection_evaluation"] is not None
+    assert captured["account_protection_evaluation"].trading_account_id == item.trading_account_id
+
+
+def test_no_executor_or_broker_imports_in_protection_wiring_modules() -> None:
+    """Cases 19/20: the new wiring modules import no executor or broker code."""
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    modules = (
+        repo_root / "src/decision_gate/account_protection_evaluation_v1.py",
+        repo_root / "src/decision_gate/account_protection_policy_contract_v1.py",
+        repo_root / "src/decision_gate/account_protection_policy_repository_v1.py",
+    )
+    forbidden_prefixes = ("src.executor", "src.manual_execution", "src.account_provisioning")
+    for module_path in modules:
+        tree = ast.parse(module_path.read_text(), filename=str(module_path))
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module)
+        for name in names:
+            for forbidden in forbidden_prefixes:
+                assert not (name == forbidden or name.startswith(forbidden + ".")), (
+                    f"{module_path.name} imports forbidden module {name}"
+                )

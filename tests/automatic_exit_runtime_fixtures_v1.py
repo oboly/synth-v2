@@ -6,8 +6,9 @@ tests: %s placeholders, DictCursor-style rows, lastrowid.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -197,11 +198,56 @@ CREATE TABLE automatic_exit_evaluation_audit_v1 (
     gate_reason_code TEXT,
     approved_fraction_candidate TEXT,
     approved_quantity_ceiling_base TEXT,
+    protection_code TEXT,
+    protection_reason_code TEXT,
     planner_state TEXT NOT NULL,
     planner_reason_code TEXT,
     immutable_plan_json TEXT,
     evaluation_ts_utc TEXT NOT NULL,
     planning_ts_utc TEXT
+);
+
+CREATE TABLE account_protection_lock_fact_v1 (
+    account_protection_lock_fact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lifecycle_id TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    protection_code TEXT NOT NULL,
+    protection_version TEXT NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    observed_from_ts_utc TEXT NOT NULL,
+    observed_to_ts_utc TEXT NOT NULL,
+    triggered_ts_utc TEXT NOT NULL,
+    expires_ts_utc TEXT,
+    reason_code TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    configuration_version TEXT NOT NULL,
+    lock_state TEXT NOT NULL
+);
+
+CREATE TABLE account_protection_policy_config_v1 (
+    account_protection_policy_config_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trading_account_id INTEGER NOT NULL,
+    config_version TEXT NOT NULL,
+    configuration_version TEXT NOT NULL,
+    max_account_drawdown TEXT,
+    max_daily_realized_loss TEXT,
+    max_repeated_stoploss_streak INTEGER,
+    max_metric_age_seconds INTEGER NOT NULL,
+    effective_from_ts_utc TEXT NOT NULL,
+    effective_until_ts_utc TEXT,
+    source_provenance TEXT NOT NULL
+);
+
+CREATE TABLE account_protection_policy_config_revocation_v1 (
+    account_protection_policy_config_revocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_protection_policy_config_id INTEGER NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    revocation_version TEXT NOT NULL,
+    effective_ts_utc TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL
 );
 """
 
@@ -444,8 +490,73 @@ def insert_sell_reservation(
         return cur.lastrowid
 
 
+def insert_protection_lock_fact(
+    conn: FakeConnection, *, lifecycle_id: str, event_id: str, protection_code: str, protection_version: str = "1",
+    account_id: int = 7, scope_type: str = "ACCOUNT", scope_id: str | None = None,
+    observed_from_ts_utc: datetime = TS - timedelta(minutes=1), observed_to_ts_utc: datetime = TS,
+    triggered_ts_utc: datetime = TS, expires_ts_utc: datetime | None = None,
+    reason_code: str = "TEST", evidence_refs: tuple[str, ...] = ("evidence:1",),
+    configuration_version: str = "policy-1", lock_state: str = "ACTIVE",
+) -> int:
+    if scope_id is None:
+        scope_id = str(account_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO account_protection_lock_fact_v1 (lifecycle_id, event_id, protection_code, protection_version, "
+            "trading_account_id, scope_type, scope_id, observed_from_ts_utc, observed_to_ts_utc, triggered_ts_utc, "
+            "expires_ts_utc, reason_code, evidence_refs_json, configuration_version, lock_state) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                lifecycle_id, event_id, protection_code, protection_version, account_id, scope_type, scope_id,
+                observed_from_ts_utc, observed_to_ts_utc, triggered_ts_utc, expires_ts_utc, reason_code,
+                json.dumps(list(evidence_refs)), configuration_version, lock_state,
+            ),
+        )
+        return cur.lastrowid
+
+
+def insert_protection_policy_config(
+    conn: FakeConnection, *, account_id: int = 7, config_version: str = "1", configuration_version: str = "policy-1",
+    max_account_drawdown: Decimal | None = None, max_daily_realized_loss: Decimal | None = None,
+    max_repeated_stoploss_streak: int | None = None, max_metric_age_seconds: int = 900,
+    effective_from_ts_utc: datetime = TS - timedelta(days=1),
+    effective_until_ts_utc: datetime | None = None, source_provenance: str = "manual_review",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO account_protection_policy_config_v1 (trading_account_id, config_version, configuration_version, "
+            "max_account_drawdown, max_daily_realized_loss, max_repeated_stoploss_streak, max_metric_age_seconds, "
+            "effective_from_ts_utc, effective_until_ts_utc, source_provenance) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                account_id, config_version, configuration_version, max_account_drawdown, max_daily_realized_loss,
+                max_repeated_stoploss_streak, max_metric_age_seconds, effective_from_ts_utc, effective_until_ts_utc,
+                source_provenance,
+            ),
+        )
+        return cur.lastrowid
+
+
+def insert_protection_policy_config_revocation(
+    conn: FakeConnection, *, config_id: int, account_id: int = 7, revocation_version: str = "1",
+    effective_ts_utc: datetime = TS, actor: str = "operator-v1", reason: str = "superseded",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO account_protection_policy_config_revocation_v1 (account_protection_policy_config_id, "
+            "trading_account_id, revocation_version, effective_ts_utc, actor, reason) VALUES (%s,%s,%s,%s,%s,%s)",
+            (config_id, account_id, revocation_version, effective_ts_utc, actor, reason),
+        )
+        return cur.lastrowid
+
+
 def seed_happy_path(conn: FakeConnection, *, account_id: int = 7, venue: str = "bitvavo") -> dict[str, Any]:
-    """A fully fresh, internally consistent evidence set for one BTC position."""
+    """A fully fresh, internally consistent evidence set for one BTC position.
+
+    Includes a resolved, permissive (all thresholds disabled) account
+    protection policy config row so the account-protection evaluation the
+    real runtime now always performs resolves to PERMITTED by default,
+    matching "no active protection -> existing behavior".
+    """
     insert_trading_account(conn, account_id=account_id, venue=venue)
     bundle_ids = insert_complete_bundle(conn, account_id=account_id, venue=venue)
     position_id = insert_position(conn, account_id=account_id, venue=venue)
@@ -456,4 +567,5 @@ def seed_happy_path(conn: FakeConnection, *, account_id: int = 7, venue: str = "
     insert_exit_profile(conn, venue=venue)
     insert_permission(conn, account_id=account_id)
     insert_venue_constraint(conn, venue=venue)
+    insert_protection_policy_config(conn, account_id=account_id)
     return {"account_id": account_id, "venue": venue, "position_id": position_id, "venue_market_id": venue_market_id, **bundle_ids}
