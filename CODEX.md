@@ -70,12 +70,38 @@ and obey `src/research/AGENTS.override.md`.
   for repository architecture and safety rules.
 - Do not push unless explicitly requested.
 
+## Pull Request Review Policy
+
+GitHub automatically runs `Claude Code Review / claude-review (pull_request)`
+on pull requests. Treat that GitHub check as the default code-review gate.
+
+- After opening or updating a PR, do **not** start a separate manual Claude,
+  Codex, `/ultrareview`, or other duplicate code review while the automatic
+  GitHub Claude review is pending.
+- Wait for the automatic GitHub Claude review to complete and use its exact
+  result/comments as review evidence.
+- If the automatic Claude review succeeds with no blocking findings, no second
+  manual code review is required by default.
+- Start an additional independent review only when the automatic review is
+  absent, failed/cancelled, reports a blocker needing follow-up, the user
+  explicitly requests another review, or the task is explicitly designated
+  high-risk and requires a separate independent audit.
+- Tests, CI, architecture checks, DB/runtime safety checks, and required human
+  authorization remain separate gates. The automatic review does not replace
+  them.
+- Do not merge while the automatic Claude review is still in progress when it
+  is configured for that PR.
+
 ## Cross-Provider Review
 
 Codex is the OpenAI side of the cross-provider review contract.
 
-- Codex implementation -> prefer an Anthropic Claude review.
-- When Codex reviews Claude work, use a CLEAR thread and review the exact diff
-  and evidence, not a summary.
+- The automatic GitHub Claude review above is the default PR code-review gate
+  and avoids duplicate manual review work.
+- A separate cross-provider review is exception-based, not automatic: use it
+  only for the conditions listed in the Pull Request Review Policy or when a
+  task contract explicitly requires it.
+- When Codex reviews Claude work manually, use a CLEAR thread and review the
+  exact diff and evidence, not a summary.
 - Cross-provider review supplements but never replaces tests, audits, or human
   authorization.
