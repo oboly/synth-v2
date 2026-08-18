@@ -53,4 +53,6 @@ jobs:
             tests/test_execution_plan_explicit_intent_contract_mariadb_ddl_v1.py \
             tests/test_executor_live_authority_mariadb_ddl_v1.py \
             tests/test_execution_live_authority_datetime_v1.py \
-            tests/test_executor_paper_contract_mariadb_v1.py
+            tests/test_executor_paper_contract_mariadb_v1.py \
+            tests/test_account_protection_policy_config_mariadb_ddl_v1.py \
+            tests/test_account_asset_settings_mariadb_ddl_v1.py
