@@ -6851,6 +6851,74 @@ def test_sort_ppp_rail_and_main_grid_stay_synchronized_in_ppp_modes() -> None:
         assert result["rail_order"] == result["main_order"], mode
 
 
+def test_sort_ppp_desc_orders_globally_across_workflow_buckets() -> None:
+    """Regression (#364): ppp_desc used to sort by workflowBucket before PPP
+    value, so a lower-bucket card with a small PPP could outrank a
+    higher-bucket card with a much larger PPP. The comparator must ignore
+    workflowBucket entirely and order purely by numeric Actionable PPP."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="low_bucket_small_ppp", ppp="0.88", bucket=0),
+        _sort_ppp_fixture_card(symbol="high_bucket_big_ppp", ppp="6.8", bucket=3),
+        _sort_ppp_fixture_card(symbol="mid_bucket_mid_ppp", ppp="5.18", bucket=1),
+        _sort_ppp_fixture_card(symbol="high_bucket_bigger_ppp", ppp="6.64", bucket=2),
+        _sort_ppp_fixture_card(symbol="low_bucket_mid_ppp", ppp="4.26", bucket=0),
+    ]
+    result = _run_profit_plan_sort_js("ppp_desc", cards)
+    assert result["main_order"] == [
+        "high_bucket_big_ppp",
+        "high_bucket_bigger_ppp",
+        "mid_bucket_mid_ppp",
+        "low_bucket_mid_ppp",
+        "low_bucket_small_ppp",
+    ]
+
+
+def test_sort_ppp_asc_orders_globally_across_workflow_buckets() -> None:
+    """Same regression as ppp_desc (#364) but for the ascending direction."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="low_bucket_small_ppp", ppp="0.88", bucket=0),
+        _sort_ppp_fixture_card(symbol="high_bucket_big_ppp", ppp="6.8", bucket=3),
+        _sort_ppp_fixture_card(symbol="mid_bucket_mid_ppp", ppp="5.18", bucket=1),
+        _sort_ppp_fixture_card(symbol="high_bucket_bigger_ppp", ppp="6.64", bucket=2),
+        _sort_ppp_fixture_card(symbol="low_bucket_mid_ppp", ppp="4.26", bucket=0),
+    ]
+    result = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert result["main_order"] == [
+        "low_bucket_small_ppp",
+        "low_bucket_mid_ppp",
+        "mid_bucket_mid_ppp",
+        "high_bucket_bigger_ppp",
+        "high_bucket_big_ppp",
+    ]
+
+
+def test_sort_ppp_unavailable_grouped_after_usable_regardless_of_bucket() -> None:
+    """A card with unavailable Actionable PPP in a low workflowBucket must
+    still land after every usable-PPP card, even one from a higher bucket."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="unavailable_low_bucket", ppp=None, bucket=0),
+        _sort_ppp_fixture_card(symbol="usable_high_bucket", ppp="1.5", bucket=3),
+    ]
+    asc = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert asc["main_order"] == ["usable_high_bucket", "unavailable_low_bucket"]
+    desc = _run_profit_plan_sort_js("ppp_desc", cards)
+    assert desc["main_order"] == ["usable_high_bucket", "unavailable_low_bucket"]
+
+
+def test_sort_ppp_rail_matches_dom_order_with_mixed_buckets_and_unavailable() -> None:
+    """Rail/DOM parity must hold for the full mixed scenario: different
+    workflow buckets plus an unavailable-PPP card plus a symbol tie."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="zzz_tie", ppp="5", bucket=0),
+        _sort_ppp_fixture_card(symbol="aaa_tie", ppp="5", bucket=2),
+        _sort_ppp_fixture_card(symbol="unavailable", ppp=None, bucket=1),
+        _sort_ppp_fixture_card(symbol="high_ppp", ppp="9", bucket=0),
+    ]
+    for mode in ("ppp_asc", "ppp_desc"):
+        result = _run_profit_plan_sort_js(mode, cards)
+        assert result["rail_order"] == result["main_order"], mode
+
+
 def test_sort_ppp_rail_still_prioritizes_wallet_held_in_action_priority_mode() -> None:
     """The wallet-held-first rail convenience is preserved for the default
     action-priority sort — only PPP/symbol/setup modes must mirror DOM order."""
