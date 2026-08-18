@@ -11,26 +11,44 @@ A and B are unchanged and still block `GO_LIVE_READY`. No LIVE activation,
 executor change, or broker authority was introduced by that follow-on
 change; see its own safety markers where noted below.
 
-**Update (2026-08-18, same branch, correctness fix):** the initial blocker-C
-migration made `account_protection_policy_config_v1` fully immutable
-(`BEFORE UPDATE` unconditionally rejected), which made the resolver's own
-supersession contract impossible to satisfy in practice — an open-ended
-(`effective_until_ts_utc IS NULL`) config row could never be closed, so any
-second row for the same account would overlap the first forever and the
-account would be permanently stuck failing closed
+**Update (2026-08-18, same branch, correctness fix, revision 1):** the
+initial blocker-C migration made `account_protection_policy_config_v1`
+fully immutable (`BEFORE UPDATE` unconditionally rejected), which made the
+resolver's own supersession contract impossible to satisfy in practice — an
+open-ended (`effective_until_ts_utc IS NULL`) config row could never be
+closed, so any second row for the same account would overlap the first
+forever and the account would be permanently stuck failing closed
 (`AMBIGUOUS_PROTECTION_CONFIGURATION`) the moment a threshold needed to
-change. `db/migrations/20260817_account_protection_policy_config_v1.sql`'s
-update trigger now permits exactly one narrow transition — closing a
-still-open row's window, all other columns immutable, closeable only once —
-so a config update is: close the old open row's `effective_until_ts_utc` to
-the new row's `effective_from_ts_utc`, then insert the new row, in one
-transaction. See
-`docs/architecture/account_protection_contract_v1.md`'s "Real #392 wiring"
-section and `tests/test_account_protection_policy_config_mariadb_ddl_v1.py`
-(new, registered in `pr_mariadb_ddl_validation.yml`) for the corrected
-lifecycle proved against a disposable MariaDB schema. Migration remains an
-artifact only (not applied); no DB write, credential, authority, executor,
-or broker change.
+change. A first fix permitted one narrow `UPDATE` transition (closing the
+open window). Re-review found that still violated the required strictly
+append-only architecture for this table.
+
+**Update (2026-08-18, same branch, correctness fix, revision 2 — supersedes
+revision 1):** config rows are now permanently immutable with no update
+exception of any kind. Supersession/ending is instead expressed through a
+new, separate, immutable, append-only
+`account_protection_policy_config_revocation_v1` table (config id,
+denormalized account id, `revocation_version`, `effective_ts_utc`, `actor`,
+`reason`) — itself `UPDATE`/`DELETE`-rejecting. `resolve_account_protection_policy_v1`
+now takes both config rows and revocation facts: a config row is revoked at
+evaluation time `T` if *any* of its revocation facts has
+`effective_ts_utc <= T`. Multiple revocation facts per config row are valid
+by design so a future-scheduled revocation can never block a later,
+immediate one. Malformed revocations (dangling config reference, effective
+timestamp at/before the config's own start, empty `actor`/`reason`),
+cross-account corruption, and an unsupported `revocation_version` all fail
+closed. Superseding a config is now: insert a revocation fact for the old
+row, then insert the new config row — never an `UPDATE`. This revision also
+fixes a second, independent gap found in the same re-review:
+`AccountProtectionPolicyConfigRowV1` was missing `source_provenance` even
+though the DB row already persisted it; the repository now loads it and the
+resolver validates it non-empty on the winning row (audit trail only, never
+threshold semantics). See `docs/architecture/account_protection_contract_v1.md`'s
+"Real #392 wiring" section and the rewritten
+`tests/test_account_protection_policy_config_mariadb_ddl_v1.py` (registered
+in `pr_mariadb_ddl_validation.yml`) for the corrected lifecycle proved
+against a disposable MariaDB schema. Migration remains an artifact only (not
+applied); no DB write, credential, authority, executor, or broker change.
 
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5

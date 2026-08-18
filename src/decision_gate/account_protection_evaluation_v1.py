@@ -32,6 +32,7 @@ from src.decision_gate.account_protection_policy_contract_v1 import (
 )
 from src.decision_gate.account_protection_policy_repository_v1 import (
     AccountProtectionPolicyRepositoryError,
+    load_account_protection_policy_config_revocations_v1,
     load_account_protection_policy_config_rows_v1,
 )
 from src.decision_gate.account_protection_repository_v1 import (
@@ -104,8 +105,11 @@ def evaluate_account_protection_for_automatic_exit_v1(
     """
     try:
         config_rows = load_account_protection_policy_config_rows_v1(conn, trading_account_id=trading_account_id)
+        config_revocations = load_account_protection_policy_config_revocations_v1(
+            conn, trading_account_id=trading_account_id,
+        )
         policy = resolve_account_protection_policy_v1(
-            config_rows, trading_account_id=trading_account_id, at=evaluation_ts_utc,
+            config_rows, config_revocations, trading_account_id=trading_account_id, at=evaluation_ts_utc,
         )
     except (AccountProtectionPolicyRepositoryError, AccountProtectionPolicyConfigError):
         return _blocked(

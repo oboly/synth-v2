@@ -239,6 +239,16 @@ CREATE TABLE account_protection_policy_config_v1 (
     effective_until_ts_utc TEXT,
     source_provenance TEXT NOT NULL
 );
+
+CREATE TABLE account_protection_policy_config_revocation_v1 (
+    account_protection_policy_config_revocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_protection_policy_config_id INTEGER NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    revocation_version TEXT NOT NULL,
+    effective_ts_utc TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
 """
 
 
@@ -522,6 +532,19 @@ def insert_protection_policy_config(
                 max_repeated_stoploss_streak, max_metric_age_seconds, effective_from_ts_utc, effective_until_ts_utc,
                 source_provenance,
             ),
+        )
+        return cur.lastrowid
+
+
+def insert_protection_policy_config_revocation(
+    conn: FakeConnection, *, config_id: int, account_id: int = 7, revocation_version: str = "1",
+    effective_ts_utc: datetime = TS, actor: str = "operator-v1", reason: str = "superseded",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO account_protection_policy_config_revocation_v1 (account_protection_policy_config_id, "
+            "trading_account_id, revocation_version, effective_ts_utc, actor, reason) VALUES (%s,%s,%s,%s,%s,%s)",
+            (config_id, account_id, revocation_version, effective_ts_utc, actor, reason),
         )
         return cur.lastrowid
 

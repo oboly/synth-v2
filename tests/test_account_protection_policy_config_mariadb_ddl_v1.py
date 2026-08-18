@@ -121,6 +121,30 @@ INSERT INTO account_protection_policy_config_v1 (
 """
 
 
+def _insert_open_row(conn: Any) -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(_INSERT_OPEN_ROW)
+        row_id = int(cursor.lastrowid)
+    conn.commit()
+    return row_id
+
+
+def _insert_revocation(conn: Any, *, config_id: int, effective_ts_utc: str = "2026-08-18 00:00:00") -> int:
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO account_protection_policy_config_revocation_v1 (
+                account_protection_policy_config_id, trading_account_id,
+                revocation_version, effective_ts_utc, actor, reason
+            ) VALUES (%s, 7, '1', %s, 'operator-v1', 'superseded')
+            """,
+            [config_id, effective_ts_utc],
+        )
+        revocation_id = int(cursor.lastrowid)
+    conn.commit()
+    return revocation_id
+
+
 def test_migration_executes_and_audit_columns_are_added() -> None:
     with _schema() as conn:
         with conn.cursor() as cursor:
@@ -147,99 +171,47 @@ def test_migration_executes_and_audit_columns_are_added() -> None:
             assert "chk_account_protection_policy_config_daily_loss" in constraints
             assert "chk_account_protection_policy_config_streak" in constraints
             assert "fk_account_protection_policy_config_account" in constraints
-
-
-def test_config_row_can_be_closed_exactly_once_to_supersede_it() -> None:
-    from pymysql.err import OperationalError
-
-    with _schema() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(_INSERT_OPEN_ROW)
-            row_id = int(cursor.lastrowid)
-        conn.commit()
-
-        # The permitted lifecycle transition: close the open window so a new
-        # row can become the sole effective row from that point on.
-        with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE account_protection_policy_config_v1 "
-                "SET effective_until_ts_utc='2026-08-18 00:00:00' "
-                "WHERE account_protection_policy_config_id=%s",
-                [row_id],
+                """
+                SELECT constraint_name FROM information_schema.table_constraints
+                WHERE constraint_schema=DATABASE()
+                  AND table_name='account_protection_policy_config_revocation_v1'
+                """
             )
-        conn.commit()
-
-        with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT effective_until_ts_utc FROM account_protection_policy_config_v1 "
-                "WHERE account_protection_policy_config_id=%s",
-                [row_id],
-            )
-            closed = cursor.fetchone()
-            assert str(closed["effective_until_ts_utc"]) == "2026-08-18 00:00:00"
-
-        # A now-closed row cannot be closed again, reopened, or otherwise edited.
-        with pytest.raises(OperationalError):
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE account_protection_policy_config_v1 "
-                    "SET effective_until_ts_utc='2026-08-19 00:00:00' "
-                    "WHERE account_protection_policy_config_id=%s",
-                    [row_id],
-                )
-        conn.rollback()
-        with pytest.raises(OperationalError):
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE account_protection_policy_config_v1 "
-                    "SET effective_until_ts_utc=NULL "
-                    "WHERE account_protection_policy_config_id=%s",
-                    [row_id],
-                )
-        conn.rollback()
+            revocation_constraints = {str(row["constraint_name"]) for row in cursor.fetchall()}
+            assert "fk_account_protection_policy_config_revocation_config" in revocation_constraints
+            assert "fk_account_protection_policy_config_revocation_account" in revocation_constraints
+            assert "chk_account_protection_policy_config_revocation_text" in revocation_constraints
 
 
-def test_close_transition_rejects_value_edits_and_invalid_windows() -> None:
+def test_config_row_update_is_always_rejected() -> None:
     from pymysql.err import OperationalError
 
     with _schema() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(_INSERT_OPEN_ROW)
-            row_id = int(cursor.lastrowid)
-        conn.commit()
+        row_id = _insert_open_row(conn)
 
-        # Closing must not smuggle in an edit to any other column.
-        with pytest.raises(OperationalError):
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE account_protection_policy_config_v1 "
-                    "SET effective_until_ts_utc='2026-08-18 00:00:00', configuration_version='policy-2' "
-                    "WHERE account_protection_policy_config_id=%s",
-                    [row_id],
-                )
-        conn.rollback()
-
-        # The new effective_until must still be a valid (later) window.
-        with pytest.raises(OperationalError):
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "UPDATE account_protection_policy_config_v1 "
-                    "SET effective_until_ts_utc='2026-08-16 00:00:00' "
-                    "WHERE account_protection_policy_config_id=%s",
-                    [row_id],
-                )
-        conn.rollback()
+        # Every shape of update is rejected, including the previously-permitted
+        # "close the open window" transition: config rows are fully immutable.
+        rejected_updates = (
+            f"UPDATE account_protection_policy_config_v1 SET effective_until_ts_utc='2026-08-18 00:00:00' "
+            f"WHERE account_protection_policy_config_id={row_id}",
+            f"UPDATE account_protection_policy_config_v1 SET configuration_version='policy-2' "
+            f"WHERE account_protection_policy_config_id={row_id}",
+            f"UPDATE account_protection_policy_config_v1 SET source_provenance='other' "
+            f"WHERE account_protection_policy_config_id={row_id}",
+        )
+        for statement in rejected_updates:
+            with pytest.raises(OperationalError):
+                with conn.cursor() as cursor:
+                    cursor.execute(statement)
+            conn.rollback()
 
 
-def test_config_row_cannot_be_deleted() -> None:
+def test_config_row_delete_is_rejected() -> None:
     from pymysql.err import OperationalError
 
     with _schema() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(_INSERT_OPEN_ROW)
-            row_id = int(cursor.lastrowid)
-        conn.commit()
-
+        row_id = _insert_open_row(conn)
         with pytest.raises(OperationalError):
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -250,22 +222,82 @@ def test_config_row_cannot_be_deleted() -> None:
         conn.rollback()
 
 
-def test_supersession_produces_exactly_one_effective_row_matching_resolver_contract() -> None:
-    with _schema() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(_INSERT_OPEN_ROW)
-            old_id = int(cursor.lastrowid)
-        conn.commit()
+def test_revocation_update_is_rejected() -> None:
+    from pymysql.err import OperationalError
 
-        # Supersede: close the old row and insert the new row in one transaction,
-        # both anchored at the same boundary timestamp.
+    with _schema() as conn:
+        row_id = _insert_open_row(conn)
+        revocation_id = _insert_revocation(conn, config_id=row_id)
+        with pytest.raises(OperationalError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE account_protection_policy_config_revocation_v1 SET reason='other' "
+                    "WHERE account_protection_policy_config_revocation_id=%s",
+                    [revocation_id],
+                )
+        conn.rollback()
+
+
+def test_revocation_delete_is_rejected() -> None:
+    from pymysql.err import OperationalError
+
+    with _schema() as conn:
+        row_id = _insert_open_row(conn)
+        revocation_id = _insert_revocation(conn, config_id=row_id)
+        with pytest.raises(OperationalError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM account_protection_policy_config_revocation_v1 "
+                    "WHERE account_protection_policy_config_revocation_id=%s",
+                    [revocation_id],
+                )
+        conn.rollback()
+
+
+def test_revocation_requires_nonempty_actor_and_reason() -> None:
+    from pymysql.err import OperationalError
+
+    with _schema() as conn:
+        row_id = _insert_open_row(conn)
+        with pytest.raises(OperationalError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO account_protection_policy_config_revocation_v1 (
+                        account_protection_policy_config_id, trading_account_id,
+                        revocation_version, effective_ts_utc, actor, reason
+                    ) VALUES (%s, 7, '1', '2026-08-18 00:00:00', '   ', 'superseded')
+                    """,
+                    [row_id],
+                )
+        conn.rollback()
+
+
+def test_multiple_revocations_permitted_for_the_same_config_row() -> None:
+    """A scheduled future revocation must never block a later immediate one."""
+    with _schema() as conn:
+        row_id = _insert_open_row(conn)
+        _insert_revocation(conn, config_id=row_id, effective_ts_utc="2026-08-25 00:00:00")
+        # This must succeed even though a revocation already exists for this
+        # config row: multiple revocation facts per config are by design.
+        second_id = _insert_revocation(conn, config_id=row_id, effective_ts_utc="2026-08-18 00:00:00")
+        assert second_id > 0
+
         with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE account_protection_policy_config_v1 "
-                "SET effective_until_ts_utc='2026-08-20 00:00:00' "
+                "SELECT COUNT(*) AS n FROM account_protection_policy_config_revocation_v1 "
                 "WHERE account_protection_policy_config_id=%s",
-                [old_id],
+                [row_id],
             )
+            assert int(cursor.fetchone()["n"]) == 2
+
+
+def test_successor_and_revocation_leave_exactly_one_effective_config() -> None:
+    with _schema() as conn:
+        old_id = _insert_open_row(conn)
+        _insert_revocation(conn, config_id=old_id, effective_ts_utc="2026-08-20 00:00:00")
+
+        with conn.cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO account_protection_policy_config_v1 (
@@ -279,16 +311,25 @@ def test_supersession_produces_exactly_one_effective_row_matching_resolver_contr
                 )
                 """
             )
+            new_id = int(cursor.lastrowid)
         conn.commit()
 
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT account_protection_policy_config_id, configuration_version "
-                "FROM account_protection_policy_config_v1 "
-                "WHERE trading_account_id=7 "
-                "  AND effective_from_ts_utc <= '2026-08-21 00:00:00' "
-                "  AND (effective_until_ts_utc IS NULL OR effective_until_ts_utc > '2026-08-21 00:00:00')"
+                """
+                SELECT c.account_protection_policy_config_id, c.configuration_version
+                FROM account_protection_policy_config_v1 c
+                WHERE c.trading_account_id=7
+                  AND c.effective_from_ts_utc <= '2026-08-21 00:00:00'
+                  AND (c.effective_until_ts_utc IS NULL OR c.effective_until_ts_utc > '2026-08-21 00:00:00')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM account_protection_policy_config_revocation_v1 r
+                      WHERE r.account_protection_policy_config_id = c.account_protection_policy_config_id
+                        AND r.effective_ts_utc <= '2026-08-21 00:00:00'
+                  )
+                """
             )
             effective = cursor.fetchall()
             assert len(effective) == 1
+            assert effective[0]["account_protection_policy_config_id"] == new_id
             assert effective[0]["configuration_version"] == "policy-2"

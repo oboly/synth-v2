@@ -36,45 +36,73 @@ CREATE TABLE IF NOT EXISTS account_protection_policy_config_v1 (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Append-only account-scoped account-protection thresholds. No effective row means protection configuration is unresolved and #392 fails closed.';
 
--- Append-only, with exactly one permitted lifecycle transition: closing a
--- still-open (effective_until_ts_utc IS NULL) row's window when it is
--- superseded by a new effective-window row. Every other field is immutable
--- and a row may only be closed once. Without this narrow exception, an
--- open-ended row could never be superseded at all: the resolver
--- (account_protection_policy_contract_v1.resolve_account_protection_policy_v1)
--- requires exactly one row active at a given timestamp, but a second
--- unbounded row would otherwise overlap the first forever, permanently
--- producing AMBIGUOUS_PROTECTION_CONFIGURATION. Callers must close the prior
--- open row and insert the new row in the same transaction.
+-- Strictly append-only: no UPDATE, no DELETE, ever. A config row's window is
+-- fixed for its lifetime. Superseding or ending an open-ended
+-- (effective_until_ts_utc IS NULL) row is expressed exclusively through an
+-- immutable revocation fact in account_protection_policy_config_revocation_v1
+-- below, never by mutating the config row itself.
 DELIMITER //
 CREATE TRIGGER trg_account_protection_policy_config_v1_no_update
 BEFORE UPDATE ON account_protection_policy_config_v1
 FOR EACH ROW
 BEGIN
-    IF NOT (
-        OLD.effective_until_ts_utc IS NULL
-        AND NEW.effective_until_ts_utc IS NOT NULL
-        AND NEW.effective_until_ts_utc > NEW.effective_from_ts_utc
-        AND NEW.account_protection_policy_config_id = OLD.account_protection_policy_config_id
-        AND NEW.trading_account_id = OLD.trading_account_id
-        AND NEW.config_version = OLD.config_version
-        AND NEW.configuration_version = OLD.configuration_version
-        AND NEW.max_account_drawdown <=> OLD.max_account_drawdown
-        AND NEW.max_daily_realized_loss <=> OLD.max_daily_realized_loss
-        AND NEW.max_repeated_stoploss_streak <=> OLD.max_repeated_stoploss_streak
-        AND NEW.max_metric_age_seconds = OLD.max_metric_age_seconds
-        AND NEW.effective_from_ts_utc = OLD.effective_from_ts_utc
-        AND NEW.source_provenance = OLD.source_provenance
-        AND NEW.created_ts_utc = OLD.created_ts_utc
-    ) THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config only permits closing an open effective_until_ts_utc window exactly once; all other fields are immutable, insert a new row for any other change';
-    END IF;
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config is immutable; append a revocation fact instead';
 END//
 CREATE TRIGGER trg_account_protection_policy_config_v1_no_delete
 BEFORE DELETE ON account_protection_policy_config_v1
 FOR EACH ROW
 BEGIN
-    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config is append-only; insert a new effective-window row instead';
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config is immutable; append a revocation fact instead';
+END//
+DELIMITER ;
+
+-- Immutable, append-only revocation/supersession lifecycle facts for
+-- account_protection_policy_config_v1. Multiple revocation facts per config
+-- row are permitted by design (e.g. an earlier scheduled future revocation
+-- must never block a later immediate one from also being recorded); the
+-- resolver treats a config row as revoked at time T if ANY of its
+-- revocation facts has effective_ts_utc <= T. trading_account_id is
+-- denormalized from the referenced config row so the resolver can detect a
+-- corrupt/conflicting cross-account reference without a join.
+CREATE TABLE IF NOT EXISTS account_protection_policy_config_revocation_v1 (
+    account_protection_policy_config_revocation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    account_protection_policy_config_id BIGINT UNSIGNED NOT NULL,
+    trading_account_id BIGINT UNSIGNED NOT NULL,
+    revocation_version VARCHAR(16) NOT NULL,
+    effective_ts_utc DATETIME(6) NOT NULL,
+    actor VARCHAR(128) NOT NULL,
+    reason VARCHAR(512) NOT NULL,
+    created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (account_protection_policy_config_revocation_id),
+    KEY ix_account_protection_policy_config_revocation_lookup (
+        account_protection_policy_config_id, effective_ts_utc
+    ),
+    KEY ix_account_protection_policy_config_revocation_account (
+        trading_account_id, effective_ts_utc
+    ),
+    CONSTRAINT fk_account_protection_policy_config_revocation_config
+        FOREIGN KEY (account_protection_policy_config_id)
+        REFERENCES account_protection_policy_config_v1 (account_protection_policy_config_id),
+    CONSTRAINT fk_account_protection_policy_config_revocation_account
+        FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id),
+    CONSTRAINT chk_account_protection_policy_config_revocation_text CHECK (
+        CHAR_LENGTH(TRIM(actor)) > 0 AND CHAR_LENGTH(TRIM(reason)) > 0
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Immutable, append-only revocation/supersession facts for account_protection_policy_config_v1. Never updated or deleted.';
+
+DELIMITER //
+CREATE TRIGGER trg_account_protection_policy_config_revocation_v1_no_update
+BEFORE UPDATE ON account_protection_policy_config_revocation_v1
+FOR EACH ROW
+BEGIN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config revocation facts are append-only';
+END//
+CREATE TRIGGER trg_account_protection_policy_config_revocation_v1_no_delete
+BEFORE DELETE ON account_protection_policy_config_revocation_v1
+FOR EACH ROW
+BEGIN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'account protection policy config revocation facts are append-only';
 END//
 DELIMITER ;
 

@@ -369,22 +369,36 @@ automatic-exit gate decision.** Provisioning at least a permissive
 (all-thresholds-`None`) config row is therefore an operational prerequisite
 before any account's automatic-exit candidates can stage a plan again.
 
-The table is append-only with two enforced triggers, but the update trigger
-permits exactly one narrow lifecycle transition: closing a still-open
-(`effective_until_ts_utc IS NULL`) row's window when it is superseded, with
-every other column byte-identical and a row closeable only once (any other
-edit, any second close, or any reopen is rejected). This is required, not
-incidental: the resolver demands exactly one row be effective at a given
-timestamp, and without a way to close an open-ended row, a second config row
-for the same account would overlap the first forever and the account would
-be permanently stuck at `AMBIGUOUS_PROTECTION_CONFIGURATION`. Superseding a
-config therefore means, in one transaction: `UPDATE
-account_protection_policy_config_v1 SET effective_until_ts_utc = <new row's
-effective_from_ts_utc> WHERE account_protection_policy_config_id = <old row>
-AND effective_until_ts_utc IS NULL`, then `INSERT` the new row. All other
-column values, including historical thresholds, remain immutable forever.
-`tests/test_account_protection_policy_config_mariadb_ddl_v1.py` proves this
-end-to-end against a disposable MariaDB schema.
+`account_protection_policy_config_v1` rows are permanently immutable: both
+the `UPDATE` and `DELETE` triggers reject unconditionally, with no exception
+for closing an open-ended (`effective_until_ts_utc IS NULL`) row. Ending or
+superseding a config is expressed exclusively through an immutable fact in
+the companion `account_protection_policy_config_revocation_v1` table (config
+id, denormalized `trading_account_id`, `revocation_version`,
+`effective_ts_utc`, `actor`, `reason`) — itself `UPDATE`/`DELETE`-rejecting.
+`resolve_account_protection_policy_v1` now takes both the config rows and
+the revocation facts: a config row counts as revoked at evaluation time `T`
+if *any* of its revocation facts has `effective_ts_utc <= T`. Multiple
+revocation facts per config row are valid by design — a revocation scheduled
+for the future must never block a second, immediate revocation from also
+being recorded and taking effect right away. Malformed revocations (dangling
+config reference, effective timestamp at/before the referenced config's own
+`effective_from_ts_utc`, empty `actor`/`reason`) and cross-account corruption
+(a revocation's own `trading_account_id` disagreeing with its referenced
+config row's account) both fail closed, as does an unsupported
+`revocation_version`. Superseding a config is therefore, in one transaction:
+`INSERT` a revocation fact for the old row (`effective_ts_utc` = the new
+row's `effective_from_ts_utc`), then `INSERT` the new config row — never an
+`UPDATE` to the old row. `tests/test_account_protection_policy_config_mariadb_ddl_v1.py`
+proves this end-to-end against a disposable MariaDB schema, including that
+config/revocation rows reject every update and delete shape and that a
+config with an already-scheduled future revocation still accepts a second,
+immediate one.
+
+`AccountProtectionPolicyConfigRowV1.source_provenance` (who/what provisioned
+the row) is loaded by the repository and validated non-empty by the resolver
+on the winning row — it is operational audit trail only and is never used as
+threshold semantics.
 
 `MAX_ACCOUNT_DRAWDOWN`, `DAILY_REALIZED_LOSS`, and `REPEATED_STOPLOSS_STREAK`
 still have **no canonical metric-fact producer**: the composition seam always
