@@ -88,6 +88,20 @@ This batch adds only the missing settings-support fields:
 
 It reuses existing `created_ts` / `updated_ts` instead of adding duplicate timestamp columns.
 
+### Production schema reconciliation
+
+Issue #333 tracks production drift where the three settings-support fields above are absent from the live `account_asset` table even though the repository runtime already reads and writes them.
+
+`db/migrations/20260603_account_asset_settings_v1.sql` is additive and idempotent for the three columns. Existing rows are backfilled as follows:
+
+- `first_seen_at_utc` from the row's existing `created_ts`;
+- `last_seen_at_utc` from the row's existing `updated_ts`;
+- `updated_ts` must remain byte-for-byte unchanged by the backfill.
+
+The final invariant matters because the foundation column is defined with `ON UPDATE CURRENT_TIMESTAMP`. The migration therefore explicitly self-assigns `updated_ts = updated_ts` during the provenance backfill so the schema repair does not rewrite historical update evidence merely because new columns were populated.
+
+Production application remains a separately authorized ops action. Repository merge or Issue #333 work alone does not authorize a production `ALTER TABLE` or data backfill.
+
 ## Supported actions
 
 Local-only runner actions:
@@ -142,8 +156,7 @@ The renderer exposes prepared action metadata only:
 
 These are dashboard/UI-prep descriptors only, not live public mutation handlers.
 
-The wallet dashboard render exposes these datasets inside `wallet.json` and as
-disabled controls/sections in `wallet.html`.
+The wallet dashboard render exposes these datasets inside `wallet.json` and as disabled controls/sections in `wallet.html`.
 
 ## Filtering semantics
 
