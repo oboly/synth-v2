@@ -1,0 +1,127 @@
+name: Claude Cheap Batch
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  haiku:
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '[agent:haiku]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Haiku
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: main
+          prompt: |
+            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+
+            Issue title:
+            ${{ github.event.issue.title }}
+
+            Issue body:
+            ${{ github.event.issue.body }}
+
+            Trigger instructions:
+            ${{ github.event.comment.body }}
+
+            Follow repository AGENTS.md and canonical docs. Keep the change small and reviewable.
+            Stay strictly inside the issue scope and architecture boundaries.
+            Open a pull request against main. Do not merge it.
+          claude_args: |
+            --model haiku
+            --max-turns 12
+            --disallowedTools WebSearch
+
+  sonnet-low:
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '[agent:sonnet-low]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Sonnet low effort
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: main
+          prompt: |
+            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+
+            Issue title:
+            ${{ github.event.issue.title }}
+
+            Issue body:
+            ${{ github.event.issue.body }}
+
+            Trigger instructions:
+            ${{ github.event.comment.body }}
+
+            Follow repository AGENTS.md and canonical docs. Keep the change small and reviewable.
+            Stay strictly inside the issue scope and architecture boundaries.
+            Run focused validation permitted by the tool policy below.
+            Open a pull request against main. Do not merge it.
+          claude_args: |
+            --model sonnet
+            --effort low
+            --max-turns 18
+            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *)"
+            --disallowedTools WebSearch
+
+  sonnet-medium:
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.comment.body, '[agent:sonnet-medium]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Sonnet medium effort
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: main
+          prompt: |
+            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
+
+            Issue title:
+            ${{ github.event.issue.title }}
+
+            Issue body:
+            ${{ github.event.issue.body }}
+
+            Trigger instructions:
+            ${{ github.event.comment.body }}
+
+            Follow repository AGENTS.md and canonical docs. Keep the change small and reviewable.
+            Stay strictly inside the issue scope and architecture boundaries.
+            Run focused validation permitted by the tool policy below.
+            Open a pull request against main. Do not merge it.
+          claude_args: |
+            --model sonnet
+            --effort medium
+            --max-turns 28
+            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *)"
+            --disallowedTools WebSearch
