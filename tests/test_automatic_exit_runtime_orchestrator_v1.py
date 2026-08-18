@@ -24,6 +24,7 @@ from src.exit_policy.automatic_exit_runtime_repository_v1 import (
 from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
+    insert_live_permission,
     insert_market_price,
     insert_protection_lock_fact,
     insert_protection_policy_config,
@@ -135,7 +136,12 @@ def test_runtime_cannot_bypass_gate_via_legacy_live_flag_alone() -> None:
 
 
 def test_runtime_live_account_mode_alone_without_explicit_permission_is_denied() -> None:
-    """Issue #392 Phase 6 blocker B: account_mode=live alone is never sufficient."""
+    """Issue #392 Phase 6 blocker B: account_mode=live alone is never sufficient.
+
+    No row exists in automatic_exit_live_decision_gate_permission_v1 for this
+    account; the decision_gate-owned evaluation seam resolves that to a typed
+    DENIED evaluation, which the orchestrator forwards unchanged.
+    """
     conn = FakeConnection()
     seed_happy_path(conn)
     with conn.cursor() as cur:
@@ -143,23 +149,27 @@ def test_runtime_live_account_mode_alone_without_explicit_permission_is_denied()
     insert_market_price(conn, price=Decimal("65000"))
     item = _build_item(conn)
     live_item = replace(item, account_mode="live", live_trading_enabled=True)
-    assert live_item.automatic_exit_live_permission_enabled is False
     outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
     assert outcome.gate_state == "DENIED"
     assert outcome.planner_state == "NOT_REACHED"
 
 
 def test_runtime_live_account_with_explicit_permission_reaches_staged_plan() -> None:
-    """Issue #392 Phase 6 blocker B: explicit decision-gate LIVE permission lets a LIVE candidate stage a plan."""
+    """Issue #392 Phase 6 blocker B: explicit decision-gate LIVE permission lets a LIVE candidate stage a plan.
+
+    The permission fact is persisted in automatic_exit_live_decision_gate_permission_v1
+    and resolved fresh by the orchestrator's call into decision_gate, not
+    carried on RuntimeItemV1 -- exit_policy never resolves LIVE permission
+    itself (Issue #392 Phase 6 blocker B ownership fix).
+    """
     conn = FakeConnection()
     seed_happy_path(conn)
     with conn.cursor() as cur:
         cur.execute("DELETE FROM market_price_snapshot")
     insert_market_price(conn, price=Decimal("65000"))
+    insert_live_permission(conn, account_id=7, live_execution_permitted=True)
     item = _build_item(conn)
-    live_item = replace(
-        item, account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
-    )
+    live_item = replace(item, account_mode="live", live_trading_enabled=True)
     outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=live_item, evaluation_ts_utc=NOW)
     assert outcome.gate_state == "APPROVED"
     assert outcome.planner_state == "STAGED"
@@ -174,9 +184,8 @@ def test_runtime_live_account_manual_lock_denies() -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM market_price_snapshot")
     insert_market_price(conn, price=Decimal("65000"))
-    live_item = replace(
-        _build_item(conn), account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
-    )
+    insert_live_permission(conn, account_id=7, live_execution_permitted=True)
+    live_item = replace(_build_item(conn), account_mode="live", live_trading_enabled=True)
     insert_protection_lock_fact(
         conn, lifecycle_id="manual-1", event_id="manual-event-1", protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK,
     )
@@ -192,9 +201,8 @@ def test_runtime_live_account_drawdown_protection_permits_reduce() -> None:
     with conn.cursor() as cur:
         cur.execute("DELETE FROM market_price_snapshot")
     insert_market_price(conn, price=Decimal("65000"))
-    live_item = replace(
-        _build_item(conn), account_mode="live", live_trading_enabled=True, automatic_exit_live_permission_enabled=True,
-    )
+    insert_live_permission(conn, account_id=7, live_execution_permitted=True)
+    live_item = replace(_build_item(conn), account_mode="live", live_trading_enabled=True)
     insert_protection_lock_fact(
         conn, lifecycle_id="drawdown-1", event_id="drawdown-event-1", protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
     )

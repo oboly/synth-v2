@@ -19,6 +19,10 @@ from src.decision_gate.account_protection_contract_v1 import (
     STATE_BLOCKED as PROTECTION_STATE_BLOCKED,
     validate_account_protection_evaluation_binding_v1,
 )
+from src.decision_gate.automatic_exit_live_permission_evaluation_v1 import (
+    DECISION_GRANTED as LIVE_PERMISSION_DECISION_GRANTED,
+    AutomaticExitLivePermissionEvaluationV1,
+)
 from src.exit_policy import POLICY_NAME, POLICY_VERSION
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
 
@@ -50,6 +54,7 @@ REASON_EXECUTION_PERMISSION_DISABLED: Final[str] = "AUTOMATIC_EXIT_EXECUTION_PER
 REASON_UNSUPPORTED_ACCOUNT_MODE: Final[str] = "UNSUPPORTED_ACCOUNT_MODE"
 REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT: Final[str] = "ACCOUNT_MODE_LIVE_FLAG_EVIDENCE_INCONSISTENT"
 REASON_LIVE_EXECUTION_NOT_GRANTED: Final[str] = "LIVE_EXECUTION_NOT_GRANTED"
+REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH: Final[str] = "AUTOMATIC_EXIT_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH"
 REASON_BLOCKING_CONFLICT: Final[str] = "BLOCKING_SELL_RESERVATION_OR_ORDER_CONFLICT"
 REASON_NO_FREE_QUANTITY: Final[str] = "NO_FREE_UNRESERVED_QUANTITY"
 REASON_RISK_BOUND_UNRESOLVED: Final[str] = "AUTOMATIC_EXIT_RISK_BOUND_UNRESOLVED"
@@ -77,13 +82,18 @@ class AutomaticExitGateContextV1:
     own it is never sufficient LIVE permission and is never executor
     authority, a kill switch, or a credential/broker permission of any kind.
 
-    ``automatic_exit_live_permission_enabled`` is the explicit, separately
-    persisted, account-scoped decision-gate LIVE permission fact resolved by
-    ``automatic_exit_live_permission_contract_v1.resolve_automatic_exit_live_decision_gate_permission_v1``
-    (Issue #392 Phase 6 blocker B). It is required, in addition to
-    ``account_mode == "live"`` and ``live_trading_enabled == True``, before a
-    LIVE candidate may reach APPROVED. It is decision-gate permission only:
-    it grants no executor operational LIVE authority
+    ``automatic_exit_live_permission_evaluation`` is the typed decision-gate
+    LIVE permission evaluation (Issue #392 Phase 6 blocker B), composed by
+    ``src/decision_gate/automatic_exit_live_permission_evaluation_v1.py``
+    (the sole owner of LIVE permission resolution semantics) and forwarded
+    unchanged by the caller -- this gate never resolves permission evidence
+    itself, matching how ``account_protection_evaluation`` is handled below.
+    It is required, in addition to ``account_mode == "live"`` and
+    ``live_trading_enabled == True``, before a LIVE candidate may reach
+    APPROVED: its ``trading_account_id`` must match this context's account,
+    and its ``decision_state`` must be ``GRANTED``. ``None``, an account
+    mismatch, or any non-``GRANTED`` state all deny. It is decision-gate
+    permission only: it grants no executor operational LIVE authority
     (``src/executor/execution_live_authority_v1.py``), no kill-switch state,
     and no credential/broker access -- those remain a wholly separate,
     downstream gate. For ``account_mode == "paper"`` this field is not
@@ -108,7 +118,6 @@ class AutomaticExitGateContextV1:
     account_mode: str
     automatic_exit_execution_enabled: bool
     live_trading_enabled: bool
-    automatic_exit_live_permission_enabled: bool
     blocking_conflict: bool
     evaluation_ts_utc: datetime
     max_account_age_seconds: int = 15 * 60
@@ -122,6 +131,10 @@ class AutomaticExitGateContextV1:
     # P2 supplies an action-aware evaluation from decision_gate. Exit policy
     # remains unaware of protection internals.
     account_protection_evaluation: AccountProtectionEvaluationV1 | None = None
+    # Issue #392 Phase 6 blocker B: decision_gate supplies a typed LIVE
+    # permission evaluation. Exit policy remains unaware of LIVE permission
+    # resolution internals, matching account_protection_evaluation above.
+    automatic_exit_live_permission_evaluation: AutomaticExitLivePermissionEvaluationV1 | None = None
 
 
 @dataclass(frozen=True)
@@ -227,9 +240,9 @@ def _evaluate_automatic_exit_candidate_permission_base_v1(
     # Issue #392 Phase 6 blocker B: explicit typed LIVE decision-gate
     # semantics. account_mode alone, live_trading_enabled alone, or both
     # together are never sufficient LIVE permission -- only an explicit,
-    # separately persisted automatic_exit_live_permission_enabled fact can
-    # approve a LIVE candidate. This grants decision-gate permission only;
-    # it never grants executor operational LIVE authority, a kill switch, or
+    # separately persisted, account-bound GRANTED evaluation can approve a
+    # LIVE candidate. This grants decision-gate permission only; it never
+    # grants executor operational LIVE authority, a kill switch, or
     # broker/credential access (see AutomaticExitGateContextV1 docstring).
     if context.account_mode not in SUPPORTED_ACCOUNT_MODES:
         return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate)
@@ -239,7 +252,12 @@ def _evaluate_automatic_exit_candidate_permission_base_v1(
     else:  # ACCOUNT_MODE_LIVE
         if not context.live_trading_enabled:
             return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
-        if not context.automatic_exit_live_permission_enabled:
+        live_permission = context.automatic_exit_live_permission_evaluation
+        if live_permission is None:
+            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
+        if live_permission.trading_account_id != context.trading_account_id:
+            return _decision(STATE_DENIED, REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH, candidate)
+        if live_permission.decision_state != LIVE_PERMISSION_DECISION_GRANTED:
             return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
 
     if context.blocking_conflict:
