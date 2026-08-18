@@ -18,9 +18,13 @@ ALTER TABLE account_asset
         COMMENT 'Most recent discovery/add visibility timestamp'
         AFTER first_seen_at_utc;
 
+-- Backfill provenance without rewriting the foundation row's historical
+-- updated_ts. account_asset.updated_ts has ON UPDATE CURRENT_TIMESTAMP, so an
+-- explicit self-assignment is required while populating the new columns.
 UPDATE account_asset
 SET
     first_seen_at_utc = COALESCE(first_seen_at_utc, created_ts),
-    last_seen_at_utc = COALESCE(last_seen_at_utc, updated_ts)
+    last_seen_at_utc = COALESCE(last_seen_at_utc, updated_ts),
+    updated_ts = updated_ts
 WHERE first_seen_at_utc IS NULL
    OR last_seen_at_utc IS NULL;
