@@ -4394,9 +4394,9 @@ def _build_client_js(storage_scope: str) -> str:
       }}
 
       if (mode === 'ppp_asc' || mode === 'ppp_desc') {{
-        var bucketDelta = numericDataset(a, 'workflowBucket', '999') - numericDataset(b, 'workflowBucket', '999');
-        if (bucketDelta !== 0) return bucketDelta;
-
+        // Explicit PPP sort must be a true global numeric ordering by
+        // Actionable PPP value only (#364) — workflowBucket belongs to
+        // action/workflow-priority sorting, not here.
         var aHasPpp = hasUsablePpp(a);
         var bHasPpp = hasUsablePpp(b);
         if (aHasPpp !== bHasPpp) return aHasPpp ? -1 : 1;
