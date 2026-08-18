@@ -3107,6 +3107,78 @@ def test_rotation_strip_leads_with_pressure_scale_and_persisted_participation() 
     assert "rotation-history-line" in rendered
 
 
+def test_rotation_strip_history_uses_dynamic_visible_scale_and_cadence_label() -> None:
+    """Issue #412: the rotation strip's history chart must scale to the
+    currently visible window's own min/zero/max, not the fixed -100..+100
+    persisted validation domain used by the headline gauge, and must state
+    the active window + detected cadence near the chart."""
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    header = {
+        "pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0),
+        "venue": "bitvavo", "model_version": "1.0", "eligible_asset_count": 1,
+        "excluded_missing_pair_count": 0, "positive_count": 1, "neutral_count": 0,
+        "negative_count": 0, "market_score": 20.0, "positive_breadth_ratio": 1.0,
+        "negative_breadth_ratio": 0.0, "acceleration_state": "ACCELERATING_IN",
+        "concentration_state": "SELECTIVE", "confirmation_state": "CONFIRMED",
+        "market_direction": "ROTATION_IN", "evidence_light_count": 2,
+    }
+    rows = [{"asset_id": 1, "market": "OTHER-EUR", "score_total": 40.0,
+        "pressure_state": "ROTATION_IN", "phase_state": "ACCELERATING_IN",
+        "raw_return_24h_pct": 4.0, "raw_return_7d_pct": 10.0,
+        "raw_relative_volume_24h": 1.5, "raw_relative_volume_7d": 1.2,
+        "score_acceleration": 2.0, "score_persistence": 1.3}]
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 12.0},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 20.0},
+    ]
+    projection = build_rotation_projection(
+        header, rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "history: 30d · 1h snapshots" in rendered
+    assert "<span>+5.0</span><span>0</span><span>+20.0</span>" in rendered
+    # headline keeps the fixed persisted-domain scale; only the history chart is dynamic
+    assert "-100</span><span>0</span><span>+100" in rendered
+
+
+def test_rotation_strip_history_scale_shows_true_extrema_not_zero_folded() -> None:
+    """Issue #412: visible_min/visible_max must be the true extrema of the
+    visible scores -- zero must not overwrite an all-positive window's
+    actual minimum (or an all-negative window's actual maximum). Zero
+    remains a separate chart reference marker."""
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    header = {
+        "pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0),
+        "venue": "bitvavo", "model_version": "1.0", "eligible_asset_count": 1,
+        "excluded_missing_pair_count": 0, "positive_count": 0, "neutral_count": 0,
+        "negative_count": 1, "market_score": -20.0, "positive_breadth_ratio": 0.0,
+        "negative_breadth_ratio": 1.0, "acceleration_state": "ACCELERATING_OUT",
+        "concentration_state": "SELECTIVE", "confirmation_state": "CONFIRMED",
+        "market_direction": "ROTATION_OUT", "evidence_light_count": 2,
+    }
+    rows = [{"asset_id": 1, "market": "OTHER-EUR", "score_total": -40.0,
+        "pressure_state": "ROTATION_OUT", "phase_state": "ACCELERATING_OUT",
+        "raw_return_24h_pct": -4.0, "raw_return_7d_pct": -10.0,
+        "raw_relative_volume_24h": 1.5, "raw_relative_volume_7d": 1.2,
+        "score_acceleration": -2.0, "score_persistence": 1.3}]
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": -18.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": -12.0},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": -20.0},
+    ]
+    projection = build_rotation_projection(
+        header, rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "<span>-20.0</span><span>0</span><span>-12.0</span>" in rendered
+    # zero stays drawn as a reference marker even though it falls outside the
+    # true (all-negative) visible extrema
+    assert "rotation-history-zero" in rendered
+
+
 def test_html_and_json_render_id_match_when_same_id_passed() -> None:
     fixed_render_id = "shared-render-id-abcd-1234"
     fixed_writer_id = "shared-writer-id-efgh-5678"

@@ -19,6 +19,11 @@ from src.reporting.market_rotation_profit_plan_projection_v1 import (
     to_json_dict as rotation_projection_to_json_dict,
     unavailable_projection as unavailable_rotation_projection,
 )
+from src.reporting.market_rotation_pressure_dashboard_v1 import (
+    build_history_view as build_rotation_history_view,
+    format_history_window_label as format_rotation_history_window_label,
+    render_pressure_curve_svg as render_rotation_pressure_curve_svg,
+)
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -4097,6 +4102,7 @@ _CSS = """
     .rotation-composition-out { background: var(--bad); } .rotation-composition-mixed { background: var(--warn); } .rotation-composition-in { background: var(--ok); }
     .rotation-history { grid-column: 1 / -1; margin-top: 2px; }
     .rotation-history-label { font-size: 10px; color: var(--muted); }
+    .rotation-history-scale { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); margin-top: 2px; }
     .rotation-history svg { display: block; width: 100%; max-height: 80px; margin-top: 3px; background: rgba(0,0,0,.16); border-radius: 4px; }
     .rotation-history-zero { stroke: var(--muted); stroke-dasharray: 4 4; } .rotation-history-line { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
     .rotation-freshness-badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); }
@@ -4888,21 +4894,41 @@ def _rotation_composition_html(projection: RotationProfitPlanProjection) -> str:
 
 
 def _rotation_history_html(projection: RotationProfitPlanProjection) -> str:
-    if not projection.history:
+    # Issue #412: default 30d viewport over the same persisted history source
+    # the dedicated rotation pressure dashboard reads, scaled to the visible
+    # window's own min/zero/max rather than the fixed -100..+100 persisted
+    # validation domain. Full 24h/7d/30d/all viewport switching lives on the
+    # dedicated dashboard; this compact strip keeps the default window only.
+    view = build_rotation_history_view(projection.history)
+    if not view.points:
         return "<div class='rotation-history'><span class='rotation-history-label'>No prior persisted pressure snapshots</span></div>"
-    width, height, padding = 600, 100, 15
-    plot_height = height - padding * 2
-    points = " ".join(
-        f"{padding + index * (width - padding * 2) / max(len(projection.history) - 1, 1):.1f},"
-        f"{padding + (100.0 - point.market_score) / 200.0 * plot_height:.1f}"
-        for index, point in enumerate(projection.history)
+    visible_min = view.visible_min if view.visible_min is not None else -1.0
+    visible_max = view.visible_max if view.visible_max is not None else 1.0
+    # Plot domain always includes zero as a reference line; the displayed
+    # scale labels below stay the true visible extrema (see
+    # market_rotation_pressure_dashboard_v1.build_history_view).
+    domain_min = min(0.0, visible_min)
+    domain_max = max(0.0, visible_max)
+    curve_svg = render_rotation_pressure_curve_svg(
+        view.points,
+        visible_min=domain_min,
+        visible_max=domain_max,
+        width=600,
+        height=100,
+        padding=15,
+        svg_class=None,
+        line_class="rotation-history-line",
+        zero_class="rotation-history-zero",
+        aria_label="Persisted aggregate pressure history, scaled to visible min, zero, and max",
     )
     return (
-        "<div class='rotation-history'><span class='rotation-history-label'>"
-        "Persisted aggregate pressure history · fixed −100 · 0 · +100</span>"
-        "<svg viewBox='0 0 600 100' role='img' aria-label='Persisted aggregate pressure history'>"
-        "<line class='rotation-history-zero' x1='15' y1='50' x2='585' y2='50'></line>"
-        f"<polyline class='rotation-history-line' points='{points}'></polyline></svg></div>"
+        "<div class='rotation-history'>"
+        f"<span class='rotation-history-label'>{esc(format_rotation_history_window_label(view))}</span>"
+        "<div class='rotation-history-scale' aria-label='Visible chart scale'>"
+        f"<span>{visible_min:+.1f}</span><span>0</span><span>{visible_max:+.1f}</span>"
+        "</div>"
+        f"{curve_svg}"
+        "</div>"
     )
 
 

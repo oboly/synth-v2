@@ -23,7 +23,13 @@ REQUIRED_TABLES = (
     "market_rotation_pressure_snapshot_v1",
     "market_rotation_pressure_observation_v1",
 )
-HISTORY_LIMIT = 168
+# Issue #412 (follow-up): a single-query LIMIT cap -- whatever its size --
+# is still a truncation point for the "all" viewport once persisted history
+# grows past it. `fetch_pressure_history` instead reads the complete
+# persisted history for venue/model_version via keyset pagination: each
+# page is bounded by HISTORY_FETCH_PAGE_SIZE, but the loop continues until a
+# page comes back short, so no overall row count can silently truncate it.
+HISTORY_FETCH_PAGE_SIZE = 2000
 _OUTPUT_MODE = 0o644
 
 
@@ -109,18 +115,53 @@ def fetch_snapshot_observations(conn: Any, *, pressure_snapshot_id: int) -> list
 
 
 def fetch_pressure_history(
-    conn: Any, *, venue: str, model_version: str, limit: int = HISTORY_LIMIT
+    conn: Any, *, venue: str, model_version: str, page_size: int = HISTORY_FETCH_PAGE_SIZE
 ) -> list[dict[str, Any]]:
-    """Read persisted aggregate snapshots only; this runner never recomputes pressure."""
+    """Read the complete persisted aggregate history for venue/model_version.
+
+    This runner never recomputes pressure and never mutates persisted rows.
+    Rows are read via keyset pagination on (as_of_ts_utc, pressure_snapshot_id)
+    -- each page is bounded by ``page_size`` (a per-query safety bound, not a
+    result cap), and pagination continues until a page returns fewer than
+    ``page_size`` rows. Total persisted history size therefore never gates
+    completeness: the "all" viewport downstream always sees every row.
+    Returned order is not significant -- ``build_dashboard`` sorts history
+    rows by timestamp before use.
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    rows: list[dict[str, Any]] = []
+    cursor_ts: datetime | None = None
+    cursor_id: int | None = None
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT pressure_snapshot_id,as_of_ts_utc,market_score "
-            "FROM market_rotation_pressure_snapshot_v1 "
-            "WHERE venue=%s AND model_version=%s "
-            "ORDER BY as_of_ts_utc DESC LIMIT %s",
-            (venue, model_version, limit),
-        )
-        return list(cur.fetchall())
+        while True:
+            if cursor_ts is None:
+                cur.execute(
+                    "SELECT pressure_snapshot_id,as_of_ts_utc,market_score "
+                    "FROM market_rotation_pressure_snapshot_v1 "
+                    "WHERE venue=%s AND model_version=%s "
+                    "ORDER BY as_of_ts_utc ASC, pressure_snapshot_id ASC LIMIT %s",
+                    (venue, model_version, page_size),
+                )
+            else:
+                cur.execute(
+                    "SELECT pressure_snapshot_id,as_of_ts_utc,market_score "
+                    "FROM market_rotation_pressure_snapshot_v1 "
+                    "WHERE venue=%s AND model_version=%s "
+                    "AND (as_of_ts_utc > %s OR (as_of_ts_utc = %s AND pressure_snapshot_id > %s)) "
+                    "ORDER BY as_of_ts_utc ASC, pressure_snapshot_id ASC LIMIT %s",
+                    (venue, model_version, cursor_ts, cursor_ts, cursor_id, page_size),
+                )
+            page = list(cur.fetchall())
+            if not page:
+                break
+            rows.extend(page)
+            last = page[-1]
+            cursor_ts = last["as_of_ts_utc"]
+            cursor_id = int(last["pressure_snapshot_id"])
+            if len(page) < page_size:
+                break
+    return rows
 
 
 def main(argv: list[str] | None = None) -> int:

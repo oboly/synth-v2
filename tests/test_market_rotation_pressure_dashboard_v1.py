@@ -4,12 +4,23 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
+    DEFAULT_HISTORY_VIEWPORT,
+    HISTORY_VIEWPORTS,
     PRESSURE_SCALE_MAX,
     PRESSURE_SCALE_MIN,
+    RotationPressureHistoryPoint,
     build_dashboard,
+    build_history_view,
     classify_freshness,
     dashboard_to_json_dict,
+    detect_snapshot_cadence,
+    format_cadence_label,
+    format_history_window_label,
     render_dashboard_html,
+    select_history_window,
+)
+from src.reporting.run_market_rotation_pressure_dashboard_v1 import (
+    fetch_pressure_history,
 )
 
 
@@ -277,6 +288,280 @@ def test_dashboard_runner_history_is_read_only_and_bounded():
     text = Path("src/reporting/run_market_rotation_pressure_dashboard_v1.py").read_text(encoding="utf-8")
     assert "def fetch_pressure_history" in text
     assert "FROM market_rotation_pressure_snapshot_v1" in text
-    assert "HISTORY_LIMIT = 168" in text
+    assert "HISTORY_FETCH_PAGE_SIZE = 2000" in text
     assert "INSERT " not in text
     assert "UPDATE " not in text
+
+
+class _PagedHistoryCursor:
+    """Fakes keyset-paginated reads: each ``fetchall`` returns the next
+    pre-baked page, regardless of the SQL/params passed to ``execute`` (the
+    stitching logic under test is exercised via the number/size of calls
+    made, not by re-implementing keyset filtering here)."""
+
+    def __init__(self, pages: list[list[dict[str, object]]]):
+        self._pages = list(pages)
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self.execute_calls.append((sql, params))
+
+    def fetchall(self) -> list[dict[str, object]]:
+        if self._pages:
+            return self._pages.pop(0)
+        return []
+
+
+class _PagedHistoryConn:
+    def __init__(self, cursor: _PagedHistoryCursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_fetch_pressure_history_has_no_overall_row_cap():
+    """Regression for the review-flagged truncation gap: the old
+    implementation issued one query with a fixed LIMIT, so persisted history
+    past that bound was silently dropped. The fix must keep reading pages
+    until a short page proves exhaustion, however many pages that takes --
+    proving there is no total-row cap, only a per-query page bound."""
+    page_size = 4
+    total_rows = 10 * page_size + 3  # deliberately not a multiple of page_size
+    all_rows = [
+        {
+            "pressure_snapshot_id": index,
+            "as_of_ts_utc": datetime(2026, 1, 1) + timedelta(hours=index),
+            "market_score": float((index % 9) - 4),
+        }
+        for index in range(total_rows)
+    ]
+    pages = [all_rows[start : start + page_size] for start in range(0, total_rows, page_size)]
+    cursor = _PagedHistoryCursor(pages)
+    conn = _PagedHistoryConn(cursor)
+
+    rows = fetch_pressure_history(conn, venue="bitvavo", model_version="1.0", page_size=page_size)
+
+    assert len(rows) == total_rows
+    assert [row["pressure_snapshot_id"] for row in rows] == list(range(total_rows))
+    # More round-trips than any single fixed-LIMIT read: proves the fetch
+    # kept paging instead of stopping at one bounded query.
+    assert len(cursor.execute_calls) == len(pages)
+    assert len(cursor.execute_calls) > 1
+    first_sql, first_params = cursor.execute_calls[0]
+    assert "as_of_ts_utc >" not in first_sql
+    assert first_params == ("bitvavo", "1.0", page_size)
+    second_sql, second_params = cursor.execute_calls[1]
+    assert "as_of_ts_utc >" in second_sql or "as_of_ts_utc = %s AND pressure_snapshot_id >" in second_sql
+    assert second_params[0:2] == ("bitvavo", "1.0")
+
+
+def test_fetch_pressure_history_stops_after_exact_multiple_with_empty_probe():
+    """When persisted history is an exact multiple of page_size, the loop
+    must issue one more (empty) page fetch to confirm exhaustion rather than
+    assuming completeness -- otherwise a coincidental multiple would look
+    truncated the same way the old fixed-LIMIT bound did."""
+    page_size = 5
+    total_rows = page_size * 3
+    all_rows = [
+        {
+            "pressure_snapshot_id": index,
+            "as_of_ts_utc": datetime(2026, 2, 1) + timedelta(hours=index),
+            "market_score": 0.0,
+        }
+        for index in range(total_rows)
+    ]
+    pages = [all_rows[start : start + page_size] for start in range(0, total_rows, page_size)]
+    cursor = _PagedHistoryCursor(pages)
+    conn = _PagedHistoryConn(cursor)
+
+    rows = fetch_pressure_history(conn, venue="bitvavo", model_version="1.0", page_size=page_size)
+
+    assert len(rows) == total_rows
+    assert len(cursor.execute_calls) == len(pages) + 1
+
+
+def _hourly_history(count: int, base: datetime = datetime(2026, 8, 10, 12, 0)):
+    """``count`` persisted points at a strict 1h cadence, oldest first, with
+    scores cycling through both signs so min/zero/max bounds are exercised."""
+    return tuple(
+        sorted(
+            (
+                RotationPressureHistoryPoint(
+                    pressure_snapshot_id=count - hours_ago,
+                    as_of_ts_utc=base - timedelta(hours=hours_ago),
+                    market_score=float((hours_ago % 5) - 2),
+                )
+                for hours_ago in range(count)
+            ),
+            key=lambda point: point.as_of_ts_utc,
+        )
+    )
+
+
+def test_select_history_window_24h_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "24h")
+    assert len(window) == 25
+    anchor = history[-1].as_of_ts_utc
+    assert all(point.as_of_ts_utc >= anchor - timedelta(hours=24) for point in window)
+    assert window[0].as_of_ts_utc == anchor - timedelta(hours=24)
+    assert window[-1] == history[-1]
+
+
+def test_select_history_window_7d_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "7d")
+    assert len(window) == 24 * 7 + 1
+
+
+def test_select_history_window_30d_membership_is_exact():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "30d")
+    assert len(window) == 24 * 30 + 1
+
+
+def test_select_history_window_all_exposes_full_persisted_history():
+    history = _hourly_history(24 * 40)
+    window = select_history_window(history, "all")
+    assert len(window) == len(history) == 24 * 40
+    assert window == history
+
+
+def test_select_history_window_rejects_unknown_viewport():
+    try:
+        select_history_window(_hourly_history(1), "12h")
+    except ValueError as exc:
+        assert "12h" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for unsupported viewport")
+
+
+def test_build_history_view_defaults_to_30d():
+    assert DEFAULT_HISTORY_VIEWPORT == "30d"
+    history = _hourly_history(24 * 40)
+    view = build_history_view(history)
+    assert view.viewport == "30d"
+    assert len(view.points) == 24 * 30 + 1
+    assert view.total_persisted_count == len(history)
+
+
+def test_build_history_view_visible_bounds_are_true_extrema_positive_only():
+    """An all-positive window must report its actual min, not zero."""
+    history = tuple(
+        RotationPressureHistoryPoint(
+            pressure_snapshot_id=index,
+            as_of_ts_utc=datetime(2026, 8, 10, 0, 0) + timedelta(hours=index),
+            market_score=score,
+        )
+        for index, score in enumerate([5.0, 12.0, 8.0])
+    )
+    view = build_history_view(history, "all")
+    assert view.visible_min == 5.0
+    assert view.visible_max == 12.0
+
+
+def test_build_history_view_visible_bounds_are_true_extrema_negative_only():
+    """An all-negative window must report its actual max, not zero."""
+    negative_history = tuple(
+        RotationPressureHistoryPoint(
+            pressure_snapshot_id=index,
+            as_of_ts_utc=datetime(2026, 8, 10, 0, 0) + timedelta(hours=index),
+            market_score=score,
+        )
+        for index, score in enumerate([-30.0, -5.0, -18.0])
+    )
+    negative_view = build_history_view(negative_history, "all")
+    assert negative_view.visible_min == -30.0
+    assert negative_view.visible_max == -5.0
+
+
+def test_detect_snapshot_cadence_hourly():
+    history = _hourly_history(48)
+    assert detect_snapshot_cadence(history) == timedelta(hours=1)
+    assert format_cadence_label(detect_snapshot_cadence(history)) == "1h snapshots"
+
+
+def test_detect_snapshot_cadence_needs_two_points():
+    assert detect_snapshot_cadence(_hourly_history(1)) is None
+    assert format_cadence_label(None) == "cadence unknown"
+
+
+def test_detect_snapshot_cadence_is_robust_to_one_gap():
+    base = datetime(2026, 8, 10, 0, 0)
+    history = tuple(
+        RotationPressureHistoryPoint(pressure_snapshot_id=i, as_of_ts_utc=ts, market_score=0.0)
+        for i, ts in enumerate(
+            [base, base + timedelta(hours=1), base + timedelta(hours=2), base + timedelta(hours=9)]
+        )
+    )
+    assert detect_snapshot_cadence(history) == timedelta(hours=1)
+
+
+def test_format_history_window_label_states_span_and_cadence():
+    history = _hourly_history(24 * 40)
+    view = build_history_view(history, "30d")
+    assert format_history_window_label(view) == "history: 30d · 1h snapshots"
+
+
+def test_build_dashboard_preserves_full_persisted_history_row_count():
+    history_rows = [
+        {
+            "pressure_snapshot_id": i,
+            "as_of_ts_utc": datetime(2026, 7, 1, 0, 0) + timedelta(hours=i),
+            "market_score": 1.0,
+        }
+        for i in range(200)
+    ]
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=history_rows)
+    assert len(dashboard.history) == 200
+    all_view = build_history_view(dashboard.history, "all")
+    assert len(all_view.points) == 200
+
+
+def test_render_dashboard_has_all_viewport_buttons_and_defaults_to_30d():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 38.5},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    for viewport in HISTORY_VIEWPORTS:
+        assert f"data-viewport='{viewport}'" in rendered
+    assert "history-viewport-btn active' data-viewport='30d'" in rendered
+    assert "history-panel active' data-viewport='30d'" in rendered
+    assert "history: 30d ·" in rendered
+
+
+def test_render_dashboard_history_scale_reflects_visible_window_not_fixed_domain():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 12.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "<span>+5.0</span><span>0</span><span>+12.0</span>" in rendered
+
+
+def test_render_dashboard_history_scale_negative_only_window_shows_true_extrema():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": -18.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": -5.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "<span>-18.0</span><span>0</span><span>-5.0</span>" in rendered
+
+
+def test_render_dashboard_zero_reference_line_still_drawn_for_all_positive_window():
+    """Zero stays an explicit chart marker even when it falls outside the
+    true visible extrema (all-positive scores)."""
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 12.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "curve-zero" in rendered
