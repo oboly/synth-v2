@@ -123,3 +123,48 @@ The mapping follows Bitvavo's current official [Create Order][create-order],
 
 Rescue commit `10eba297` is a historical donor only and is not part of this
 branch, its ancestry, or its architecture authority.
+
+## #392 -> #206 automatic-exit handoff adapter boundary
+
+`src/execution_planner/automatic_exit_execution_handoff_adapter_v1.py` is
+the sole deliberate import boundary between Issue #392's automatic-exit
+planner output (`AutomaticExitPlanV1`) and this document's shared handoff
+contract (`ApprovedExecutionPlanV1` / `ExecutionHandoffRepositoryV1`). It is
+a pure function: no re-evaluation of exit policy, no re-run of
+`decision_gate`, no quantity/price recompute or re-rounding, no broker,
+credential, LIVE-authority, or kill-switch inspection, and no order
+submission. `src/executor` core modules stay unaware of `AutomaticExitPlanV1`.
+
+`plan_reference_id` is derived deterministically from the plan's full
+logical identity (account/position/venue/asset/market/side, REDUCE vs EXIT
+action, evidence id, exit profile id/version, gate approval provenance,
+planner version, and every leg's exact index/side/price/quantity), excluding
+only the wall-clock planning timestamp. This is deliberate: `ApprovedExecutionPlanV1.content_hash`
+is side-neutral order-mechanics identity only and does not by itself
+distinguish REDUCE from EXIT or carry #392 evidence provenance, so
+`plan_reference_id` — which the content hash also covers — must carry that
+distinction, or two logically different approved plans that happen to
+produce numerically identical legs could otherwise collide under #206's
+`(plan_source, plan_reference_id)` handoff idempotency.
+
+`automatic_exit_execution_handoff_application_v1.py` composes the adapter
+with `ExecutionHandoffRepositoryV1`: DRY_RUN/PAPER route through `.intake`,
+LIVE routes through `.intake_live_authorized`. It never pre-checks or
+duplicates credential-scope, LIVE-authority, or kill-switch decisions —
+those remain exclusively owned by `ExecutionHandoffRepositoryV1` as
+described above. Reaching a `decision_gate`-`APPROVED` LIVE candidate is not,
+by itself, executor operational LIVE authority.
+
+`src/exit_policy/run_automatic_exit_policy_with_handoff_once_v1.py` is the
+composition-root runner that wires the real #392 candidate ->
+account-protection -> gate -> planner path to this seam. It consumes only
+the in-memory `AutomaticExitPlanV1` (`RuntimeItemOutcomeV1.plan`) produced in
+the same evaluation cycle. The append-only `automatic_exit_evaluation_audit_v1`
+audit table is never read as executor input by this runner or by any other
+module — it remains audit/replay evidence only. The pre-existing,
+audit-only `run_automatic_exit_policy_once_v1.py` runner is unchanged and
+remains architecturally guarded against importing `src.executor`
+(`tests/test_automatic_exit_runtime_architecture_guards_v1.py`).
+
+This adapter does not activate LIVE trading, provision credentials, grant
+executor operational LIVE authority, or submit broker orders by itself.
