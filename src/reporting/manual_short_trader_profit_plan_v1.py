@@ -4904,10 +4904,15 @@ def _rotation_history_html(projection: RotationProfitPlanProjection) -> str:
         return "<div class='rotation-history'><span class='rotation-history-label'>No prior persisted pressure snapshots</span></div>"
     visible_min = view.visible_min if view.visible_min is not None else -1.0
     visible_max = view.visible_max if view.visible_max is not None else 1.0
+    # Plot domain always includes zero as a reference line; the displayed
+    # scale labels below stay the true visible extrema (see
+    # market_rotation_pressure_dashboard_v1.build_history_view).
+    domain_min = min(0.0, visible_min)
+    domain_max = max(0.0, visible_max)
     curve_svg = render_rotation_pressure_curve_svg(
         view.points,
-        visible_min=visible_min,
-        visible_max=visible_max,
+        visible_min=domain_min,
+        visible_max=domain_max,
         width=600,
         height=100,
         padding=15,

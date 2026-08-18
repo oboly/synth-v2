@@ -277,14 +277,17 @@ def build_history_view(
 ) -> RotationPressureHistoryView:
     """Build a rendered viewport over ``history`` without mutating it.
 
-    ``visible_min``/``visible_max`` always include zero so the zero
-    reference is never clipped out of the presentation-only chart scale,
-    even when every visible score is on one side of zero.
+    ``visible_min``/``visible_max`` are the true extrema of the visible
+    scores only -- zero is never injected into them, so an all-positive
+    window still reports its actual minimum (and an all-negative window its
+    actual maximum) instead of collapsing to zero. Zero is a separate
+    reference marker handled at render time (see ``_pressure_curve_svg``),
+    not part of these extrema.
     """
     points = select_history_window(history, viewport)
     scores = [point.market_score for point in points]
-    visible_min = min([0.0, *scores]) if scores else None
-    visible_max = max([0.0, *scores]) if scores else None
+    visible_min = min(scores) if scores else None
+    visible_max = max(scores) if scores else None
     cadence = detect_snapshot_cadence(history)
     return RotationPressureHistoryView(
         viewport=viewport,
@@ -506,10 +509,17 @@ def render_pressure_curve_svg(
 def _pressure_curve_svg(view: RotationPressureHistoryView) -> str:
     visible_min = view.visible_min if view.visible_min is not None else -1.0
     visible_max = view.visible_max if view.visible_max is not None else 1.0
+    # The zero line is drawn whenever it falls within this plot domain, so
+    # the domain always includes zero even when every visible score is on
+    # one side of it. This is a plotting-domain concern only -- the
+    # displayed visible_min/visible_max labels (see _history_panel_html)
+    # stay the true extrema and are never widened to zero.
+    domain_min = min(0.0, visible_min)
+    domain_max = max(0.0, visible_max)
     return render_pressure_curve_svg(
         view.points,
-        visible_min=visible_min,
-        visible_max=visible_max,
+        visible_min=domain_min,
+        visible_max=domain_max,
         aria_label=(
             f"Persisted aggregate pressure history for the {view.viewport} "
             "viewport, scaled to visible min, zero, and max"

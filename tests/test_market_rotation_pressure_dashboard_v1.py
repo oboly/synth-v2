@@ -452,7 +452,8 @@ def test_build_history_view_defaults_to_30d():
     assert view.total_persisted_count == len(history)
 
 
-def test_build_history_view_visible_bounds_always_include_zero():
+def test_build_history_view_visible_bounds_are_true_extrema_positive_only():
+    """An all-positive window must report its actual min, not zero."""
     history = tuple(
         RotationPressureHistoryPoint(
             pressure_snapshot_id=index,
@@ -462,9 +463,12 @@ def test_build_history_view_visible_bounds_always_include_zero():
         for index, score in enumerate([5.0, 12.0, 8.0])
     )
     view = build_history_view(history, "all")
-    assert view.visible_min == 0.0
+    assert view.visible_min == 5.0
     assert view.visible_max == 12.0
 
+
+def test_build_history_view_visible_bounds_are_true_extrema_negative_only():
+    """An all-negative window must report its actual max, not zero."""
     negative_history = tuple(
         RotationPressureHistoryPoint(
             pressure_snapshot_id=index,
@@ -475,7 +479,7 @@ def test_build_history_view_visible_bounds_always_include_zero():
     )
     negative_view = build_history_view(negative_history, "all")
     assert negative_view.visible_min == -30.0
-    assert negative_view.visible_max == 0.0
+    assert negative_view.visible_max == -5.0
 
 
 def test_detect_snapshot_cadence_hourly():
@@ -540,4 +544,24 @@ def test_render_dashboard_history_scale_reflects_visible_window_not_fixed_domain
         {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 12.0},
     ])
     rendered = render_dashboard_html(dashboard)
-    assert "<span>+0.0</span><span>0</span><span>+12.0</span>" in rendered
+    assert "<span>+5.0</span><span>0</span><span>+12.0</span>" in rendered
+
+
+def test_render_dashboard_history_scale_negative_only_window_shows_true_extrema():
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": -18.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": -5.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "<span>-18.0</span><span>0</span><span>-5.0</span>" in rendered
+
+
+def test_render_dashboard_zero_reference_line_still_drawn_for_all_positive_window():
+    """Zero stays an explicit chart marker even when it falls outside the
+    true visible extrema (all-positive scores)."""
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=[
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 12.0},
+    ])
+    rendered = render_dashboard_html(dashboard)
+    assert "curve-zero" in rendered
