@@ -123,3 +123,20 @@ def test_position_market_identity_does_not_reference_tradeability() -> None:
     start = text.index("def resolve_position_market_v1(")
     end = text.index("\ndef load_latest_market_price(", start)
     assert "is_tradeable" not in text[start:end]
+
+
+def test_exit_policy_repository_does_not_resolve_decision_gate_live_permission() -> None:
+    """Issue #392 Phase 6 blocker B ownership fix: exit_policy must never own or
+
+    resolve decision-gate LIVE permission semantics -- only decision_gate does.
+    """
+    text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
+    assert "automatic_exit_live_permission" not in text
+
+
+def test_orchestrator_forwards_decision_gate_owned_live_permission_evaluation() -> None:
+    """The orchestrator composes the already-typed decision_gate result; it never resolves permission itself."""
+    text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_orchestrator_v1.py").read_text()
+    assert "from src.decision_gate.automatic_exit_live_permission_evaluation_v1 import" in text
+    assert "automatic_exit_live_permission_contract_v1" not in text
+    assert "automatic_exit_live_permission_repository_v1" not in text

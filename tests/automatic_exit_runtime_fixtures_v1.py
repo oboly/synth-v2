@@ -144,6 +144,26 @@ CREATE TABLE automatic_exit_account_permission_v1 (
     source_provenance TEXT NOT NULL
 );
 
+CREATE TABLE automatic_exit_live_decision_gate_permission_v1 (
+    automatic_exit_live_decision_gate_permission_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trading_account_id INTEGER NOT NULL,
+    live_execution_permitted INTEGER NOT NULL,
+    effective_from_ts_utc TEXT NOT NULL,
+    effective_until_ts_utc TEXT,
+    permission_version TEXT NOT NULL,
+    source_provenance TEXT NOT NULL
+);
+
+CREATE TABLE automatic_exit_live_decision_gate_permission_revocation_v1 (
+    automatic_exit_live_decision_gate_permission_revocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    automatic_exit_live_decision_gate_permission_id INTEGER NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    revocation_version TEXT NOT NULL,
+    effective_ts_utc TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+
 CREATE TABLE venue_execution_constraint (
     venue_execution_constraint_id INTEGER PRIMARY KEY AUTOINCREMENT,
     venue TEXT NOT NULL,
@@ -458,6 +478,32 @@ def insert_permission(
         cur.execute(
             "INSERT INTO automatic_exit_account_permission_v1 (trading_account_id, planning_enabled, effective_from_ts_utc, effective_until_ts_utc, permission_version, source_provenance) VALUES (%s,%s,%s,%s,%s,%s)",
             (account_id, planning_enabled, effective_from_ts_utc, effective_until_ts_utc, permission_version, source_provenance),
+        )
+        return cur.lastrowid
+
+
+def insert_live_permission(
+    conn: FakeConnection, *, account_id: int = 7, live_execution_permitted: bool = True,
+    effective_from_ts_utc: datetime = TS, effective_until_ts_utc: datetime | None = None,
+    permission_version: str = "1", source_provenance: str = "manual_review",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO automatic_exit_live_decision_gate_permission_v1 (trading_account_id, live_execution_permitted, effective_from_ts_utc, effective_until_ts_utc, permission_version, source_provenance) VALUES (%s,%s,%s,%s,%s,%s)",
+            (account_id, live_execution_permitted, effective_from_ts_utc, effective_until_ts_utc, permission_version, source_provenance),
+        )
+        return cur.lastrowid
+
+
+def insert_live_permission_revocation(
+    conn: FakeConnection, *, permission_id: int, account_id: int = 7,
+    revocation_version: str = "1", effective_ts_utc: datetime = TS, actor: str = "operator-v1",
+    reason: str = "superseded",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO automatic_exit_live_decision_gate_permission_revocation_v1 (automatic_exit_live_decision_gate_permission_id, trading_account_id, revocation_version, effective_ts_utc, actor, reason) VALUES (%s,%s,%s,%s,%s,%s)",
+            (permission_id, account_id, revocation_version, effective_ts_utc, actor, reason),
         )
         return cur.lastrowid
 

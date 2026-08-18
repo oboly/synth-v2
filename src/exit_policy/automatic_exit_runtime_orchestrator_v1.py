@@ -25,6 +25,9 @@ from src.decision_gate.automatic_exit_gate_v1 import (
     AutomaticExitGateContextV1,
     evaluate_automatic_exit_candidate_permission_v1,
 )
+from src.decision_gate.automatic_exit_live_permission_evaluation_v1 import (
+    evaluate_automatic_exit_live_permission_v1,
+)
 from src.execution_planner.automatic_exit_planner_v1 import (
     AutomaticExitPlanningContextV1,
     AutomaticExitPlanningError,
@@ -168,6 +171,12 @@ def evaluate_automatic_exit_runtime_item_v1(
         account_state_observed_ts_utc=item.account_state_observed_ts_utc,
         evaluation_ts_utc=evaluation_ts_utc,
     )
+    # Issue #392 Phase 6 blocker B: decision_gate resolves LIVE permission
+    # semantics; this orchestrator only forwards the already-typed result,
+    # matching the account-protection composition immediately above.
+    live_permission_evaluation = evaluate_automatic_exit_live_permission_v1(
+        conn, trading_account_id=item.trading_account_id, evaluation_ts_utc=evaluation_ts_utc,
+    )
 
     gate_context = AutomaticExitGateContextV1(
         trading_account_id=item.trading_account_id,
@@ -188,6 +197,7 @@ def evaluate_automatic_exit_runtime_item_v1(
         blocking_conflict=item.blocking_conflict,
         evaluation_ts_utc=evaluation_ts_utc,
         account_protection_evaluation=account_protection_evaluation,
+        automatic_exit_live_permission_evaluation=live_permission_evaluation,
     )
     decision = evaluate_automatic_exit_candidate_permission_v1(candidate=candidate, context=gate_context)
 

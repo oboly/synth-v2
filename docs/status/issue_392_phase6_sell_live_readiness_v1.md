@@ -66,6 +66,77 @@ Python repository/resolver change was required. Same migration file edited
 in place (still an artifact only, not applied); no DB write, credential,
 authority, executor, or broker change.
 
+**Update (2026-08-18, new branch, blocker B implementation):** blocker B
+(reviewed LIVE-capable extension of the automatic-exit `decision_gate`) is
+now RESOLVED — see "LIVE-capable decision-gate extension (Phase B finding,
+RESOLVED)" below, which rewrites the former "Missing live link (Phase B
+finding)" gate half of this document in place (the #392 -> #206 adapter half
+of that finding, blocker A, is unchanged and still open — see that section's
+new note). This change makes the `decision_gate` contract LIVE-*capable*
+only: it introduces explicit, typed, account-scoped, fail-closed decision-gate
+LIVE permission evidence. It does not activate LIVE trading, does not touch
+the executor, and does not introduce or call any executor operational LIVE
+authority, kill switch, credential, or broker module. See its own safety
+markers where noted below.
+
+**Update (2026-08-18, same branch, PR #426 review fix):** cross-provider
+review of the blocker-B implementation found two real merge blockers, both
+now fixed in place (see "LIVE-capable decision-gate extension (Phase B
+finding, RESOLVED)" below for the corrected shape):
+
+1. **Lifecycle gap.** The initial `automatic_exit_live_decision_gate_permission_v1`
+   table was described as append-only but had no DB-enforced immutability
+   and no revocation mechanism — an open-ended `TRUE` grant could not be
+   safely revoked without either mutating the row or creating an
+   indefinitely overlapping second row. Fixed by adopting the same corrected
+   lifecycle already proven for `account_protection_policy_config_v1`
+   (see the revision-2/3 updates above): the permission row is now
+   permanently immutable (`UPDATE`/`DELETE` always rejected by DB trigger),
+   and ending or superseding an open-ended row is expressed exclusively
+   through an immutable, append-only fact in a new companion table,
+   `automatic_exit_live_decision_gate_permission_revocation_v1`, bound to
+   its permission row by a composite `(permission_id, trading_account_id)`
+   foreign key so a cross-account revocation is rejected by MariaDB itself.
+2. **Ownership leak.** `src/exit_policy/automatic_exit_runtime_repository_v1.py`
+   (exit_policy) had started importing and resolving decision-gate LIVE
+   permission directly, making exit_policy runtime infrastructure a second
+   owner of permission semantics. Fixed by removing those imports/fields
+   entirely from the exit_policy repository and introducing a new
+   decision_gate-owned composition seam,
+   `src/decision_gate/automatic_exit_live_permission_evaluation_v1.py`
+   (mirroring `account_protection_evaluation_v1.py` exactly), which the
+   orchestrator now calls directly and forwards unchanged into the gate
+   context — exit_policy never resolves LIVE permission itself, matching
+   its existing relationship to `account_protection_evaluation`.
+
+**Update (2026-08-18, same branch, PR #426 second review fix):** a further
+review found the gate trusted the typed
+`AutomaticExitLivePermissionEvaluationV1` object's own claims too readily —
+it checked only `trading_account_id` and `decision_state`, which is
+insufficient for a safety-critical decision-gate permission artifact. A
+malformed, stale, future-dated, unsupported-version, or structurally
+incomplete `GRANTED` evaluation could reach the gate merely because its
+account id and `decision_state` happened to match. Fixed by adding a
+decision_gate-owned binding validator,
+`automatic_exit_live_permission_evaluation_v1.validate_automatic_exit_live_permission_evaluation_binding_v1`,
+mirroring `account_protection_contract_v1.validate_account_protection_evaluation_binding_v1`
+exactly: it independently checks the evaluation's `evaluation_contract_version`,
+that `trading_account_id` matches, that `decision_state` is a supported
+value, that `evaluated_ts_utc` is timezone-aware and *exactly* equal to the
+gate context's own `evaluation_ts_utc` (rejecting stale reuse and
+future-dating alike — no tolerance window), and — for a `GRANTED`
+evaluation specifically — that `permission_id` is present and positive,
+`permission_version` is the supported contract version, and `reason_code`
+is the canonical `OK` value. The gate calls this validator before accepting
+a LIVE permission evaluation; any failure denies with the existing
+`REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH` reason code. The gate
+still does not re-resolve DB permission and does not duplicate persistence
+logic — it validates the shape and binding of the object it was handed, the
+same division of responsibility the protection composition already uses.
+
+No LIVE activation, executor change, or broker authority was introduced by
+this fix; see its own safety markers where noted below.
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)
@@ -183,22 +254,208 @@ key (e.g. the Phase 4B audit table's own idempotency key derivation in
 `automatic_exit_runtime_contract_v1.py`) already satisfies these three
 properties or needs its own dedicated key.
 
-**A second, independently blocking finding**: even with that adapter built,
+Building the adapter itself (blocker A) remains open and unchanged by this
+document's blocker-B update; see "Go-live determination" below for current
+ordering.
+
+## LIVE-capable decision-gate extension (Phase B finding, RESOLVED)
+
+**RESOLVED (2026-08-18).** Until this change,
 `src/decision_gate/automatic_exit_gate_v1.py`
-(`_evaluate_automatic_exit_candidate_permission_base_v1`, line ~189) contains:
+(`_evaluate_automatic_exit_candidate_permission_base_v1`) contained an
+unconditional hard denial for any non-paper account:
 
 ```python
 if context.live_trading_enabled or context.account_mode != "paper":
     return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
 ```
 
-This is deliberate, tested Phase 2 behavior
-(`tests/test_automatic_exit_gate_v1.py::test_account_disabled_live_enabled_and_non_paper_modes_are_denied`)
-and is not a bug: the automatic-exit gate contract itself is DRY_RUN/PAPER-only
-by construction today. A LIVE automatic-exit candidate cannot reach
-`STATE_APPROVED` through this gate at all until this contract is deliberately
-extended for a LIVE mode, under its own explicit, reviewed change — not as a
-side effect of building the executor adapter.
+This was deliberate, tested Phase 2 behavior and not a bug: the gate
+contract was DRY_RUN/PAPER-only by construction. The gate is now deliberately
+LIVE-*capable* through explicit typed permission evidence rather than by
+weakening or removing that check:
+
+- `AutomaticExitGateContextV1.account_mode` must be exactly `"paper"` or
+  `"live"` (`SUPPORTED_ACCOUNT_MODES`); any other value is `NON_ACTIONABLE`
+  (`REASON_UNSUPPORTED_ACCOUNT_MODE`) — no lowercasing, guessing, or
+  canonicalization of a malformed mode.
+- `live_trading_enabled` (mirrored from `trading_account.live_trading_enabled`,
+  the same column other account-scoped modules already trust as the
+  authoritative live/non-live account fact) must always agree with
+  `account_mode`. Disagreement in either direction is inconsistent evidence
+  and fails closed to `NON_ACTIONABLE`
+  (`REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT`) rather than being trusted
+  either way. Neither `account_mode == "live"` alone nor
+  `live_trading_enabled == True` alone is ever sufficient permission.
+- A new context field, `automatic_exit_live_permission_evaluation:
+  AutomaticExitLivePermissionEvaluationV1 | None`, carries the typed
+  decision-gate LIVE permission evaluation. It is required, in addition to
+  a consistent `account_mode == "live"` / `live_trading_enabled == True`
+  pair, before a LIVE candidate can reach `STATE_APPROVED`. `None` denies
+  outright with `REASON_LIVE_EXECUTION_NOT_GRANTED`. Otherwise the gate does
+  not trust the object's own claims — it calls
+  `validate_automatic_exit_live_permission_evaluation_binding_v1` (added in
+  the second PR #426 review fix; see the update above), which independently
+  checks the evaluation's contract version, that `trading_account_id`
+  matches the context's account (defense in depth against attaching the
+  wrong account's evaluation), that `decision_state` is a supported value,
+  and that `evaluated_ts_utc` is timezone-aware and *exactly* equal to the
+  context's own `evaluation_ts_utc` — rejecting a stale reused evaluation, a
+  future-dated one, or a forged/malformed one, with no tolerance window. A
+  `GRANTED` evaluation is additionally required to carry a positive
+  `permission_id`, the supported `permission_version`, and the canonical
+  `OK` reason code — an incomplete or self-inconsistent `GRANTED` evaluation
+  is not trustworthy evidence of permission merely because its account and
+  timestamp line up. Any binding failure denies with
+  `REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH`; a validated
+  non-`GRANTED` state denies with `REASON_LIVE_EXECUTION_NOT_GRANTED`. Not
+  consulted at all for `account_mode == "paper"`.
+- All existing freshness, identity, conflict, free-quantity, risk-ceiling,
+  and #318 account-protection checks apply identically to LIVE and PAPER —
+  nothing about the LIVE path skips or weakens any existing check.
+
+**Permission lifecycle (immutable, revocation-based).** The persisted
+permission fact, `AutomaticExitLiveDecisionGatePermissionV1`, is permanently
+immutable — the backing table,
+`automatic_exit_live_decision_gate_permission_v1` (migration artifact only:
+`db/migrations/20260818_automatic_exit_live_decision_gate_permission_v1.sql`,
+not applied), rejects every `UPDATE` and `DELETE` at the DB layer via
+trigger, including the "close the open window" transition. Ending or
+superseding an open-ended grant is expressed exclusively through an
+immutable, append-only fact in a companion table,
+`automatic_exit_live_decision_gate_permission_revocation_v1` (also
+`UPDATE`/`DELETE`-rejecting), bound to its permission row by a composite
+`(permission_id, trading_account_id)` foreign key so MariaDB itself rejects
+a structurally corrupt cross-account revocation at `INSERT` time. This is
+the exact lifecycle already proven for `account_protection_policy_config_v1`
+(see the revision-2/3 updates above), reused deliberately rather than
+re-deriving the same fix independently. A permission row is revoked at
+evaluation time `T` if any of its revocation facts has
+`effective_ts_utc <= T`; multiple revocation facts per row are valid by
+design so a future-scheduled revocation can never block a later, immediate
+one from also taking effect.
+
+The pure resolver, `src/decision_gate/automatic_exit_live_permission_contract_v1.py`
+(`resolve_automatic_exit_live_decision_gate_permission_v1`), takes both
+permission rows and revocation facts and returns the single effective,
+non-revoked, supported-version permission row (or `None` if no row is
+currently effective — default-denied, not an error). It fails closed
+(raises) on: more than one simultaneously effective non-revoked row
+(ambiguous), a malformed window, a malformed/cross-account/unsupported-
+version revocation, or an unsupported permission version. A row belonging
+to a different account is excluded from consideration and can never grant
+or affect permission for the wrong account. DB reads are isolated in
+`src/decision_gate/automatic_exit_live_permission_repository_v1.py`
+(`load_automatic_exit_live_permission_history_v1` /
+`load_automatic_exit_live_permission_revocation_history_v1`).
+
+**Composition seam and ownership.** A new decision_gate-owned seam,
+`src/decision_gate/automatic_exit_live_permission_evaluation_v1.py`
+(`evaluate_automatic_exit_live_permission_v1`, mirroring
+`account_protection_evaluation_v1.py` exactly), is the sole place LIVE
+permission semantics are resolved: it loads persisted evidence, resolves it
+through the pure contract, and always returns a typed
+`AutomaticExitLivePermissionEvaluationV1` (`GRANTED`/`DENIED`, reason code,
+permission id/version, evaluated timestamp) rather than raising or
+returning a bare boolean — missing evidence resolves to a typed `DENIED`
+evaluation, and malformed/ambiguous evidence resolves to a typed fail-closed
+`DENIED` evaluation (`REASON_LIVE_PERMISSION_EVIDENCE_UNRESOLVED`) rather
+than propagating an exception that would abort a whole runtime cycle — the
+same design already used for `account_protection_evaluation_v1.py`.
+`automatic_exit_runtime_orchestrator_v1.evaluate_automatic_exit_runtime_item_v1`
+calls this seam directly (immediately alongside its existing
+`evaluate_account_protection_for_automatic_exit_v1` call) and forwards its
+typed result unchanged into `AutomaticExitGateContextV1`.
+`src/exit_policy/automatic_exit_runtime_repository_v1.py` and `RuntimeItemV1`
+carry **no** LIVE permission field and import **no** decision-gate LIVE
+permission module at all — `exit_policy` never resolves LIVE permission
+semantics itself, matching its existing relationship to
+`account_protection_evaluation`
+(`tests/test_automatic_exit_runtime_architecture_guards_v1.py::test_exit_policy_repository_does_not_resolve_decision_gate_live_permission`
+/ `::test_orchestrator_forwards_decision_gate_owned_live_permission_evaluation`
+prove this ownership split directly).
+
+**Critical invariant, restated:** decision-gate LIVE permission is *not*
+executor operational LIVE authority. An `APPROVED` LIVE result from this
+gate means only "this account/candidate is permitted to proceed as a LIVE
+automatic exit at the decision-gate layer." It does **not** mean "the
+executor is operationally authorized to submit this order." Executor LIVE
+authority (`src/executor/execution_live_authority_v1.py`), the kill switch,
+and TRADE_EXECUTION credential resolution remain a wholly separate,
+downstream gate that this change does not touch, call, or import. There
+remains no direct path from `decision_gate` to `executor` or to any broker
+call — `automatic_exit_gate_v1.py` and all three new decision-gate
+LIVE-permission modules import none of `src.executor`, `src.manual_execution`,
+or any broker/credential/kill-switch module (proved by
+`tests/test_automatic_exit_gate_v1.py::test_gate_has_no_planner_executor_broker_or_manual_dependencies`
+and the new
+`tests/test_automatic_exit_live_permission_contract_v1.py::test_contract_module_has_no_db_broker_credential_or_executor_imports`
+/ `::test_repository_module_has_no_broker_credential_or_executor_imports`
+/ `::test_evaluation_seam_has_no_broker_credential_or_executor_imports`).
+
+Tests added/updated:
+`tests/test_automatic_exit_live_permission_contract_v1.py` (rewritten pure
+resolver, now revocation-aware: no row denies, single row resolves by flag,
+wrong-account row never leaks permission, overlapping non-revoked rows fail
+closed, unsupported version fails closed, malformed window/provenance fails
+closed, window expiry and future-dated-not-yet-effective deny, open-ended
+permission revoked immutably, permission inactive at/after effective
+revocation timestamp, future revocation does not revoke early, future
+revocation does not block a later immediate one, malformed/cross-account/
+unsupported-version revocation fails closed, replay deterministic
+independent of ordering, account isolation, no forbidden imports);
+`tests/test_automatic_exit_live_permission_evaluation_v1.py` (new;
+decision_gate composition seam over the fixtures DB: no row denies without
+raising, granted permission resolves a typed grant, flag-false denies,
+revoked open-ended permission denies, future revocation does not revoke
+early, conflicting active permissions fail closed to a typed DENIED
+evaluation, strict account isolation, deterministic replay);
+`tests/test_automatic_exit_live_permission_mariadb_ddl_v1.py` (new;
+disposable-MariaDB proof that permission/revocation `UPDATE`/`DELETE` are
+always rejected, revocation requires non-empty actor/reason, multiple
+revocations per permission row are permitted, and a cross-account revocation
+is rejected by the composite FK — registered in
+`.github/workflows/pr_mariadb_ddl_validation.yml`);
+`tests/test_automatic_exit_gate_v1.py` (LIVE matrix rewritten around the
+typed evaluation object, plus a new binding-mismatch case);
+`tests/test_automatic_exit_runtime_repository_v1.py` (the four now-obsolete
+LIVE-permission-in-`RuntimeItemV1` tests removed — that field no longer
+exists);
+`tests/test_automatic_exit_runtime_orchestrator_v1.py` (end-to-end LIVE
+cases rewritten to seed the persisted permission table and let the
+orchestrator resolve it via the decision_gate seam, rather than constructing
+a bool directly on the runtime item);
+`tests/test_automatic_exit_runtime_architecture_guards_v1.py` (two new
+ownership-boundary guards, see above).
+
+Safety markers for this change:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+production_db_mutation=0
+production_migration_apply=0
+executor_adapter=0
+executor_calls=0
+credential_provisioning=0
+live_authority_provisioning=0
+service_activation=0
+timer_activation=0
+live_gate_extension=1
+```
+
+`live_gate_extension=1` means software contract support only (the
+decision_gate contract can now express and approve a LIVE decision given
+explicit permission evidence) — it does not mean operational activation. No
+production account has a provisioned `automatic_exit_live_decision_gate_permission_v1`
+row; provisioning one (in addition to the existing automatic-exit planning
+permission and account-protection policy config rows) remains an
+operational prerequisite before any account's automatic-exit candidates
+could ever reach an `APPROVED` LIVE decision, and even then blocker A (the
+#392 -> #206 executor handoff adapter) must still be built, reviewed, and
+merged before an `APPROVED` LIVE decision can reach an order at all.
 
 ## Account protection (#318) wiring (Phase C finding)
 
@@ -537,20 +794,26 @@ timer_activation=0
 
 `GO_LIVE_READY = NO`.
 
-Three actual Phase 6 blockers were identified. Blocker C is now RESOLVED (see
-Phase C finding above); blockers A and B remain open, each its own explicitly
-authorized, reviewed implementation task — neither resolvable by a
-documentation or test-only change:
+Three actual Phase 6 blockers were identified. Blockers B and C are now
+RESOLVED; blocker A remains open and is its own explicitly authorized,
+reviewed implementation task — not resolvable by a documentation or
+test-only change:
 
 - **A. #392 -> #206 typed adapter / runtime seam.** No adapter/intake
   boundary exists between #392's in-memory planner output and #206's shared
   executor handoff (Phase B). It must be the typed, in-process seam described
   above — not a persistence-mediated one built on top of the Phase 4B audit
   table.
-- **B. Reviewed LIVE-capable extension of the automatic-exit `decision_gate`.**
-  `automatic_exit_gate_v1` is a DRY_RUN/PAPER-only contract by construction
-  today (`REASON_LIVE_EXECUTION_NOT_GRANTED` on any non-paper mode); it
-  cannot approve a LIVE candidate until deliberately extended.
+- ~~**B. Reviewed LIVE-capable extension of the automatic-exit `decision_gate`.**~~
+  **RESOLVED 2026-08-18.** See "LIVE-capable decision-gate extension (Phase B
+  finding, RESOLVED)" above. `automatic_exit_gate_v1` can now approve a LIVE
+  candidate given explicit, typed, account-scoped, fail-closed decision-gate
+  LIVE permission evidence — `account_mode == "live"` alone and any retained
+  `live_trading_enabled` flag alone both remain insufficient. This resolves
+  the decision-gate half of the former Phase B finding only; it grants no
+  executor operational LIVE authority and does not by itself let any LIVE
+  candidate reach an order, because blocker A (the executor handoff adapter)
+  is still absent.
 - ~~**C. Real #318 account-protection producer/configuration wiring into the
   #392 runtime.**~~ **RESOLVED 2026-08-17.** The real #392 runtime
   orchestrator now calls the P2 evaluator through
@@ -573,14 +836,18 @@ merged and reviewed, and no step authorizes skipping ahead:
    production account (and, if wanted, a metric-fact producer) remains a
    prerequisite operational/implementation step before automatic-exit
    candidates on those accounts can reach `APPROVED` again.
-2. LIVE-capable gate contract (blocker B) — only once account-protection
-   composition is real should the gate's paper-only restriction be
-   deliberately extended for LIVE.
-3. Typed planner -> shared-handoff adapter/runtime seam (blocker A) — only
-   once the gate can correctly produce a LIVE-eligible `APPROVED` decision
-   does connecting the planner's output to #206 become meaningful; building
-   the adapter first, against a gate that can never approve LIVE, would
-   invite exactly the kind of premature/implicit coupling this audit warns
+2. ~~LIVE-capable gate contract (blocker B)~~ — DONE. The gate's former
+   unconditional paper-only restriction is now a deliberate, typed,
+   fail-closed LIVE permission contract (see above). Provisioning an
+   `automatic_exit_live_decision_gate_permission_v1` row per production
+   account remains a further prerequisite before any account's automatic-exit
+   candidates could reach an `APPROVED` LIVE decision.
+3. Typed planner -> shared-handoff adapter/runtime seam (blocker A) — now
+   the next and only remaining implementation blocker. Only now that the
+   gate can correctly produce a LIVE-eligible `APPROVED` decision does
+   connecting the planner's output to #206 become meaningful; building the
+   adapter earlier, against a gate that could never approve LIVE, would have
+   invited exactly the kind of premature/implicit coupling this audit warns
    against.
 4. Final repository-level integrated non-broker acceptance — an end-to-end
    DRY_RUN/PAPER exercise of candidate -> gate (with real protections) ->
