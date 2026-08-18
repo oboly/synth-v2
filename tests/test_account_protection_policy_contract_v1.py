@@ -266,3 +266,24 @@ def test_replay_is_deterministic_independent_of_row_and_revocation_order():
     )
     assert forward == reversed_
     assert forward.configuration_version == "policy-new"
+
+
+def test_account_b_is_unaffected_by_account_a_config_revocation():
+    """Account B cannot receive Account A's revocation as valid evidence."""
+    config_a = _row(account_protection_policy_config_id=1, trading_account_id=ACCOUNT_A)
+    config_b = _row(
+        account_protection_policy_config_id=2, trading_account_id=ACCOUNT_B, configuration_version="policy-b",
+    )
+    revoke_a = _revocation(
+        account_protection_policy_config_id=1, trading_account_id=ACCOUNT_A, effective_ts_utc=NOW,
+    )
+
+    with pytest.raises(AccountProtectionPolicyConfigError, match="PROTECTION_CONFIGURATION_UNRESOLVED"):
+        resolve_account_protection_policy_v1(
+            (config_a, config_b), (revoke_a,), trading_account_id=ACCOUNT_A, at=NOW,
+        )
+
+    policy_b = resolve_account_protection_policy_v1(
+        (config_a, config_b), (revoke_a,), trading_account_id=ACCOUNT_B, at=NOW,
+    )
+    assert policy_b.configuration_version == "policy-b"

@@ -50,6 +50,22 @@ in `pr_mariadb_ddl_validation.yml`) for the corrected lifecycle proved
 against a disposable MariaDB schema. Migration remains an artifact only (not
 applied); no DB write, credential, authority, executor, or broker change.
 
+**Update (2026-08-18, same branch, correctness fix, revision 3):** a further
+re-review found the revocation table's cross-account binding was enforced
+only by the resolver, not by MariaDB, because the two foreign keys (config
+id, and a separately denormalized account id) could independently be valid
+while still pairing one account's config with another account's id.
+Revocation identity is now bound by `(account_protection_policy_config_id,
+trading_account_id)`: `account_protection_policy_config_v1` gained a
+`UNIQUE KEY` on that pair, and the revocation table's foreign key became the
+matching composite `FOREIGN KEY` against it, replacing the two independent
+single-column foreign keys. A structurally corrupt revocation is now
+rejected by MariaDB itself at `INSERT` time; the resolver's own mismatch
+check is retained as defense-in-depth, not the sole enforcement point. No
+Python repository/resolver change was required. Same migration file edited
+in place (still an artifact only, not applied); no DB write, credential,
+authority, executor, or broker change.
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)

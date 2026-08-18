@@ -389,11 +389,26 @@ config row's account) both fail closed, as does an unsupported
 `revocation_version`. Superseding a config is therefore, in one transaction:
 `INSERT` a revocation fact for the old row (`effective_ts_utc` = the new
 row's `effective_from_ts_utc`), then `INSERT` the new config row — never an
-`UPDATE` to the old row. `tests/test_account_protection_policy_config_mariadb_ddl_v1.py`
+`UPDATE` to the old row.
+
+Revocation identity is bound by `(account_protection_policy_config_id,
+trading_account_id)`, not by `account_protection_policy_config_id` alone.
+`account_protection_policy_config_v1` carries a `UNIQUE KEY` on that same
+column pair, and the revocation table's foreign key is the matching
+composite `FOREIGN KEY (account_protection_policy_config_id,
+trading_account_id) REFERENCES account_protection_policy_config_v1
+(account_protection_policy_config_id, trading_account_id)` — not two
+independent single-column foreign keys. A structurally corrupt revocation
+row (one config's id paired with a different account's `trading_account_id`)
+is therefore rejected by MariaDB itself at `INSERT` time; the resolver's own
+account-mismatch check remains as defense-in-depth for data that never
+passed through this schema (e.g. directly-constructed rows in tests), not as
+the only enforcement point. `tests/test_account_protection_policy_config_mariadb_ddl_v1.py`
 proves this end-to-end against a disposable MariaDB schema, including that
-config/revocation rows reject every update and delete shape and that a
-config with an already-scheduled future revocation still accepts a second,
-immediate one.
+config/revocation rows reject every update and delete shape, that a config
+with an already-scheduled future revocation still accepts a second,
+immediate one, and that a cross-account revocation insert fails with the
+composite foreign key while the matching-account one succeeds.
 
 `AccountProtectionPolicyConfigRowV1.source_provenance` (who/what provisioned
 the row) is loaded by the repository and validated non-empty by the resolver

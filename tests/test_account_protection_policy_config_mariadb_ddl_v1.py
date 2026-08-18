@@ -85,7 +85,7 @@ def _schema() -> Iterator[Any]:
                     PRIMARY KEY (trading_account_id)
                 ) ENGINE=InnoDB
                 """,
-                "INSERT INTO trading_account (trading_account_id) VALUES (7)",
+                "INSERT INTO trading_account (trading_account_id) VALUES (7), (8)",
                 """
                 CREATE TABLE automatic_exit_evaluation_audit_v1 (
                     automatic_exit_evaluation_audit_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -115,30 +115,32 @@ INSERT INTO account_protection_policy_config_v1 (
     max_metric_age_seconds, effective_from_ts_utc, effective_until_ts_utc,
     source_provenance
 ) VALUES (
-    7, '1', 'policy-1', NULL, NULL, NULL, 900,
+    %s, '1', 'policy-1', NULL, NULL, NULL, 900,
     '2026-08-17 00:00:00', NULL, 'operator-v1'
 )
 """
 
 
-def _insert_open_row(conn: Any) -> int:
+def _insert_open_row(conn: Any, *, account_id: int = 7) -> int:
     with conn.cursor() as cursor:
-        cursor.execute(_INSERT_OPEN_ROW)
+        cursor.execute(_INSERT_OPEN_ROW, [account_id])
         row_id = int(cursor.lastrowid)
     conn.commit()
     return row_id
 
 
-def _insert_revocation(conn: Any, *, config_id: int, effective_ts_utc: str = "2026-08-18 00:00:00") -> int:
+def _insert_revocation(
+    conn: Any, *, config_id: int, account_id: int = 7, effective_ts_utc: str = "2026-08-18 00:00:00",
+) -> int:
     with conn.cursor() as cursor:
         cursor.execute(
             """
             INSERT INTO account_protection_policy_config_revocation_v1 (
                 account_protection_policy_config_id, trading_account_id,
                 revocation_version, effective_ts_utc, actor, reason
-            ) VALUES (%s, 7, '1', %s, 'operator-v1', 'superseded')
+            ) VALUES (%s, %s, '1', %s, 'operator-v1', 'superseded')
             """,
-            [config_id, effective_ts_utc],
+            [config_id, account_id, effective_ts_utc],
         )
         revocation_id = int(cursor.lastrowid)
     conn.commit()
@@ -171,6 +173,7 @@ def test_migration_executes_and_audit_columns_are_added() -> None:
             assert "chk_account_protection_policy_config_daily_loss" in constraints
             assert "chk_account_protection_policy_config_streak" in constraints
             assert "fk_account_protection_policy_config_account" in constraints
+            assert "uq_account_protection_policy_config_account_binding" in constraints
             cursor.execute(
                 """
                 SELECT constraint_name FROM information_schema.table_constraints
@@ -179,8 +182,9 @@ def test_migration_executes_and_audit_columns_are_added() -> None:
                 """
             )
             revocation_constraints = {str(row["constraint_name"]) for row in cursor.fetchall()}
-            assert "fk_account_protection_policy_config_revocation_config" in revocation_constraints
-            assert "fk_account_protection_policy_config_revocation_account" in revocation_constraints
+            assert "fk_account_protection_policy_config_revocation_config_account" in revocation_constraints
+            assert "fk_account_protection_policy_config_revocation_config" not in revocation_constraints
+            assert "fk_account_protection_policy_config_revocation_account" not in revocation_constraints
             assert "chk_account_protection_policy_config_revocation_text" in revocation_constraints
 
 
@@ -333,3 +337,30 @@ def test_successor_and_revocation_leave_exactly_one_effective_config() -> None:
             assert len(effective) == 1
             assert effective[0]["account_protection_policy_config_id"] == new_id
             assert effective[0]["configuration_version"] == "policy-2"
+
+
+def test_cross_account_revocation_insert_is_rejected_by_composite_fk() -> None:
+    """A structurally corrupt revocation (Account A's config, Account B's
+    trading_account_id) must be rejected by MariaDB itself -- the resolver's
+    own mismatch check is defense-in-depth, not the only line of defense."""
+    from pymysql.err import IntegrityError
+
+    with _schema() as conn:
+        account_a_config_id = _insert_open_row(conn, account_id=7)
+
+        with pytest.raises(IntegrityError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO account_protection_policy_config_revocation_v1 (
+                        account_protection_policy_config_id, trading_account_id,
+                        revocation_version, effective_ts_utc, actor, reason
+                    ) VALUES (%s, 8, '1', '2026-08-18 00:00:00', 'operator-v1', 'cross-account')
+                    """,
+                    [account_a_config_id],
+                )
+        conn.rollback()
+
+        # The matching (non-corrupt) binding succeeds.
+        matching_id = _insert_revocation(conn, config_id=account_a_config_id, account_id=7)
+        assert matching_id > 0

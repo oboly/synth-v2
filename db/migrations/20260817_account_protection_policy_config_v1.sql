@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS account_protection_policy_config_v1 (
     source_provenance VARCHAR(128) NOT NULL,
     created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (account_protection_policy_config_id),
+    UNIQUE KEY uq_account_protection_policy_config_account_binding (
+        account_protection_policy_config_id, trading_account_id
+    ),
     KEY ix_account_protection_policy_config_lookup (trading_account_id, effective_from_ts_utc),
     CONSTRAINT fk_account_protection_policy_config_account
         FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id),
@@ -62,8 +65,17 @@ DELIMITER ;
 -- must never block a later immediate one from also being recorded); the
 -- resolver treats a config row as revoked at time T if ANY of its
 -- revocation facts has effective_ts_utc <= T. trading_account_id is
--- denormalized from the referenced config row so the resolver can detect a
--- corrupt/conflicting cross-account reference without a join.
+-- denormalized from the referenced config row, and the composite foreign
+-- key below binds (account_protection_policy_config_id, trading_account_id)
+-- together against the config table's own matching unique key -- MariaDB
+-- itself rejects a structurally corrupt row referencing Account A's config
+-- while claiming Account B's trading_account_id, before it can ever reach
+-- the resolver's own defense-in-depth mismatch check. A separate
+-- single-column FK straight to trading_account is intentionally omitted:
+-- it would be redundant, since the composite FK already transitively
+-- guarantees trading_account_id is a valid account (via the config row's
+-- own FK to trading_account) without a second, independently-owned copy of
+-- that same invariant.
 CREATE TABLE IF NOT EXISTS account_protection_policy_config_revocation_v1 (
     account_protection_policy_config_revocation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     account_protection_policy_config_id BIGINT UNSIGNED NOT NULL,
@@ -74,22 +86,25 @@ CREATE TABLE IF NOT EXISTS account_protection_policy_config_revocation_v1 (
     reason VARCHAR(512) NOT NULL,
     created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (account_protection_policy_config_revocation_id),
+    KEY ix_account_protection_policy_config_revocation_binding (
+        account_protection_policy_config_id, trading_account_id
+    ),
     KEY ix_account_protection_policy_config_revocation_lookup (
         account_protection_policy_config_id, effective_ts_utc
     ),
     KEY ix_account_protection_policy_config_revocation_account (
         trading_account_id, effective_ts_utc
     ),
-    CONSTRAINT fk_account_protection_policy_config_revocation_config
-        FOREIGN KEY (account_protection_policy_config_id)
-        REFERENCES account_protection_policy_config_v1 (account_protection_policy_config_id),
-    CONSTRAINT fk_account_protection_policy_config_revocation_account
-        FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id),
+    CONSTRAINT fk_account_protection_policy_config_revocation_config_account
+        FOREIGN KEY (account_protection_policy_config_id, trading_account_id)
+        REFERENCES account_protection_policy_config_v1 (
+            account_protection_policy_config_id, trading_account_id
+        ),
     CONSTRAINT chk_account_protection_policy_config_revocation_text CHECK (
         CHAR_LENGTH(TRIM(actor)) > 0 AND CHAR_LENGTH(TRIM(reason)) > 0
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Immutable, append-only revocation/supersession facts for account_protection_policy_config_v1. Never updated or deleted.';
+  COMMENT='Immutable, append-only revocation/supersession facts for account_protection_policy_config_v1. Never updated or deleted. Composite FK binds (config_id, trading_account_id) to reject cross-account corruption at the DB boundary.';
 
 DELIMITER //
 CREATE TRIGGER trg_account_protection_policy_config_revocation_v1_no_update
