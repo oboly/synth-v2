@@ -1,27 +1,10 @@
 """Pure account-permission gate for :class:`AutomaticBuyCandidateV1`.
 
-Issue #399 Phase 2: the decision_gate BUY permission/allocation owner. This
-is deliberately a bounded permission layer, mirroring the structural
-discipline of ``automatic_exit_gate_v1``: it consumes account/bucket
-evidence assembled by a caller, never fetches it, and does not create
-execution intent, ladders, or broker payloads. It never re-evaluates the
-entry/re-entry zone decision made by ``entry_policy.automatic_buy_candidate_v1``.
-
-It reuses two existing account-policy owners rather than recreating account
-policy in the BUY lane:
-
-- ``strategy_bucket_participation_evaluation_v1`` (Issue #279): strategy-bucket
-  enable state, new-entry allowance, max position amount, max bucket amount,
-  max asset exposure, and max open positions.
-- ``account_protection_contract_v1`` (Issue #318): drawdown/loss/cooldown/
-  manual-lock protection, evaluated for the canonical ``ACTION_BUY`` action
-  that module already defines.
-
-This repository phase supports ``account_mode == "paper"`` only. No
-automatic-BUY LIVE permission contract exists yet -- Issue #399 Phase 7
-(separately authorized LIVE activation) is future work, out of scope here.
-A non-paper ``account_mode`` fails closed to ``NON_ACTIONABLE`` rather than
-being silently approved or denied as if it had been evaluated.
+Issue #399: decision_gate owns automatic-BUY account permission, allocation,
+protection, and LIVE decision-gate permission. It consumes typed evidence
+assembled by the caller, never fetches it, never creates execution intent,
+and never grants executor operational LIVE authority, credentials,
+kill-switch state, broker access, or order authority.
 """
 from __future__ import annotations
 
@@ -37,6 +20,12 @@ from src.decision_gate.account_protection_contract_v1 import (
     STATE_BLOCKED as PROTECTION_STATE_BLOCKED,
     validate_account_protection_evaluation_binding_v1,
 )
+from src.decision_gate.automatic_buy_live_permission_evaluation_v1 import (
+    DECISION_GRANTED as LIVE_PERMISSION_DECISION_GRANTED,
+    AutomaticBuyLivePermissionEvaluationError,
+    AutomaticBuyLivePermissionEvaluationV1,
+    validate_automatic_buy_live_permission_evaluation_binding_v1,
+)
 from src.decision_gate.strategy_bucket_participation_evaluation_v1 import (
     DECISION_BLOCKED as BUCKET_DECISION_BLOCKED,
     REQUEST_KIND_NEW_ENTRY,
@@ -47,18 +36,13 @@ from src.decision_gate.strategy_bucket_participation_evaluation_v1 import (
 from src.entry_policy import POLICY_NAME, POLICY_VERSION
 from src.entry_policy.automatic_buy_candidate_v1 import AutomaticBuyCandidateV1
 
-
 STATE_APPROVED: Final[str] = "APPROVED"
 STATE_DENIED: Final[str] = "DENIED"
 STATE_NON_ACTIONABLE: Final[str] = "NON_ACTIONABLE"
-
 SUPPORTED_CANDIDATE_ACTIONS: Final[frozenset[str]] = frozenset({"ENTER", "RE_ENTER"})
-
-# This gate's only supported account mode for the current repository phase.
-# LIVE BUY permission is separately authorized future work (Issue #399
-# Phase 7); it must never be inferred from this constant growing silently.
 ACCOUNT_MODE_PAPER: Final[str] = "paper"
-SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({ACCOUNT_MODE_PAPER})
+ACCOUNT_MODE_LIVE: Final[str] = "live"
+SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({ACCOUNT_MODE_PAPER, ACCOUNT_MODE_LIVE})
 
 REASON_OK: Final[str] = "OK"
 REASON_INVALID_CANDIDATE: Final[str] = "INVALID_AUTOMATIC_BUY_CANDIDATE"
@@ -74,6 +58,9 @@ REASON_INVALID_PROPOSED_POSITION_AMOUNT: Final[str] = "INVALID_PROPOSED_POSITION
 REASON_ACCOUNT_DISABLED: Final[str] = "ACCOUNT_DISABLED"
 REASON_EXECUTION_PERMISSION_DISABLED: Final[str] = "AUTOMATIC_BUY_EXECUTION_PERMISSION_DISABLED"
 REASON_UNSUPPORTED_ACCOUNT_MODE: Final[str] = "UNSUPPORTED_ACCOUNT_MODE"
+REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT: Final[str] = "ACCOUNT_MODE_LIVE_FLAG_EVIDENCE_INCONSISTENT"
+REASON_LIVE_EXECUTION_NOT_GRANTED: Final[str] = "LIVE_EXECUTION_NOT_GRANTED"
+REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH: Final[str] = "AUTOMATIC_BUY_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH"
 REASON_BLOCKING_CONFLICT: Final[str] = "BLOCKING_BUY_ORDER_OR_RESERVATION_CONFLICT"
 REASON_NO_FREE_QUOTE_BALANCE: Final[str] = "NO_FREE_QUOTE_BALANCE"
 REASON_RISK_BOUND_UNRESOLVED: Final[str] = "AUTOMATIC_BUY_RISK_BOUND_UNRESOLVED"
@@ -83,32 +70,17 @@ REASON_INVALID_PROTECTION_EVALUATION_BINDING: Final[str] = "INVALID_PROTECTION_E
 
 @dataclass(frozen=True)
 class AutomaticBuyGateContextV1:
-    """Fresh, account-owned facts for one exact automatic-BUY candidate.
+    """Fresh account-owned facts for one exact automatic-BUY candidate.
 
-    ``proposed_position_amount_eur`` is the account-side proposed sizing for
-    this candidate (e.g. a configured default per-entry amount) -- it is not
-    read from the candidate, which is account-agnostic by construction and
-    carries no sizing field. This context supplies it the same way
-    ``AutomaticExitGateContextV1`` supplies ``held_quantity_base``: as an
-    already-decided, caller-assembled account fact, not a value this gate
-    derives.
+    ``account_mode`` and ``live_trading_enabled`` are evidence, not mutations.
+    PAPER requires ``live_trading_enabled=False``. LIVE requires
+    ``live_trading_enabled=True`` plus an exact typed GRANTED
+    ``automatic_buy_live_permission_evaluation``. This establishes the
+    software contract while production may remain non-live until a separately
+    authorized activation change sets those facts.
 
-    ``strategy_bucket_config_rows``/``strategy_bucket_config_revocations``
-    are forwarded unchanged to
-    ``strategy_bucket_participation_evaluation_v1.evaluate_strategy_bucket_participation_v1``
-    (Issue #279) together with ``current_bucket_amount_eur``,
-    ``current_open_positions``, and ``current_asset_exposure_pct`` so the
-    bucket ceilings (max position amount, max bucket amount, max asset
-    exposure, max open positions, new-entry allowance) are resolved from the
-    single canonical bucket-config owner rather than recomputed here.
-
-    ``blocking_conflict`` represents any active reservation/open BUY-order
-    state which cannot safely coexist with the proposed BUY.
-
-    ``account_protection_evaluation`` is the typed decision-gate protection
-    evaluation (Issue #318), composed by the caller for ``ACTION_BUY`` and
-    forwarded unchanged -- this gate never re-resolves protection state
-    itself, matching ``automatic_exit_gate_v1``.
+    Decision-gate LIVE permission remains wholly separate from downstream
+    executor operational LIVE authority, credential scope and kill switch.
     """
 
     trading_account_id: int
@@ -131,18 +103,17 @@ class AutomaticBuyGateContextV1:
     max_account_age_seconds: int = 15 * 60
     max_candidate_age_seconds: int = 15 * 60
     max_free_quote_balance_age_seconds: int = 15 * 60
-    # A caller may supply a stricter account risk ceiling. None means the
-    # account evidence has no additional cap, not that planning may bypass
-    # the proposed-amount/free-balance bounds.
     max_automatic_buy_notional_eur: Decimal | None = None
     strategy_bucket_config_rows: tuple = ()
     strategy_bucket_config_revocations: tuple = ()
     account_protection_evaluation: AccountProtectionEvaluationV1 | None = None
+    live_trading_enabled: bool = False
+    automatic_buy_live_permission_evaluation: AutomaticBuyLivePermissionEvaluationV1 | None = None
 
 
 @dataclass(frozen=True)
 class AutomaticBuyGateDecisionV1:
-    state: str  # APPROVED | DENIED | NON_ACTIONABLE
+    state: str
     reason_code: str
     candidate: AutomaticBuyCandidateV1
     approved_notional_ceiling_eur: Decimal | None
@@ -165,8 +136,12 @@ def _stale(observed: datetime, evaluation: datetime, max_age_seconds: int) -> bo
 
 
 def _decision(
-    state: str, reason: str, candidate: AutomaticBuyCandidateV1, *,
-    ceiling: Decimal | None = None, bucket_reason: str | None = None,
+    state: str,
+    reason: str,
+    candidate: AutomaticBuyCandidateV1,
+    *,
+    ceiling: Decimal | None = None,
+    bucket_reason: str | None = None,
 ) -> AutomaticBuyGateDecisionV1:
     return AutomaticBuyGateDecisionV1(
         state=state,
@@ -178,15 +153,10 @@ def _decision(
 
 
 def _evaluate_automatic_buy_candidate_permission_base_v1(
-    *, candidate: AutomaticBuyCandidateV1, context: AutomaticBuyGateContextV1
+    *,
+    candidate: AutomaticBuyCandidateV1,
+    context: AutomaticBuyGateContextV1,
 ) -> AutomaticBuyGateDecisionV1:
-    """Fail-closed permission decision for an already-selected BUY candidate.
-
-    The approved ceiling is account safety data, not a strategy quantity: it
-    is the account's own proposed sizing, bounded by fresh free quote
-    balance, the resolved strategy-bucket ceilings, and (if supplied) an
-    account risk cap. Downstream planning must not exceed it.
-    """
     if (
         not _is_nonempty_string(candidate.venue)
         or candidate.asset_id <= 0
@@ -202,21 +172,31 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_POLICY_CONTRACT, candidate)
 
     if not all(_is_aware(value) for value in (
-        candidate.observed_ts_utc, context.account_observed_ts_utc,
-        context.free_quote_balance_observed_ts_utc, context.evaluation_ts_utc,
+        candidate.observed_ts_utc,
+        context.account_observed_ts_utc,
+        context.free_quote_balance_observed_ts_utc,
+        context.evaluation_ts_utc,
     )):
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, candidate)
 
     if (
-        context.trading_account_id <= 0 or not _is_nonempty_string(context.venue)
-        or context.asset_id <= 0 or not _is_nonempty_string(context.market)
+        context.trading_account_id <= 0
+        or not _is_nonempty_string(context.venue)
+        or context.asset_id <= 0
+        or not _is_nonempty_string(context.market)
         or not _is_nonempty_string(context.strategy_bucket_id)
-        or context.max_account_age_seconds < 0 or context.max_candidate_age_seconds < 0
+        or context.max_account_age_seconds < 0
+        or context.max_candidate_age_seconds < 0
         or context.max_free_quote_balance_age_seconds < 0
+        or type(context.live_trading_enabled) is not bool
     ):
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_ACCOUNT_EVIDENCE, candidate)
 
-    if (candidate.venue, candidate.asset_id, candidate.market) != (context.venue, context.asset_id, context.market):
+    if (candidate.venue, candidate.asset_id, candidate.market) != (
+        context.venue,
+        context.asset_id,
+        context.market,
+    ):
         return _decision(STATE_NON_ACTIONABLE, REASON_IDENTITY_MISMATCH, candidate)
 
     if _stale(context.account_observed_ts_utc, context.evaluation_ts_utc, context.max_account_age_seconds):
@@ -224,7 +204,8 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
     if _stale(candidate.observed_ts_utc, context.evaluation_ts_utc, context.max_candidate_age_seconds):
         return _decision(STATE_NON_ACTIONABLE, REASON_CANDIDATE_EVIDENCE_STALE, candidate)
     if _stale(
-        context.free_quote_balance_observed_ts_utc, context.evaluation_ts_utc,
+        context.free_quote_balance_observed_ts_utc,
+        context.evaluation_ts_utc,
         context.max_free_quote_balance_age_seconds,
     ):
         return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate)
@@ -235,13 +216,36 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_PROPOSED_POSITION_AMOUNT, candidate)
     if context.max_automatic_buy_notional_eur is not None and context.max_automatic_buy_notional_eur < 0:
         return _decision(STATE_NON_ACTIONABLE, REASON_RISK_BOUND_UNRESOLVED, candidate)
-
     if not context.account_enabled:
         return _decision(STATE_DENIED, REASON_ACCOUNT_DISABLED, candidate)
     if not context.automatic_buy_execution_enabled:
         return _decision(STATE_DENIED, REASON_EXECUTION_PERMISSION_DISABLED, candidate)
+
     if context.account_mode not in SUPPORTED_ACCOUNT_MODES:
         return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate)
+    if context.account_mode == ACCOUNT_MODE_PAPER:
+        if context.live_trading_enabled:
+            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+    else:
+        if not context.live_trading_enabled:
+            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+        live_permission = context.automatic_buy_live_permission_evaluation
+        if live_permission is None:
+            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
+        try:
+            validate_automatic_buy_live_permission_evaluation_binding_v1(
+                live_permission,
+                trading_account_id=context.trading_account_id,
+                evaluation_ts_utc=context.evaluation_ts_utc,
+            )
+        except AutomaticBuyLivePermissionEvaluationError:
+            return _decision(
+                STATE_DENIED,
+                REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH,
+                candidate,
+            )
+        if live_permission.decision_state != LIVE_PERMISSION_DECISION_GRANTED:
+            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
 
     if context.blocking_conflict:
         return _decision(STATE_DENIED, REASON_BLOCKING_CONFLICT, candidate)
@@ -265,29 +269,49 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             request=bucket_request,
         )
     except StrategyBucketParticipationEvaluationError:
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_STRATEGY_BUCKET_PARTICIPATION_REQUEST, candidate)
+        return _decision(
+            STATE_NON_ACTIONABLE,
+            REASON_INVALID_STRATEGY_BUCKET_PARTICIPATION_REQUEST,
+            candidate,
+        )
 
     if bucket_decision.decision_state == BUCKET_DECISION_BLOCKED:
-        return _decision(STATE_DENIED, bucket_decision.reason_code, candidate, bucket_reason=bucket_decision.reason_code)
+        return _decision(
+            STATE_DENIED,
+            bucket_decision.reason_code,
+            candidate,
+            bucket_reason=bucket_decision.reason_code,
+        )
 
     ceiling = min(context.proposed_position_amount_eur, context.free_quote_balance_eur)
     if context.max_automatic_buy_notional_eur is not None:
         ceiling = min(ceiling, context.max_automatic_buy_notional_eur)
     if ceiling <= 0:
-        return _decision(STATE_DENIED, REASON_RISK_BOUND_UNRESOLVED, candidate, bucket_reason=bucket_decision.reason_code)
-    return _decision(STATE_APPROVED, REASON_OK, candidate, ceiling=ceiling, bucket_reason=bucket_decision.reason_code)
+        return _decision(
+            STATE_DENIED,
+            REASON_RISK_BOUND_UNRESOLVED,
+            candidate,
+            bucket_reason=bucket_decision.reason_code,
+        )
+    return _decision(
+        STATE_APPROVED,
+        REASON_OK,
+        candidate,
+        ceiling=ceiling,
+        bucket_reason=bucket_decision.reason_code,
+    )
 
 
 def evaluate_automatic_buy_candidate_permission_v1(
-    *, candidate: AutomaticBuyCandidateV1, context: AutomaticBuyGateContextV1
+    *,
+    candidate: AutomaticBuyCandidateV1,
+    context: AutomaticBuyGateContextV1,
 ) -> AutomaticBuyGateDecisionV1:
-    """Compose base BUY permission with explicit account-protection evidence.
-
-    A protection may only turn an otherwise approved gate result into
-    denied; it can never approve a candidate the base evaluation denied or
-    left non-actionable. This gate never inspects protection rules itself.
-    """
-    base = _evaluate_automatic_buy_candidate_permission_base_v1(candidate=candidate, context=context)
+    """Compose BUY permission with canonical action-aware protection evidence."""
+    base = _evaluate_automatic_buy_candidate_permission_base_v1(
+        candidate=candidate,
+        context=context,
+    )
     protection = context.account_protection_evaluation
     if protection is None:
         return base
@@ -310,6 +334,7 @@ def evaluate_automatic_buy_candidate_permission_v1(
             approved_notional_ceiling_eur=None,
             protection_reason_code=REASON_INVALID_PROTECTION_EVALUATION_BINDING,
         )
+
     enriched = replace(
         base,
         protection_reason_code=protection.reason_code,
