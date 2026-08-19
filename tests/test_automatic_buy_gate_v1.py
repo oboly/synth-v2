@@ -16,6 +16,7 @@ from src.decision_gate.account_protection_contract_v1 import (
 from src.decision_gate.automatic_buy_gate_v1 import (
     REASON_ACCOUNT_DISABLED,
     REASON_ACCOUNT_EVIDENCE_STALE,
+    REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT,
     REASON_BLOCKING_CONFLICT,
     REASON_CANDIDATE_EVIDENCE_STALE,
     REASON_EXECUTION_PERMISSION_DISABLED,
@@ -138,7 +139,7 @@ def test_drawdown_protection_denies_buy() -> None:
 
 
 def test_protection_evaluation_binding_mismatch_denies_an_otherwise_approved_candidate() -> None:
-    mismatched = _protection(ACTION_EXIT)  # evaluated for EXIT, but this gate always requests ACTION_BUY
+    mismatched = _protection(ACTION_EXIT)
     result = _evaluate(account_protection_evaluation=mismatched)
     assert result.state == STATE_DENIED
     assert result.reason_code == "INVALID_PROTECTION_EVALUATION_BINDING"
@@ -186,8 +187,10 @@ def test_account_disabled_is_denied() -> None:
     assert _evaluate(account_enabled=False).reason_code == REASON_ACCOUNT_DISABLED
 
 
-def test_non_paper_account_mode_is_non_actionable() -> None:
-    for mode in ("live", "LIVE", "Paper", "demo", "", "sandbox"):
+def test_live_without_live_flag_is_non_actionable_and_other_unknown_modes_remain_unsupported() -> None:
+    live = _evaluate(account_mode="live")
+    assert (live.state, live.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT)
+    for mode in ("LIVE", "Paper", "demo", "", "sandbox"):
         result = _evaluate(account_mode=mode)
         assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE)
 
