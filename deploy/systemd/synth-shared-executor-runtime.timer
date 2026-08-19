@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Synth shared executor runtime every 15 seconds (candidate only)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/shared_executor_runtime_v1.md
+ConditionHost=gurkdb
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=false
+Unit=synth-shared-executor-runtime.service
+
+# Timer remains uninstalled and disabled until a separate non-live deployment.
+
+[Install]
+WantedBy=timers.target

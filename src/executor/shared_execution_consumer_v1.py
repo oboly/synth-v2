@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 from uuid import uuid4
 
 from src.executor.execution_handoff_v1 import ExecutionHandoffRepositoryV1, ExecutionHandoffV1
@@ -9,6 +10,12 @@ from src.executor.execution_claim_v1 import ExecutionClaimLostError
 from src.executor.execution_leg_v1 import RECONCILIATION_REQUIRED, SUBMISSION_UNCERTAIN, ExecutionLegRepositoryV1
 from src.executor.execution_plan_reference_v1 import ApprovedExecutionPlanV1, ExecutionPlanLegV1
 from src.executor.execution_submission_orchestrator_v1 import OrderPlacementAdapter, submit_execution_plan
+
+
+class OrderPlacementAdapterFactory(Protocol):
+    """Build an adapter for one exact persisted handoff after its claim wins."""
+
+    def adapter_for_handoff(self, handoff: ExecutionHandoffV1) -> OrderPlacementAdapter: ...
 
 
 def hydrate_approved_execution_plan(*, handoff: ExecutionHandoffV1, repository: ExecutionHandoffRepositoryV1) -> ApprovedExecutionPlanV1:
@@ -67,16 +74,29 @@ class _ClaimHeartbeatAdapter:
 class SharedExecutionConsumerV1:
     handoff_repository: ExecutionHandoffRepositoryV1
     leg_repository: ExecutionLegRepositoryV1
-    adapter: OrderPlacementAdapter
+    adapter: OrderPlacementAdapter | None
     operator_id: int
     worker_id: str
     runtime_owner: str
+    executor_identity: str
+    adapter_factory: OrderPlacementAdapterFactory | None = None
+
+    def __post_init__(self) -> None:
+        if (self.adapter is None) == (self.adapter_factory is None):
+            raise ValueError("EXACTLY_ONE_ORDER_ADAPTER_OR_FACTORY_REQUIRED")
 
     def consume_once(self, *, executor_mode: str = "DRY_RUN", limit: int = 100, lease_seconds: int = 60) -> tuple[SharedExecutionConsumerResultV1, ...]:
         outcomes: list[SharedExecutionConsumerResultV1] = []
-        for handoff in self.handoff_repository.discover_eligible(executor_mode=executor_mode, runtime_owner=self.runtime_owner, limit=limit):
+        for handoff in self.handoff_repository.discover_eligible(
+            executor_mode=executor_mode,
+            runtime_owner=self.runtime_owner,
+            executor_identity=self.executor_identity,
+            limit=limit,
+        ):
             if handoff.handoff_id is None:
                 continue
+            if handoff.executor_identity != self.executor_identity:
+                raise ValueError("PERSISTED_HANDOFF_EXECUTOR_IDENTITY_MISMATCH")
             token = str(uuid4())
             if not self.handoff_repository.claim(handoff_id=handoff.handoff_id, claim_token=token, claimed_by=self.worker_id):
                 continue
@@ -85,7 +105,14 @@ class SharedExecutionConsumerV1:
                 if not self.handoff_repository.renew_claim(handoff_id=handoff.handoff_id, claim_token=token, lease_seconds=lease_seconds):
                     raise ExecutionClaimLostError(ExecutionClaimLostError.reason_code)
                 plan = hydrate_approved_execution_plan(handoff=handoff, repository=self.handoff_repository)
-                result = submit_execution_plan(handoff=handoff, plan=plan, operator_id=self.operator_id, handoff_repository=self.handoff_repository, leg_repository=self.leg_repository, adapter=_ClaimHeartbeatAdapter(self.adapter, self.handoff_repository, handoff.handoff_id, token, lease_seconds))
+                adapter = (
+                    self.adapter_factory.adapter_for_handoff(handoff)
+                    if self.adapter_factory is not None
+                    else self.adapter
+                )
+                if adapter is None:
+                    raise AssertionError("adapter required after consumer validation")
+                result = submit_execution_plan(handoff=handoff, plan=plan, operator_id=self.operator_id, handoff_repository=self.handoff_repository, leg_repository=self.leg_repository, adapter=_ClaimHeartbeatAdapter(adapter, self.handoff_repository, handoff.handoff_id, token, lease_seconds))
                 outcomes.append(SharedExecutionConsumerResultV1(result.handoff_id, result.stopped_reason))
                 completed = result.stopped_reason not in {SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED}
             except ExecutionClaimLostError:

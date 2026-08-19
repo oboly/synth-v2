@@ -142,14 +142,14 @@ def _cursor_factory(get_connection: Any, database: str):
     return factory
 
 
-def _seed_handoff(cursor_factory: Any, reference: str, *, legs: tuple[ExecutionPlanLegV1, ...], mode: str = "DRY_RUN") -> int:
+def _seed_handoff(cursor_factory: Any, reference: str, *, legs: tuple[ExecutionPlanLegV1, ...], mode: str = "DRY_RUN", executor_identity: str = "acceptance") -> int:
     plan = ApprovedExecutionPlanV1("ACCEPTANCE", reference, 7, "bitvavo", "BTC-EUR", "SELL", legs)
     with cursor_factory(commit=True) as (_conn, cursor):
         cursor.execute(
             "INSERT INTO executor_execution_handoff "
             "(plan_source, plan_reference_id, plan_content_hash, trading_account_id, venue, market, side, executor_mode, executor_identity, runtime_owner, executor_credential_binding_id, created_ts_utc) "
-            "VALUES (%s,%s,%s,7,'bitvavo','BTC-EUR','SELL',%s,'acceptance','devlap',1,UTC_TIMESTAMP(6))",
-            [plan.plan_source, plan.plan_reference_id, plan.content_hash, mode],
+            "VALUES (%s,%s,%s,7,'bitvavo','BTC-EUR','SELL',%s,%s,'devlap',1,UTC_TIMESTAMP(6))",
+            [plan.plan_source, plan.plan_reference_id, plan.content_hash, mode, executor_identity],
         )
         handoff_id = int(cursor.lastrowid)
         for leg in legs:
@@ -200,7 +200,7 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
 
         # Discovery is mode-specific and persisted-id ordered; the separate
         # repository objects open independent MariaDB connection contexts.
-        assert [h.handoff_id for h in handoffs_a.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap")] == [first, second]
+        assert [h.handoff_id for h in handoffs_a.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap", executor_identity="acceptance")] == [first, second]
         assert handoffs_a.claim(handoff_id=first, claim_token=str(uuid.uuid4()), claimed_by="worker-a")
         assert not handoffs_b.claim(handoff_id=first, claim_token=str(uuid.uuid4()), claimed_by="worker-b")
         with factory() as (_conn, cursor):
@@ -223,7 +223,7 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
         assert handoffs_b.claim(handoff_id=first, claim_token=reclaim_token, claimed_by="worker-b")
         assert not handoffs_a.finish_claim(handoff_id=first, claim_token=first_token, completed=False)
         reopened = ExecutionHandoffRepositoryV1(cursor_factory=factory)
-        assert first not in [h.handoff_id for h in reopened.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap")]
+        assert first not in [h.handoff_id for h in reopened.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap", executor_identity="acceptance")]
 
         # Release the test claim; restart/reload remains DB authoritative.
         with factory() as (_conn, cursor):
@@ -243,19 +243,19 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
         assert [(leg.leg_index, leg.price, leg.quantity, leg.side) for leg in hydrated.legs] == [(1, Decimal("101.20"), Decimal("0.11"), "SELL"), (2, Decimal("102.30"), Decimal("0.22"), "SELL")]
 
         adapter = _FakeAdapter()
-        outcomes = run_shared_execution_consumer_once_v1(handoff_repository=handoffs_a, leg_repository=legs_a, adapter=adapter, operator_id=9, worker_id="worker-a", runtime_owner="devlap")
+        outcomes = run_shared_execution_consumer_once_v1(handoff_repository=handoffs_a, leg_repository=legs_a, adapter=adapter, operator_id=9, worker_id="worker-a", runtime_owner="devlap", executor_identity="acceptance")
         assert [outcome.handoff_id for outcome in outcomes] == [first, second]
         assert len(adapter.place_calls) == 4
         # A fresh consumer/repository cannot re-post completed legs/handoffs.
-        restarted = run_shared_execution_consumer_once_v1(handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=factory), leg_repository=ExecutionLegRepositoryV1(cursor_factory=factory), adapter=adapter, operator_id=9, worker_id="worker-restart", runtime_owner="devlap")
+        restarted = run_shared_execution_consumer_once_v1(handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=factory), leg_repository=ExecutionLegRepositoryV1(cursor_factory=factory), adapter=adapter, operator_id=9, worker_id="worker-restart", runtime_owner="devlap", executor_identity="acceptance")
         assert restarted == () and len(adapter.place_calls) == 4
 
         uncertain = _seed_handoff(factory, "uncertain", legs=(ExecutionPlanLegV1(1, "SELL", Decimal("99.10"), Decimal("0.10")),))
         uncertain_adapter = _FakeAdapter(timeout_once=True)
-        first_run = run_shared_execution_consumer_once_v1(handoff_repository=handoffs_a, leg_repository=legs_a, adapter=uncertain_adapter, operator_id=9, worker_id="worker-a", runtime_owner="devlap")
+        first_run = run_shared_execution_consumer_once_v1(handoff_repository=handoffs_a, leg_repository=legs_a, adapter=uncertain_adapter, operator_id=9, worker_id="worker-a", runtime_owner="devlap", executor_identity="acceptance")
         assert first_run[-1].handoff_id == uncertain and first_run[-1].stopped_reason == "SUBMISSION_UNCERTAIN"
         assert len(uncertain_adapter.place_calls) == 1
-        second_run = run_shared_execution_consumer_once_v1(handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=factory), leg_repository=ExecutionLegRepositoryV1(cursor_factory=factory), adapter=uncertain_adapter, operator_id=9, worker_id="worker-restart", runtime_owner="devlap")
+        second_run = run_shared_execution_consumer_once_v1(handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=factory), leg_repository=ExecutionLegRepositoryV1(cursor_factory=factory), adapter=uncertain_adapter, operator_id=9, worker_id="worker-restart", runtime_owner="devlap", executor_identity="acceptance")
         assert second_run[-1].handoff_id == uncertain and second_run[-1].stopped_reason is None
         assert len(uncertain_adapter.place_calls) == 1
         assert len(uncertain_adapter.lookup_calls) == 1

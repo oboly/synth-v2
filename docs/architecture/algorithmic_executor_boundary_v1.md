@@ -202,3 +202,19 @@ remains architecturally guarded against importing `src.executor`
 
 This adapter does not activate LIVE trading, provision credentials, grant
 executor operational LIVE authority, or submit broker orders by itself.
+
+## Phase J shared runtime deployment boundary
+
+The repository now supplies one candidate `shared-executor-v1` runtime entry
+point for both persisted BUY and SELL handoffs. It discovers only the exact
+persisted `(executor_mode, runtime_owner, executor_identity)` tuple, claims
+before adapter construction, then constructs the adapter per exact persisted
+handoff. The per-handoff factory is required because the dormant Bitvavo
+adapter is bound to one immutable handoff identity.
+
+The committed candidate service/timer is DRY_RUN-only. PAPER and LIVE remain
+canonical modes but fail closed because no truthful shared PAPER adapter or
+authorized LIVE runtime composition exists. Phase J does not install/enable a
+unit, apply a production migration, provision a credential, grant authority,
+or make a broker/private call. The operational contract and separately
+authorized rollout prerequisites are in `docs/ops/shared_executor_runtime_v1.md`.

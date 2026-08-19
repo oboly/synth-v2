@@ -1,0 +1,38 @@
+[Unit]
+Description=Synth shared executor runtime (candidate, DRY_RUN only)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/shared_executor_runtime_v1.md
+ConditionHost=gurkdb
+ConditionPathExists=/etc/synth/shared-executor-runtime-v1.env
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gurk
+Group=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+Environment=SYNTH_SHARED_EXECUTOR_MODE=DRY_RUN
+Environment=SYNTH_SHARED_EXECUTOR_RUNTIME_OWNER=gurkdb
+Environment=SYNTH_SHARED_EXECUTOR_IDENTITY=shared-executor-v1
+Environment=SYNTH_SHARED_EXECUTOR_LEASE_SECONDS=60
+Environment=SYNTH_SHARED_EXECUTOR_BATCH_LIMIT=100
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+EnvironmentFile=/etc/synth/shared-executor-runtime-v1.env
+ExecStart=/home/gurk/projects/synth-v2/.venv/bin/python -m src.executor.run_shared_execution_runtime_v1 --executor-mode DRY_RUN --runtime-owner gurkdb --executor-identity shared-executor-v1 --lease-seconds 60 --batch-limit 100
+Restart=no
+TimeoutStartSec=2min
+TimeoutStopSec=15s
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-shared-executor-runtime
+
+# Candidate only. This repository artifact remains uninstalled and disabled.
+# PAPER has no shared paper adapter; LIVE has no runtime authorization here.
+
+[Install]
+WantedBy=multi-user.target
