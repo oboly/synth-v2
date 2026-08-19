@@ -32,9 +32,11 @@ how agent work is organized and evidenced.
 
 ## 1. Model Orchestration
 
-Match model capability to task risk, not to habit.
+Match model capability to task uncertainty and risk, not to habit, role title,
+or task size.
 
-Use a strong frontier model as **advisor** for:
+Use a strong frontier model as **advisor** when the assigned slice genuinely
+contains unresolved material uncertainty, especially around:
 
 ```text
 architectural change
@@ -44,8 +46,13 @@ database schema or write-path change
 decision_gate / execution_planner / executor work
 broker-adjacent work
 broad or cross-module refactor
-ambiguous or high-blast-radius tasks
+ambiguous or high-blast-radius failures
 ```
+
+This does **not** mean every task in those categories automatically requires
+the strongest model or high effort. If the architecture, boundaries, and
+implementation choices are already resolved, bounded execution should remain
+on the cheapest model/effort combination that can complete it reliably.
 
 Less-capable or cheaper agents may execute **bounded implementation work**
 under an explicit advisor contract.
@@ -68,24 +75,72 @@ agent rather than executed directly inside the primary session context.
 Do not use the most expensive model for routine mechanical work unless there
 is a stated reason.
 
-Select effort proportionally:
+Select effort proportionally to unresolved uncertainty:
 
 ```text
-low     = bounded mechanical work with low risk
-medium  = normal implementation, focused review, triage, or worker execution (default)
-high    = architecture, security, runtime, database, execution, broad
-          refactors, ambiguous failures, or final high-risk review
+low     = lookup, formatting, inventory, mechanical verification, bounded edits
+medium  = normal implementation, focused review, triage, project management,
+          architecture triage, or worker execution (default)
+high    = exception only: genuine unresolved architecture/security/runtime/DB
+          ambiguity, difficult unknown failure cause, or broad evidence synthesis
 ```
 
+Before escalating to `high`, state the material uncertainty the agent still
+needs to resolve. If there is no concrete uncertainty, remain on `medium` or
+`low`. Prefer narrowing the task over compensating for broad scope with high
+effort.
+
 Use the exact effort or reasoning value supported by the selected model or
-client where known. Otherwise use `low`, `medium`, or `high`. Default to `medium`
-for normal project-management, architecture triage, and worker implementation tasks.
+client where known. Otherwise use `low`, `medium`, or `high`. Default to
+`medium` for normal project-management, architecture triage, implementation,
+and review tasks. High effort must not be inherited by subagents simply
+because the parent task used it.
 
-Operational provider routing preference (revisable guidance, non-architectural):
+### OpenAI routing policy
 
-- Claude Code Sonnet Medium is the preferred primary implementation route for sustained bounded work while quota-efficient.
-- OpenAI Codex remains preferred for targeted implementation, independent review, difficult debugging, or a bounded second pass.
-- Model/provider preferences reflect operational cost awareness; architecture and safety contracts remain provider-neutral. Do not encode temporary quota metrics or account balances in canonical documents.
+Current project preference, effective 2026-08-19:
+
+```text
+GPT-5.6 Luna  + low/medium = cheapest bounded bulk work
+GPT-5.6 Terra + medium     = default project manager, engineer, reviewer, triage
+GPT-5.6 Sol   + medium     = escalation for difficult/high-risk unresolved work
+high effort                = exception, regardless of model
+```
+
+Use Luna first for tasks such as repository search, inventories, mechanical
+documentation work, bounded checks, simple transformations, evidence
+collection, and other low-risk slices whose contract is already clear.
+
+Use Terra as the default OpenAI model for normal Synth v2 project-management
+and engineering work when model choice is available. This includes normal
+implementation, PR analysis, issue design, architecture triage, focused review,
+and coordination of bounded workers.
+
+Use Sol only when Terra is insufficient for the unresolved problem, or when a
+specific high-risk slice materially benefits from the stronger model. Sol is
+an escalation path, not the default project-manager model. A project-manager
+session fixed to Sol by the host application may remain on Sol, but generated
+worker/advisor handoffs should still follow this routing policy.
+
+Cost rationale recorded from the project owner's 2026-08-19 pricing update:
+GPT-5.6 Luna became 80% less expensive than its prior price and GPT-5.6 Terra
+became 20% less expensive than its prior price. Treat these percentages as a
+dated operational routing signal, not as an architectural invariant. If
+provider pricing changes materially, update this section rather than preserving
+stale cost assumptions.
+
+Operational provider routing preference remains revisable and
+non-architectural:
+
+- Claude Code Sonnet Medium remains a valid primary implementation route for
+  sustained bounded work when it is the best quota/cost fit.
+- OpenAI Luna is preferred for cheap bounded bulk work when capable.
+- OpenAI Terra Medium is the default OpenAI project-manager/engineering route.
+- OpenAI Sol Medium is reserved for escalation, independent difficult review,
+  or genuinely difficult debugging/architecture work.
+- Model/provider preferences reflect operational cost awareness; architecture
+  and safety contracts remain provider-neutral. Do not encode temporary quota
+  balances or account-specific usage counters in canonical documents.
 
 Effort does not replace ROLE. It does not authorize broader scope, additional
 mutations, or any permission not stated in the task.
@@ -267,6 +322,10 @@ Rules:
 - Report exceptions, relevant evidence, blockers, and final status.
 - Do not repeat repository content already available to the receiving agent.
 - Prefer exact paths, SHAs, commands, and compact evidence over narrative.
+- Prefer Luna or Terra with low/medium effort over Sol/high when the bounded
+  task can be completed reliably at the cheaper setting.
+- Escalate model or effort only for a named unresolved uncertainty, not merely
+  because more context or more tokens are available.
 
 Token discipline never justifies skipping a required safety check, weakening
 a boundary statement, or reporting an unrun check as run.
