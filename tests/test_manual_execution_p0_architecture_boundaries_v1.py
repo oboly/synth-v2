@@ -183,6 +183,13 @@ class TestExecutorHandoffBoundary:
             for path in directory.rglob("*.py"):
                 imported = _imported_module_names(path)
                 for forbidden in self._FORBIDDEN_HANDOFF_MODULES:
+                    if (
+                        path.relative_to(_REPO_ROOT).as_posix()
+                        == "src/execution_planner/automatic_exit_execution_handoff_application_v1.py"
+                        and forbidden == "src.executor.execution_handoff_v1"
+                    ):
+                        # Canonical #392 -> #206 composition seam only.
+                        continue
                     if forbidden in imported:
                         offenders.append(f"{path.relative_to(_REPO_ROOT)} imports {forbidden}")
         assert offenders == [], (

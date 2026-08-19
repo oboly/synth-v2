@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from src.executor.broker_ack_classification_v1 import OrderAckV1
+from src.executor.execution_claim_v1 import ExecutionClaimLostError
 from src.executor.execution_client_order_id_v1 import derive_execution_client_order_id
 from src.executor.execution_handoff_v1 import ExecutionHandoffRepositoryV1, ExecutionHandoffV1
 from src.executor.execution_leg_v1 import (
@@ -33,6 +34,10 @@ class OrderPlacementAdapter(Protocol):
         operator_id: int,
     ) -> OrderAckV1: ...
     def find_order_by_client_order_id(self, *, market: str, client_order_id: str) -> OrderAckV1 | None: ...
+
+
+class SubmissionAttemptPreflight(Protocol):
+    def before_submission_attempt(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,9 @@ def _resolve_leg(leg: ExecutionLegV1, adapter: OrderPlacementAdapter, repository
         return reconcile_execution_leg(leg=leg, adapter=adapter, repository=repository)
     if leg.state != PREPARED:
         return leg
+    preflight = getattr(adapter, "before_submission_attempt", None)
+    if preflight is not None:
+        preflight()
     leg, won = repository.claim_submission(leg.execution_leg_id or 0)
     if not won:
         return leg
@@ -127,6 +135,8 @@ def _resolve_leg(leg: ExecutionLegV1, adapter: OrderPlacementAdapter, repository
             client_order_id=leg.client_order_id,
             operator_id=leg.operator_id,
         )
+    except ExecutionClaimLostError:
+        raise
     except Exception:
         try:
             return repository.mark_uncertain(leg.execution_leg_id or 0)

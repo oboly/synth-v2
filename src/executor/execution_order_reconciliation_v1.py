@@ -9,6 +9,7 @@ from src.executor.broker_ack_classification_v1 import (
     BrokerAckStateV1,
     OrderAckV1,
 )
+from src.executor.execution_claim_v1 import ExecutionClaimLostError
 from src.executor.execution_leg_v1 import (
     RECONCILIATION_REQUIRED,
     SUBMISSION_UNCERTAIN,
@@ -37,6 +38,8 @@ def reconcile_execution_leg(
             market=leg.market,
             client_order_id=leg.client_order_id,
         )
+    except ExecutionClaimLostError:
+        raise
     except Exception:
         return _current(repository, leg)
     if found is None:
