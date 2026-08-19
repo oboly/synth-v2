@@ -28,6 +28,7 @@ from src.decision_gate.account_protection_contract_v1 import (
     STATE_PERMITTED,
     account_protection_lock_event_id_v1,
     account_protection_lock_lifecycle_id_v1,
+    list_account_protection_lock_status_v1,
     resolve_account_protection_state_for_action_v1,
     resolve_account_protection_state_v1,
 )
@@ -364,3 +365,71 @@ def test_lifecycle_identity_cannot_change_across_append_only_events():
     )
     with pytest.raises(AccountProtectionContractError, match="CONTRADICTORY_PROTECTION_LIFECYCLE_IDENTITY"):
         _resolve_action((active, invalid_clear))
+
+
+def test_reporting_separates_active_from_expired_lock():
+    active = _lock(lifecycle_id="l-active", event_id="e-active")
+    expired = _lock(
+        lifecycle_id="l-expired",
+        event_id="e-expired",
+        protection_code=PROTECTION_DAILY_REALIZED_LOSS_BLOCK,
+        triggered_ts_utc=NOW - timedelta(hours=2),
+        expires_ts_utc=NOW - timedelta(hours=1),
+    )
+    statuses = list_account_protection_lock_status_v1(
+        (active, expired), trading_account_id=ACCOUNT_ID, at=NOW,
+    )
+    by_lifecycle = {status.fact.lifecycle_id: status for status in statuses}
+    assert by_lifecycle["l-active"].in_force is True
+    assert by_lifecycle["l-expired"].in_force is False
+
+
+def test_reporting_agrees_with_enforcement_on_manual_precedence():
+    # Reporting must never disagree with the permission path: both facts are
+    # reported in-force even though the resolver only blocks on one of them.
+    drawdown = _lock()
+    manual = _lock(
+        lifecycle_id="l-manual", event_id="e-manual",
+        protection_code=PROTECTION_MANUAL_ACCOUNT_LOCK, reason_code="OPERATOR_LOCK",
+    )
+    statuses = list_account_protection_lock_status_v1(
+        (drawdown, manual), trading_account_id=ACCOUNT_ID, at=NOW,
+    )
+    assert all(status.in_force for status in statuses)
+    assert len(statuses) == 2
+
+
+def test_reporting_collapses_append_only_history_to_latest_event():
+    original = _lock(
+        lifecycle_id="same", event_id="event-active",
+        triggered_ts_utc=NOW - timedelta(minutes=30), expires_ts_utc=NOW + timedelta(hours=1),
+    )
+    recovery = _lock(
+        lifecycle_id="same", event_id="event-recovered",
+        triggered_ts_utc=NOW - timedelta(minutes=1), lock_state=LOCK_STATE_RECOVERED,
+        expires_ts_utc=NOW + timedelta(hours=1),
+    )
+    statuses = list_account_protection_lock_status_v1(
+        (original, recovery), trading_account_id=ACCOUNT_ID, at=NOW,
+    )
+    assert len(statuses) == 1
+    assert statuses[0].fact.event_id == "event-recovered"
+    assert statuses[0].in_force is False
+
+
+def test_reporting_is_read_only_and_does_not_mutate_input_facts():
+    lock = _lock()
+    before = ProtectionLockFactV1(**lock.__dict__)
+    list_account_protection_lock_status_v1((lock,), trading_account_id=ACCOUNT_ID, at=NOW)
+    assert lock == before
+
+
+def test_reporting_rejects_cross_account_evidence():
+    foreign = _lock(trading_account_id=ACCOUNT_ID + 1)
+    with pytest.raises(AccountProtectionContractError, match="CROSS_ACCOUNT_EVIDENCE_LEAKAGE"):
+        list_account_protection_lock_status_v1((foreign,), trading_account_id=ACCOUNT_ID, at=NOW)
+
+
+def test_reporting_rejects_naive_timestamp():
+    with pytest.raises(AccountProtectionContractError):
+        list_account_protection_lock_status_v1((), trading_account_id=ACCOUNT_ID, at=datetime(2026, 8, 15, 12, 0))

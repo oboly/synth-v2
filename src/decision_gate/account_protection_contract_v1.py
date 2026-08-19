@@ -222,6 +222,19 @@ class AccountProtectionEvaluationV1:
     asset_id: int | None = None
 
 
+@dataclass(frozen=True)
+class AccountProtectionLockStatusV1:
+    """Read-only reporting row: one authoritative lifecycle plus its status.
+
+    ``in_force`` reuses the exact same enforcement rule the resolvers apply,
+    so a reporting/dashboard consumer can never disagree with the permission
+    path about whether a lock is currently active or expired.
+    """
+
+    fact: ProtectionLockFactV1
+    in_force: bool
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -605,3 +618,42 @@ def account_protection_lock_event_id_v1(event: dict[str, Any]) -> str:
         raise AccountProtectionContractError("INCOMPLETE_EVENT_IDENTITY_EVIDENCE")
     serialized = json.dumps(logical_event, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Read-only reporting
+# ---------------------------------------------------------------------------
+
+def list_account_protection_lock_status_v1(
+    facts: Iterable[ProtectionLockFactV1],
+    *,
+    trading_account_id: int,
+    at: datetime,
+) -> tuple[AccountProtectionLockStatusV1, ...]:
+    """Return the authoritative lock status per lifecycle for one account.
+
+    Pure and read-only: it takes caller-loaded facts (e.g. from
+    ``account_protection_repository_v1.load_protection_lock_facts_for_account_v1``)
+    and never creates, unlocks, expires, or otherwise mutates a fact. It
+    collapses append-only history with the same ``_authoritative_facts_by_identity``
+    reduction and applies the same ``_in_force`` rule the permission resolvers
+    use, so reporting can never drift from enforcement. Cross-account facts,
+    malformed fact shape, or duplicate event identity raise
+    :class:`AccountProtectionContractError` rather than silently dropping rows.
+    """
+    if trading_account_id <= 0 or not _is_aware(at):
+        raise AccountProtectionContractError("INVALID_EVALUATION_INPUT")
+    materialized = tuple(facts)
+    event_ids: set[str] = set()
+    for fact in materialized:
+        if fact.trading_account_id != trading_account_id:
+            raise AccountProtectionContractError("CROSS_ACCOUNT_EVIDENCE_LEAKAGE")
+        _validate_fact_shape(fact)
+        if fact.event_id in event_ids:
+            raise AccountProtectionContractError("DUPLICATE_PROTECTION_LOCK_EVENT_ID")
+        event_ids.add(fact.event_id)
+    authoritative = _authoritative_facts_by_identity(materialized)
+    return tuple(
+        AccountProtectionLockStatusV1(fact=fact, in_force=_in_force(fact, at=at))
+        for fact in authoritative
+    )
