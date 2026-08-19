@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -59,10 +58,9 @@ def _binding(**changes: object) -> CredentialScopeBinding:
 class _CredentialCursor:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
-        self.params: list[object] | None = None
 
-    def execute(self, _sql: str, params: list[object]) -> None:
-        self.params = params
+    def execute(self, _sql: str, _params: list[object]) -> None:
+        pass
 
     def fetchall(self) -> list[dict[str, object]]:
         return self.rows
@@ -202,7 +200,7 @@ def test_engaged_kill_switch_blocks_before_secret_or_client_construction() -> No
     adapter, scope, handoffs, kill, authority, events = _adapter_fixture(kill_engaged=True)
     with pytest.raises(BitvavoAdapterUnavailableError, match="LIVE_AUTHORITY_DENIED"):
         adapter._fresh_client()
-    assert handoffs.calls == [17]
+    assert handoffs.calls == [17, 17]
     assert len(scope.calls) == 1
     assert kill.calls == 1
     assert authority.calls == []
@@ -213,7 +211,7 @@ def test_missing_live_authority_blocks_before_secret_or_client_construction() ->
     adapter, scope, handoffs, kill, authority, events = _adapter_fixture(authority_permitted=False)
     with pytest.raises(BitvavoAdapterUnavailableError, match="LIVE_AUTHORITY_DENIED"):
         adapter._fresh_client()
-    assert handoffs.calls == [17]
+    assert handoffs.calls == [17, 17]
     assert len(scope.calls) == 1
     assert kill.calls == 1
     assert len(authority.calls) == 1
@@ -221,37 +219,41 @@ def test_missing_live_authority_blocks_before_secret_or_client_construction() ->
 
 
 def test_buy_authority_is_bound_to_exact_handoff_identity() -> None:
-    adapter, _scope, _handoffs, _kill, authority, events = _adapter_fixture()
+    adapter, _scope, handoffs, kill, authority, events = _adapter_fixture()
     client = adapter._fresh_client()
     assert client is not None
+    assert handoffs.calls == [17, 17]
+    assert kill.calls == 1
     assert events == ["credential_secret_loaded", "private_client_constructed"]
-    assert authority.calls == [{
+    call = authority.calls[0]
+    assert {key: call[key] for key in (
+        "trading_account_id", "venue", "side", "market", "executor_identity", "runtime_owner"
+    )} == {
         "trading_account_id": 101,
         "venue": "bitvavo",
         "side": "BUY",
         "market": "BTC-EUR",
         "executor_identity": "shared-executor-v1",
         "runtime_owner": "gurkdb",
-        "as_of_ts_utc": authority.calls[0]["as_of_ts_utc"],
-    }]
+    }
 
 
 def test_persisted_handoff_mismatch_blocks_before_credential_resolution() -> None:
     handoff = _handoff()
     scope = _Scope(_binding())
     mismatched = _Handoffs(_handoff(market="ETH-EUR"))
-    adapter = build_bitvavo_order_adapter_v1(
-        handoff=handoff,
-        conn=object(),
-        master_key_bytes=b"x" * 32,
-        cred_repo_factory=object(),
-        credential_scope_repository=scope,  # type: ignore[arg-type]
-        handoff_repository=mismatched,  # type: ignore[arg-type]
-        live_authority_repository=_Authority(True),  # type: ignore[arg-type]
-        kill_switch_repository=_KillSwitch(False),  # type: ignore[arg-type]
-        credential_loader=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not load")),
-        client_factory=lambda **_k: (_ for _ in ()).throw(AssertionError("must not construct")),
-    )
-    # Build-time persisted identity verification is intentionally fail-closed.
-    # The constructor must reject before any credential resolution can happen.
+    with pytest.raises(BitvavoAdapterUnavailableError, match="PERSISTED_HANDOFF_IDENTITY_MISMATCH"):
+        build_bitvavo_order_adapter_v1(
+            handoff=handoff,
+            conn=object(),
+            master_key_bytes=b"x" * 32,
+            cred_repo_factory=object(),
+            credential_scope_repository=scope,  # type: ignore[arg-type]
+            handoff_repository=mismatched,  # type: ignore[arg-type]
+            live_authority_repository=_Authority(True),  # type: ignore[arg-type]
+            kill_switch_repository=_KillSwitch(False),  # type: ignore[arg-type]
+            credential_loader=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not load")),
+            client_factory=lambda **_k: (_ for _ in ()).throw(AssertionError("must not construct")),
+        )
+    assert mismatched.calls == [17]
     assert scope.calls == []
