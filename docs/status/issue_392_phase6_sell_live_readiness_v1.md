@@ -35,71 +35,94 @@ credential provisioning, LIVE authority provisioning, kill-switch mutation,
 service/timer activation, or broker call was performed or authorized by
 this change.
 
-**Update (2026-08-19, item 4 attempt, blocked on DB user privilege, revision
-2 — supersedes the revision-1 note below):** re-attempted the "Final
-repository-level integrated non-broker acceptance against the real
-`executor_execution_handoff` table" step (item 4 above), this time explicitly
-authorized to create a disposable database (`synth_acceptance_437`) on the
-same MariaDB host as production `synth` (`192.168.1.221`), apply the exact
-migration dependency closure, seed synthetic-only fixture rows, and drive the
-real `ExecutionHandoffRepositoryV1` there, then drop it.
+**Update (2026-08-19, item 4 CLOSED — real repository-level acceptance PASS,
+revision 3 — supersedes the revision-1/2 notes below):** with an explicit
+disposable-only MariaDB grant now in place
+(`GRANT ALL PRIVILEGES ON \`synth_acceptance_437\`.* TO
+'synth'@'192.168.1.%'`), re-ran the same acceptance prepared in the
+revision-1/2 notes and it **passed against the real repository and real
+schema**. `CREATE DATABASE synth_acceptance_437` succeeded on the first
+attempt with this grant (no broader privilege was needed or requested).
+`SELECT DATABASE()` was verified equal to `synth_acceptance_437` before
+every schema/seed/write step; every cursor factory used by the acceptance
+script hard-fails if any call is ever routed at a database other than
+`synth_acceptance_437`.
 
-Read-only production before-snapshot (unchanged from the revision-1 note):
-account mapping is still exactly one row, `account_id=1 ->
-trading_account_id=3`; `trading_account_id=3` still has
-`live_trading_enabled=0`. New finding this run: `executor_execution_handoff`
-does not exist yet as a table in production `synth` at all — its migration
-(`db/migrations/20260815_shared_executor_substrate_v1.sql`) is still
-`CREATED_NOT_APPLIED`, so there was and is nothing to count or mutate there.
+Read-only production `synth` snapshots taken before, during (after all
+disposable writes, before `DROP DATABASE`), and after cleanup are byte-for-
+byte identical: account mapping is exactly one row (`account_id=1 ->
+trading_account_id=3`), `trading_account_id=3` still has
+`live_trading_enabled=0`, and `executor_execution_handoff` still does not
+exist as a table in production `synth` at all (its migration remains
+`CREATED_NOT_APPLIED` there) — so production had, and still has, nothing to
+mutate. Zero writes were issued against `synth`.
 
-Identified the exact minimal migration dependency closure needed for a
-disposable-schema acceptance (deliberately narrower than the full migration
-history): (1) a minimal `trading_account` PK-only stand-in — no migration in
-this repo owns creating that baseline table, matching the same pattern
-already used by `tests/test_automatic_exit_live_permission_mariadb_ddl_v1.py`;
-(2) `db/migrations/20260609_trading_account_credential_v1.sql`; (3)
-`db/migrations/20260721_account_credential_binding_contract_v1.sql` (adds
-`permission_scope`/`allowed_order_write`/etc.); (4) only the
-`uq_tac_credential_identity_v1` unique-key add and the
+Applied the exact minimal migration dependency closure identified in the
+prior revision into `synth_acceptance_437` only: (1) a minimal synthetic
+`trading_account` PK-only stand-in (`trading_account_id=9900437`); (2)
+`db/migrations/20260609_trading_account_credential_v1.sql`; (3)
+`db/migrations/20260721_account_credential_binding_contract_v1.sql`; (4) only
+the `uq_tac_credential_identity_v1` unique-key add and the
 `executor_credential_binding` table from
-`db/migrations/20260812_manual_execution_executor_handoff_v1.sql` — not that
-migration's unrelated `manual_execution_executor_handoff` table, which has
-its own FK prerequisites (`manual_execution_request`/`approval`/
-`plan_snapshot`) not needed here; (5)
-`db/migrations/20260815_shared_executor_substrate_v1.sql` in full
-(`executor_execution_handoff` + `executor_execution_leg` + triggers).
+`db/migrations/20260812_manual_execution_executor_handoff_v1.sql`; (5)
+`db/migrations/20260815_shared_executor_substrate_v1.sql` in full. Seeded one
+synthetic, non-secret `trading_account_credential` row (`permission_scope=
+TRADE_EXECUTION`, `encrypted_envelope='{"synthetic":"acceptance-437-no-
+secret"}'`, no real API key/secret material) and one matching
+`executor_credential_binding` row for `executor_identity=
+acceptance_437_executor` / `runtime_owner=acceptance_437_runtime`.
 
-Acceptance stopped before any schema/write step: the only MariaDB credential
-reachable in this environment (`synth`@`192.168.1.%`, loaded from the
-runtime's own `.env`-sourced settings) holds `GRANT ALL PRIVILEGES ON
-`synth`.*` and `GRANT USAGE ON *.*` only (verified via `SHOW GRANTS FOR
-CURRENT_USER()`) — no `CREATE`/`DROP DATABASE` privilege at the server level,
-so `CREATE DATABASE synth_acceptance_437` itself was rejected
-(`Access denied for user 'synth'@'192.168.1.%' to database
-'synth_acceptance_437'`) before any DDL or DML ran. No disposable database
-was created (`SHOW DATABASES LIKE 'synth_acceptance_437'` returns zero rows
-after the attempt) and production `synth` is unchanged (mapping still one
-row, `trading_account_id=3` still `live_trading_enabled=0`,
-`executor_execution_handoff` still absent) — zero acceptance residue, zero
-production mutation. This is a credential-privilege limitation, not an
-architecture or repository defect; per this task's own instructions, no
-alternate/admin credential was requested, guessed, or read from outside
-permitted paths.
+Built a real, canonical, typed `AutomaticExitPlanV1` through
+`build_automatic_exit_plan_v1(decision=..., context=...)` — the same
+constructor and fixture shape used by
+`tests/test_automatic_exit_execution_handoff_adapter_v1.py` — for synthetic
+`trading_account_id=9900437`, `venue=bitvavo`, `market=SOL-EUR`, `side=SELL`,
+`candidate_action=REDUCE`, gate approval `state=APPROVED`. Never
+deserialized from `automatic_exit_evaluation_audit_v1` or any audit/reporting
+JSON. Passed it through the real, unmodified
+`adapt_automatic_exit_plan_to_approved_execution_plan_v1` (#432) into a real
+`ApprovedExecutionPlanV1`, then through the real, unmodified
+`ExecutionHandoffRepositoryV1.intake(..., executor_mode="DRY_RUN", ...)` —
+`intake_live_authorized()` was never called.
 
-Per this task's own stop conditions, item 4's real-MariaDB-repository
-acceptance is **still not performed**. `SOFTWARE_PHASE6_BLOCKERS` and
-`GO_LIVE_READY` are unchanged by this update. The exact remaining operator
-action to close item 4: on `gurkdb`, grant the `synth` application user (or a
-separate disposable-acceptance user) `CREATE`, `DROP`, and full DML/DDL
-privilege scoped to `` `synth_acceptance_437`.* `` (e.g.
-`GRANT ALL PRIVILEGES ON \`synth_acceptance_437\`.* TO 'synth'@'192.168.1.%'`
-after the database exists, or a broader
-`GRANT CREATE, DROP ON \`synth_acceptance_437\`.* TO ...` pattern if the
-account already exists) — never widen the grant to `` *.* `` or to
-production `synth` itself — then re-run the acceptance script that already
-implements steps (1)-(5) above plus test cases A-D (initial handoff,
-idempotent retry, distinct logical intent, identity conflict) against
-`synth_acceptance_437` and drops it afterward.
+All four acceptance cases passed against the real `executor_execution_handoff`
+table in `synth_acceptance_437`:
+
+- **Case A (initial handoff):** `plan_reference_id=
+  automatic_exit_v1:9900437:acc437-pos:acc437-ev1:d97f45c7...` persisted as
+  `executor_execution_handoff_id=1`; row count went 0 -> 1; the persisted
+  row's `trading_account_id`, `venue`, `market`, `side`, and `executor_mode`
+  match the typed plan and `ApprovedExecutionPlanV1` exactly (venue, market,
+  side, leg indices/prices/quantities all preserved losslessly — no
+  replanning, re-rounding, or quantity recomputation anywhere in the path).
+- **Case B (idempotent retry):** the exact same logical plan, rebuilt fresh
+  from the planner (not reused in-memory), produced the identical
+  `plan_reference_id` and resolved to the identical
+  `executor_execution_handoff_id=1`; row count stayed at 1 — no duplicate
+  handoff.
+- **Case C (distinct logical intent):** changing only
+  `candidate_evidence_id` (`acc437-ev1` -> `acc437-ev2`) produced a distinct
+  `plan_reference_id` and a new row (`executor_execution_handoff_id=2`); row
+  count went 1 -> 2.
+- **Case D (identity conflict):** reusing Case A's exact `plan_reference_id`
+  with conflicting content (a different `market`) raised
+  `ExecutionHandoffIdentityConflictError` and failed closed; row count stayed
+  at 2 — no corrupted or ambiguous row was written.
+
+After evidence capture, `DROP DATABASE synth_acceptance_437` was executed
+and `SHOW DATABASES LIKE 'synth_acceptance_437'` confirmed zero rows
+afterward — zero acceptance residue. Zero broker calls, zero private-API
+calls, zero order submission, zero LIVE intake at any point.
+
+`REPOSITORY_LEVEL_ACCEPTANCE=PASS`. `SOFTWARE_PHASE6_BLOCKERS_REMAINING=0`.
+`GO_LIVE_READY` remains `NO` — this is software/repository acceptance only,
+not production LIVE authorization; production migration apply, executor
+credential provisioning, LIVE authority provisioning, kill-switch
+authoritative state, deployment, and an explicit user LIVE activation
+decision all remain outstanding and unauthorized by this update. Item 4 in
+the dependency ordering below is now closed; only item 5 (the Phase J
+production activation checklist and a separately authorized LIVE activation
+decision) remains.
 
 **Update (2026-08-18, same branch, correctness fix, revision 1):** the
 initial blocker-C migration made `account_protection_policy_config_v1`
@@ -1001,10 +1024,14 @@ merged and reviewed, and no step authorizes skipping ahead:
    planner -> adapter -> handoff path against a fake in-memory handoff
    repository, still with zero broker calls, zero authority rows, zero
    credentials, zero DB writes.
-4. Final repository-level integrated non-broker acceptance against the real
-   `executor_execution_handoff` table (this task's test above uses only an
-   in-memory fake repository) — the next remaining implementation step
-   before any production activation checklist work.
+4. ~~Final repository-level integrated non-broker acceptance against the real
+   `executor_execution_handoff` table~~ — **DONE 2026-08-19.** See the
+   "item 4 CLOSED" update above: a disposable `synth_acceptance_437` schema
+   (exact minimal migration closure, real `ExecutionHandoffRepositoryV1`,
+   `executor_mode=DRY_RUN` only) proved initial persisted handoff, idempotent
+   retry, distinct-intent-yields-distinct-id, and identity-conflict-fails-
+   closed, then was dropped with zero residue and zero production `synth`
+   mutation. `REPOSITORY_LEVEL_ACCEPTANCE=PASS`.
 5. Only then: work through the Phase J production activation checklist and a
    separately authorized LIVE activation decision. No step in this ordering
    authorizes LIVE by itself, including this one. Production migration
