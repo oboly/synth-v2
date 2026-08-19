@@ -326,11 +326,12 @@ class ExecutionHandoffRepositoryV1:
 
     def finish_claim(self, *, handoff_id: int, claim_token: str, completed: bool) -> bool:
         state = "COMPLETED" if completed else "PENDING"
+        now = trusted_clock.utc_now()
         with self.cursor_factory(commit=True) as db_obj:
             cursor = _cursor(db_obj)
             cursor.execute(
-                f"UPDATE executor_execution_handoff_consumption SET state='{state}', claim_token=NULL, claimed_by=NULL, claim_expires_ts_utc=NULL, updated_ts_utc=%s WHERE executor_execution_handoff_id=%s AND state='CLAIMED' AND claim_token=%s",
-                [trusted_clock.utc_now(), handoff_id, claim_token],
+                f"UPDATE executor_execution_handoff_consumption SET state='{state}', claim_token=NULL, claimed_by=NULL, claim_expires_ts_utc=NULL, updated_ts_utc=%s WHERE executor_execution_handoff_id=%s AND state='CLAIMED' AND claim_token=%s AND claim_expires_ts_utc > %s",
+                [now, handoff_id, claim_token, now],
             )
             return cursor.rowcount == 1
 

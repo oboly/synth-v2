@@ -212,6 +212,13 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
         with factory(commit=True) as (_conn, cursor):
             cursor.execute("UPDATE executor_execution_handoff_consumption SET claim_expires_ts_utc=UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE executor_execution_handoff_id=%s", [first])
         assert not handoffs_a.renew_claim(handoff_id=first, claim_token=first_token, lease_seconds=60)
+        # An expired owner cannot release/finalize its still-token-matching row.
+        assert not handoffs_a.finish_claim(handoff_id=first, claim_token=first_token, completed=False)
+        with factory() as (_conn, cursor):
+            cursor.execute("SELECT state, claim_token, claim_expires_ts_utc < UTC_TIMESTAMP(6) AS expired FROM executor_execution_handoff_consumption WHERE executor_execution_handoff_id=%s", [first])
+            stale_row = cursor.fetchone()
+        assert stale_row == {"state": "CLAIMED", "claim_token": first_token, "expired": 1}
+        # A later worker may reclaim that untouched expired row.
         reclaim_token = str(uuid.uuid4())
         assert handoffs_b.claim(handoff_id=first, claim_token=reclaim_token, claimed_by="worker-b")
         assert not handoffs_a.finish_claim(handoff_id=first, claim_token=first_token, completed=False)
