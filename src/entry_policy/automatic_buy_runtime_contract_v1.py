@@ -26,14 +26,17 @@ class AutomaticBuyRuntimeContractError(ValueError):
 class AutomaticBuyRuntimeInputV1:
     """One immutable, fully bound pre-evaluation input snapshot.
 
-    Market/setup facts remain market-only. Account facts are attached only at
-    this runtime composition boundary and are subsequently consumed by
-    decision_gate. No execution intent is present here.
+    ``evaluation_ts_utc`` is part of the immutable source snapshot. Replaying
+    the same snapshot therefore evaluates Phase 1/2/3 at the same logical
+    instant instead of depending on the wall clock of the replay process.
+    Market/setup facts remain market-only; account facts are attached only at
+    this runtime composition boundary and are consumed by decision_gate.
     """
 
     automatic_buy_runtime_input_id: int
     source_snapshot_key: str
     input_contract_version: str
+    evaluation_ts_utc: datetime
     trading_account_id: int
     venue: str
     asset_id: int
@@ -76,9 +79,9 @@ def _nonempty(value: object) -> bool:
 def validate_runtime_input_v1(
     value: AutomaticBuyRuntimeInputV1,
     *,
-    evaluation_ts_utc: datetime,
     max_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
 ) -> None:
+    evaluation_ts_utc = value.evaluation_ts_utc
     if not _aware(evaluation_ts_utc) or max_age_seconds < 0:
         raise AutomaticBuyRuntimeContractError("INVALID_EVALUATION_TIMESTAMP")
     if (
@@ -133,6 +136,7 @@ def automatic_buy_idempotency_key_v1(evidence: dict[str, Any]) -> str:
     """Hash the exact immutable source identities for one logical evaluation."""
     required = {
         "source_snapshot_key",
+        "evaluation_ts_utc",
         "trading_account_id",
         "venue",
         "asset_id",
