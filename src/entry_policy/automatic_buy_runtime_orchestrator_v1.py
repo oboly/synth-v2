@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from typing import Any, Final
 
 from src.decision_gate.automatic_buy_gate_v1 import (
@@ -63,22 +62,10 @@ def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any
         row.strategy_bucket_account_config_revocation_id
         for row in item.strategy_bucket_config_revocations
     ))
-    protection_fingerprint = _fingerprint(asdict(item.account_protection_evaluation))
     constraints = item.venue_constraints
-    constraint_identity = {
-        "venue": constraints.venue,
-        "market": constraints.market,
-        "source_provenance": constraints.source_provenance,
-        "metadata_synced_ts_utc": constraints.metadata_synced_ts_utc,
-        "tick_size": constraints.tick_size,
-        "qty_step_size": constraints.qty_step_size,
-        "min_base_quantity": constraints.min_base_quantity,
-        "min_quote_notional": constraints.min_quote_notional,
-        "supported_order_types": constraints.supported_order_types,
-        "supported_time_in_force": constraints.supported_time_in_force,
-    }
     return {
         "source_snapshot_key": value.source_snapshot_key,
+        "evaluation_ts_utc": value.evaluation_ts_utc,
         "trading_account_id": value.trading_account_id,
         "venue": value.venue,
         "asset_id": value.asset_id,
@@ -89,8 +76,19 @@ def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any
         "setup_evidence_id": value.setup_evidence_id,
         "strategy_bucket_config_ids": config_ids,
         "strategy_bucket_revocation_ids": revocation_ids,
-        "account_protection_fingerprint": protection_fingerprint,
-        "venue_constraint_identity": constraint_identity,
+        "account_protection_fingerprint": _fingerprint(asdict(item.account_protection_evaluation)),
+        "venue_constraint_identity": {
+            "venue": constraints.venue,
+            "market": constraints.market,
+            "source_provenance": constraints.source_provenance,
+            "metadata_synced_ts_utc": constraints.metadata_synced_ts_utc,
+            "tick_size": constraints.tick_size,
+            "qty_step_size": constraints.qty_step_size,
+            "min_base_quantity": constraints.min_base_quantity,
+            "min_quote_notional": constraints.min_quote_notional,
+            "supported_order_types": constraints.supported_order_types,
+            "supported_time_in_force": constraints.supported_time_in_force,
+        },
     }
 
 
@@ -98,10 +96,10 @@ def evaluate_automatic_buy_runtime_item_v1(
     conn: Any,
     *,
     item: RuntimeItemV1,
-    evaluation_ts_utc: datetime,
     config: AutomaticBuyPolicyConfigV1 = AutomaticBuyPolicyConfigV1(),
 ) -> AutomaticBuyRuntimeItemOutcomeV1:
     runtime_input = item.runtime_input
+    evaluation_ts_utc = runtime_input.evaluation_ts_utc
     evidence = build_automatic_buy_source_evidence_v1(item)
     idempotency_key = automatic_buy_idempotency_key_v1(evidence)
     audit_identity = dict(
@@ -230,8 +228,6 @@ def evaluate_automatic_buy_runtime_item_v1(
         )
 
     immutable_plan = build_immutable_buy_plan_json(plan)
-    # Wall-clock planning time is audit metadata, not logical execution intent.
-    immutable_plan.pop("planning_ts_utc", None)
     result = write_automatic_buy_evaluation_audit_v1(
         conn,
         **audit_identity,
