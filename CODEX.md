@@ -21,7 +21,7 @@ the shared contract here.
 Supporting documents:
 
 ```text
-docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host rules
+docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host / model-routing rules
 docs/ops/agent_search_hygiene_v1.md           untrusted search / log / tool-output handling
 docs/ops/state_model_discipline_v1.md         lifecycle vs temporary health / degraded-state design
 ```
@@ -36,6 +36,22 @@ and obey `src/research/AGENTS.override.md`.
   exposed by the Codex client. If no real effort control is exposed, report
   `effort=default` or `effort=unknown`; do not infer an effort value from task
   depth or elapsed work.
+- Follow the current OpenAI model-routing policy in
+  `docs/ops/agent_orchestration_contract_v1.md`:
+  - GPT-5.6 Luna + low/medium for cheap bounded bulk work.
+  - GPT-5.6 Terra + medium as the default OpenAI project-manager, engineering,
+    focused-review, and triage route.
+  - GPT-5.6 Sol + medium only as escalation for genuinely difficult or
+    high-risk unresolved work.
+  - High effort is an exception on every model, not a default quality tier.
+- When model choice is available, do not default a long-lived project-manager
+  or worker session to Sol merely because Sol is stronger. Start with Terra
+  Medium and escalate only for a named unresolved uncertainty. A host
+  application that fixes the project-manager model to Sol may keep that host
+  model, but generated workers still follow the routing policy.
+- Use Luna first for repository search, inventories, mechanical documentation,
+  bounded evidence collection, simple transformations, and similarly clear
+  low-risk slices when Luna is capable of the task.
 - **Use effort to resolve uncertainty, not to execute scope.** If the task
   contract already resolves the important architecture, requirements, and
   implementation choices, low or medium is normally sufficient even when the
@@ -54,6 +70,9 @@ and obey `src/research/AGENTS.override.md`.
   or broaden the task merely because high effort is available.
 - Before escalating effort, ask: `What material uncertainty remains for this
   agent to resolve?` If there is no concrete answer, do not escalate.
+- Before escalating model tier, ask the same question and state why Terra or
+  Luna cannot reliably resolve it. If there is no concrete answer, do not
+  escalate to Sol.
 - Do not escalate a subagent to high merely because the parent task is an
   architecture audit, because the agent is a reviewer/auditor, or because
   parallel agents are available. Narrow the assigned slice first.
