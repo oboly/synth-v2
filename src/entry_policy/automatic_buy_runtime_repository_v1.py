@@ -1,9 +1,9 @@
-"""DB-local input loader for Issue #399 Phase 4 automatic BUY runtime.
+"""DB-local input/evidence loader for the automatic BUY runtime.
 
-The repository loads one immutable runtime input snapshot, canonical #279
-strategy-bucket configuration history, #318 account-protection evaluation,
-and public venue execution constraints. It performs no BUY permission or
-planning logic and has no executor/broker imports.
+The repository assembles persisted runtime input, canonical #279 strategy
+bucket history, #318 account protection, Phase 7A BUY LIVE permission evidence
+when the snapshot is LIVE-mode, and public venue constraints. It makes no BUY
+permission or planning decision and has no executor/broker imports.
 """
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from typing import Any
 
 from src.decision_gate.account_protection_contract_v1 import ACTION_BUY, AccountProtectionEvaluationV1
 from src.decision_gate.account_protection_evaluation_v1 import evaluate_account_protection_for_automatic_exit_v1
+from src.decision_gate.automatic_buy_live_permission_evaluation_v1 import (
+    AutomaticBuyLivePermissionEvaluationV1,
+    evaluate_automatic_buy_live_permission_v1,
+)
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import (
     StrategyBucketAccountConfigRevocationV1,
     StrategyBucketAccountConfigRowV1,
@@ -82,6 +86,7 @@ def _row_to_input(row: dict[str, Any]) -> AutomaticBuyRuntimeInputV1:
                 if row["max_automatic_buy_notional_eur"] is not None else None
             ),
             source_provenance=str(row["source_provenance"]),
+            live_trading_enabled=bool(row.get("live_trading_enabled", 0)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AutomaticBuyRuntimeRepositoryError("INVALID_AUTOMATIC_BUY_RUNTIME_INPUT_ROW") from exc
@@ -94,6 +99,7 @@ class RuntimeItemV1:
     strategy_bucket_config_revocations: tuple[StrategyBucketAccountConfigRevocationV1, ...]
     account_protection_evaluation: AccountProtectionEvaluationV1
     venue_constraints: VenueExecutionConstraints
+    automatic_buy_live_permission_evaluation: AutomaticBuyLivePermissionEvaluationV1 | None = None
 
 
 def load_ready_runtime_inputs_v1(conn: Any, *, venue: str) -> tuple[AutomaticBuyRuntimeInputV1, ...]:
@@ -104,7 +110,7 @@ def load_ready_runtime_inputs_v1(conn: Any, *, venue: str) -> tuple[AutomaticBuy
            entry_zone_low, entry_zone_high, re_entry_zone_low, re_entry_zone_high,
            setup_evidence_id, setup_observed_ts_utc,
            account_observed_ts_utc, account_enabled, account_mode,
-           automatic_buy_execution_enabled, free_quote_balance_eur,
+           automatic_buy_execution_enabled, live_trading_enabled, free_quote_balance_eur,
            free_quote_balance_observed_ts_utc, blocking_conflict,
            proposed_position_amount_eur, current_bucket_amount_eur,
            current_open_positions, current_asset_exposure_pct,
@@ -144,6 +150,15 @@ def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV
         account_state_observed_ts_utc=runtime_input.account_observed_ts_utc,
         evaluation_ts_utc=runtime_input.evaluation_ts_utc,
     )
+
+    live_permission = None
+    if runtime_input.account_mode == "live":
+        live_permission = evaluate_automatic_buy_live_permission_v1(
+            conn,
+            trading_account_id=runtime_input.trading_account_id,
+            evaluation_ts_utc=runtime_input.evaluation_ts_utc,
+        )
+
     db_constraints = load_constraints_from_db(
         conn, venue=runtime_input.venue, markets=[runtime_input.market],
     )
@@ -161,4 +176,5 @@ def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV
         strategy_bucket_config_revocations=config_revocations,
         account_protection_evaluation=protection,
         venue_constraints=constraints,
+        automatic_buy_live_permission_evaluation=live_permission,
     )
