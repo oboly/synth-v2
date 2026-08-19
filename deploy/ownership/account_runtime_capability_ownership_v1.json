@@ -24,6 +24,17 @@
       "order_submission": 0,
       "live_orders": 0,
       "activation_status": "PLANNED"
+    },
+    {
+      "capability_id": "AUTOMATIC_BUY_POLICY_RUNTIME",
+      "owner_host": "gurkdb",
+      "runtime_entrypoint": "python -m src.entry_policy.run_automatic_buy_policy_once_v1",
+      "lock_scope": "host-local flock at ~/.local/state/synth/runtime/locks/automatic-buy-policy-runtime.lock",
+      "private_read_authority": "none; consumes persisted automatic BUY runtime input snapshots plus canonical decision_gate and public venue evidence",
+      "broker_writes": 0,
+      "order_submission": 0,
+      "live_orders": 0,
+      "activation_status": "PLANNED"
     }
   ]
 }
