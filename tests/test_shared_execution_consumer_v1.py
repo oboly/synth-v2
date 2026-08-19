@@ -41,6 +41,9 @@ class FakeHandoffs:
         self.claimed.add(handoff_id)
         return True
 
+    def renew_claim(self, *, handoff_id, **_kwargs):
+        return handoff_id in self.claimed
+
     def finish_claim(self, *, handoff_id, completed, **_kwargs):
         self.finished.append((handoff_id, completed))
         if not completed:
@@ -134,3 +137,12 @@ def test_uncertain_restart_reconciles_without_duplicate_fake_post() -> None:
     assert second[0].stopped_reason is None
     assert len(adapter.place_calls) == 2  # second leg only; first was lookup-resolved
     assert len(adapter.lookup_calls) == 1
+
+
+def test_consumer_fails_closed_before_submission_when_claim_heartbeat_is_lost() -> None:
+    value = handoff(plan(), 1)
+    repo, legs, adapter = FakeHandoffs([value]), FakeLegs(), FakeAdapter()
+    repo.renew_claim = lambda **_kwargs: False
+    with pytest.raises(RuntimeError, match="CLAIM_LOST"):
+        run_shared_execution_consumer_once_v1(handoff_repository=repo, leg_repository=legs, adapter=adapter, operator_id=9, worker_id="w", runtime_owner="devlap")
+    assert adapter.place_calls == []

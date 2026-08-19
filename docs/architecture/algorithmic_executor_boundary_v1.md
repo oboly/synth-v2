@@ -109,6 +109,10 @@ persisted hash and never replans, rounds, or recomputes quantity. Runtime
 adapter composition and production ownership remain separate Phase J work;
 no LIVE activation occurs here.
 
+Claims are persisted, token-guarded leases. The consumer renews its lease
+before processing and before each injected adapter operation; an expired or
+superseded token cannot be renewed or finalized by its former worker.
+
 The current Bitvavo REST order statuses map as follows:
 
 - `new` and `awaitingTrigger` -> `ACTIVE`

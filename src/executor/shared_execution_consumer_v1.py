@@ -34,6 +34,35 @@ class SharedExecutionConsumerResultV1:
     stopped_reason: str | None
 
 
+class SharedExecutionClaimLostError(RuntimeError):
+    pass
+
+
+@dataclass
+class _ClaimHeartbeatAdapter:
+    adapter: OrderPlacementAdapter
+    handoff_repository: ExecutionHandoffRepositoryV1
+    handoff_id: int
+    claim_token: str
+    lease_seconds: int
+
+    def _renew(self) -> None:
+        if not self.handoff_repository.renew_claim(
+            handoff_id=self.handoff_id,
+            claim_token=self.claim_token,
+            lease_seconds=self.lease_seconds,
+        ):
+            raise SharedExecutionClaimLostError("EXECUTION_HANDOFF_CLAIM_LOST")
+
+    def place_order(self, **kwargs):
+        self._renew()
+        return self.adapter.place_order(**kwargs)
+
+    def find_order_by_client_order_id(self, **kwargs):
+        self._renew()
+        return self.adapter.find_order_by_client_order_id(**kwargs)
+
+
 @dataclass
 class SharedExecutionConsumerV1:
     handoff_repository: ExecutionHandoffRepositoryV1
@@ -43,7 +72,7 @@ class SharedExecutionConsumerV1:
     worker_id: str
     runtime_owner: str
 
-    def consume_once(self, *, executor_mode: str = "DRY_RUN", limit: int = 100) -> tuple[SharedExecutionConsumerResultV1, ...]:
+    def consume_once(self, *, executor_mode: str = "DRY_RUN", limit: int = 100, lease_seconds: int = 60) -> tuple[SharedExecutionConsumerResultV1, ...]:
         outcomes: list[SharedExecutionConsumerResultV1] = []
         for handoff in self.handoff_repository.discover_eligible(executor_mode=executor_mode, runtime_owner=self.runtime_owner, limit=limit):
             if handoff.handoff_id is None:
@@ -53,8 +82,10 @@ class SharedExecutionConsumerV1:
                 continue
             completed = False
             try:
+                if not self.handoff_repository.renew_claim(handoff_id=handoff.handoff_id, claim_token=token, lease_seconds=lease_seconds):
+                    raise SharedExecutionClaimLostError("EXECUTION_HANDOFF_CLAIM_LOST")
                 plan = hydrate_approved_execution_plan(handoff=handoff, repository=self.handoff_repository)
-                result = submit_execution_plan(handoff=handoff, plan=plan, operator_id=self.operator_id, handoff_repository=self.handoff_repository, leg_repository=self.leg_repository, adapter=self.adapter)
+                result = submit_execution_plan(handoff=handoff, plan=plan, operator_id=self.operator_id, handoff_repository=self.handoff_repository, leg_repository=self.leg_repository, adapter=_ClaimHeartbeatAdapter(self.adapter, self.handoff_repository, handoff.handoff_id, token, lease_seconds))
                 outcomes.append(SharedExecutionConsumerResultV1(result.handoff_id, result.stopped_reason))
                 completed = result.stopped_reason not in {SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED}
             finally:

@@ -24,6 +24,7 @@ def run_shared_execution_consumer_once_v1(
     runtime_owner: str,
     executor_mode: str = "DRY_RUN",
     limit: int = 100,
+    lease_seconds: int = 60,
 ) -> tuple[SharedExecutionConsumerResultV1, ...]:
     return SharedExecutionConsumerV1(
         handoff_repository=handoff_repository,
@@ -32,4 +33,4 @@ def run_shared_execution_consumer_once_v1(
         operator_id=operator_id,
         worker_id=worker_id,
         runtime_owner=runtime_owner,
-    ).consume_once(executor_mode=executor_mode, limit=limit)
+    ).consume_once(executor_mode=executor_mode, limit=limit, lease_seconds=lease_seconds)

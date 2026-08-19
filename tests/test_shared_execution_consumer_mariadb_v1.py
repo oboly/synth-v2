@@ -203,6 +203,18 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
         assert [h.handoff_id for h in handoffs_a.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap")] == [first, second]
         assert handoffs_a.claim(handoff_id=first, claim_token=str(uuid.uuid4()), claimed_by="worker-a")
         assert not handoffs_b.claim(handoff_id=first, claim_token=str(uuid.uuid4()), claimed_by="worker-b")
+        with factory() as (_conn, cursor):
+            cursor.execute("SELECT claim_token FROM executor_execution_handoff_consumption WHERE executor_execution_handoff_id=%s", [first])
+            first_token = cursor.fetchone()["claim_token"]
+        assert handoffs_a.renew_claim(handoff_id=first, claim_token=first_token, lease_seconds=60)
+        assert not handoffs_b.claim(handoff_id=first, claim_token=str(uuid.uuid4()), claimed_by="worker-b")
+        # An expired claim can be reclaimed, but its stale token cannot renew.
+        with factory(commit=True) as (_conn, cursor):
+            cursor.execute("UPDATE executor_execution_handoff_consumption SET claim_expires_ts_utc=UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE executor_execution_handoff_id=%s", [first])
+        assert not handoffs_a.renew_claim(handoff_id=first, claim_token=first_token, lease_seconds=60)
+        reclaim_token = str(uuid.uuid4())
+        assert handoffs_b.claim(handoff_id=first, claim_token=reclaim_token, claimed_by="worker-b")
+        assert not handoffs_a.finish_claim(handoff_id=first, claim_token=first_token, completed=False)
         reopened = ExecutionHandoffRepositoryV1(cursor_factory=factory)
         assert first not in [h.handoff_id for h in reopened.discover_eligible(executor_mode="DRY_RUN", runtime_owner="devlap")]
 
@@ -210,7 +222,7 @@ def test_disposable_shared_execution_consumer_acceptance() -> None:
         with factory() as (_conn, cursor):
             cursor.execute("SELECT claim_token FROM executor_execution_handoff_consumption WHERE executor_execution_handoff_id=%s", [first])
             token = cursor.fetchone()["claim_token"]
-        assert handoffs_a.finish_claim(handoff_id=first, claim_token=token, completed=False)
+        assert handoffs_b.finish_claim(handoff_id=first, claim_token=token, completed=False)
 
         persisted = handoffs_a.find(first)
         assert persisted is not None

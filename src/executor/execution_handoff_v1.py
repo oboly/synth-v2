@@ -287,6 +287,31 @@ class ExecutionHandoffRepositoryV1:
             )
             return cursor.rowcount == 1
 
+    def renew_claim(
+        self, *, handoff_id: int, claim_token: str, lease_seconds: int = 60
+    ) -> bool:
+        """Extend only this still-current, unexpired persisted claim.
+
+        A stale worker must never revive an expired lease after another worker
+        becomes eligible to reclaim the handoff.
+        """
+        if not isinstance(handoff_id, int) or isinstance(handoff_id, bool) or handoff_id <= 0:
+            raise ValueError("handoff_id must be a positive integer")
+        if not isinstance(claim_token, str) or not claim_token.strip():
+            raise ValueError("claim token required")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or lease_seconds <= 0:
+            raise ValueError("lease_seconds must be a positive integer")
+        now = trusted_clock.utc_now()
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_handoff_consumption SET claim_expires_ts_utc=%s, updated_ts_utc=%s "
+                "WHERE executor_execution_handoff_id=%s AND state='CLAIMED' AND claim_token=%s "
+                "AND claim_expires_ts_utc > %s",
+                [now + timedelta(seconds=lease_seconds), now, handoff_id, claim_token, now],
+            )
+            return cursor.rowcount == 1
+
     def load_immutable_legs(self, handoff_id: int) -> tuple[ExecutionHandoffPlanLegV1, ...]:
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)
