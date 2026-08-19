@@ -143,7 +143,7 @@ class MemoryCursor:
         self.selected: dict[str, object] | None = None
 
     def execute(self, sql: str, params: list[object]) -> None:
-        if sql.startswith("INSERT INTO executor_execution_handoff"):
+        if sql.startswith("INSERT INTO executor_execution_handoff ("):
             key = (str(params[0]), str(params[1]))
             if key in self.database.rows:
                 raise IntegrityError(1062, "duplicate plan reference")
@@ -157,6 +157,10 @@ class MemoryCursor:
                 "executor_mode": params[7], "executor_identity": params[8], "runtime_owner": params[9],
                 "executor_credential_binding_id": params[10],
             }
+            return
+        if sql.startswith("INSERT INTO executor_execution_handoff_plan_leg"):
+            return
+        if sql.startswith("INSERT INTO executor_execution_handoff_consumption"):
             return
         if "WHERE plan_source=%s AND plan_reference_id=%s" in sql:
             self.selected = self.database.rows.get((str(params[0]), str(params[1])))

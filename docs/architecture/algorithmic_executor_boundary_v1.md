@@ -100,6 +100,15 @@ Repository acceptance remains non-live. This phase creates schema and dormant
 code only: it creates no authority rows or credentials, applies no production
 migration, activates no service or timer, and makes no broker call.
 
+## Generic persisted-handoff consumer
+
+Automatic-exit ends at the shared handoff. The generic executor consumer is
+the only owner of persisted-handoff discovery, claim, immutable-plan hydration,
+and invocation of the shared submission orchestrator. Hydration verifies the
+persisted hash and never replans, rounds, or recomputes quantity. Runtime
+adapter composition and production ownership remain separate Phase J work;
+no LIVE activation occurs here.
+
 The current Bitvavo REST order statuses map as follows:
 
 - `new` and `awaitingTrigger` -> `ACTIVE`
