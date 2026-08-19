@@ -19,6 +19,7 @@ from src.decision_gate.strategy_bucket_account_config_contract_v1 import (
     StrategyBucketAccountConfigRowV1,
 )
 from src.decision_gate.strategy_bucket_account_config_repository_v1 import (
+    StrategyBucketAccountConfigRepositoryError,
     load_strategy_bucket_account_config_revocations_v1,
     load_strategy_bucket_account_config_rows_v1,
 )
@@ -48,6 +49,7 @@ def _row_to_input(row: dict[str, Any]) -> AutomaticBuyRuntimeInputV1:
             automatic_buy_runtime_input_id=int(row["automatic_buy_runtime_input_id"]),
             source_snapshot_key=str(row["source_snapshot_key"]),
             input_contract_version=str(row["input_contract_version"]),
+            evaluation_ts_utc=_aware(row["evaluation_ts_utc"]),
             trading_account_id=int(row["trading_account_id"]),
             venue=str(row["venue"]),
             asset_id=int(row["asset_id"]),
@@ -97,7 +99,7 @@ class RuntimeItemV1:
 def load_ready_runtime_inputs_v1(conn: Any, *, venue: str) -> tuple[AutomaticBuyRuntimeInputV1, ...]:
     sql = """
     SELECT automatic_buy_runtime_input_id, source_snapshot_key, input_contract_version,
-           trading_account_id, venue, asset_id, market, strategy_bucket_id,
+           evaluation_ts_utc, trading_account_id, venue, asset_id, market, strategy_bucket_id,
            strategy_id, strategy_version, setup_id, setup_ready, current_price,
            entry_zone_low, entry_zone_high, re_entry_zone_low, re_entry_zone_high,
            setup_evidence_id, setup_observed_ts_utc,
@@ -117,31 +119,30 @@ def load_ready_runtime_inputs_v1(conn: Any, *, venue: str) -> tuple[AutomaticBuy
     return tuple(_row_to_input(row) for row in rows)
 
 
-def build_runtime_item_v1(
-    conn: Any,
-    *,
-    runtime_input: AutomaticBuyRuntimeInputV1,
-    evaluation_ts_utc: datetime,
-) -> RuntimeItemV1:
+def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV1) -> RuntimeItemV1:
     """Assemble canonical persisted evidence for one immutable runtime input."""
     try:
-        validate_runtime_input_v1(runtime_input, evaluation_ts_utc=evaluation_ts_utc)
+        validate_runtime_input_v1(runtime_input)
     except ValueError as exc:
         raise AutomaticBuyRuntimeRepositoryError(exc.args[0] if exc.args else "INVALID_RUNTIME_INPUT") from exc
 
-    config_rows = load_strategy_bucket_account_config_rows_v1(
-        conn, trading_account_id=runtime_input.trading_account_id,
-    )
-    config_revocations = load_strategy_bucket_account_config_revocations_v1(
-        conn, trading_account_id=runtime_input.trading_account_id,
-    )
+    try:
+        config_rows = load_strategy_bucket_account_config_rows_v1(
+            conn, trading_account_id=runtime_input.trading_account_id,
+        )
+        config_revocations = load_strategy_bucket_account_config_revocations_v1(
+            conn, trading_account_id=runtime_input.trading_account_id,
+        )
+    except StrategyBucketAccountConfigRepositoryError as exc:
+        raise AutomaticBuyRuntimeRepositoryError("STRATEGY_BUCKET_CONFIGURATION_EVIDENCE_INVALID") from exc
+
     protection = evaluate_account_protection_for_automatic_exit_v1(
         conn,
         trading_account_id=runtime_input.trading_account_id,
         asset_id=runtime_input.asset_id,
         requested_action=ACTION_BUY,
         account_state_observed_ts_utc=runtime_input.account_observed_ts_utc,
-        evaluation_ts_utc=evaluation_ts_utc,
+        evaluation_ts_utc=runtime_input.evaluation_ts_utc,
     )
     db_constraints = load_constraints_from_db(
         conn, venue=runtime_input.venue, markets=[runtime_input.market],
@@ -150,7 +151,7 @@ def build_runtime_item_v1(
         venue=runtime_input.venue,
         market=runtime_input.market,
         db_rows=db_constraints,
-        now=evaluation_ts_utc,
+        now=runtime_input.evaluation_ts_utc,
     )
     if constraints.status != STATUS_FRESH:
         raise AutomaticBuyRuntimeRepositoryError("VENUE_CONSTRAINTS_NOT_FRESH")
