@@ -2,7 +2,8 @@
 
 DB-local runtime-input reads plus append-only audit writes only. No executor,
 broker, credential, order submission, service/timer activation, or LIVE
-behavior is present.
+behavior is present. Each input carries its immutable logical evaluation
+instant, so retries/replays do not depend on the runner wall clock.
 """
 from __future__ import annotations
 
@@ -101,14 +102,14 @@ class CycleSummaryV1:
         }
 
 
-def run_cycle(conn: Any, *, venue: str, now: datetime) -> CycleSummaryV1:
+def run_cycle(conn: Any, *, venue: str) -> CycleSummaryV1:
     summary = CycleSummaryV1()
     runtime_inputs = load_ready_runtime_inputs_v1(conn, venue=venue)
     for runtime_input in runtime_inputs:
         summary.inputs_considered += 1
         try:
-            item = build_runtime_item_v1(conn, runtime_input=runtime_input, evaluation_ts_utc=now)
-            outcome = evaluate_automatic_buy_runtime_item_v1(conn, item=item, evaluation_ts_utc=now)
+            item = build_runtime_item_v1(conn, runtime_input=runtime_input)
+            outcome = evaluate_automatic_buy_runtime_item_v1(conn, item=item)
             conn.commit()
         except (
             AutomaticBuyRuntimeRepositoryError,
@@ -178,7 +179,7 @@ def run(args: argparse.Namespace) -> int:
                 print(f"FAILED runner={RUNNER_NAME} result=db_unavailable detail={exc}", file=sys.stderr)
                 return 1
             try:
-                summary = run_cycle(conn, venue=args.venue, now=datetime.now(UTC))
+                summary = run_cycle(conn, venue=args.venue)
             except Exception as exc:
                 conn.rollback()
                 print(f"FAILED runner={RUNNER_NAME} result=cycle_failed detail={exc}", file=sys.stderr)
