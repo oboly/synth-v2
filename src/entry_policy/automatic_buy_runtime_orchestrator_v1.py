@@ -1,7 +1,8 @@
-"""Issue #399 Phase 4 canonical automatic BUY runtime sequence.
+"""Canonical automatic BUY runtime sequence.
 
-Owns sequencing only: Phase 1 candidate -> Phase 2 decision_gate -> Phase 3
-planner -> append-only audit. No executor handoff or broker behavior exists.
+Owns sequencing only: market candidate -> decision_gate -> execution_planner ->
+append-only audit. Phase 7B makes the sequence LIVE-capable by forwarding typed
+Phase 7A evidence; it still contains no executor handoff or broker behavior.
 """
 from __future__ import annotations
 
@@ -25,7 +26,11 @@ from src.entry_policy.automatic_buy_runtime_audit_writer_v1 import (
     canonical_json,
     write_automatic_buy_evaluation_audit_v1,
 )
-from src.entry_policy.automatic_buy_runtime_contract_v1 import automatic_buy_idempotency_key_v1
+from src.entry_policy.automatic_buy_runtime_contract_v1 import (
+    RUNTIME_INPUT_LIVE_CONTRACT_VERSION,
+    automatic_buy_idempotency_key_v1,
+    automatic_buy_idempotency_key_v2,
+)
 from src.entry_policy.automatic_buy_runtime_repository_v1 import RuntimeItemV1
 from src.execution_planner.automatic_buy_planner_v1 import (
     AutomaticBuyPlanningContextV1,
@@ -33,7 +38,6 @@ from src.execution_planner.automatic_buy_planner_v1 import (
     AutomaticBuyPlanV1,
     build_automatic_buy_plan_v1,
 )
-
 
 RUNTIME_VERSION: Final[str] = "automatic_buy_policy_runtime_v1"
 PLANNER_STATE_NOT_REACHED: Final[str] = "NOT_REACHED"
@@ -56,6 +60,7 @@ def _fingerprint(value: Any) -> str:
 
 
 def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any]:
+    """Build V1 legacy evidence or V2 LIVE-capable evidence deterministically."""
     value = item.runtime_input
     config_ids = tuple(sorted(row.strategy_bucket_account_config_id for row in item.strategy_bucket_config_rows))
     revocation_ids = tuple(sorted(
@@ -63,7 +68,7 @@ def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any
         for row in item.strategy_bucket_config_revocations
     ))
     constraints = item.venue_constraints
-    return {
+    evidence: dict[str, Any] = {
         "source_snapshot_key": value.source_snapshot_key,
         "evaluation_ts_utc": value.evaluation_ts_utc,
         "trading_account_id": value.trading_account_id,
@@ -90,6 +95,13 @@ def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any
             "supported_time_in_force": constraints.supported_time_in_force,
         },
     }
+    if value.input_contract_version == RUNTIME_INPUT_LIVE_CONTRACT_VERSION:
+        live_evaluation = item.automatic_buy_live_permission_evaluation
+        evidence["live_trading_enabled"] = value.live_trading_enabled
+        evidence["automatic_buy_live_permission_fingerprint"] = _fingerprint(
+            None if live_evaluation is None else asdict(live_evaluation)
+        )
+    return evidence
 
 
 def evaluate_automatic_buy_runtime_item_v1(
@@ -101,7 +113,11 @@ def evaluate_automatic_buy_runtime_item_v1(
     runtime_input = item.runtime_input
     evaluation_ts_utc = runtime_input.evaluation_ts_utc
     evidence = build_automatic_buy_source_evidence_v1(item)
-    idempotency_key = automatic_buy_idempotency_key_v1(evidence)
+    if runtime_input.input_contract_version == RUNTIME_INPUT_LIVE_CONTRACT_VERSION:
+        idempotency_key = automatic_buy_idempotency_key_v2(evidence)
+    else:
+        idempotency_key = automatic_buy_idempotency_key_v1(evidence)
+
     audit_identity = dict(
         idempotency_key=idempotency_key,
         runtime_version=RUNTIME_VERSION,
@@ -181,8 +197,13 @@ def evaluate_automatic_buy_runtime_item_v1(
         strategy_bucket_config_rows=item.strategy_bucket_config_rows,
         strategy_bucket_config_revocations=item.strategy_bucket_config_revocations,
         account_protection_evaluation=item.account_protection_evaluation,
+        live_trading_enabled=runtime_input.live_trading_enabled,
+        automatic_buy_live_permission_evaluation=item.automatic_buy_live_permission_evaluation,
     )
-    decision = evaluate_automatic_buy_candidate_permission_v1(candidate=candidate, context=gate_context)
+    decision = evaluate_automatic_buy_candidate_permission_v1(
+        candidate=candidate,
+        context=gate_context,
+    )
 
     def write_pre_plan(planner_state: str, planner_reason: str | None) -> Any:
         return write_automatic_buy_evaluation_audit_v1(
@@ -247,5 +268,10 @@ def evaluate_automatic_buy_runtime_item_v1(
         planning_ts_utc=evaluation_ts_utc,
     )
     return AutomaticBuyRuntimeItemOutcomeV1(
-        idempotency_key, evaluation.state, decision.state, PLANNER_STATE_STAGED, result.outcome, plan=plan,
+        idempotency_key,
+        evaluation.state,
+        decision.state,
+        PLANNER_STATE_STAGED,
+        result.outcome,
+        plan=plan,
     )

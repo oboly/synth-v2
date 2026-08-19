@@ -1,8 +1,8 @@
-"""Issue #399 Phase 4 runtime/replay contracts for automatic BUY.
+"""Issue #399 automatic BUY runtime/replay contracts.
 
-This module is pure: no DB, executor, broker, credential, or order imports.
-It defines the immutable runtime input snapshot identity and deterministic
-idempotency evidence used by the automatic BUY runtime.
+V1 remains the exact existing PAPER-era snapshot/idempotency contract. V2 adds
+LIVE-capable account evidence without changing V1 replay identity. This module
+is pure: no DB, executor, broker, credential, kill-switch, or order imports.
 """
 from __future__ import annotations
 
@@ -13,8 +13,11 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
-
 RUNTIME_INPUT_CONTRACT_VERSION: Final[str] = "1"
+RUNTIME_INPUT_LIVE_CONTRACT_VERSION: Final[str] = "2"
+SUPPORTED_RUNTIME_INPUT_CONTRACT_VERSIONS: Final[frozenset[str]] = frozenset(
+    {RUNTIME_INPUT_CONTRACT_VERSION, RUNTIME_INPUT_LIVE_CONTRACT_VERSION}
+)
 DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS: Final[int] = 15 * 60
 
 
@@ -26,11 +29,10 @@ class AutomaticBuyRuntimeContractError(ValueError):
 class AutomaticBuyRuntimeInputV1:
     """One immutable, fully bound pre-evaluation input snapshot.
 
-    ``evaluation_ts_utc`` is part of the immutable source snapshot. Replaying
-    the same snapshot therefore evaluates Phase 1/2/3 at the same logical
-    instant instead of depending on the wall clock of the replay process.
-    Market/setup facts remain market-only; account facts are attached only at
-    this runtime composition boundary and are consumed by decision_gate.
+    Contract v1 preserves the original PAPER runtime semantics. Contract v2
+    adds ``live_trading_enabled`` as immutable account evidence and is required
+    for any LIVE-mode runtime input. The flag is evidence only: this contract
+    never mutates production account state.
     """
 
     automatic_buy_runtime_input_id: int
@@ -66,6 +68,7 @@ class AutomaticBuyRuntimeInputV1:
     current_asset_exposure_pct: Decimal
     max_automatic_buy_notional_eur: Decimal | None
     source_provenance: str
+    live_trading_enabled: bool = False
 
 
 def _aware(value: datetime) -> bool:
@@ -86,7 +89,7 @@ def validate_runtime_input_v1(
         raise AutomaticBuyRuntimeContractError("INVALID_EVALUATION_TIMESTAMP")
     if (
         value.automatic_buy_runtime_input_id <= 0
-        or value.input_contract_version != RUNTIME_INPUT_CONTRACT_VERSION
+        or value.input_contract_version not in SUPPORTED_RUNTIME_INPUT_CONTRACT_VERSIONS
         or not _nonempty(value.source_snapshot_key)
         or len(value.source_snapshot_key) != 64
         or value.trading_account_id <= 0
@@ -106,6 +109,7 @@ def validate_runtime_input_v1(
         or type(value.account_enabled) is not bool
         or type(value.automatic_buy_execution_enabled) is not bool
         or type(value.blocking_conflict) is not bool
+        or type(value.live_trading_enabled) is not bool
         or value.current_price <= 0
         or value.free_quote_balance_eur < 0
         or value.proposed_position_amount_eur <= 0
@@ -116,6 +120,13 @@ def validate_runtime_input_v1(
         or (value.max_automatic_buy_notional_eur is not None and value.max_automatic_buy_notional_eur < 0)
     ):
         raise AutomaticBuyRuntimeContractError("INVALID_AUTOMATIC_BUY_RUNTIME_INPUT")
+
+    if (
+        value.input_contract_version == RUNTIME_INPUT_CONTRACT_VERSION
+        and (value.account_mode == "live" or value.live_trading_enabled)
+    ):
+        raise AutomaticBuyRuntimeContractError("LIVE_RUNTIME_INPUT_REQUIRES_CONTRACT_V2")
+
     if not all(_aware(item) for item in (
         value.setup_observed_ts_utc,
         value.account_observed_ts_utc,
@@ -132,8 +143,17 @@ def validate_runtime_input_v1(
             raise AutomaticBuyRuntimeContractError("STALE_OR_FUTURE_AUTOMATIC_BUY_RUNTIME_INPUT")
 
 
+def _hash_evidence(evidence: dict[str, Any], required: set[str]) -> str:
+    if set(evidence) != required:
+        raise AutomaticBuyRuntimeContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
+    if any(evidence[key] in (None, "") for key in required):
+        raise AutomaticBuyRuntimeContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
+    payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def automatic_buy_idempotency_key_v1(evidence: dict[str, Any]) -> str:
-    """Hash the exact immutable source identities for one logical evaluation."""
+    """Original V1 hash contract. Kept bit-for-bit for existing PAPER replay."""
     required = {
         "source_snapshot_key",
         "evaluation_ts_utc",
@@ -150,9 +170,27 @@ def automatic_buy_idempotency_key_v1(evidence: dict[str, Any]) -> str:
         "account_protection_fingerprint",
         "venue_constraint_identity",
     }
-    if set(evidence) != required:
-        raise AutomaticBuyRuntimeContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
-    if any(evidence[key] in (None, "") for key in required):
-        raise AutomaticBuyRuntimeContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
-    payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return _hash_evidence(evidence, required)
+
+
+def automatic_buy_idempotency_key_v2(evidence: dict[str, Any]) -> str:
+    """V2 identity binds LIVE account and permission evidence explicitly."""
+    required = {
+        "source_snapshot_key",
+        "evaluation_ts_utc",
+        "trading_account_id",
+        "venue",
+        "asset_id",
+        "market",
+        "strategy_id",
+        "strategy_version",
+        "setup_id",
+        "setup_evidence_id",
+        "strategy_bucket_config_ids",
+        "strategy_bucket_revocation_ids",
+        "account_protection_fingerprint",
+        "live_trading_enabled",
+        "automatic_buy_live_permission_fingerprint",
+        "venue_constraint_identity",
+    }
+    return _hash_evidence(evidence, required)

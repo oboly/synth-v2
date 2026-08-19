@@ -21,9 +21,8 @@ These exact identities are included in the idempotency evidence before the
 candidate/gate/planner path runs.
 
 The resulting audit row is append-only. `immutable_plan_json` is replay/audit
-evidence only and MUST NOT become executor input. Phase 6 uses the typed
-in-memory `AutomaticBuyPlanV1` through the explicit shared #206
-adapter/handoff boundary.
+evidence only and MUST NOT become executor input. The shared handoff uses the
+typed in-memory `AutomaticBuyPlanV1` produced by the same runtime cycle.
 
 ## LIVE-capable versus LIVE-enabled
 
@@ -37,16 +36,35 @@ BUY LIVE permission evaluation is `GRANTED`. The permission contract is
 append-only and revocable. Missing, malformed, stale, conflicting, denied, or
 wrong-account evidence fails closed.
 
-This is a software contract, not a production mutation. Repository readiness
-MUST NOT set production `trading_account.live_trading_enabled`, create a real
-TRADE_EXECUTION credential, grant executor LIVE authority, mutate the global
-kill switch, enable broker writes, start a LIVE service/timer, or submit an
-order. Production may remain `live_trading_enabled=false` throughout 7A/7B/7C.
+Phase 7B makes runtime composition LIVE-capable without activating it. Runtime
+input contract v1 remains the frozen PAPER-era contract and retains its exact
+idempotency evidence shape. A LIVE-mode input must use contract v2. V2 binds
+`live_trading_enabled` and the typed BUY LIVE permission evaluation fingerprint
+explicitly into idempotency evidence, in addition to the pre-existing account
+protection, strategy-bucket, setup and venue-constraint evidence. Replays of an
+old v1 PAPER snapshot therefore remain unchanged by the software upgrade.
 
-Decision-gate LIVE permission is also insufficient for an order by design.
-Downstream executor credential scope, finite LIVE authority, kill-switch state,
-handoff-bound identity, submission state and reconciliation remain separate
-executor-owned gates.
+The canonical runtime core remains executor-free. The only deliberate crossing
+to the shared #206 executor boundary is
+`automatic_buy_live_handoff_composition_v1` ->
+`automatic_buy_execution_handoff_application_v1`. That seam forwards only the
+exact staged in-memory plan. It never reconstructs a plan from append-only audit
+JSON.
+
+Normal executor mode is derived from account mode (`paper -> PAPER`,
+`live -> LIVE`). The only explicit override is `DRY_RUN`. A LIVE plan routes
+only through the existing shared `intake_live_authorized` method, so the BUY
+lane cannot bypass executor credential scope, finite LIVE authority or global
+kill-switch checks. Phase-5 `PAPER_DRY_RUN` preview evidence is explicitly
+forbidden from reaching LIVE intake.
+
+This is still a software contract, not a production mutation. Repository
+readiness MUST NOT set production `trading_account.live_trading_enabled`, create
+a real TRADE_EXECUTION credential, grant executor LIVE authority, mutate the
+global kill switch, enable broker writes, start a LIVE service/timer, or submit
+an order. Production may remain `live_trading_enabled=false` throughout
+7A/7B/7C.
 
 The one-cycle policy runtime remains separate from the shared executor runtime.
-No runtime/service/timer activation is performed by this readiness change.
+Phase 7B adds no LIVE CLI, service or timer. No runtime/service/timer activation
+is performed by this readiness change.
