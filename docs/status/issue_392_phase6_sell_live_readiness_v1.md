@@ -35,6 +35,54 @@ credential provisioning, LIVE authority provisioning, kill-switch mutation,
 service/timer activation, or broker call was performed or authorized by
 this change.
 
+**Update (2026-08-19, item 4 attempt, blocked on disposable MariaDB access):**
+attempted the "Final repository-level integrated non-broker acceptance
+against the real `executor_execution_handoff` table" step (item 4 above).
+Confirmed on current `main` (`b117fd2e`, includes merged PR #432): the
+typed adapter, application seam, and shared `ExecutionHandoffRepositoryV1`
+are unchanged from the description above; account mapping is still exactly
+one row, `account_id=1 -> trading_account_id=3` (read-only verified); no
+`executor_credential_binding` row exists for `trading_account_id=3`, and its
+two `trading_account_credential` rows are both `READ_ONLY_PRIVATE` (one
+`ACTIVE`, one `REVOKED`), not `TRADE_EXECUTION` — so `intake()` would fail
+closed at credential-scope resolution before any row could be written, even
+before considering `LIVE`. Re-ran the full directly-relevant unit suite
+(automatic-exit candidate/gate/planner/orchestrator/handoff-adapter/handoff-
+application/boundary-guards/runner, shared-handoff compatibility,
+architecture guards, execution handoff, execution plan reference, execution
+credential scope, execution live authority, account protection): 288/288
+pass, all against fakes/in-memory repositories, zero DB writes.
+
+The one reachable MariaDB instance from this environment is the
+production-configured host (`DB_HOST=192.168.1.221`, `DB_NAME=synth`); the
+repository's own `executor_execution_handoff` migration
+(`db/migrations/20260815_shared_executor_substrate_v1.sql`) installs a
+`BEFORE DELETE` trigger that unconditionally rejects deletion of that table,
+so any write against it can never be cleaned up — ruling out a real-repository
+acceptance write there. `ExecutionHandoffRepositoryV1.intake` also commits
+internally per call (`cursor_factory(commit=True)`), so an outer
+transaction/rollback wrapper cannot reliably undo it either. No local or
+disposable MariaDB instance was reachable in this environment (no `docker`,
+no local `mariadbd`/`mysqld`, `127.0.0.1`/`localhost` refused connection),
+so the repo's own disposable-schema test pattern (see
+`tests/test_automatic_exit_live_permission_mariadb_ddl_v1.py`, gated on
+`SYNTH_RUN_DISPOSABLE_MARIADB_DDL_TESTS=1` + a local, disposable-marked
+MariaDB) could not be satisfied either. Per this task's own stop conditions,
+item 4's real-MariaDB-repository acceptance was **not performed** — no
+production DB write was made. `SOFTWARE_PHASE6_BLOCKERS` and
+`GO_LIVE_READY` are unchanged by this update. The minimal operator-run
+procedure to close item 4 is: on a host with a disposable local MariaDB
+instance, set `SYNTH_RUN_DISPOSABLE_MARIADB_DDL_TESTS=1` and a
+disposable-marked `DB_PASSWORD`, apply
+`db/migrations/20260815_shared_executor_substrate_v1.sql` (plus its
+prerequisite credential/binding tables) into a throwaway schema, seed one
+`executor_credential_binding` row (any synthetic account/venue), then drive
+`ExecutionHandoffRepositoryV1.intake(..., executor_mode="DRY_RUN", ...)`
+twice with the same real `AutomaticExitPlanV1` (idempotent retry), once with
+a changed logical-identity field (distinct `plan_reference_id`), and once
+with the same `plan_reference_id` but conflicting content (expect
+`ExecutionHandoffIdentityConflictError`), then drop the throwaway schema.
+
 **Update (2026-08-18, same branch, correctness fix, revision 1):** the
 initial blocker-C migration made `account_protection_policy_config_v1`
 fully immutable (`BEFORE UPDATE` unconditionally rejected), which made the
