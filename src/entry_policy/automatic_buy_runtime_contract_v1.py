@@ -121,8 +121,6 @@ def validate_runtime_input_v1(
     ):
         raise AutomaticBuyRuntimeContractError("INVALID_AUTOMATIC_BUY_RUNTIME_INPUT")
 
-    # V1 remains the exact pre-LIVE contract. Any LIVE-mode snapshot must be
-    # explicit V2 evidence; do not reinterpret an old row after an upgrade.
     if (
         value.input_contract_version == RUNTIME_INPUT_CONTRACT_VERSION
         and (value.account_mode == "live" or value.live_trading_enabled)
@@ -176,7 +174,7 @@ def automatic_buy_idempotency_key_v1(evidence: dict[str, Any]) -> str:
 
 
 def automatic_buy_idempotency_key_v2(evidence: dict[str, Any]) -> str:
-    """V2 LIVE-capable identity additionally binds typed LIVE permission evidence."""
+    """V2 identity binds LIVE account and permission evidence explicitly."""
     required = {
         "source_snapshot_key",
         "evaluation_ts_utc",
@@ -191,6 +189,7 @@ def automatic_buy_idempotency_key_v2(evidence: dict[str, Any]) -> str:
         "strategy_bucket_config_ids",
         "strategy_bucket_revocation_ids",
         "account_protection_fingerprint",
+        "live_trading_enabled",
         "automatic_buy_live_permission_fingerprint",
         "venue_constraint_identity",
     }
