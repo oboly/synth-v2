@@ -35,53 +35,71 @@ credential provisioning, LIVE authority provisioning, kill-switch mutation,
 service/timer activation, or broker call was performed or authorized by
 this change.
 
-**Update (2026-08-19, item 4 attempt, blocked on disposable MariaDB access):**
-attempted the "Final repository-level integrated non-broker acceptance
-against the real `executor_execution_handoff` table" step (item 4 above).
-Confirmed on current `main` (`b117fd2e`, includes merged PR #432): the
-typed adapter, application seam, and shared `ExecutionHandoffRepositoryV1`
-are unchanged from the description above; account mapping is still exactly
-one row, `account_id=1 -> trading_account_id=3` (read-only verified); no
-`executor_credential_binding` row exists for `trading_account_id=3`, and its
-two `trading_account_credential` rows are both `READ_ONLY_PRIVATE` (one
-`ACTIVE`, one `REVOKED`), not `TRADE_EXECUTION` — so `intake()` would fail
-closed at credential-scope resolution before any row could be written, even
-before considering `LIVE`. Re-ran the full directly-relevant unit suite
-(automatic-exit candidate/gate/planner/orchestrator/handoff-adapter/handoff-
-application/boundary-guards/runner, shared-handoff compatibility,
-architecture guards, execution handoff, execution plan reference, execution
-credential scope, execution live authority, account protection): 288/288
-pass, all against fakes/in-memory repositories, zero DB writes.
+**Update (2026-08-19, item 4 attempt, blocked on DB user privilege, revision
+2 — supersedes the revision-1 note below):** re-attempted the "Final
+repository-level integrated non-broker acceptance against the real
+`executor_execution_handoff` table" step (item 4 above), this time explicitly
+authorized to create a disposable database (`synth_acceptance_437`) on the
+same MariaDB host as production `synth` (`192.168.1.221`), apply the exact
+migration dependency closure, seed synthetic-only fixture rows, and drive the
+real `ExecutionHandoffRepositoryV1` there, then drop it.
 
-The one reachable MariaDB instance from this environment is the
-production-configured host (`DB_HOST=192.168.1.221`, `DB_NAME=synth`); the
-repository's own `executor_execution_handoff` migration
-(`db/migrations/20260815_shared_executor_substrate_v1.sql`) installs a
-`BEFORE DELETE` trigger that unconditionally rejects deletion of that table,
-so any write against it can never be cleaned up — ruling out a real-repository
-acceptance write there. `ExecutionHandoffRepositoryV1.intake` also commits
-internally per call (`cursor_factory(commit=True)`), so an outer
-transaction/rollback wrapper cannot reliably undo it either. No local or
-disposable MariaDB instance was reachable in this environment (no `docker`,
-no local `mariadbd`/`mysqld`, `127.0.0.1`/`localhost` refused connection),
-so the repo's own disposable-schema test pattern (see
-`tests/test_automatic_exit_live_permission_mariadb_ddl_v1.py`, gated on
-`SYNTH_RUN_DISPOSABLE_MARIADB_DDL_TESTS=1` + a local, disposable-marked
-MariaDB) could not be satisfied either. Per this task's own stop conditions,
-item 4's real-MariaDB-repository acceptance was **not performed** — no
-production DB write was made. `SOFTWARE_PHASE6_BLOCKERS` and
-`GO_LIVE_READY` are unchanged by this update. The minimal operator-run
-procedure to close item 4 is: on a host with a disposable local MariaDB
-instance, set `SYNTH_RUN_DISPOSABLE_MARIADB_DDL_TESTS=1` and a
-disposable-marked `DB_PASSWORD`, apply
-`db/migrations/20260815_shared_executor_substrate_v1.sql` (plus its
-prerequisite credential/binding tables) into a throwaway schema, seed one
-`executor_credential_binding` row (any synthetic account/venue), then drive
-`ExecutionHandoffRepositoryV1.intake(..., executor_mode="DRY_RUN", ...)`
-twice with the same real `AutomaticExitPlanV1` (idempotent retry), once with
-a changed logical-identity field (distinct `plan_reference_id`), and once
-with the same `plan_reference_id` but conflicting content (expect
-`ExecutionHandoffIdentityConflictError`), then drop the throwaway schema.
+Read-only production before-snapshot (unchanged from the revision-1 note):
+account mapping is still exactly one row, `account_id=1 ->
+trading_account_id=3`; `trading_account_id=3` still has
+`live_trading_enabled=0`. New finding this run: `executor_execution_handoff`
+does not exist yet as a table in production `synth` at all — its migration
+(`db/migrations/20260815_shared_executor_substrate_v1.sql`) is still
+`CREATED_NOT_APPLIED`, so there was and is nothing to count or mutate there.
+
+Identified the exact minimal migration dependency closure needed for a
+disposable-schema acceptance (deliberately narrower than the full migration
+history): (1) a minimal `trading_account` PK-only stand-in — no migration in
+this repo owns creating that baseline table, matching the same pattern
+already used by `tests/test_automatic_exit_live_permission_mariadb_ddl_v1.py`;
+(2) `db/migrations/20260609_trading_account_credential_v1.sql`; (3)
+`db/migrations/20260721_account_credential_binding_contract_v1.sql` (adds
+`permission_scope`/`allowed_order_write`/etc.); (4) only the
+`uq_tac_credential_identity_v1` unique-key add and the
+`executor_credential_binding` table from
+`db/migrations/20260812_manual_execution_executor_handoff_v1.sql` — not that
+migration's unrelated `manual_execution_executor_handoff` table, which has
+its own FK prerequisites (`manual_execution_request`/`approval`/
+`plan_snapshot`) not needed here; (5)
+`db/migrations/20260815_shared_executor_substrate_v1.sql` in full
+(`executor_execution_handoff` + `executor_execution_leg` + triggers).
+
+Acceptance stopped before any schema/write step: the only MariaDB credential
+reachable in this environment (`synth`@`192.168.1.%`, loaded from the
+runtime's own `.env`-sourced settings) holds `GRANT ALL PRIVILEGES ON
+`synth`.*` and `GRANT USAGE ON *.*` only (verified via `SHOW GRANTS FOR
+CURRENT_USER()`) — no `CREATE`/`DROP DATABASE` privilege at the server level,
+so `CREATE DATABASE synth_acceptance_437` itself was rejected
+(`Access denied for user 'synth'@'192.168.1.%' to database
+'synth_acceptance_437'`) before any DDL or DML ran. No disposable database
+was created (`SHOW DATABASES LIKE 'synth_acceptance_437'` returns zero rows
+after the attempt) and production `synth` is unchanged (mapping still one
+row, `trading_account_id=3` still `live_trading_enabled=0`,
+`executor_execution_handoff` still absent) — zero acceptance residue, zero
+production mutation. This is a credential-privilege limitation, not an
+architecture or repository defect; per this task's own instructions, no
+alternate/admin credential was requested, guessed, or read from outside
+permitted paths.
+
+Per this task's own stop conditions, item 4's real-MariaDB-repository
+acceptance is **still not performed**. `SOFTWARE_PHASE6_BLOCKERS` and
+`GO_LIVE_READY` are unchanged by this update. The exact remaining operator
+action to close item 4: on `gurkdb`, grant the `synth` application user (or a
+separate disposable-acceptance user) `CREATE`, `DROP`, and full DML/DDL
+privilege scoped to `` `synth_acceptance_437`.* `` (e.g.
+`GRANT ALL PRIVILEGES ON \`synth_acceptance_437\`.* TO 'synth'@'192.168.1.%'`
+after the database exists, or a broader
+`GRANT CREATE, DROP ON \`synth_acceptance_437\`.* TO ...` pattern if the
+account already exists) — never widen the grant to `` *.* `` or to
+production `synth` itself — then re-run the acceptance script that already
+implements steps (1)-(5) above plus test cases A-D (initial handoff,
+idempotent retry, distinct logical intent, identity conflict) against
+`synth_acceptance_437` and drops it afterward.
 
 **Update (2026-08-18, same branch, correctness fix, revision 1):** the
 initial blocker-C migration made `account_protection_policy_config_v1`
