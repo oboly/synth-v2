@@ -31,6 +31,7 @@ from src.decision_gate.automatic_exit_live_permission_evaluation_v1 import (
 from src.execution_planner.automatic_exit_planner_v1 import (
     AutomaticExitPlanningContextV1,
     AutomaticExitPlanningError,
+    AutomaticExitPlanV1,
     build_automatic_exit_plan_v1,
 )
 from src.exit_policy.automatic_exit_candidate_v1 import (
@@ -64,6 +65,12 @@ class RuntimeItemOutcomeV1:
     gate_state: str | None
     planner_state: str
     audit_outcome: str  # inserted | idempotent_existing
+    # Present only when planner_state == PLANNER_STATE_STAGED. This is the
+    # exact in-memory object build_automatic_exit_plan_v1 produced in this
+    # same evaluation cycle -- callers that need a typed plan for a #206
+    # executor handoff seam must use this field, never the audit table's
+    # immutable_plan_json (which is append-only replay/audit evidence only).
+    plan: AutomaticExitPlanV1 | None = None
 
 
 def build_automatic_exit_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any]:
@@ -263,4 +270,6 @@ def evaluate_automatic_exit_runtime_item_v1(
         immutable_plan_json=build_immutable_plan_json(plan),
         planning_ts_utc=evaluation_ts_utc,
     )
-    return RuntimeItemOutcomeV1(idempotency_key, evaluation.state, decision.state, PLANNER_STATE_STAGED, result.outcome)
+    return RuntimeItemOutcomeV1(
+        idempotency_key, evaluation.state, decision.state, PLANNER_STATE_STAGED, result.outcome, plan=plan,
+    )

@@ -11,6 +11,30 @@ A and B are unchanged and still block `GO_LIVE_READY`. No LIVE activation,
 executor change, or broker authority was introduced by that follow-on
 change; see its own safety markers where noted below.
 
+**Update (2026-08-18, blocker A implementation):** blocker A (the #392 ->
+#206 typed adapter/runtime seam) is now RESOLVED in software — see
+"Go-live determination" below. `src/execution_planner/
+automatic_exit_execution_handoff_adapter_v1.py` provides a pure, lossless
+`AutomaticExitPlanV1 -> ApprovedExecutionPlanV1` mapping with a deterministic,
+retry-stable, evidence-traceable `plan_reference_id`;
+`automatic_exit_execution_handoff_application_v1.py` selects
+`ExecutionHandoffRepositoryV1.intake` (DRY_RUN/PAPER) or
+`.intake_live_authorized` (LIVE) without duplicating #206's credential/LIVE-
+authority/kill-switch checks; `src/exit_policy/
+run_automatic_exit_policy_with_handoff_once_v1.py` is the new composition
+root that wires the real candidate -> account-protection -> gate -> planner
+runtime path to this seam, consuming only the in-memory
+`RuntimeItemOutcomeV1.plan` from the same evaluation cycle -- never
+`automatic_exit_evaluation_audit_v1.immutable_plan_json`. The existing
+audit-only `run_automatic_exit_policy_once_v1.py` runner and its
+architecture guard (forbidding `src.executor` imports) are unchanged. This
+resolves `SOFTWARE_PHASE6_BLOCKERS=0`; `GO_LIVE_READY` remains `NO` — see
+"Go-live determination" for the unchanged remaining prerequisites
+(migration/provisioning/deployment/authorization). No LIVE activation,
+credential provisioning, LIVE authority provisioning, kill-switch mutation,
+service/timer activation, or broker call was performed or authorized by
+this change.
+
 **Update (2026-08-18, same branch, correctness fix, revision 1):** the
 initial blocker-C migration made `account_protection_policy_config_v1`
 fully immutable (`BEFORE UPDATE` unconditionally rejected), which made the
@@ -136,6 +160,31 @@ same division of responsibility the protection composition already uses.
 
 No LIVE activation, executor change, or broker authority was introduced by
 this fix; see its own safety markers where noted below.
+
+**Update (2026-08-19, same branch, PR #432 review fix, mode-integrity):** a
+further independent review found
+`run_automatic_exit_policy_with_handoff_once_v1.py` exposed `--executor-mode
+DRY_RUN|PAPER|LIVE` as caller-selectable overrides. Allowing `PAPER` or `LIVE`
+as an explicit override would let a caller decouple executor mode from the
+`account_mode`/`decision_gate` path that actually produced the approved plan
+— e.g. a paper account's plan reaching `intake_live_authorized`, or a live
+account's plan reaching ordinary PAPER intake, neither of which the gate or
+planner ever authorized. **Canonical rule:** normal `executor_mode` is
+derived exclusively from the account's own canonical `account_mode`
+(`paper` -> `PAPER`, `live` -> `LIVE`) via
+`resolve_automatic_exit_executor_mode_v1`; the only permitted explicit
+override is `DRY_RUN`, a deliberate non-production acceptance/testing
+override, never a production execution mode. Fixed by restricting the CLI
+parser's `--executor-mode` `choices` to `DRY_RUN` only, and defensively
+inside `run_cycle_with_handoff` itself (`executor_mode_override not in
+(None, RUNTIME_MODE_DRY_RUN)` raises `AutomaticExitExecutorModeError`) so a
+direct Python caller cannot bypass the CLI restriction. This does not change
+executor operational LIVE authority, credential binding, or kill-switch
+ownership, which remain independently owned by #206's `intake_live_authorized`
+path. See the matching canonical statement in
+`docs/architecture/algorithmic_executor_boundary_v1.md`. No LIVE activation,
+production migration, credential/authority/kill-switch provisioning, service/
+timer activation, or broker call was performed or authorized by this fix.
 
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
@@ -792,18 +841,51 @@ timer_activation=0
 
 ## Go-live determination
 
-`GO_LIVE_READY = NO`.
+`GO_LIVE_READY = NO`. `SOFTWARE_PHASE6_BLOCKERS = 0` (all three software
+blockers A, B, and C are RESOLVED). `GO_LIVE_READY` remains `NO` independent
+of that — see the dependency ordering below for what is still outstanding
+(production migration/provisioning/deployment/authorization).
 
-Three actual Phase 6 blockers were identified. Blockers B and C are now
-RESOLVED; blocker A remains open and is its own explicitly authorized,
-reviewed implementation task — not resolvable by a documentation or
-test-only change:
+Three actual Phase 6 blockers were identified; all three are now RESOLVED
+in software:
 
-- **A. #392 -> #206 typed adapter / runtime seam.** No adapter/intake
-  boundary exists between #392's in-memory planner output and #206's shared
-  executor handoff (Phase B). It must be the typed, in-process seam described
-  above — not a persistence-mediated one built on top of the Phase 4B audit
-  table.
+- ~~**A. #392 -> #206 typed adapter / runtime seam.**~~ **RESOLVED
+  2026-08-18.** `src/execution_planner/
+  automatic_exit_execution_handoff_adapter_v1.py` is a pure function
+  `AutomaticExitPlanV1 -> ApprovedExecutionPlanV1`: lossless field mapping
+  (no quantity/price recompute, no re-rounding, no leg reorder/merge/split,
+  no side rewrite), fail-closed structural validation, and a deterministic,
+  retry-stable `plan_reference_id` derived from the plan's full logical
+  identity (trading_account_id, position_reference, venue, asset_id,
+  market, side, REDUCE/EXIT action, evidence id, exit profile id/version,
+  gate approval provenance, planner version, and every leg's exact
+  index/side/price/quantity) — excluding only the wall-clock
+  `planning_ts_utc`. `automatic_exit_execution_handoff_application_v1.py`
+  is the seam that adapts the plan and then selects
+  `ExecutionHandoffRepositoryV1.intake` for DRY_RUN/PAPER or
+  `.intake_live_authorized` for LIVE, without pre-checking or duplicating
+  #206's credential-scope, LIVE-authority, or kill-switch checks.
+  `src/exit_policy/run_automatic_exit_policy_with_handoff_once_v1.py` is the
+  new composition-root runner that wires the real candidate ->
+  account-protection -> gate -> planner path to this seam, consuming only
+  the in-memory `RuntimeItemOutcomeV1.plan` produced in the same evaluation
+  cycle — the `automatic_exit_evaluation_audit_v1` audit table is never read
+  as executor input, by this runner or anywhere else. The pre-existing
+  audit-only `run_automatic_exit_policy_once_v1.py` runner and its
+  `src.executor`-import architecture guard are unchanged. The runner's
+  normal executor mode is derived exclusively from the account's own
+  `account_mode` (`paper` -> `PAPER`, `live` -> `LIVE`); the **only**
+  permitted explicit override is `DRY_RUN` (a deliberate non-production
+  acceptance/testing mode), enforced both by the CLI's restricted
+  `--executor-mode` choices and defensively inside `run_cycle_with_handoff`
+  for direct Python callers. `PAPER` and `LIVE` are never valid override
+  values — a paper account's plan can never reach `intake_live_authorized`
+  and a live account's plan can never reach ordinary `PAPER` intake by
+  passing an override; no override bypasses `decision_gate` evaluation
+  itself. See `tests/test_automatic_exit_execution_handoff_adapter_v1.py`,
+  `tests/test_automatic_exit_execution_handoff_application_v1.py`,
+  `tests/test_run_automatic_exit_policy_with_handoff_once_v1.py`, and
+  `tests/test_automatic_exit_execution_handoff_boundary_guards_v1.py`.
 - ~~**B. Reviewed LIVE-capable extension of the automatic-exit `decision_gate`.**~~
   **RESOLVED 2026-08-18.** See "LIVE-capable decision-gate extension (Phase B
   finding, RESOLVED)" above. `automatic_exit_gate_v1` can now approve a LIVE
@@ -842,20 +924,28 @@ merged and reviewed, and no step authorizes skipping ahead:
    `automatic_exit_live_decision_gate_permission_v1` row per production
    account remains a further prerequisite before any account's automatic-exit
    candidates could reach an `APPROVED` LIVE decision.
-3. Typed planner -> shared-handoff adapter/runtime seam (blocker A) — now
-   the next and only remaining implementation blocker. Only now that the
-   gate can correctly produce a LIVE-eligible `APPROVED` decision does
-   connecting the planner's output to #206 become meaningful; building the
-   adapter earlier, against a gate that could never approve LIVE, would have
-   invited exactly the kind of premature/implicit coupling this audit warns
-   against.
-4. Final repository-level integrated non-broker acceptance — an end-to-end
-   DRY_RUN/PAPER exercise of candidate -> gate (with real protections) ->
-   planner -> adapter -> handoff, still with zero broker calls, zero
-   authority rows, zero credentials.
+3. ~~Typed planner -> shared-handoff adapter/runtime seam (blocker A)~~ —
+   DONE (see above). Only now that the gate can correctly produce a
+   LIVE-eligible `APPROVED` decision did connecting the planner's output to
+   #206 become meaningful; building the adapter earlier, against a gate that
+   could never approve LIVE, would have invited exactly the kind of
+   premature/implicit coupling this audit warns against.
+   `tests/test_run_automatic_exit_policy_with_handoff_once_v1.py` exercises
+   an end-to-end DRY_RUN/PAPER candidate -> gate (with real protections) ->
+   planner -> adapter -> handoff path against a fake in-memory handoff
+   repository, still with zero broker calls, zero authority rows, zero
+   credentials, zero DB writes.
+4. Final repository-level integrated non-broker acceptance against the real
+   `executor_execution_handoff` table (this task's test above uses only an
+   in-memory fake repository) — the next remaining implementation step
+   before any production activation checklist work.
 5. Only then: work through the Phase J production activation checklist and a
    separately authorized LIVE activation decision. No step in this ordering
-   authorizes LIVE by itself, including this one.
+   authorizes LIVE by itself, including this one. Production migration
+   apply, executor credential provisioning, LIVE authority provisioning,
+   kill-switch authoritative state, actual deployment, and an explicit user
+   LIVE activation decision all remain outstanding and unauthorized by this
+   change.
 
 Additionally, and independent of that ordering: no #392 SELL LIVE authority
 row exists (correctly — none was created by this audit), no
