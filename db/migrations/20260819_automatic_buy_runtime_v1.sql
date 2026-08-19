@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS automatic_buy_runtime_input_v1 (
     source_snapshot_key CHAR(64) NOT NULL,
     input_contract_version VARCHAR(16) NOT NULL DEFAULT '1',
     input_state VARCHAR(16) NOT NULL DEFAULT 'READY',
+    evaluation_ts_utc DATETIME(6) NOT NULL,
     trading_account_id BIGINT UNSIGNED NOT NULL,
     venue VARCHAR(32) NOT NULL,
     asset_id BIGINT UNSIGNED NOT NULL,
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS automatic_buy_runtime_input_v1 (
     PRIMARY KEY (automatic_buy_runtime_input_id),
     UNIQUE KEY uq_automatic_buy_runtime_source_snapshot (source_snapshot_key),
     KEY ix_automatic_buy_runtime_ready (input_state, venue, automatic_buy_runtime_input_id),
-    KEY ix_automatic_buy_runtime_account (trading_account_id, market, setup_observed_ts_utc),
+    KEY ix_automatic_buy_runtime_account (trading_account_id, market, evaluation_ts_utc),
     CONSTRAINT fk_automatic_buy_runtime_input_account
         FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id),
     CONSTRAINT fk_automatic_buy_runtime_input_asset
@@ -66,6 +67,11 @@ CREATE TABLE IF NOT EXISTS automatic_buy_runtime_input_v1 (
         (re_entry_zone_low IS NULL OR re_entry_zone_low > 0)
         AND (re_entry_zone_high IS NULL OR re_entry_zone_high > 0)
         AND (re_entry_zone_low IS NULL OR re_entry_zone_high IS NULL OR re_entry_zone_high >= re_entry_zone_low)
+    ),
+    CONSTRAINT chk_automatic_buy_runtime_observation_order CHECK (
+        setup_observed_ts_utc <= evaluation_ts_utc
+        AND account_observed_ts_utc <= evaluation_ts_utc
+        AND free_quote_balance_observed_ts_utc <= evaluation_ts_utc
     )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Append-only exact input snapshot for automatic BUY Phase 4 runtime. No executor/order authority.';
