@@ -12,7 +12,7 @@ ASSET_FK_TABLES = (
 
 def _create_table_body(sql: str, table_name: str) -> str:
     pattern = re.compile(
-        rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \\((.*?)\\) ENGINE=InnoDB",
+        rf"CREATE TABLE IF NOT EXISTS {re.escape(table_name)} \((.*?)\) ENGINE=InnoDB",
         re.DOTALL,
     )
     match = pattern.search(sql)
@@ -22,7 +22,7 @@ def _create_table_body(sql: str, table_name: str) -> str:
 
 def _column_type(table_body: str, column_name: str) -> str:
     pattern = re.compile(
-        rf"^\\s*{re.escape(column_name)}\\s+([^,\\n]+)",
+        rf"^\s*{re.escape(column_name)}\s+([^,\n]+)",
         re.MULTILINE,
     )
     match = pattern.search(table_body)
