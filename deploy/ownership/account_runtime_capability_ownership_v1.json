@@ -35,6 +35,17 @@
       "order_submission": 0,
       "live_orders": 0,
       "activation_status": "PLANNED"
+    },
+    {
+      "capability_id": "SHARED_EXECUTOR_RUNTIME",
+      "owner_host": "gurkdb",
+      "runtime_entrypoint": "python -m src.executor.run_shared_execution_runtime_v1",
+      "lock_scope": "one bounded systemd service; DB-backed exact-token leases protect duplicate/manual/multi-host consumers",
+      "private_read_authority": "none; DRY_RUN adapter has no credential or broker client; PAPER/LIVE adapters are unavailable",
+      "broker_writes": 0,
+      "order_submission": 0,
+      "live_orders": 0,
+      "activation_status": "PLANNED"
     }
   ]
 }

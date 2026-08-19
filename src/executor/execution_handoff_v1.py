@@ -251,7 +251,14 @@ class ExecutionHandoffRepositoryV1:
             row = cursor.fetchone()
             return None if row is None else _row_to_handoff(row)
 
-    def discover_eligible(self, *, executor_mode: str, runtime_owner: str, limit: int = 100) -> tuple[ExecutionHandoffV1, ...]:
+    def discover_eligible(
+        self,
+        *,
+        executor_mode: str,
+        runtime_owner: str,
+        executor_identity: str,
+        limit: int = 100,
+    ) -> tuple[ExecutionHandoffV1, ...]:
         """Discover unclaimed/reclaimable handoffs in stable persisted order."""
         if executor_mode not in {RUNTIME_MODE_DRY_RUN, RUNTIME_MODE_PAPER, RUNTIME_MODE_LIVE}:
             raise ValueError("EXECUTOR_MODE_INVALID")
@@ -259,12 +266,14 @@ class ExecutionHandoffRepositoryV1:
             raise ValueError("limit must be a positive integer")
         if not isinstance(runtime_owner, str) or not runtime_owner.strip():
             raise ValueError("runtime_owner required")
+        if not isinstance(executor_identity, str) or not executor_identity.strip():
+            raise ValueError("executor_identity required")
         now = trusted_clock.utc_now()
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)
             cursor.execute(
-                "SELECT h.* FROM executor_execution_handoff h JOIN executor_execution_handoff_consumption c ON c.executor_execution_handoff_id=h.executor_execution_handoff_id WHERE h.executor_mode=%s AND h.runtime_owner=%s AND (c.state='PENDING' OR (c.state='CLAIMED' AND c.claim_expires_ts_utc <= %s)) ORDER BY h.executor_execution_handoff_id ASC LIMIT %s",
-                [executor_mode, runtime_owner.strip(), now, limit],
+                "SELECT h.* FROM executor_execution_handoff h JOIN executor_execution_handoff_consumption c ON c.executor_execution_handoff_id=h.executor_execution_handoff_id WHERE h.executor_mode=%s AND h.runtime_owner=%s AND h.executor_identity=%s AND (c.state='PENDING' OR (c.state='CLAIMED' AND c.claim_expires_ts_utc <= %s)) ORDER BY h.executor_execution_handoff_id ASC LIMIT %s",
+                [executor_mode, runtime_owner.strip(), executor_identity.strip(), now, limit],
             )
             rows = cursor.fetchall()
         return tuple(_row_to_handoff(row) for row in rows)
