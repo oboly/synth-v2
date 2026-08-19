@@ -18,6 +18,7 @@ def _runtime_input(now: datetime) -> AutomaticBuyRuntimeInputV1:
         automatic_buy_runtime_input_id=1,
         source_snapshot_key="a" * 64,
         input_contract_version="1",
+        evaluation_ts_utc=now,
         trading_account_id=101,
         venue="bitvavo",
         asset_id=42,
@@ -52,7 +53,7 @@ def _runtime_input(now: datetime) -> AutomaticBuyRuntimeInputV1:
 
 def test_runtime_input_validation_accepts_fresh_bound_snapshot() -> None:
     now = datetime(2026, 8, 19, 16, 0, tzinfo=UTC)
-    validate_runtime_input_v1(_runtime_input(now), evaluation_ts_utc=now)
+    validate_runtime_input_v1(_runtime_input(now))
 
 
 def test_runtime_input_validation_fails_closed_on_stale_snapshot() -> None:
@@ -62,12 +63,13 @@ def test_runtime_input_validation_fails_closed_on_stale_snapshot() -> None:
         **{**value.__dict__, "setup_observed_ts_utc": now - timedelta(hours=1)}
     )
     with pytest.raises(AutomaticBuyRuntimeContractError, match="STALE_OR_FUTURE"):
-        validate_runtime_input_v1(stale, evaluation_ts_utc=now)
+        validate_runtime_input_v1(stale)
 
 
 def test_idempotency_key_is_order_independent_and_source_bound() -> None:
     evidence = {
         "source_snapshot_key": "a" * 64,
+        "evaluation_ts_utc": datetime(2026, 8, 19, 16, 0, tzinfo=UTC),
         "trading_account_id": 101,
         "venue": "bitvavo",
         "asset_id": 42,
