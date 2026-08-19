@@ -139,10 +139,25 @@ def test_uncertain_restart_reconciles_without_duplicate_fake_post() -> None:
     assert len(adapter.lookup_calls) == 1
 
 
-def test_consumer_fails_closed_before_submission_when_claim_heartbeat_is_lost() -> None:
+def test_claim_loss_before_post_does_not_create_broker_uncertainty() -> None:
     value = handoff(plan(), 1)
     repo, legs, adapter = FakeHandoffs([value]), FakeLegs(), FakeAdapter()
-    repo.renew_claim = lambda **_kwargs: False
-    with pytest.raises(RuntimeError, match="CLAIM_LOST"):
-        run_shared_execution_consumer_once_v1(handoff_repository=repo, leg_repository=legs, adapter=adapter, operator_id=9, worker_id="w", runtime_owner="devlap")
+    renewals = iter((True, False))
+    repo.renew_claim = lambda **_kwargs: next(renewals)
+    result = run_shared_execution_consumer_once_v1(handoff_repository=repo, leg_repository=legs, adapter=adapter, operator_id=9, worker_id="w", runtime_owner="devlap")
+    assert result[0].stopped_reason == "EXECUTION_HANDOFF_CLAIM_LOST"
     assert adapter.place_calls == []
+    assert legs.rows[(1, 1)].state == PREPARED
+
+
+def test_claim_loss_before_reconciliation_lookup_does_not_call_delegate() -> None:
+    value = handoff(plan(), 1)
+    repo, legs, adapter = FakeHandoffs([value]), FakeLegs(), FakeAdapter(timeout_once=True)
+    first = run_shared_execution_consumer_once_v1(handoff_repository=repo, leg_repository=legs, adapter=adapter, operator_id=9, worker_id="w", runtime_owner="devlap")
+    assert first[0].stopped_reason == SUBMISSION_UNCERTAIN
+    renewals = iter((True, False))
+    repo.renew_claim = lambda **_kwargs: next(renewals)
+    second = run_shared_execution_consumer_once_v1(handoff_repository=repo, leg_repository=legs, adapter=adapter, operator_id=9, worker_id="w", runtime_owner="devlap")
+    assert second[0].stopped_reason == "EXECUTION_HANDOFF_CLAIM_LOST"
+    assert adapter.lookup_calls == []
+    assert legs.rows[(1, 1)].state == SUBMISSION_UNCERTAIN

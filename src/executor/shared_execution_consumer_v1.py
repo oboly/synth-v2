@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from src.executor.execution_handoff_v1 import ExecutionHandoffRepositoryV1, ExecutionHandoffV1
+from src.executor.execution_claim_v1 import ExecutionClaimLostError
 from src.executor.execution_leg_v1 import RECONCILIATION_REQUIRED, SUBMISSION_UNCERTAIN, ExecutionLegRepositoryV1
 from src.executor.execution_plan_reference_v1 import ApprovedExecutionPlanV1, ExecutionPlanLegV1
 from src.executor.execution_submission_orchestrator_v1 import OrderPlacementAdapter, submit_execution_plan
@@ -34,10 +35,6 @@ class SharedExecutionConsumerResultV1:
     stopped_reason: str | None
 
 
-class SharedExecutionClaimLostError(RuntimeError):
-    pass
-
-
 @dataclass
 class _ClaimHeartbeatAdapter:
     adapter: OrderPlacementAdapter
@@ -52,11 +49,14 @@ class _ClaimHeartbeatAdapter:
             claim_token=self.claim_token,
             lease_seconds=self.lease_seconds,
         ):
-            raise SharedExecutionClaimLostError("EXECUTION_HANDOFF_CLAIM_LOST")
+            raise ExecutionClaimLostError(ExecutionClaimLostError.reason_code)
 
     def place_order(self, **kwargs):
         self._renew()
         return self.adapter.place_order(**kwargs)
+
+    def before_submission_attempt(self) -> None:
+        self._renew()
 
     def find_order_by_client_order_id(self, **kwargs):
         self._renew()
@@ -83,11 +83,13 @@ class SharedExecutionConsumerV1:
             completed = False
             try:
                 if not self.handoff_repository.renew_claim(handoff_id=handoff.handoff_id, claim_token=token, lease_seconds=lease_seconds):
-                    raise SharedExecutionClaimLostError("EXECUTION_HANDOFF_CLAIM_LOST")
+                    raise ExecutionClaimLostError(ExecutionClaimLostError.reason_code)
                 plan = hydrate_approved_execution_plan(handoff=handoff, repository=self.handoff_repository)
                 result = submit_execution_plan(handoff=handoff, plan=plan, operator_id=self.operator_id, handoff_repository=self.handoff_repository, leg_repository=self.leg_repository, adapter=_ClaimHeartbeatAdapter(self.adapter, self.handoff_repository, handoff.handoff_id, token, lease_seconds))
                 outcomes.append(SharedExecutionConsumerResultV1(result.handoff_id, result.stopped_reason))
                 completed = result.stopped_reason not in {SUBMISSION_UNCERTAIN, RECONCILIATION_REQUIRED}
+            except ExecutionClaimLostError:
+                outcomes.append(SharedExecutionConsumerResultV1(handoff.handoff_id, ExecutionClaimLostError.reason_code))
             finally:
                 self.handoff_repository.finish_claim(handoff_id=handoff.handoff_id, claim_token=token, completed=completed)
         return tuple(outcomes)
