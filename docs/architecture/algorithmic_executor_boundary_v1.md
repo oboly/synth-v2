@@ -6,6 +6,12 @@ after their own decision-gate permission and execution-planner work. The
 executor performs no selection, strategy, sizing, allocation, or account
 permission decision.
 
+Callers never select `executor_mode` freely. Normal `executor_mode` is derived
+exclusively from the canonical account_mode that produced the approved plan
+(`paper` -> `PAPER`, `live` -> `LIVE`); the only permitted explicit override is
+`DRY_RUN`, a non-production acceptance/testing override only, never a
+production execution mode.
+
 Ordinary intake permits `DRY_RUN` and `PAPER` only; `LIVE` is denied. The same
 canonical handoff repository has one explicit LIVE-authorized
 intake method. It requires current operational LIVE authority before it may
@@ -154,6 +160,21 @@ duplicates credential-scope, LIVE-authority, or kill-switch decisions —
 those remain exclusively owned by `ExecutionHandoffRepositoryV1` as
 described above. Reaching a `decision_gate`-`APPROVED` LIVE candidate is not,
 by itself, executor operational LIVE authority.
+
+The runner's normal executor mode is derived exclusively from the account's
+own `account_mode` (`paper` -> `PAPER`, `live` -> `LIVE`) via
+`resolve_automatic_exit_executor_mode_v1`. The **only** permitted explicit
+override is `DRY_RUN` — a deliberate non-production acceptance/testing mode
+— enforced both by the CLI's restricted `--executor-mode` choices and,
+defensively, inside `run_cycle_with_handoff` itself for any direct Python
+caller. `PAPER` and `LIVE` are never valid override values: allowing either
+would let executor mode contradict the account_mode/decision_gate path that
+actually produced the approved plan (for example, a paper account's plan
+reaching `intake_live_authorized`, or a live account's plan reaching
+ordinary `PAPER` intake). No override, including `DRY_RUN`, bypasses gate
+evaluation itself — a plan only reaches the handoff seam at all once
+`decision_gate` has already approved it under the account's real
+`account_mode`.
 
 `src/exit_policy/run_automatic_exit_policy_with_handoff_once_v1.py` is the
 composition-root runner that wires the real #392 candidate ->

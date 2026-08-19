@@ -161,6 +161,31 @@ same division of responsibility the protection composition already uses.
 No LIVE activation, executor change, or broker authority was introduced by
 this fix; see its own safety markers where noted below.
 
+**Update (2026-08-19, same branch, PR #432 review fix, mode-integrity):** a
+further independent review found
+`run_automatic_exit_policy_with_handoff_once_v1.py` exposed `--executor-mode
+DRY_RUN|PAPER|LIVE` as caller-selectable overrides. Allowing `PAPER` or `LIVE`
+as an explicit override would let a caller decouple executor mode from the
+`account_mode`/`decision_gate` path that actually produced the approved plan
+— e.g. a paper account's plan reaching `intake_live_authorized`, or a live
+account's plan reaching ordinary PAPER intake, neither of which the gate or
+planner ever authorized. **Canonical rule:** normal `executor_mode` is
+derived exclusively from the account's own canonical `account_mode`
+(`paper` -> `PAPER`, `live` -> `LIVE`) via
+`resolve_automatic_exit_executor_mode_v1`; the only permitted explicit
+override is `DRY_RUN`, a deliberate non-production acceptance/testing
+override, never a production execution mode. Fixed by restricting the CLI
+parser's `--executor-mode` `choices` to `DRY_RUN` only, and defensively
+inside `run_cycle_with_handoff` itself (`executor_mode_override not in
+(None, RUNTIME_MODE_DRY_RUN)` raises `AutomaticExitExecutorModeError`) so a
+direct Python caller cannot bypass the CLI restriction. This does not change
+executor operational LIVE authority, credential binding, or kill-switch
+ownership, which remain independently owned by #206's `intake_live_authorized`
+path. See the matching canonical statement in
+`docs/architecture/algorithmic_executor_boundary_v1.md`. No LIVE activation,
+production migration, credential/authority/kill-switch provisioning, service/
+timer activation, or broker call was performed or authorized by this fix.
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)
@@ -847,8 +872,17 @@ in software:
   cycle — the `automatic_exit_evaluation_audit_v1` audit table is never read
   as executor input, by this runner or anywhere else. The pre-existing
   audit-only `run_automatic_exit_policy_once_v1.py` runner and its
-  `src.executor`-import architecture guard are unchanged. See
-  `tests/test_automatic_exit_execution_handoff_adapter_v1.py`,
+  `src.executor`-import architecture guard are unchanged. The runner's
+  normal executor mode is derived exclusively from the account's own
+  `account_mode` (`paper` -> `PAPER`, `live` -> `LIVE`); the **only**
+  permitted explicit override is `DRY_RUN` (a deliberate non-production
+  acceptance/testing mode), enforced both by the CLI's restricted
+  `--executor-mode` choices and defensively inside `run_cycle_with_handoff`
+  for direct Python callers. `PAPER` and `LIVE` are never valid override
+  values — a paper account's plan can never reach `intake_live_authorized`
+  and a live account's plan can never reach ordinary `PAPER` intake by
+  passing an override; no override bypasses `decision_gate` evaluation
+  itself. See `tests/test_automatic_exit_execution_handoff_adapter_v1.py`,
   `tests/test_automatic_exit_execution_handoff_application_v1.py`,
   `tests/test_run_automatic_exit_policy_with_handoff_once_v1.py`, and
   `tests/test_automatic_exit_execution_handoff_boundary_guards_v1.py`.

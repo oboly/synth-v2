@@ -20,12 +20,18 @@ against ever importing ``src.executor``.
 
 Executor mode is derived from the account's own ``account_mode``
 (paper -> PAPER, live -> LIVE) via
-``resolve_automatic_exit_executor_mode_v1``; DRY_RUN is only reachable via
-an explicit ``--executor-mode DRY_RUN`` override, never inferred. Reaching
-``decision_gate`` APPROVED for account_mode == "live" is not, by itself,
-executor operational LIVE authority: ``intake_live_authorized`` remains the
-independent operational gate (credential binding, LIVE authority, kill
-switch) owned entirely by #206.
+``resolve_automatic_exit_executor_mode_v1``; the *only* permitted explicit
+override is ``DRY_RUN`` (a deliberate non-production acceptance/testing
+mode), enforced both by the CLI parser's restricted ``choices`` and,
+defensively, inside ``run_cycle_with_handoff`` itself for direct Python
+callers. Overriding to PAPER or LIVE is never permitted: it would let a
+caller decouple executor mode from the account_mode/decision_gate path that
+actually produced the approved plan (e.g. a paper account's plan reaching
+``intake_live_authorized``, or a live account's plan reaching ordinary
+PAPER intake). Reaching ``decision_gate`` APPROVED for account_mode ==
+"live" is not, by itself, executor operational LIVE authority:
+``intake_live_authorized`` remains the independent operational gate
+(credential binding, LIVE authority, kill switch) owned entirely by #206.
 
 broker_private_calls=0
 broker_writes=0
@@ -52,8 +58,7 @@ from src.execution_planner.automatic_exit_execution_handoff_application_v1 impor
     submit_automatic_exit_plan_to_execution_handoff_v1,
 )
 from src.executor.execution_handoff_v1 import (
-    ALLOWED_EXECUTOR_INTAKE_MODES,
-    RUNTIME_MODE_LIVE,
+    RUNTIME_MODE_DRY_RUN,
     ExecutionHandoffDeniedError,
     ExecutionHandoffIdentityConflictError,
     ExecutionHandoffRepositoryV1,
@@ -135,11 +140,16 @@ def run_cycle_with_handoff(
 ) -> CycleSummaryV1:
     """Process every eligible account's positive positions; hand off STAGED plans.
 
-    ``executor_mode_override``, when given, must already be one of the
-    #206 executor modes and is used verbatim instead of deriving the mode
-    from the account's own account_mode -- intended only for an explicit
-    DRY_RUN exercise, never for silently promoting a paper/live account.
+    ``executor_mode_override``, when given, must be exactly ``DRY_RUN`` --
+    the only permitted explicit override -- and is used verbatim instead of
+    deriving the mode from the account's own account_mode. This is
+    enforced here defensively (not only by the CLI parser's restricted
+    ``choices``) so a direct Python caller cannot pass PAPER or LIVE and
+    decouple executor mode from the account_mode/decision_gate path that
+    produced the approved plan.
     """
+    if executor_mode_override is not None and executor_mode_override != RUNTIME_MODE_DRY_RUN:
+        raise AutomaticExitExecutorModeError("EXECUTOR_MODE_OVERRIDE_MUST_BE_DRY_RUN_ONLY")
     summary = CycleSummaryV1()
     accounts = load_eligible_trading_accounts(conn, venue=venue)
     for account in accounts:
@@ -231,10 +241,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--runtime-owner", required=True)
     parser.add_argument(
         "--executor-mode",
-        choices=sorted(ALLOWED_EXECUTOR_INTAKE_MODES | {RUNTIME_MODE_LIVE}),
+        choices=(RUNTIME_MODE_DRY_RUN,),
         default=None,
         help="Override the executor mode instead of deriving it from account_mode. "
-        "Intended for an explicit DRY_RUN exercise only.",
+        "The only permitted value is DRY_RUN (a deliberate non-production "
+        "acceptance/testing override); PAPER and LIVE are never valid overrides "
+        "and are always derived from the account's own account_mode.",
     )
     return parser.parse_args(argv)
 
