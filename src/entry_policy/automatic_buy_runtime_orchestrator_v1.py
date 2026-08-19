@@ -97,6 +97,7 @@ def build_automatic_buy_source_evidence_v1(item: RuntimeItemV1) -> dict[str, Any
     }
     if value.input_contract_version == RUNTIME_INPUT_LIVE_CONTRACT_VERSION:
         live_evaluation = item.automatic_buy_live_permission_evaluation
+        evidence["live_trading_enabled"] = value.live_trading_enabled
         evidence["automatic_buy_live_permission_fingerprint"] = _fingerprint(
             None if live_evaluation is None else asdict(live_evaluation)
         )
