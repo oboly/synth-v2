@@ -12,26 +12,85 @@ permissions:
   actions: read
 
 jobs:
-  haiku:
-    if: >-
-      github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '[agent:haiku]')
+  route:
+    if: github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    outputs:
+      matched: ${{ steps.route.outputs.matched }}
+      model: ${{ steps.route.outputs.model }}
+      effort: ${{ steps.route.outputs.effort }}
+      max_turns: ${{ steps.route.outputs.max_turns }}
+      lane: ${{ steps.route.outputs.lane }}
+    steps:
+      - id: route
+        env:
+          BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          matched=false
+          model=''
+          effort=''
+          max_turns=''
+          lane=''
+
+          if [[ "$BODY" == *'[agent:haiku]'* ]]; then
+            matched=true
+            model='haiku'
+            effort='low'
+            max_turns='10'
+            lane='haiku'
+          elif [[ "$BODY" == *'[agent:sonnet-low]'* ]]; then
+            matched=true
+            model='sonnet'
+            effort='low'
+            max_turns='16'
+            lane='sonnet-low'
+          elif [[ "$BODY" == *'[agent:sonnet-medium]'* ]]; then
+            matched=true
+            model='sonnet'
+            effort='medium'
+            max_turns='24'
+            lane='sonnet-medium'
+          fi
+
+          printf 'matched=%s\n' "$matched" >> "$GITHUB_OUTPUT"
+          printf 'model=%s\n' "$model" >> "$GITHUB_OUTPUT"
+          printf 'effort=%s\n' "$effort" >> "$GITHUB_OUTPUT"
+          printf 'max_turns=%s\n' "$max_turns" >> "$GITHUB_OUTPUT"
+          printf 'lane=%s\n' "$lane" >> "$GITHUB_OUTPUT"
+
+  claude:
+    needs: route
+    if: needs.route.outputs.matched == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: main
           fetch-depth: 1
+          persist-credentials: false
 
-      - name: Run Claude Code Haiku
+      - name: Create worker branch
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="agent/issue-${{ github.event.issue.number }}-${{ needs.route.outputs.lane }}-${{ github.run_id }}"
+          git switch -c "$branch"
+          printf 'name=%s\n' "$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code
+        id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           base_branch: main
           prompt: |
             HOST: GitHub-hosted ubuntu-latest
-            MODEL: haiku
-            EFFORT: default
+            MODEL: ${{ needs.route.outputs.model }}
+            EFFORT: ${{ needs.route.outputs.effort }}
             ROLE: implementer
             THREAD: CLEAR
             DEPLOYMENT PERMISSION: not granted
@@ -51,118 +110,53 @@ jobs:
             ${{ github.event.comment.body }}
 
             First read AGENTS.md, CLAUDE.md, and docs/ops/agent_dispatch_cost_contract_v1.md.
-            Stay strictly inside the issue scope and architecture boundaries.
-            Minimize token/context use: search first, read only relevant files/ranges, avoid broad history and repository dumps.
-            Do not reopen settled design decisions. Stop once acceptance criteria are satisfied.
-            This runner has no implicit access to devlap, gurkdb, Odroid, local DB/data, or runtime services.
-            Do not deploy, mutate runtime/DB state, call private broker APIs, or enable live trading.
-            Keep the change small and reviewable. Open a pull request against main. Do not merge it.
+            Read additional canonical/scoped docs only when relevant.
+            Treat the issue body as the task contract and the trigger as narrowing guidance only.
+            Stay strictly inside scope and architecture boundaries.
+            Minimize token/context use: search first, read only relevant files/ranges, avoid broad history and full-repo dumps.
+            Use focused validation proportional to the change. Do not run broad suites by habit.
+            Do not use web/network research unless the task explicitly requires it.
+            This runner has no implicit access to devlap, gurkdb, Odroid, local databases, local historical datasets, or runtime services.
+            Do not deploy, mutate runtime/DB state, use private broker APIs, or enable live trading.
+            Do not commit, push, or open a pull request. The workflow owns git delivery after you finish.
+            Stop once the issue acceptance criteria are satisfied and validated.
+            Keep the final report terse per AGENTS.md.
           claude_args: |
-            --model haiku
-            --max-turns 10
+            --model ${{ needs.route.outputs.model }}
+            --effort ${{ needs.route.outputs.effort }}
+            --max-turns ${{ needs.route.outputs.max_turns }}
+            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *)"
             --disallowedTools WebSearch
 
-  sonnet-low:
-    if: >-
-      github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '[agent:sonnet-low]')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
+      - name: Commit and push changes
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      - name: Run Claude Code Sonnet low effort
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          base_branch: main
-          prompt: |
-            HOST: GitHub-hosted ubuntu-latest
-            MODEL: sonnet
-            EFFORT: low
-            ROLE: implementer
-            THREAD: CLEAR
-            DEPLOYMENT PERMISSION: not granted
-            RUNTIME MUTATION PERMISSION: not granted
-            DB WRITE PERMISSION: not granted
-            BROKER / PRIVATE API PERMISSION: not granted
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "agent: implement issue #${{ github.event.issue.number }} via ${{ needs.route.outputs.lane }}"
+          gh auth setup-git
+          git push origin HEAD
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
 
-            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
-
-            Issue title:
-            ${{ github.event.issue.title }}
-
-            Issue body:
-            ${{ github.event.issue.body }}
-
-            Trigger instructions:
-            ${{ github.event.comment.body }}
-
-            First read AGENTS.md, CLAUDE.md, and docs/ops/agent_dispatch_cost_contract_v1.md.
-            Stay strictly inside the issue scope and architecture boundaries.
-            Minimize token/context use: search first, read only relevant files/ranges, avoid broad history and repository dumps.
-            Do not reopen settled design decisions. Use focused validation only.
-            This runner has no implicit access to devlap, gurkdb, Odroid, local DB/data, or runtime services.
-            Do not deploy, mutate runtime/DB state, call private broker APIs, or enable live trading.
-            Keep the change small and reviewable. Open a pull request against main. Do not merge it.
-          claude_args: |
-            --model sonnet
-            --effort low
-            --max-turns 16
-            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *)"
-            --disallowedTools WebSearch
-
-  sonnet-medium:
-    if: >-
-      github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '[agent:sonnet-medium]')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 1
-
-      - name: Run Claude Code Sonnet medium effort
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          base_branch: main
-          prompt: |
-            HOST: GitHub-hosted ubuntu-latest
-            MODEL: sonnet
-            EFFORT: medium
-            ROLE: implementer
-            THREAD: CLEAR
-            DEPLOYMENT PERMISSION: not granted
-            RUNTIME MUTATION PERMISSION: not granted
-            DB WRITE PERMISSION: not granted
-            BROKER / PRIVATE API PERMISSION: not granted
-
-            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
-
-            Issue title:
-            ${{ github.event.issue.title }}
-
-            Issue body:
-            ${{ github.event.issue.body }}
-
-            Trigger instructions:
-            ${{ github.event.comment.body }}
-
-            First read AGENTS.md, CLAUDE.md, and docs/ops/agent_dispatch_cost_contract_v1.md.
-            Stay strictly inside the issue scope and architecture boundaries.
-            Use medium effort only to resolve uncertainty necessary for the issue; do not broaden scope.
-            Minimize token/context use: search first, read only relevant files/ranges, avoid broad history and repository dumps.
-            Use focused validation proportional to the change. Stop once acceptance evidence is sufficient.
-            This runner has no implicit access to devlap, gurkdb, Odroid, local DB/data, or runtime services.
-            Do not deploy, mutate runtime/DB state, call private broker APIs, or enable live trading.
-            Open a pull request against main. Do not merge it.
-          claude_args: |
-            --model sonnet
-            --effort medium
-            --max-turns 24
-            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *)"
-            --disallowedTools WebSearch
+      - name: Open pull request
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --base main \
+            --head '${{ steps.branch.outputs.name }}' \
+            --title "Agent: issue #${{ github.event.issue.number }} via ${{ needs.route.outputs.lane }}" \
+            --body "Implements #${{ github.event.issue.number }} using the cost-aware GitHub agent lane \`${{ needs.route.outputs.lane }}\`.\n\nNo deployment, runtime mutation, DB write, broker/private API access, or live-trading permission was granted by this workflow."
