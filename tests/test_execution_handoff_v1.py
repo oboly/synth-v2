@@ -260,7 +260,7 @@ def test_internal_helper_cannot_bypass_authorized_live_intake() -> None:
     assert database.rows == {}
 
 
-def test_credential_scope_denial_is_a_handoff_denial() -> None:
+def test_credential_scope_denial_is_a_handoff_denial_for_paper() -> None:
     class DeniedCredentials(CredentialRepository):
         def resolve(self, **_kwargs) -> CredentialScopeBinding:
             raise CredentialScopeDeniedError("CREDENTIAL_SCOPE_NOT_BOUND")
@@ -269,7 +269,7 @@ def test_credential_scope_denial_is_a_handoff_denial() -> None:
     with pytest.raises(ExecutionHandoffDeniedError, match="CREDENTIAL_SCOPE_NOT_BOUND"):
         repository.intake(
             plan=make_plan(),
-            executor_mode="DRY_RUN",
+            executor_mode="PAPER",
             executor_identity="shared-executor-v1",
             runtime_owner="devlap",
         )

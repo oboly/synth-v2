@@ -71,7 +71,7 @@ class ExecutionHandoffV1:
     executor_mode: str
     executor_identity: str
     runtime_owner: str
-    executor_credential_binding_id: int
+    executor_credential_binding_id: int | None
 
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
@@ -84,6 +84,7 @@ def _cursor(value: Any) -> Any:
 
 
 def _row_to_handoff(row: Any) -> ExecutionHandoffV1:
+    binding_id = row["executor_credential_binding_id"]
     return ExecutionHandoffV1(
         handoff_id=int(row["executor_execution_handoff_id"]),
         plan_source=str(row["plan_source"]),
@@ -93,7 +94,7 @@ def _row_to_handoff(row: Any) -> ExecutionHandoffV1:
         venue=str(row["venue"]), market=str(row["market"]), side=str(row["side"]),
         executor_mode=str(row["executor_mode"]), executor_identity=str(row["executor_identity"]),
         runtime_owner=str(row["runtime_owner"]),
-        executor_credential_binding_id=int(row["executor_credential_binding_id"]),
+        executor_credential_binding_id=None if binding_id is None else int(binding_id),
     )
 
 
@@ -107,8 +108,27 @@ def _row_to_plan_leg(row: Any) -> ExecutionHandoffPlanLegV1:
     )
 
 
-def _handoff_value(plan: ApprovedExecutionPlanV1, mode: str, identity: str, owner: str, binding_id: int) -> ExecutionHandoffV1:
-    return ExecutionHandoffV1(None, plan.plan_source, plan.plan_reference_id, plan.content_hash, plan.trading_account_id, plan.venue, plan.market, plan.side, mode, identity, owner, binding_id)
+def _handoff_value(
+    plan: ApprovedExecutionPlanV1,
+    mode: str,
+    identity: str,
+    owner: str,
+    binding_id: int | None,
+) -> ExecutionHandoffV1:
+    return ExecutionHandoffV1(
+        None,
+        plan.plan_source,
+        plan.plan_reference_id,
+        plan.content_hash,
+        plan.trading_account_id,
+        plan.venue,
+        plan.market,
+        plan.side,
+        mode,
+        identity,
+        owner,
+        binding_id,
+    )
 
 
 def _same_identity(left: ExecutionHandoffV1, right: ExecutionHandoffV1) -> bool:
@@ -179,11 +199,21 @@ class ExecutionHandoffRepositoryV1:
         owner = runtime_owner.strip()
         if not identity or not owner:
             raise ExecutionHandoffDeniedError("EXECUTOR_IDENTITY_AND_RUNTIME_OWNER_REQUIRED")
-        assert self.credential_scope_repository is not None
-        try:
-            binding = self.credential_scope_repository.resolve(trading_account_id=plan.trading_account_id, venue=plan.venue, executor_identity=identity, runtime_owner=owner)
-        except CredentialScopeDeniedError as exc:
-            raise ExecutionHandoffDeniedError(str(exc)) from exc
+
+        binding_id: int | None = None
+        if executor_mode != RUNTIME_MODE_DRY_RUN:
+            assert self.credential_scope_repository is not None
+            try:
+                binding = self.credential_scope_repository.resolve(
+                    trading_account_id=plan.trading_account_id,
+                    venue=plan.venue,
+                    executor_identity=identity,
+                    runtime_owner=owner,
+                )
+            except CredentialScopeDeniedError as exc:
+                raise ExecutionHandoffDeniedError(str(exc)) from exc
+            binding_id = binding.executor_credential_binding_id
+
         if require_live_authority:
             assert self.live_authority_repository is not None
             assert self.kill_switch_repository is not None
@@ -200,7 +230,14 @@ class ExecutionHandoffRepositoryV1:
                 )
             except ExecutionLiveAuthorityDeniedError as exc:
                 raise ExecutionHandoffDeniedError(str(exc)) from None
-        handoff_value = _handoff_value(plan, executor_mode, identity, owner, binding.executor_credential_binding_id)
+
+        handoff_value = _handoff_value(
+            plan,
+            executor_mode,
+            identity,
+            owner,
+            binding_id,
+        )
         try:
             with self.cursor_factory(commit=True) as db_obj:
                 cursor = _cursor(db_obj)
