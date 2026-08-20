@@ -3,21 +3,10 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,15 +18,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 2
+          persist-credentials: false
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            HOST: GitHub-hosted ubuntu-latest
+            MODEL: sonnet
+            EFFORT: low
+            ROLE: reviewer
+            THREAD: CLEAR
+            DEPLOYMENT PERMISSION: not granted
+            RUNTIME MUTATION PERMISSION: not granted
+            DB WRITE PERMISSION: not granted
+            BROKER / PRIVATE API PERMISSION: not granted
+
+            First read AGENTS.md and CLAUDE.md.
+            Review only the exact PR diff and evidence needed to decide PASS or BLOCK.
+            Focus on architecture boundaries, safety, regressions, determinism, test adequacy, and unintended scope.
+            Do not implement fixes, change files, commit, push, merge, deploy, mutate runtime/DB state, or use private broker APIs.
+            Do not reconstruct project history or perform broad repository exploration unless a concrete finding requires it.
+            Return the terse review shape required by AGENTS.md: PASS/BLOCK, issues, minimal fixes only.
+          claude_args: |
+            --model sonnet
+            --effort low
+            --max-turns 10
+            --allowedTools "Bash(git diff *),Bash(git status *),Bash(git log *)"
+            --disallowedTools WebSearch
