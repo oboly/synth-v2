@@ -4,10 +4,6 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: claude-cheap-batch-issue-${{ github.event.issue.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: write
   pull-requests: write
@@ -67,6 +63,9 @@ jobs:
   claude:
     needs: route
     if: needs.route.outputs.matched == 'true'
+    concurrency:
+      group: claude-cheap-batch-issue-${{ github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
