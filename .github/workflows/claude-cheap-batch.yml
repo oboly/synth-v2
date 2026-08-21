@@ -63,6 +63,9 @@ jobs:
   claude:
     needs: route
     if: needs.route.outputs.matched == 'true'
+    concurrency:
+      group: claude-cheap-batch-issue-${{ github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -118,6 +121,7 @@ jobs:
             Do not use web/network research unless the task explicitly requires it.
             This runner has no implicit access to devlap, gurkdb, Odroid, local databases, local historical datasets, or runtime services.
             Do not deploy, mutate runtime/DB state, use private broker APIs, or enable live trading.
+            You MAY read, create, and edit repository files required by the issue.
             Do not commit, push, or open a pull request. The workflow owns git delivery after you finish.
             Stop once the issue acceptance criteria are satisfied and validated.
             Keep the final report terse per AGENTS.md.
@@ -135,7 +139,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet && git diff --cached --quiet; then
+          if [[ -z "$(git status --porcelain)" ]]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -155,8 +159,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          existing_pr="$(gh pr list --state open --base main --search "Implements #${{ github.event.issue.number }} in:body" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing_pr" ]]; then
+            echo "Open PR #$existing_pr already implements issue #${{ github.event.issue.number }}; skipping duplicate PR creation."
+            exit 0
+          fi
+
           gh pr create \
             --base main \
             --head '${{ steps.branch.outputs.name }}' \
             --title "Agent: issue #${{ github.event.issue.number }} via ${{ needs.route.outputs.lane }}" \
-            --body "Implements #${{ github.event.issue.number }} using the cost-aware GitHub agent lane \`${{ needs.route.outputs.lane }}\`.\n\nNo deployment, runtime mutation, DB write, broker/private API access, or live-trading permission was granted by this workflow."
+            --body "Implements #${{ github.event.issue.number }} using the GitHub-hosted Claude lane \`${{ needs.route.outputs.lane }}\`.\n\nNo deployment, runtime mutation, DB write, broker/private API access, or live-trading permission was granted by this workflow."
