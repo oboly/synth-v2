@@ -16,7 +16,6 @@ This document supplements, and does not replace:
 - `AGENTS.md`
 - `docs/ops/agent_orchestration_contract_v1.md`
 - `CLAUDE.md`
-- `CODEX.md`
 
 Architecture, safety, git, review, host, and permission rules in those files
 remain authoritative.
@@ -25,8 +24,7 @@ remain authoritative.
 
 When the requested work is clear enough to execute safely, ChatGPT should
 choose the execution lane itself. Do not ask the user to choose between
-ChatGPT, GitHub Actions, Claude, Codex, or a local CLI merely as a routing
-question.
+ChatGPT, GitHub Actions, Claude, or a local CLI merely as a routing question.
 
 Ask the user only when a real authorization or unavailable-state boundary is
 reached, for example:
@@ -59,30 +57,27 @@ not needed:
 Do not launch a coding agent for work that is cheaper and clearer as one or a
 few GitHub API operations.
 
-### Lane B: GitHub-hosted coding agent
+### Lane B: GitHub-hosted Claude coding agent
 
 Use for repo-only implementation that can run in a clean ephemeral GitHub
 runner and does not require Synth host state.
 
-Preferred low-cost routes:
+Supported routes:
 
 ```text
-[agent:luna-low]       mechanical/search/docs/evidence work
-[agent:terra-low]      default bounded OpenAI implementation
-[agent:terra-medium]   normal implementation with material reasoning
-[agent:sonnet-low]     bounded Anthropic implementation
-[agent:sonnet-medium]  Anthropic implementation with material reasoning
-[agent:haiku]          very small mechanical Anthropic work
+[agent:haiku]          very small mechanical work
+[agent:sonnet-low]     bounded implementation
+[agent:sonnet-medium]  implementation with material reasoning
 ```
 
-GitHub-hosted agents are real implementation workers with a checked-out repo,
-but they do not implicitly have access to devlap, gurkdb, Odroid, local
+GitHub-hosted Claude workers are real implementation workers with a checked-out
+repo, but they do not implicitly have access to devlap, gurkdb, Odroid, local
 historical datasets, local virtualenvs, local databases, or runtime services.
 
-### Lane C: local CLI coding agent
+### Lane C: local Claude Code agent
 
-Use Claude Code or Codex CLI on the appropriate host when the task materially
-benefits from or requires:
+Use Claude Code on the appropriate host when the task materially benefits from
+or requires:
 
 - large or iterative multi-file implementation,
 - local historical data/backtests,
@@ -109,20 +104,18 @@ Default order for repo work:
 
 ```text
 ChatGPT GitHub operation
--> Luna Low for mechanical work where capable
--> Terra Low for bounded implementation
--> Sonnet Low when Anthropic is a better fit or OpenAI capacity is undesirable
--> Terra Medium / Sonnet Medium for genuine added reasoning need
--> stronger model or local CLI only for named unresolved uncertainty or host/data need
+-> Haiku for mechanical work where capable
+-> Sonnet Low for bounded implementation
+-> Sonnet Medium for genuine added reasoning need
+-> local Claude Code only for named unresolved uncertainty or host/data need
 ```
 
 Do not select medium merely because a task touches many lines. Select medium
 when the worker must resolve material uncertainty.
 
-Do not run two implementation agents for the same task by default. Parallel or
-cross-provider work is justified only by independent review requirements,
-distinct non-overlapping slices, provider failure/capacity, or a named
-uncertainty that benefits from independent analysis.
+Do not run two implementation agents for the same task by default. Parallel
+work is justified only by distinct non-overlapping slices or a named
+independent-review requirement.
 
 A failed cheap lane may be escalated automatically after inspecting the
 failure. Do not blindly retry at a more expensive tier when the failure is a
@@ -138,7 +131,7 @@ requested task already authorizes the underlying repository change.
 ChatGPT should then, where tool access permits:
 
 1. inspect the resulting workflow/PR status,
-2. avoid duplicate manual reviews while configured automatic review is
+2. avoid duplicate manual reviews while configured automatic Claude review is
    pending,
 3. surface blockers only when intervention is actually required,
 4. continue the workflow through review/readiness without asking the user to
@@ -151,7 +144,7 @@ permission from permission to implement repository code.
 
 GitHub coding workers must:
 
-- read `AGENTS.md` and applicable provider/scoped instructions first,
+- read `AGENTS.md` and applicable scoped instructions first,
 - stay inside the issue contract,
 - inspect only relevant files,
 - avoid broad repository dumps and unnecessary history excavation,
@@ -163,9 +156,9 @@ GitHub coding workers must:
 - not deploy, mutate runtime/DB state, or call private broker APIs unless
   explicitly authorized by the task contract.
 
-For GitHub-hosted implementation, prefer letting the workflow own branch,
-commit, push, and PR creation where practical. This keeps the model focused on
-code and validation and reduces tool chatter.
+For GitHub-hosted implementation, the workflow owns branch, commit, push, and
+PR creation. The Claude worker owns repository edits and focused validation
+only.
 
 ## 6. Token/context discipline
 
@@ -192,7 +185,7 @@ The trigger comment selects an execution lane, not additional task scope.
 Examples:
 
 ```text
-[agent:terra-low]
+[agent:sonnet-low]
 Implement the issue exactly as written. No deployment or runtime mutation.
 ```
 
