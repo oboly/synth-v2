@@ -125,7 +125,7 @@ jobs:
             --model ${{ needs.route.outputs.model }}
             --effort ${{ needs.route.outputs.effort }}
             --max-turns ${{ needs.route.outputs.max_turns }}
-            --allowedTools "Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *)"
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *)"
             --disallowedTools WebSearch
 
       - name: Commit and push changes
