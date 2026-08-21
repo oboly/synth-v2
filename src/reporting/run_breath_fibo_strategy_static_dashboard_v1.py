@@ -103,7 +103,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--quote", default="EUR")
     parser.add_argument("--interval", default="4h")
-    parser.add_argument("--limit", type=int, default=80)
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args(argv)
@@ -354,7 +353,7 @@ def fetch_canonical_fib_rows(
     return {str(row["symbol"]).upper(): row for row in rows}
 
 
-def fetch_latest_price_rows(conn: Any, *, venue: str, interval: str, limit: int) -> dict[str, PriceSnapshot]:
+def fetch_latest_price_rows(conn: Any, *, venue: str, interval: str) -> dict[str, PriceSnapshot]:
     queries = (
         (
             """
@@ -372,9 +371,8 @@ def fetch_latest_price_rows(conn: Any, *, venue: str, interval: str, limit: int)
             WHERE c.venue = %s
               AND c.interval_code = %s
             ORDER BY a.symbol
-            LIMIT %s
             """,
-            (venue, interval, venue, interval, limit),
+            (venue, interval, venue, interval),
         ),
         (
             """
@@ -392,9 +390,8 @@ def fetch_latest_price_rows(conn: Any, *, venue: str, interval: str, limit: int)
             WHERE c.venue = %s
               AND c.interval_code = %s
             ORDER BY a.symbol
-            LIMIT %s
             """,
-            (venue, interval, venue, interval, limit),
+            (venue, interval, venue, interval),
         ),
     )
     for sql, params in queries:
@@ -712,11 +709,10 @@ def build_rows(
     price_rows: dict[str, PriceSnapshot],
     fib_rows: dict[str, dict[str, Any]],
     regime_by_class: dict[str, dict[str, Any]],
-    limit: int,
 ) -> list[DashboardRow]:
     symbols = sorted(set(price_rows) | set(fib_rows))
     rows = []
-    for symbol in symbols[:limit]:
+    for symbol in symbols:
         asset_class = classify_asset_class(symbol)
         row = build_row(
             symbol,
@@ -908,7 +904,7 @@ def main(argv: list[str] | None = None) -> int:
             quote=quote,
             interval=interval,
         )
-        price_rows = fetch_latest_price_rows(conn, venue=venue, interval=interval, limit=max(args.limit, 200))
+        price_rows = fetch_latest_price_rows(conn, venue=venue, interval=interval)
         regime_by_class, _ = fetch_regime_by_class(conn, venue=venue, interval=interval)
     finally:
         conn.close()
@@ -918,7 +914,6 @@ def main(argv: list[str] | None = None) -> int:
         price_rows=price_rows,
         fib_rows=fib_rows,
         regime_by_class=regime_by_class,
-        limit=args.limit,
     )
 
     html_text = render_html(rows, venue=venue, quote=quote, interval=interval)
