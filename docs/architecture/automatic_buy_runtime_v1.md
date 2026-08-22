@@ -22,9 +22,10 @@ Issue #474: the snapshot's own account-owned columns (`account_enabled`,
 time `build_runtime_item_v1` replaces them with a freshly-loaded, canonical
 `AutomaticBuyAccountAllocationEvidenceV1` (see
 `docs/architecture/automatic_buy_account_allocation_evidence_v1.md`) before
-the gate ever sees them, so no writer of this table -- including a future
-acceptance/DRY_RUN producer -- can influence account permission/allocation
-outcomes by writing to those columns.
+the gate ever sees them, so no writer of this table -- including the Issue
+#471 acceptance producer described in
+`docs/architecture/automatic_buy_dry_run_acceptance_v1.md` -- can influence
+account permission/allocation outcomes by writing to those columns.
 
 At evaluation time the repository additionally loads the immutable #279
 strategy-bucket configuration history, obtains the canonical #318 protection
