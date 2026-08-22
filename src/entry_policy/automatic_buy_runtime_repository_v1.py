@@ -7,6 +7,7 @@ permission or planning decision and has no executor/broker imports.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -14,13 +15,19 @@ from typing import Any
 
 from src.decision_gate.account_protection_contract_v1 import ACTION_BUY, AccountProtectionEvaluationV1
 from src.decision_gate.account_protection_evaluation_v1 import evaluate_account_protection_for_automatic_exit_v1
+from src.decision_gate.automatic_buy_account_allocation_evidence_repository_v1 import (
+    AutomaticBuyAccountAllocationEvidenceRepositoryError,
+    load_automatic_buy_account_allocation_evidence_v1,
+)
 from src.decision_gate.automatic_buy_live_permission_evaluation_v1 import (
     AutomaticBuyLivePermissionEvaluationV1,
     evaluate_automatic_buy_live_permission_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import (
+    StrategyBucketAccountConfigError,
     StrategyBucketAccountConfigRevocationV1,
     StrategyBucketAccountConfigRowV1,
+    resolve_strategy_bucket_account_config_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_repository_v1 import (
     StrategyBucketAccountConfigRepositoryError,
@@ -126,7 +133,17 @@ def load_ready_runtime_inputs_v1(conn: Any, *, venue: str) -> tuple[AutomaticBuy
 
 
 def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV1) -> RuntimeItemV1:
-    """Assemble canonical persisted evidence for one immutable runtime input."""
+    """Assemble canonical persisted evidence for one immutable runtime input.
+
+    Issue #474: the account-owned fields on ``runtime_input`` (account
+    enablement/mode/LIVE flag, automatic-BUY execution permission, free quote
+    balance, proposed position amount, current bucket amount/open positions/
+    asset exposure) are never trusted from the persisted row. They are
+    replaced here with a freshly-loaded, decision-gate-owned
+    ``AutomaticBuyAccountAllocationEvidenceV1`` snapshot before the gate ever
+    sees them, so no writer of ``automatic_buy_runtime_input_v1`` can
+    influence account permission/allocation outcomes.
+    """
     try:
         validate_runtime_input_v1(runtime_input)
     except ValueError as exc:
@@ -141,6 +158,59 @@ def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV
         )
     except StrategyBucketAccountConfigRepositoryError as exc:
         raise AutomaticBuyRuntimeRepositoryError("STRATEGY_BUCKET_CONFIGURATION_EVIDENCE_INVALID") from exc
+
+    try:
+        resolved_bucket_config = resolve_strategy_bucket_account_config_v1(
+            config_rows,
+            config_revocations,
+            trading_account_id=runtime_input.trading_account_id,
+            strategy_bucket_id=runtime_input.strategy_bucket_id,
+            at=runtime_input.evaluation_ts_utc,
+        )
+    except StrategyBucketAccountConfigError as exc:
+        raise AutomaticBuyRuntimeRepositoryError(
+            exc.args[0] if exc.args else "STRATEGY_BUCKET_CONFIGURATION_UNRESOLVED"
+        ) from exc
+    if resolved_bucket_config.max_position_amount_eur is None:
+        raise AutomaticBuyRuntimeRepositoryError("PROPOSED_POSITION_AMOUNT_POLICY_UNRESOLVED")
+
+    try:
+        account_allocation_evidence = load_automatic_buy_account_allocation_evidence_v1(
+            conn,
+            trading_account_id=runtime_input.trading_account_id,
+            venue=runtime_input.venue,
+            asset_id=runtime_input.asset_id,
+            market=runtime_input.market,
+            strategy_bucket_id=runtime_input.strategy_bucket_id,
+            resolved_bucket_config=resolved_bucket_config,
+            evaluation_ts_utc=runtime_input.evaluation_ts_utc,
+        )
+    except AutomaticBuyAccountAllocationEvidenceRepositoryError as exc:
+        raise AutomaticBuyRuntimeRepositoryError(
+            exc.args[0] if exc.args else "ACCOUNT_ALLOCATION_EVIDENCE_UNRESOLVED"
+        ) from exc
+
+    runtime_input = dataclasses.replace(
+        runtime_input,
+        account_observed_ts_utc=account_allocation_evidence.account_observed_ts_utc,
+        account_enabled=account_allocation_evidence.account_enabled,
+        account_mode=account_allocation_evidence.account_mode,
+        automatic_buy_execution_enabled=account_allocation_evidence.automatic_buy_execution_enabled,
+        live_trading_enabled=account_allocation_evidence.live_trading_enabled,
+        free_quote_balance_eur=account_allocation_evidence.free_quote_balance_eur,
+        free_quote_balance_observed_ts_utc=account_allocation_evidence.free_quote_balance_observed_ts_utc,
+        blocking_conflict=account_allocation_evidence.blocking_conflict,
+        proposed_position_amount_eur=account_allocation_evidence.proposed_position_amount_eur,
+        current_bucket_amount_eur=account_allocation_evidence.current_bucket_amount_eur,
+        current_open_positions=account_allocation_evidence.current_open_positions,
+        current_asset_exposure_pct=account_allocation_evidence.current_asset_exposure_pct,
+    )
+    try:
+        validate_runtime_input_v1(runtime_input)
+    except ValueError as exc:
+        raise AutomaticBuyRuntimeRepositoryError(
+            exc.args[0] if exc.args else "INVALID_ACCOUNT_ALLOCATION_EVIDENCE_BINDING"
+        ) from exc
 
     protection = evaluate_account_protection_for_automatic_exit_v1(
         conn,
