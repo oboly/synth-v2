@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS automatic_buy_account_permission_revocation_v1 (
     KEY ix_automatic_buy_account_permission_revocation_account (
         trading_account_id, effective_ts_utc
     ),
-    CONSTRAINT fk_automatic_buy_account_permission_revocation_permission_account
+    CONSTRAINT fk_automatic_buy_account_permission_revocation_binding
         FOREIGN KEY (automatic_buy_account_permission_id, trading_account_id)
         REFERENCES automatic_buy_account_permission_v1 (
             automatic_buy_account_permission_id, trading_account_id
