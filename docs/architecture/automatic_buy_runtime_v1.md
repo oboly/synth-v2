@@ -14,6 +14,18 @@ snapshot binds market setup evidence and the account-fact snapshot needed by
 the gate, but does not itself make a permission decision. `evaluation_ts_utc`
 is persisted inside the input snapshot and is reused on every replay.
 
+Issue #474: the snapshot's own account-owned columns (`account_enabled`,
+`account_mode`, `live_trading_enabled`, `automatic_buy_execution_enabled`,
+`free_quote_balance_eur`, `proposed_position_amount_eur`,
+`current_bucket_amount_eur`, `current_open_positions`,
+`current_asset_exposure_pct`) are never trusted as persisted. At composition
+time `build_runtime_item_v1` replaces them with a freshly-loaded, canonical
+`AutomaticBuyAccountAllocationEvidenceV1` (see
+`docs/architecture/automatic_buy_account_allocation_evidence_v1.md`) before
+the gate ever sees them, so no writer of this table -- including a future
+acceptance/DRY_RUN producer -- can influence account permission/allocation
+outcomes by writing to those columns.
+
 At evaluation time the repository additionally loads the immutable #279
 strategy-bucket configuration history, obtains the canonical #318 protection
 evaluation for `ACTION_BUY`, and loads public venue execution constraints.
