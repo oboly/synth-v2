@@ -259,6 +259,32 @@ CREATE TABLE automatic_buy_runtime_input_v1 (
     max_automatic_buy_notional_eur TEXT,
     source_provenance TEXT NOT NULL
 );
+
+CREATE TABLE automatic_buy_evaluation_audit_v1 (
+    automatic_buy_evaluation_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    runtime_version TEXT NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    venue TEXT NOT NULL,
+    asset_id INTEGER NOT NULL,
+    market TEXT NOT NULL,
+    source_evidence_json TEXT NOT NULL,
+    candidate_state TEXT NOT NULL,
+    candidate_action TEXT,
+    candidate_reason_code TEXT NOT NULL,
+    candidate_evidence_id TEXT,
+    gate_state TEXT,
+    gate_reason_code TEXT,
+    approved_notional_ceiling_eur TEXT,
+    strategy_bucket_reason_code TEXT,
+    protection_code TEXT,
+    protection_reason_code TEXT,
+    planner_state TEXT NOT NULL,
+    planner_reason_code TEXT,
+    immutable_plan_json TEXT,
+    evaluation_ts_utc TEXT NOT NULL,
+    planning_ts_utc TEXT
+);
 """
 
 
