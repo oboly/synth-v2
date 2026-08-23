@@ -69,7 +69,7 @@ already-resolved facts into one explicit classification.
 | Field | Values |
 |---|---|
 | `canonical_fib_scope_state` | `ENROLLED` \| `NOT_ENROLLED` |
-| `canonical_fib_row_state` | `AVAILABLE` \| `STALE` \| `UNAVAILABLE` \| `ABSENT` \| `NOT_APPLICABLE` |
+| `canonical_fib_row_state` | `AVAILABLE` \| `STALE` \| `UNAVAILABLE` \| `ABSENT` \| `SOURCE_UNAVAILABLE` \| `NOT_APPLICABLE` |
 | `native_short_scope_state` | `SUPPORTED` \| `NOT_APPLICABLE` \| `UNKNOWN` |
 | `native_short_row_state` | `AVAILABLE` \| `PARTIAL` \| `ABSENT` |
 | `rendered_scope_origin` | `GLOBAL_PUBLICATION_COHORT` \| `ACCOUNT_POSITION_HELD` \| `ACCOUNT_OPEN_ORDER` \| `ACCOUNT_ASSET_CONFIG` \| `UNKNOWN` |
@@ -90,6 +90,17 @@ already-resolved facts into one explicit classification.
 6. `NOT_APPLICABLE` — native SHORT or legacy 1d context already supplies
    authority; canonical-row absence is not the operative reason for this
    card.
+7. `FIB_MAP_SOURCE_UNAVAILABLE` — the whole canonical Fib source
+   (`short_context_coverage_status == FIB_MAP_SOURCE_MISSING`) failed to
+   load. **Never** classified as `FIB_MAP_EXPECTED_BUT_MISSING`,
+   `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or `FIB_MAP_NOT_ENROLLED` — a source
+   outage is not per-symbol evidence for or against enrollment, so no
+   per-symbol enrollment-relative conclusion is drawn. This applies
+   regardless of the symbol's own enrollment/overlay facts (enrolled or
+   not, held/order/manual or none): while the source cannot be read,
+   coverage for *every* symbol is `FIB_MAP_SOURCE_UNAVAILABLE`, distinct
+   from the per-row `ABSENT` state used once the source is confirmed
+   readable and simply lacks this symbol's row (`FIB_MAP_SYMBOL_MISSING`).
 
 Native SHORT unsupported/not-enrolled (`native_short_scope_state ==
 NOT_APPLICABLE`) is tracked independently of `fib_coverage_reason` and never

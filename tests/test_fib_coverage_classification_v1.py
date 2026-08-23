@@ -14,10 +14,12 @@ from src.reporting.fib_coverage_classification_v1 import (
     ORIGIN_ACCOUNT_POSITION_HELD,
     ORIGIN_GLOBAL_PUBLICATION_COHORT,
     ORIGIN_UNKNOWN,
+    CANONICAL_ROW_SOURCE_UNAVAILABLE,
     REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE,
     REASON_FIB_MAP_AVAILABLE,
     REASON_FIB_MAP_EXPECTED_BUT_MISSING,
     REASON_FIB_MAP_NOT_ENROLLED,
+    REASON_FIB_MAP_SOURCE_UNAVAILABLE,
     REASON_NOT_APPLICABLE,
     classify_fib_coverage,
     fib_coverage_reason_text,
@@ -145,6 +147,36 @@ def test_i_no_native_no_canonical_enrollment_expected_is_expected_but_missing():
     assert result.canonical_fib_scope_state == CANONICAL_SCOPE_ENROLLED
     assert result.rendered_scope_origin == ORIGIN_GLOBAL_PUBLICATION_COHORT
     assert result.fib_coverage_reason == REASON_FIB_MAP_EXPECTED_BUT_MISSING
+
+
+def test_source_missing_enrolled_symbol_stays_source_unavailable():
+    """FIB_MAP_SOURCE_MISSING means the whole canonical source failed to load --
+    even for an enrolled symbol, that must never be reported as
+    FIB_MAP_EXPECTED_BUT_MISSING (a per-symbol conclusion the source outage
+    cannot support)."""
+    result = _classify(
+        short_context_coverage_status="FIB_MAP_SOURCE_MISSING",
+        short_context_input_status="ZONE_SOURCE_MISSING",
+        is_market_selected=True,
+    )
+    assert result.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert result.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert result.fib_coverage_reason != REASON_FIB_MAP_EXPECTED_BUT_MISSING
+
+
+def test_source_missing_not_enrolled_overlay_symbol_stays_source_unavailable():
+    """FIB_MAP_SOURCE_MISSING + an account-overlay, not-enrolled symbol must
+    also avoid a per-symbol enrollment/scope conclusion -- the source outage
+    is not evidence the symbol is out of Fib scope."""
+    result = _classify(
+        short_context_coverage_status="FIB_MAP_SOURCE_MISSING",
+        short_context_input_status="ZONE_SOURCE_MISSING",
+        is_wallet_held=True,
+    )
+    assert result.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert result.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert result.fib_coverage_reason != REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+    assert result.fib_coverage_reason != REASON_FIB_MAP_NOT_ENROLLED
 
 
 def test_manual_asset_config_overlay_origin():

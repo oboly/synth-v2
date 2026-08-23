@@ -37,6 +37,14 @@ Reason vocabulary is intentionally compact and mutually exclusive per card:
                                         already supplies authority for this
                                         symbol; canonical-row absence is not
                                         the operative reason.
+    FIB_MAP_SOURCE_UNAVAILABLE      -- the whole canonical Fib source failed
+                                        to load. Distinct from
+                                        FIB_MAP_EXPECTED_BUT_MISSING /
+                                        ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE /
+                                        FIB_MAP_NOT_ENROLLED: when the source
+                                        itself is unreadable, no per-symbol
+                                        enrollment or absence conclusion is
+                                        truthful for anyone in that render.
 
 Native SHORT scope/row state are tracked as two independent fields so that
 "unsupported/not enrolled" never collapses into the same bucket as
@@ -56,6 +64,12 @@ CANONICAL_ROW_STALE = "STALE"
 CANONICAL_ROW_UNAVAILABLE = "UNAVAILABLE"
 CANONICAL_ROW_ABSENT = "ABSENT"
 CANONICAL_ROW_NOT_APPLICABLE = "NOT_APPLICABLE"
+# The whole canonical Fib source (not just this symbol's row) is unavailable.
+# Distinct from ABSENT: ABSENT means the source was readable and this symbol
+# has no row in it, which is meaningful evidence for an enrollment
+# conclusion. SOURCE_UNAVAILABLE means the source could not be read at all,
+# so no per-symbol enrollment/absence conclusion is truthful.
+CANONICAL_ROW_SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
 
 # Native SHORT scope vocabulary matches
 # src.market_data.native_short_scope_status_v1.NativeShortScopeSupportEventState.
@@ -86,6 +100,12 @@ REASON_FIB_MAP_EXPECTED_BUT_MISSING = "FIB_MAP_EXPECTED_BUT_MISSING"
 REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE = "ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE"
 REASON_FIB_MAP_NOT_ENROLLED = "FIB_MAP_NOT_ENROLLED"
 REASON_NOT_APPLICABLE = "NOT_APPLICABLE"
+# Whole-source unavailability. Never combined with an enrollment/scope
+# conclusion (FIB_MAP_EXPECTED_BUT_MISSING / ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+# / FIB_MAP_NOT_ENROLLED) -- the source could not be read, so this symbol's
+# per-row truth (and therefore any enrollment-relative conclusion) is
+# unknown, not "missing" or "out of scope".
+REASON_FIB_MAP_SOURCE_UNAVAILABLE = "FIB_MAP_SOURCE_UNAVAILABLE"
 
 # Reasons that already carry usable/expected Fib authority — never appended
 # as a supplemental card reason and never counted as a coverage gap.
@@ -161,11 +181,12 @@ def classify_fib_coverage(
         canonical_fib_row_state = CANONICAL_ROW_STALE
     elif short_context_input_status == _INPUT_STATUS_CANONICAL_UNAVAILABLE:
         canonical_fib_row_state = CANONICAL_ROW_UNAVAILABLE
-    elif short_context_coverage_status in {
-        _COVERAGE_STATUS_FIB_MAP_SYMBOL_MISSING,
-        _COVERAGE_STATUS_FIB_MAP_SOURCE_MISSING,
-    }:
+    elif short_context_coverage_status == _COVERAGE_STATUS_FIB_MAP_SYMBOL_MISSING:
         canonical_fib_row_state = CANONICAL_ROW_ABSENT
+    elif short_context_coverage_status == _COVERAGE_STATUS_FIB_MAP_SOURCE_MISSING:
+        # The whole source failed to load -- this is not evidence that *this*
+        # symbol's row is absent, only that nothing could be read for anyone.
+        canonical_fib_row_state = CANONICAL_ROW_SOURCE_UNAVAILABLE
     else:
         # Native SHORT or legacy 1d context already supplies authority for
         # this symbol -- canonical-row absence is not the operative reason.
@@ -201,6 +222,11 @@ def classify_fib_coverage(
         fib_coverage_reason = REASON_FIB_MAP_STALE
     elif canonical_fib_row_state == CANONICAL_ROW_UNAVAILABLE:
         fib_coverage_reason = REASON_FIB_MAP_UNAVAILABLE
+    elif canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE:
+        # The source itself could not be read -- never draw a per-symbol
+        # enrollment/absence conclusion (EXPECTED_BUT_MISSING /
+        # ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE / NOT_ENROLLED) from that.
+        fib_coverage_reason = REASON_FIB_MAP_SOURCE_UNAVAILABLE
     elif canonical_fib_row_state == CANONICAL_ROW_ABSENT:
         if canonical_fib_scope_state == CANONICAL_SCOPE_ENROLLED:
             fib_coverage_reason = REASON_FIB_MAP_EXPECTED_BUT_MISSING
@@ -236,6 +262,11 @@ _REASON_DISPLAY_TEXT: dict[str, str] = {
     ),
     REASON_FIB_MAP_STALE: "Canonical Fib map row exists but is stale.",
     REASON_FIB_MAP_UNAVAILABLE: "Canonical Fib map row exists but is not usable.",
+    REASON_FIB_MAP_SOURCE_UNAVAILABLE: (
+        "The canonical Fib map source could not be read at all, so whether this "
+        "symbol is enrolled or has a row is currently unknown -- not missing, not "
+        "out of scope."
+    ),
 }
 
 
@@ -259,6 +290,7 @@ def summarize_fib_coverage_reasons(
         REASON_FIB_MAP_EXPECTED_BUT_MISSING: 0,
         REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE: 0,
         REASON_FIB_MAP_NOT_ENROLLED: 0,
+        REASON_FIB_MAP_SOURCE_UNAVAILABLE: 0,
         REASON_NOT_APPLICABLE: 0,
     }
     for classification in classifications:
