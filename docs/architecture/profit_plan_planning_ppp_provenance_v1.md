@@ -69,14 +69,16 @@ component sources per symbol and returns
 `ZoneContextLoadResult.planning_provenance_by_symbol`, threaded through
 `build_cards()` into `build_profit_plan_card(planning_provenance=...)`.
 
-When a caller does not supply `planning_provenance` explicitly (e.g. a direct
-`build_profit_plan_card()` call with both `fib_ext` and `reentry` given),
-`build_profit_plan_card()` infers a coherent single-source provenance from the
-card's own evidence (`NATIVE_SHORT_CANONICAL` when canonical native map truth
-is available, `NATIVE_SHORT_TRANSIENT_REFERENCE` otherwise) rather than
-defaulting to unavailable. This keeps ordinary single-source callers working;
-only `load_zone_contexts()` can produce a `HYBRID_REFERENCE_ONLY` result,
-because only it sees the raw per-authority composition.
+`build_profit_plan_card()` never infers provenance from the mere presence of
+`fib_ext` + `reentry`. When a caller omits `planning_provenance`, the card
+gets `PlanningProvenance()` (`DATA_UNAVAILABLE`, not coherent) regardless of
+whether `fib_ext`/`reentry` are populated, and Planning PPP fails closed. Only
+a caller that actually knows the per-authority composition -- in practice
+`load_zone_contexts()`, or a test fixture built to mirror it -- may construct
+and pass an explicit `PlanningProvenance` via `make_planning_provenance()`.
+This keeps `load_zone_contexts()` the single attribution owner end-to-end: a
+direct caller supplying an unknown or mixed `fib_ext`/`reentry` pair without
+provenance can never recreate the ambiguity this contract removes.
 
 ## Planning PPP semantics
 
@@ -160,10 +162,13 @@ Planning PPP with no Actionable PPP.
 
 `tests/test_profit_plan_provenance_v1.py` covers native-only, canonical-4h-only,
 both directions of mixed-source hybrid composition, missing provenance,
-`selected_map_tier` unavailable/non-current, `lifecycle_state` unavailable and
-explicitly blocking, a valid current-map/current-lifecycle actionable case,
-the exact former-production (MOG) shape, ranking isolation, and HTML/JSON
-field parity. `tests/test_manual_short_trader_profit_plan_v1.py` and
-`tests/test_profit_plan_portfolio_composition_v1.py` were updated where they
+populated `fib_ext`+`reentry` with no explicit `planning_provenance` (must
+fail closed to `DATA_UNAVAILABLE`, never inferred), `selected_map_tier`
+unavailable/non-current, `lifecycle_state` unavailable and explicitly
+blocking, a valid current-map/current-lifecycle actionable case, the exact
+former-production (MOG) shape, ranking isolation, and HTML/JSON field parity.
+`tests/test_manual_short_trader_profit_plan_v1.py`,
+`tests/test_profit_plan_portfolio_composition_v1.py`, and
+`tests/test_profit_plan_action_truth_v1.py` were updated where they
 previously assumed any populated entry+target zone pair produced a numeric
-Planning PPP regardless of source.
+Planning PPP regardless of source, to instead supply explicit provenance.

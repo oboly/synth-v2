@@ -178,7 +178,12 @@ def _activated_reentry() -> ReentryContext:
 def _activated_card(*, evidence: CardEvidence, reentry: ReentryContext | None = None) -> pp.ProfitPlanCard:
     """A card with a genuinely activated setup (first target passed via
     history) and current-map/current-cycle evidence -- otherwise eligible for
-    Actionable PPP so tests isolate exactly the evidence field under test."""
+    Actionable PPP so tests isolate exactly the evidence field under test.
+
+    Planning PPP provenance must be explicit (Issue #457 -- build_profit_plan_
+    card() no longer infers it from fib_ext+reentry presence), so this fixture
+    supplies a coherent single native source itself, mirroring how a real
+    caller (load_zone_contexts()) would attribute it for this fixture data."""
     return build_profit_plan_card(
         symbol="WLD",
         market="WLD-EUR",
@@ -190,6 +195,10 @@ def _activated_card(*, evidence: CardEvidence, reentry: ReentryContext | None = 
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         presentation_mode=CARD_MODE_POSITION_HELD,
         evidence=evidence,
+        planning_provenance=make_planning_provenance(
+            entry_source=pp.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+            target_source=pp.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+        ),
     )
 
 
@@ -357,6 +366,33 @@ def test_missing_zone_context_has_data_unavailable_provenance() -> None:
         reentry=None,
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
     )
+    assert card.planning_provenance.reference_source == "DATA_UNAVAILABLE"
+    assert card.planning_provenance.is_coherent is False
+    assert pp._planning_ppp(card) is None
+    assert pp._planning_ppp_unavailable_reason(card) is not None
+
+
+def test_populated_zones_without_explicit_provenance_fail_closed() -> None:
+    """Issue #457 review fix: build_profit_plan_card() must never infer a
+    coherent provenance class from the mere presence of fib_ext + reentry.
+    A direct caller that supplies populated entry/target levels but omits
+    planning_provenance must get DATA_UNAVAILABLE and an unavailable Planning
+    PPP -- only load_zone_contexts() (or another caller that actually knows
+    the per-authority composition) may assert coherence."""
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.1600"),
+        fib_ext=_activated_fib_ext(),
+        reentry=_activated_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=_active_map_evidence(),
+        # planning_provenance intentionally omitted.
+    )
+    assert card.buy_zone or card.reload_reentry_zone
+    assert card.target_exit_zone
     assert card.planning_provenance.reference_source == "DATA_UNAVAILABLE"
     assert card.planning_provenance.is_coherent is False
     assert pp._planning_ppp(card) is None

@@ -3677,28 +3677,15 @@ def build_profit_plan_card(
 ) -> ProfitPlanCard:
     card_evidence = evidence or CardEvidence()
     canonical_native_map_truth_available = _canonical_native_map_truth_available(card_evidence)
+    # Issue #457: provenance must be explicit, never inferred from the mere
+    # presence of fib_ext + reentry. A caller that has not attributed
+    # entry/target sources (e.g. a single-source construction path or a test
+    # fixture that has not been updated) gets DATA_UNAVAILABLE, and Planning
+    # PPP fails closed -- only load_zone_contexts() (or another caller that
+    # actually knows the per-authority composition) may supply a coherent
+    # PlanningProvenance.
     if planning_provenance is None:
-        # Caller did not attribute entry/target sources explicitly (e.g. a
-        # single-source construction path or a test fixture). Only load_zone_
-        # contexts() sees the raw per-authority composition and can detect a
-        # hybrid mix; absent that, infer a coherent single-source class from
-        # the evidence already proven for this card so Planning PPP keeps
-        # working for ordinary single-source callers.
-        if fib_ext is not None and reentry is not None:
-            _default_source = (
-                PLANNING_SOURCE_NATIVE_SHORT_CANONICAL
-                if canonical_native_map_truth_available
-                else PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE
-            )
-            planning_provenance = make_planning_provenance(
-                entry_source=_default_source,
-                target_source=_default_source,
-                source_map_id=card_evidence.native_map_id,
-                source_map_cycle_id=card_evidence.map_cycle_id,
-                source_as_of_ts_utc=card_evidence.context_ts_utc,
-            )
-        else:
-            planning_provenance = PlanningProvenance()
+        planning_provenance = PlanningProvenance()
     if not canonical_native_map_truth_available and (fib_ext is not None or reentry is not None):
         short_context_display_state = "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
         if short_context_coverage_status == "NATIVE_SHORT_CONTEXT_AVAILABLE":

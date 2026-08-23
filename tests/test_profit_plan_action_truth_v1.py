@@ -18,11 +18,13 @@ from decimal import Decimal
 import src.reporting.manual_short_trader_profit_plan_v1 as pp
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_POSITION_HELD,
+    PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
     CardEvidence,
     FibExtContext,
     ReentryContext,
     TargetHistoryCandle,
     build_profit_plan_card,
+    make_planning_provenance,
     render_plan_card,
 )
 
@@ -105,6 +107,11 @@ def _aero_card() -> pp.ProfitPlanCard:
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         presentation_mode=CARD_MODE_POSITION_HELD,
         evidence=_active_map_evidence(),
+        # Both entry and target come from the same native-shaped fixture data.
+        planning_provenance=make_planning_provenance(
+            entry_source=PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+            target_source=PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+        ),
     )
 
 
