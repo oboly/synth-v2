@@ -37,14 +37,21 @@ Reason vocabulary is intentionally compact and mutually exclusive per card:
                                         already supplies authority for this
                                         symbol; canonical-row absence is not
                                         the operative reason.
-    FIB_MAP_SOURCE_UNAVAILABLE      -- the whole canonical Fib source failed
-                                        to load. Distinct from
+    FIB_MAP_SOURCE_UNAVAILABLE      -- the canonical 4h Fib DB fetch itself
+                                        failed for this render
+                                        (canonical_fib_source_available is
+                                        False -- an explicit fact from the
+                                        runner's own fetch try/except, never
+                                        inferred from the *legacy* 1d CSV's
+                                        FIB_MAP_SOURCE_MISSING status).
+                                        Distinct from
                                         FIB_MAP_EXPECTED_BUT_MISSING /
                                         ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE /
-                                        FIB_MAP_NOT_ENROLLED: when the source
-                                        itself is unreadable, no per-symbol
-                                        enrollment or absence conclusion is
-                                        truthful for anyone in that render.
+                                        FIB_MAP_NOT_ENROLLED: when the
+                                        canonical source itself is
+                                        unreadable, no per-symbol enrollment
+                                        or absence conclusion is truthful
+                                        for anyone in that render.
     NATIVE_SHORT_EXPECTED_BUT_MISSING -- native SHORT scope SUPPORTED for
                                         this symbol, no native row, and no
                                         usable canonical 4h fallback either.
@@ -180,6 +187,7 @@ def classify_fib_coverage(
     has_open_order: bool,
     native_short_scope_state: str = NATIVE_SCOPE_UNKNOWN,
     canonical_fallback_usable: bool = False,
+    canonical_fib_source_available: bool = True,
 ) -> FibCoverageClassification:
     """Classify one symbol's Fib coverage from already-resolved canonical facts.
 
@@ -200,23 +208,46 @@ def classify_fib_coverage(
     Planning-PPP fallback silently supplies canonical 4h levels underneath
     a partial native row, so they cannot prove fallback usability on their
     own.
+
+    ``canonical_fib_source_available`` must come from the runner's own
+    canonical 4h DB fetch try/except (e.g. ``fetch_canonical_fib_map_rows()``
+    success/failure in ``run_manual_short_trader_profit_plan_v1.main()``) --
+    never inferred from ``short_context_coverage_status ==
+    FIB_MAP_SOURCE_MISSING``. That status describes only the separate legacy
+    1d CSV source (``load_fib_map_rows()``'s ``source_missing``) and carries
+    no information about canonical 4h DB health: the canonical fetch can
+    fail while the legacy CSV is present, and the legacy CSV can be missing
+    while the canonical fetch succeeds -- the two sources fail
+    independently.
     """
     canonical_fib_scope_state = (
         CANONICAL_SCOPE_ENROLLED if (is_market_selected or is_core_sensor) else CANONICAL_SCOPE_NOT_ENROLLED
     )
 
-    if short_context_coverage_status == _COVERAGE_STATUS_CANONICAL_AVAILABLE:
+    if not canonical_fib_source_available:
+        # The canonical 4h DB fetch itself failed for this render -- an
+        # explicit, separately-resolved fact from the runner's fetch
+        # try/except, never inferred from short_context_coverage_status ==
+        # FIB_MAP_SOURCE_MISSING (that status only ever describes the
+        # *legacy* 1d CSV source and says nothing about canonical 4h DB
+        # health -- see module docstring).
+        canonical_fib_row_state = CANONICAL_ROW_SOURCE_UNAVAILABLE
+    elif short_context_coverage_status == _COVERAGE_STATUS_CANONICAL_AVAILABLE:
         canonical_fib_row_state = CANONICAL_ROW_AVAILABLE
     elif short_context_input_status == _INPUT_STATUS_CANONICAL_STALE:
         canonical_fib_row_state = CANONICAL_ROW_STALE
     elif short_context_input_status == _INPUT_STATUS_CANONICAL_UNAVAILABLE:
         canonical_fib_row_state = CANONICAL_ROW_UNAVAILABLE
-    elif short_context_coverage_status == _COVERAGE_STATUS_FIB_MAP_SYMBOL_MISSING:
+    elif short_context_coverage_status in {
+        _COVERAGE_STATUS_FIB_MAP_SYMBOL_MISSING,
+        _COVERAGE_STATUS_FIB_MAP_SOURCE_MISSING,
+    }:
+        # The canonical source is confirmed healthy (canonical_fib_source_available
+        # is True), so a legacy-CSV-missing symbol (FIB_MAP_SOURCE_MISSING) is
+        # exactly as informative as a legacy-CSV-present-but-symbol-missing one
+        # (FIB_MAP_SYMBOL_MISSING): the canonical row is genuinely absent for
+        # this symbol, and that absence is safe to classify against enrollment.
         canonical_fib_row_state = CANONICAL_ROW_ABSENT
-    elif short_context_coverage_status == _COVERAGE_STATUS_FIB_MAP_SOURCE_MISSING:
-        # The whole source failed to load -- this is not evidence that *this*
-        # symbol's row is absent, only that nothing could be read for anyone.
-        canonical_fib_row_state = CANONICAL_ROW_SOURCE_UNAVAILABLE
     else:
         # Native SHORT or legacy 1d context already supplies authority for
         # this symbol -- canonical-row absence is not the operative reason.

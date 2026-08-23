@@ -158,34 +158,74 @@ def test_i_no_native_no_canonical_enrollment_expected_is_expected_but_missing():
     assert result.fib_coverage_reason == REASON_FIB_MAP_EXPECTED_BUT_MISSING
 
 
-def test_source_missing_enrolled_symbol_stays_source_unavailable():
-    """FIB_MAP_SOURCE_MISSING means the whole canonical source failed to load --
-    even for an enrolled symbol, that must never be reported as
-    FIB_MAP_EXPECTED_BUT_MISSING (a per-symbol conclusion the source outage
-    cannot support)."""
-    result = _classify(
+def test_a_canonical_source_unavailable_with_legacy_present_stays_source_unavailable():
+    """A. canonical 4h DB fetch unavailable (explicit fact,
+    canonical_fib_source_available=False) + legacy CSV/source present (a
+    normal, non-FIB_MAP_SOURCE_MISSING coverage status) must still report
+    FIB_MAP_SOURCE_UNAVAILABLE -- never a per-symbol enrollment conclusion
+    the outage cannot support. This is the case the legacy-status-only
+    heuristic got wrong: FIB_MAP_SYMBOL_MISSING (legacy CSV present, no
+    legacy row for this symbol) does not by itself prove canonical DB
+    health, so the explicit fact must be the source of truth."""
+    enrolled = _classify(
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        is_market_selected=True,
+        canonical_fib_source_available=False,
+    )
+    assert enrolled.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert enrolled.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert enrolled.fib_coverage_reason != REASON_FIB_MAP_EXPECTED_BUT_MISSING
+
+    overlay = _classify(
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        is_wallet_held=True,
+        canonical_fib_source_available=False,
+    )
+    assert overlay.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert overlay.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert overlay.fib_coverage_reason != REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+    assert overlay.fib_coverage_reason != REASON_FIB_MAP_NOT_ENROLLED
+
+
+def test_b_canonical_source_available_with_legacy_missing_proceeds_normally():
+    """B. canonical 4h DB fetch available (canonical_fib_source_available=True,
+    the default) + legacy CSV/source missing (short_context_coverage_status ==
+    FIB_MAP_SOURCE_MISSING) must NOT report FIB_MAP_SOURCE_UNAVAILABLE -- the
+    legacy CSV outage says nothing about canonical 4h DB health. Per-symbol
+    canonical row absence proceeds through normal enrollment classification."""
+    enrolled = _classify(
         short_context_coverage_status="FIB_MAP_SOURCE_MISSING",
         short_context_input_status="ZONE_SOURCE_MISSING",
         is_market_selected=True,
     )
-    assert result.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
-    assert result.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
-    assert result.fib_coverage_reason != REASON_FIB_MAP_EXPECTED_BUT_MISSING
+    assert enrolled.canonical_fib_row_state != CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert enrolled.fib_coverage_reason != REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert enrolled.fib_coverage_reason == REASON_FIB_MAP_EXPECTED_BUT_MISSING
 
-
-def test_source_missing_not_enrolled_overlay_symbol_stays_source_unavailable():
-    """FIB_MAP_SOURCE_MISSING + an account-overlay, not-enrolled symbol must
-    also avoid a per-symbol enrollment/scope conclusion -- the source outage
-    is not evidence the symbol is out of Fib scope."""
-    result = _classify(
+    overlay = _classify(
         short_context_coverage_status="FIB_MAP_SOURCE_MISSING",
         short_context_input_status="ZONE_SOURCE_MISSING",
         is_wallet_held=True,
     )
-    assert result.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
-    assert result.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
-    assert result.fib_coverage_reason != REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
-    assert result.fib_coverage_reason != REASON_FIB_MAP_NOT_ENROLLED
+    assert overlay.canonical_fib_row_state != CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert overlay.fib_coverage_reason != REASON_FIB_MAP_SOURCE_UNAVAILABLE
+    assert overlay.fib_coverage_reason == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+
+
+def test_c_canonical_available_enrolled_row_missing_is_expected_but_missing():
+    """C (regression). canonical available + enrolled + symbol row missing
+    => FIB_MAP_EXPECTED_BUT_MISSING, unchanged by the source-health fix."""
+    result = _classify(is_market_selected=True, canonical_fib_source_available=True)
+    assert result.fib_coverage_reason == REASON_FIB_MAP_EXPECTED_BUT_MISSING
+
+
+def test_d_canonical_available_not_enrolled_overlay_row_missing_is_overlay_outside_scope():
+    """D (regression). canonical available + not enrolled/account overlay +
+    symbol row missing => ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE, unchanged."""
+    result = _classify(is_wallet_held=True, canonical_fib_source_available=True)
+    assert result.fib_coverage_reason == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
 
 
 def test_manual_asset_config_overlay_origin():
@@ -619,3 +659,107 @@ def test_load_zone_contexts_partial_native_without_canonical_fallback_keeps_gap(
         result_card = cards[0]
         assert result_card.fib_coverage.native_short_row_state == NATIVE_ROW_PARTIAL
         assert result_card.fib_coverage.fib_coverage_reason == REASON_NATIVE_SHORT_CONTEXT_PARTIAL
+
+
+def test_load_zone_contexts_canonical_source_unavailable_with_legacy_present():
+    """A (integration). Real load_zone_contexts() composition: canonical
+    fetch failed for this render (canonical_fib_rows_by_symbol={}, exactly
+    what run_manual_short_trader_profit_plan_v1.main()'s except branch
+    leaves it as), legacy CSV source present but this symbol has no legacy
+    row (short_context_coverage_status == FIB_MAP_SYMBOL_MISSING). Passing
+    the runner's own canonical_fib_source_available=False through to
+    apply_fib_coverage_classification() must classify this as
+    FIB_MAP_SOURCE_UNAVAILABLE, never an enrollment conclusion -- confirming
+    the fix does not depend on which legacy status string happened to be
+    produced."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = _empty_fib_map_rows(tmpdir)  # file exists, no rows -> not source_missing
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.40")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["WLD"] == "FIB_MAP_SYMBOL_MISSING"
+
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.40"),
+            short_context_input_status=result.input_status_by_symbol["WLD"],
+            short_context_coverage_status=result.coverage_status_by_symbol["WLD"],
+            short_context_display_state=result.display_state_by_symbol["WLD"],
+            evidence=CardEvidence(),
+        )
+        card = dataclasses.replace(card, is_market_selected=True)
+        cards = apply_fib_coverage_classification(
+            [card],
+            open_order_count_by_market={},
+            native_short_scope_state_by_symbol={},
+            canonical_fib_source_available=False,
+        )
+        result_card = cards[0]
+        assert result_card.fib_coverage.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+        assert result_card.fib_coverage.fib_coverage_reason == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+        assert result_card.fib_coverage.fib_coverage_reason != REASON_FIB_MAP_EXPECTED_BUT_MISSING
+
+        snapshot = build_json_snapshot(cards)
+        json_entry = snapshot["symbols"][0]["fib_coverage_classification"]
+        assert json_entry["fib_coverage_reason"] == REASON_FIB_MAP_SOURCE_UNAVAILABLE
+        assert json_entry == result_card.fib_coverage.to_json()
+
+
+def test_load_zone_contexts_canonical_source_available_with_legacy_missing():
+    """B (integration). Real load_zone_contexts() composition: legacy CSV
+    file itself missing (source_missing=True -> FIB_MAP_SOURCE_MISSING),
+    but the caller's canonical_fib_source_available=True (the canonical DB
+    fetch itself succeeded). Must NOT classify as FIB_MAP_SOURCE_UNAVAILABLE
+    -- per-symbol canonical row absence proceeds through normal enrollment
+    classification instead."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        missing_fib_rows = Path(tmpdir) / "does_not_exist.csv"
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.40")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=missing_fib_rows,
+            canonical_fib_rows_by_symbol={},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["WLD"] == "FIB_MAP_SOURCE_MISSING"
+
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.40"),
+            short_context_input_status=result.input_status_by_symbol["WLD"],
+            short_context_coverage_status=result.coverage_status_by_symbol["WLD"],
+            short_context_display_state=result.display_state_by_symbol["WLD"],
+            evidence=CardEvidence(),
+        )
+        card = dataclasses.replace(card, is_wallet_held=True)
+        cards = apply_fib_coverage_classification(
+            [card],
+            open_order_count_by_market={},
+            native_short_scope_state_by_symbol={},
+            canonical_fib_source_available=True,
+        )
+        result_card = cards[0]
+        assert result_card.fib_coverage.canonical_fib_row_state != CANONICAL_ROW_SOURCE_UNAVAILABLE
+        assert result_card.fib_coverage.fib_coverage_reason != REASON_FIB_MAP_SOURCE_UNAVAILABLE
+        assert result_card.fib_coverage.fib_coverage_reason == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+
+        snapshot = build_json_snapshot(cards)
+        json_entry = snapshot["symbols"][0]["fib_coverage_classification"]
+        assert json_entry["fib_coverage_reason"] == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
+        assert json_entry == result_card.fib_coverage.to_json()

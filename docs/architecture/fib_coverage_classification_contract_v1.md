@@ -119,17 +119,57 @@ already-resolved facts into one explicit classification.
    (`native_short_scope_state` is `NOT_APPLICABLE` or `UNKNOWN`) or legacy
    1d context already supplies authority; canonical-row absence is not the
    operative reason for this card.
-8. `FIB_MAP_SOURCE_UNAVAILABLE` — the whole canonical Fib source
-   (`short_context_coverage_status == FIB_MAP_SOURCE_MISSING`) failed to
-   load. **Never** classified as `FIB_MAP_EXPECTED_BUT_MISSING`,
-   `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or `FIB_MAP_NOT_ENROLLED` — a source
-   outage is not per-symbol evidence for or against enrollment, so no
-   per-symbol enrollment-relative conclusion is drawn. This applies
-   regardless of the symbol's own enrollment/overlay facts (enrolled or
-   not, held/order/manual or none): while the source cannot be read,
-   coverage for *every* symbol is `FIB_MAP_SOURCE_UNAVAILABLE`, distinct
-   from the per-row `ABSENT` state used once the source is confirmed
-   readable and simply lacks this symbol's row (`FIB_MAP_SYMBOL_MISSING`).
+8. `FIB_MAP_SOURCE_UNAVAILABLE` — the **canonical 4h** Fib DB fetch itself
+   failed for this render (`canonical_fib_source_available == False`, an
+   explicit fact from the runner's own fetch try/except — see "Three
+   independent availability facts" below). **Never** classified as
+   `FIB_MAP_EXPECTED_BUT_MISSING`, `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or
+   `FIB_MAP_NOT_ENROLLED` — a canonical source outage is not per-symbol
+   evidence for or against enrollment, so no per-symbol enrollment-relative
+   conclusion is drawn. This applies regardless of the symbol's own
+   enrollment/overlay facts (enrolled or not, held/order/manual or none):
+   while the canonical source cannot be read, coverage for *every* symbol
+   is `FIB_MAP_SOURCE_UNAVAILABLE`, distinct from the per-row `ABSENT`
+   state used once the canonical source is confirmed readable and simply
+   lacks this symbol's row.
+
+### Three independent availability facts (do not conflate)
+
+An earlier version of this contract inferred canonical 4h DB health from
+`short_context_coverage_status == FIB_MAP_SOURCE_MISSING`. That was wrong:
+`FIB_MAP_SOURCE_MISSING` describes only the **legacy 1d CSV** source
+(`load_fib_map_rows()`'s `source_missing`, set when the CSV file itself is
+absent) and carries no information about the canonical 4h DB fetch. The two
+sources fail independently:
+
+- Canonical 4h DB fetch can fail while the legacy CSV is present — a
+  legacy-CSV-present-but-symbol-missing card then reports
+  `short_context_coverage_status == FIB_MAP_SYMBOL_MISSING`, which used to
+  be (wrongly) classified against enrollment even though the whole canonical
+  fetch had failed.
+- The legacy CSV can be missing while the canonical 4h DB fetch succeeds — a
+  card then reports `short_context_coverage_status == FIB_MAP_SOURCE_MISSING`,
+  which used to be (wrongly) classified as canonical-source-unavailable even
+  though canonical 4h was healthy and this symbol's row absence was safe to
+  classify against enrollment.
+
+`canonical_fib_source_available` is therefore tracked as its own explicit,
+separately-resolved fact, distinct from:
+
+- `canonical_fib_row_state` — per-symbol canonical row presence/freshness
+  (`AVAILABLE` / `STALE` / `UNAVAILABLE` / `ABSENT` / `SOURCE_UNAVAILABLE` /
+  `NOT_APPLICABLE`), gated by `canonical_fib_source_available` as the first
+  check in `classify_fib_coverage()`.
+- The legacy 1d source's own `FIB_MAP_SOURCE_MISSING` /
+  `ZONE_SOURCE_MISSING` statuses, which remain legacy-source truth only and,
+  once canonical source health is confirmed, are treated exactly like
+  `FIB_MAP_SYMBOL_MISSING` (canonical row genuinely absent for this symbol).
+
+`run_manual_short_trader_profit_plan_v1.main()` captures
+`canonical_fib_source_available` directly at the `fetch_canonical_fib_map_rows()`
+try/except (`True` on success, `False` on the `except` branch that already
+degrades `canonical_fib_rows_by_symbol` to `{}`) and passes it straight into
+`apply_fib_coverage_classification()` — no duplicate DB read.
 
 Native SHORT unsupported/not-enrolled (`native_short_scope_state ==
 NOT_APPLICABLE`) is tracked independently of `fib_coverage_reason` and never

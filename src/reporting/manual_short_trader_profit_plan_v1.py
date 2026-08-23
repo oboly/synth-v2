@@ -1464,6 +1464,7 @@ def apply_fib_coverage_classification(
     *,
     open_order_count_by_market: Mapping[str, int] = {},
     native_short_scope_state_by_symbol: Mapping[str, str] = {},
+    canonical_fib_source_available: bool = True,
 ) -> list[ProfitPlanCard]:
     """Attach a truthful per-symbol Fib coverage classification (Issue #489).
 
@@ -1473,8 +1474,15 @@ def apply_fib_coverage_classification(
     ``is_portfolio_asset`` from the rendered account scope, and
     ``planning_provenance`` proving whether canonical 4h data actually
     filled in usable levels via the Planning-PPP fallback) plus the caller's
-    open-order and native-SHORT-scope facts. Must run after
-    ``apply_portfolio_account_evidence`` so the overlay flags are populated.
+    open-order, native-SHORT-scope, and canonical-4h-DB-fetch-health facts.
+    Must run after ``apply_portfolio_account_evidence`` so the overlay flags
+    are populated.
+
+    ``canonical_fib_source_available`` is the caller's own canonical 4h DB
+    fetch success/failure (e.g. the ``fetch_canonical_fib_map_rows()``
+    try/except in ``run_manual_short_trader_profit_plan_v1.main()``) --
+    never derived from a card's legacy-CSV-only ``FIB_MAP_SOURCE_MISSING``
+    status, which says nothing about canonical 4h DB health.
 
     When the classification identifies a coverage gap (not simply
     "available" or "not applicable"), the truthful reason is appended to
@@ -1504,6 +1512,7 @@ def apply_fib_coverage_classification(
                 card.symbol, "UNKNOWN"
             ),
             canonical_fallback_usable=canonical_fallback_usable,
+            canonical_fib_source_available=canonical_fib_source_available,
         )
         reason_text = fib_coverage_reason_text(classification)
         reasons = card.reasons if reason_text is None or reason_text in card.reasons else (*card.reasons, reason_text)

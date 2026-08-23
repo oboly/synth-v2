@@ -1829,6 +1829,12 @@ def main() -> int:
     # failure degrades to an empty map (falls back to the legacy 1d path /
     # explicit missing classification) rather than blocking the render.
     # broker_private_calls=0 — canonical_fib_zone_map_latest_v1 is market-only.
+    # Issue #489: explicit, separately-resolved canonical 4h DB fetch health
+    # -- the only truthful source for FIB_MAP_SOURCE_UNAVAILABLE
+    # classification. Must never be inferred from the legacy 1d CSV's
+    # FIB_MAP_SOURCE_MISSING status (load_fib_map_rows()'s source_missing),
+    # which describes a different, independently-failing source.
+    canonical_fib_source_available = True
     try:
         _canonical_fib_conn = get_connection()
         try:
@@ -1843,6 +1849,7 @@ def main() -> int:
     except Exception as exc:
         print(f"[warn] canonical fib zone map read failed: {exc}", file=sys.stderr)
         canonical_fib_rows_by_symbol = {}
+        canonical_fib_source_available = False
 
     zone_contexts = load_zone_contexts(
         markets=list(context.markets),
@@ -1971,6 +1978,7 @@ def main() -> int:
         cards,
         open_order_count_by_market=context.open_order_count_by_market,
         native_short_scope_state_by_symbol=native_short_scope_state_by_symbol,
+        canonical_fib_source_available=canonical_fib_source_available,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
