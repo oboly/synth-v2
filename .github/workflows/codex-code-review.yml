@@ -36,16 +36,18 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Pre-fetch base and head refs
+      - name: Fetch exact review base and head
         env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags origin \
-            "$PR_BASE_REF" \
-            "+refs/pull/$PR_NUMBER/head"
+            "+${PR_BASE_SHA}:refs/remotes/codex-review/base" \
+            "+${PR_HEAD_SHA}:refs/remotes/codex-review/head"
+          git cat-file -e "${PR_BASE_SHA}^{commit}"
+          git cat-file -e "${PR_HEAD_SHA}^{commit}"
 
       - name: Run Codex review
         id: run_codex
