@@ -179,6 +179,7 @@ def classify_fib_coverage(
     is_portfolio_asset: bool,
     has_open_order: bool,
     native_short_scope_state: str = NATIVE_SCOPE_UNKNOWN,
+    canonical_fallback_usable: bool = False,
 ) -> FibCoverageClassification:
     """Classify one symbol's Fib coverage from already-resolved canonical facts.
 
@@ -187,6 +188,18 @@ def classify_fib_coverage(
     and ``native_short_scope_state`` are taken from separately-resolved
     enrollment facts (publication cohort / core sensor / native SHORT scope
     status), independent of whether a row happens to exist.
+
+    ``canonical_fallback_usable`` must come from an already-resolved
+    reporting fact proving canonical 4h data actually filled in usable
+    entry/target levels for this card (e.g. ``PlanningProvenance.entry_source``
+    / ``target_source`` == ``PLANNING_SOURCE_CANONICAL_4H_NAVIGATION`` from
+    ``load_zone_contexts()``'s Planning-PPP fallback, Issue #238) -- never
+    reconstructed from ``short_context_coverage_status``/
+    ``short_context_input_status`` strings alone. Those strings track
+    native SHORT's own lifecycle status and stay unchanged even when the
+    Planning-PPP fallback silently supplies canonical 4h levels underneath
+    a partial native row, so they cannot prove fallback usability on their
+    own.
     """
     canonical_fib_scope_state = (
         CANONICAL_SCOPE_ENROLLED if (is_market_selected or is_core_sensor) else CANONICAL_SCOPE_NOT_ENROLLED
@@ -233,7 +246,15 @@ def classify_fib_coverage(
     else:
         rendered_scope_origin = ORIGIN_UNKNOWN
 
-    if canonical_fib_row_state == CANONICAL_ROW_AVAILABLE or native_short_row_state == NATIVE_ROW_AVAILABLE:
+    if (
+        canonical_fib_row_state == CANONICAL_ROW_AVAILABLE
+        or native_short_row_state == NATIVE_ROW_AVAILABLE
+        or canonical_fallback_usable
+    ):
+        # Usable canonical 4h authority always wins, even when native SHORT
+        # is SUPPORTED + PARTIAL/ABSENT -- the native gap stays visible only
+        # through native_short_scope_state/native_short_row_state below, it
+        # never replaces the overall reason once a usable fallback exists.
         fib_coverage_reason = REASON_FIB_MAP_AVAILABLE
     elif canonical_fib_row_state == CANONICAL_ROW_STALE:
         fib_coverage_reason = REASON_FIB_MAP_STALE

@@ -1470,7 +1470,9 @@ def apply_fib_coverage_classification(
     Read-only composition over already-resolved canonical facts already
     carried on each card (``is_market_selected`` / ``is_core_sensor`` from the
     canonical publication cohort / core-sensor overlay, ``is_wallet_held`` /
-    ``is_portfolio_asset`` from the rendered account scope) plus the caller's
+    ``is_portfolio_asset`` from the rendered account scope, and
+    ``planning_provenance`` proving whether canonical 4h data actually
+    filled in usable levels via the Planning-PPP fallback) plus the caller's
     open-order and native-SHORT-scope facts. Must run after
     ``apply_portfolio_account_evidence`` so the overlay flags are populated.
 
@@ -1481,6 +1483,15 @@ def apply_fib_coverage_classification(
     """
     out: list[ProfitPlanCard] = []
     for card in cards:
+        # A partial native row's short_context_coverage_status stays
+        # unchanged even when load_zone_contexts()'s Planning-PPP fallback
+        # (Issue #238) silently fills fib_ext/reentry from canonical 4h
+        # underneath it -- only planning_provenance proves that actually
+        # happened, so overall availability must be read from there, not
+        # reconstructed from the coverage/input status strings.
+        canonical_fallback_usable = card.planning_provenance.entry_source == PLANNING_SOURCE_CANONICAL_4H_NAVIGATION or (
+            card.planning_provenance.target_source == PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+        )
         classification = classify_fib_coverage(
             short_context_coverage_status=card.short_context_coverage_status,
             short_context_input_status=card.short_context_input_status,
@@ -1492,6 +1503,7 @@ def apply_fib_coverage_classification(
             native_short_scope_state=native_short_scope_state_by_symbol.get(
                 card.symbol, "UNKNOWN"
             ),
+            canonical_fallback_usable=canonical_fallback_usable,
         )
         reason_text = fib_coverage_reason_text(classification)
         reasons = card.reasons if reason_text is None or reason_text in card.reasons else (*card.reasons, reason_text)

@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import tempfile
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
 
+from src.market_data.native_short_fib_context_v1 import NativeShortContextRow, write_context_rows
+import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 from src.reporting.fib_coverage_classification_v1 import (
     CANONICAL_SCOPE_ENROLLED,
     CANONICAL_SCOPE_NOT_ENROLLED,
@@ -234,6 +240,58 @@ def test_native_supported_absent_with_canonical_available_stays_available_but_ex
     assert result.native_short_row_state == NATIVE_ROW_ABSENT
 
 
+def test_a_native_supported_partial_with_canonical_fallback_usable_is_available():
+    """A. native SUPPORTED + PARTIAL + canonical fallback usable (proven by an
+    already-resolved reporting fact, not reconstructed from the coverage/input
+    status strings) => fib_coverage_reason == FIB_MAP_AVAILABLE, while
+    native_short_row_state == PARTIAL remains visible."""
+    result = _classify(
+        short_context_coverage_status="INSUFFICIENT_1H_HISTORY",
+        short_context_input_status="INSUFFICIENT_1H_HISTORY",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+        canonical_fallback_usable=True,
+    )
+    assert result.native_short_row_state == NATIVE_ROW_PARTIAL
+    assert result.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+    assert result.fib_coverage_reason != REASON_NATIVE_SHORT_CONTEXT_PARTIAL
+
+
+def test_b_native_supported_absent_with_canonical_fallback_usable_is_available():
+    """B. native SUPPORTED + ABSENT + canonical fallback usable =>
+    FIB_MAP_AVAILABLE, not NATIVE_SHORT_EXPECTED_BUT_MISSING."""
+    result = _classify(
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_input_status="LEGACY_1D_CONTEXT_ONLY",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+        canonical_fallback_usable=True,
+    )
+    assert result.native_short_row_state == NATIVE_ROW_ABSENT
+    assert result.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+    assert result.fib_coverage_reason != REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+
+
+def test_c_same_native_cases_without_usable_fallback_keep_gap_reasons():
+    """C. Same native SUPPORTED + PARTIAL/ABSENT cases, but without a usable
+    canonical fallback, must keep exposing the native gap reasons -- confirms
+    canonical_fallback_usable is the deciding factor, not an unconditional
+    override."""
+    partial = _classify(
+        short_context_coverage_status="INSUFFICIENT_1H_HISTORY",
+        short_context_input_status="INSUFFICIENT_1H_HISTORY",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+        canonical_fallback_usable=False,
+    )
+    assert partial.fib_coverage_reason == REASON_NATIVE_SHORT_CONTEXT_PARTIAL
+
+    absent = _classify(
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_input_status="LEGACY_1D_CONTEXT_ONLY",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+        canonical_fallback_usable=False,
+    )
+    assert absent.fib_coverage_reason == REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+
+
 def test_production_shape_seven_no_row_cards_are_not_all_broken():
     """L. the observed 60/53/7 production shape can be represented without
     calling all seven no-row cards broken -- some are truthfully not-enrolled
@@ -382,3 +440,182 @@ def test_available_card_gets_no_supplemental_reason():
     )
     assert out[0].fib_coverage.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
     assert out[0].reasons == card.reasons
+
+
+def _native_short_row(*, symbol: str = "WLD", status: str = "INSUFFICIENT_1H_HISTORY") -> NativeShortContextRow:
+    return NativeShortContextRow(
+        symbol=symbol,
+        venue="bitvavo",
+        quote_currency="EUR",
+        fib_trading_horizon="SHORT",
+        primary_interval="4h",
+        supporting_interval="1h",
+        context_status=status,
+        map_cycle_id=f"{symbol}|SHORT|4h|demo",
+        anchor_start_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        anchor_end_ts_utc=datetime(2026, 6, 2, 0, 0, tzinfo=UTC),
+        anchor_low_price=Decimal("0.3000"),
+        anchor_high_price=Decimal("0.3800"),
+        breakout_gate_price=Decimal("0.3800"),
+        latest_primary_close_ts_utc=datetime(2026, 6, 2, 0, 0, tzinfo=UTC),
+        latest_support_close_ts_utc=datetime(2026, 6, 2, 0, 0, tzinfo=UTC),
+        latest_primary_close_price=Decimal("0.3500"),
+        ext_1_272_price=Decimal("0.4000"),
+        ext_1_618_price=Decimal("0.4300"),
+        ext_2_000_price=Decimal("0.4600"),
+        active_target_levels=(Decimal("0.4000"), Decimal("0.4300"), Decimal("0.4600")),
+        previous_target_levels=(),
+        reload_r382_price=Decimal("0.3600"),
+        reload_r500_price=Decimal("0.3400"),
+        reload_r618_price=Decimal("0.3300"),
+        reload_r786_price=Decimal("0.3150"),
+        invalidation_price=Decimal("0.2900"),
+        primary_4h_lifecycle_state="ACTIVE",
+        supporting_1h_state="NEUTRAL",
+        context_freshness_status="FRESH",
+        max_primary_high_since_anchor=Decimal("0.3800"),
+        min_primary_low_since_anchor=Decimal("0.3000"),
+        source_name="native_short_fib_context_v1",
+        source_version="0.1",
+        source_primary_ref="ref",
+        source_support_ref="ref",
+        current_map_status="ACTIVE",
+        previous_map_cycle_id="",
+        previous_map_lifecycle_state="",
+        rollover_state="NONE",
+        selection_reason="demo",
+    )
+
+
+def _canonical_fib_row_fixture(*, symbol: str = "WLD") -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "venue": "bitvavo",
+        "quote_currency": "EUR",
+        "interval_code": "4h",
+        "asof_ts_utc": datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+        "map_status": "FRESH",
+        "current_leg": "UP",
+        "reference_price": Decimal("0.40"),
+        "anchor_low_price": Decimal("0.30"),
+        "anchor_high_price": Decimal("0.40"),
+        "entry_zone_low": Decimal("0.36"),
+        "entry_zone_high": Decimal("0.38"),
+        "entry_zone_mid": Decimal("0.37"),
+        "support_reaction_zone_low": Decimal("0.32"),
+        "support_reaction_zone_high": Decimal("0.34"),
+        "target_t1": Decimal("0.45"),
+        "target_t2": Decimal("0.50"),
+        "target_extension": Decimal("0.55"),
+    }
+
+
+def _empty_fib_map_rows(tmpdir: str) -> Path:
+    fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+    fib_rows.write_text(
+        "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+        encoding="utf-8",
+    )
+    return fib_rows
+
+
+def test_load_zone_contexts_partial_native_with_canonical_fallback_classifies_available():
+    """Real composition path (load_zone_contexts, Issue #238 Planning-PPP
+    fallback): a partial native row (INSUFFICIENT_1H_HISTORY) whose
+    short_context_coverage_status never changes, backfilled by a usable
+    canonical 4h row, must classify as FIB_MAP_AVAILABLE overall -- not
+    NATIVE_SHORT_CONTEXT_PARTIAL -- while native_short_row_state stays
+    PARTIAL. JSON must expose the same final reason as the card."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = _empty_fib_map_rows(tmpdir)
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(
+            rows=[_native_short_row(symbol="WLD", status="INSUFFICIENT_1H_HISTORY")],
+            output_dir=native_dir,
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.40")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={"WLD": _canonical_fib_row_fixture(symbol="WLD")},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        # Confirms the fixture actually reproduces the fallback: canonical 4h
+        # backfilled the side the partial native row did not provide.
+        provenance = result.planning_provenance_by_symbol["WLD"]
+        assert "CANONICAL_4H_NAVIGATION" in (provenance.entry_source, provenance.target_source)
+        assert result.coverage_status_by_symbol["WLD"] == "INSUFFICIENT_1H_HISTORY"
+
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.40"),
+            short_context_input_status=result.input_status_by_symbol["WLD"],
+            short_context_coverage_status=result.coverage_status_by_symbol["WLD"],
+            short_context_display_state=result.display_state_by_symbol["WLD"],
+            fib_ext=result.fib_ext_by_symbol.get("WLD"),
+            reentry=result.reentry_by_symbol.get("WLD"),
+            evidence=result.evidence_by_symbol.get("WLD") or CardEvidence(),
+            planning_provenance=provenance,
+        )
+        cards = apply_fib_coverage_classification(
+            [dataclasses.replace(card, is_market_selected=False)],
+            open_order_count_by_market={},
+            native_short_scope_state_by_symbol={"WLD": "SUPPORTED"},
+        )
+        result_card = cards[0]
+        assert result_card.fib_coverage.native_short_row_state == NATIVE_ROW_PARTIAL
+        assert result_card.fib_coverage.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+
+        snapshot = build_json_snapshot(cards)
+        json_entry = snapshot["symbols"][0]["fib_coverage_classification"]
+        assert json_entry["fib_coverage_reason"] == REASON_FIB_MAP_AVAILABLE
+        assert json_entry == result_card.fib_coverage.to_json()
+
+
+def test_load_zone_contexts_partial_native_without_canonical_fallback_keeps_gap():
+    """Same partial-native composition, but with no canonical row available at
+    all -- the Planning-PPP fallback cannot fire, so the native gap must stay
+    visible as NATIVE_SHORT_CONTEXT_PARTIAL, not silently promoted to
+    FIB_MAP_AVAILABLE."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = _empty_fib_map_rows(tmpdir)
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(
+            rows=[_native_short_row(symbol="WLD", status="INSUFFICIENT_1H_HISTORY")],
+            output_dir=native_dir,
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.40")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        provenance = result.planning_provenance_by_symbol.get("WLD")
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.40"),
+            short_context_input_status=result.input_status_by_symbol["WLD"],
+            short_context_coverage_status=result.coverage_status_by_symbol["WLD"],
+            short_context_display_state=result.display_state_by_symbol["WLD"],
+            fib_ext=result.fib_ext_by_symbol.get("WLD"),
+            reentry=result.reentry_by_symbol.get("WLD"),
+            evidence=result.evidence_by_symbol.get("WLD") or CardEvidence(),
+            planning_provenance=provenance,
+        )
+        cards = apply_fib_coverage_classification(
+            [card],
+            open_order_count_by_market={},
+            native_short_scope_state_by_symbol={"WLD": "SUPPORTED"},
+        )
+        result_card = cards[0]
+        assert result_card.fib_coverage.native_short_row_state == NATIVE_ROW_PARTIAL
+        assert result_card.fib_coverage.fib_coverage_reason == REASON_NATIVE_SHORT_CONTEXT_PARTIAL

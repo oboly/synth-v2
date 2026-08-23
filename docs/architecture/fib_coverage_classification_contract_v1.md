@@ -57,6 +57,16 @@ or account overlay semantics. Absence of a Fib row must never be silently
   existing canonical-row / native-row lifecycle status already computed by
   `load_zone_contexts()` (`_canonical_fib_row_status()` and the native
   SHORT context bridge).
+- `canonical_fallback_usable` — whether `load_zone_contexts()`'s
+  Planning-PPP fallback (Issue #238) actually backfilled usable canonical
+  4h levels underneath a partial native row. `apply_fib_coverage_classification()`
+  derives this from `card.planning_provenance.entry_source` /
+  `target_source == PLANNING_SOURCE_CANONICAL_4H_NAVIGATION` — **not** from
+  `short_context_coverage_status`/`short_context_input_status`, which stay
+  pinned to native SHORT's own lifecycle status and do not change when the
+  fallback fires underneath them. Reconstructing fallback usability from
+  those strings alone would wrongly report a real canonical fallback as
+  `NATIVE_SHORT_CONTEXT_PARTIAL`/`NATIVE_SHORT_EXPECTED_BUT_MISSING`.
 
 No enrollment truth is recomputed or duplicated in reporting; this module
 (`src/reporting/fib_coverage_classification_v1.py`) only combines
@@ -77,7 +87,14 @@ already-resolved facts into one explicit classification.
 
 `fib_coverage_reason` (final, mutually exclusive, precedence order):
 
-1. `FIB_MAP_AVAILABLE` — canonical or native authority is usable.
+1. `FIB_MAP_AVAILABLE` — canonical or native authority is usable. This
+   includes the case where the canonical row itself is `AVAILABLE`, the
+   native row itself is `AVAILABLE`, **and** the case where neither row
+   status string says so but `canonical_fallback_usable` (see below) proves
+   canonical 4h data actually filled in usable levels underneath a partial
+   native row via the Planning-PPP fallback (Issue #238). This always takes
+   precedence — even over a `SUPPORTED`+`PARTIAL`/`ABSENT` native gap (rule
+   6).
 2. `FIB_MAP_STALE` / `FIB_MAP_UNAVAILABLE` — canonical row exists but is not
    usable (pre-existing, already-truthful reasons; unchanged by this
    contract).
@@ -89,16 +106,15 @@ already-resolved facts into one explicit classification.
    (fallback; expected to be rare given the account-scoped market universe).
 6. `NATIVE_SHORT_EXPECTED_BUT_MISSING` / `NATIVE_SHORT_CONTEXT_PARTIAL` —
    canonical 4h has no usable authority for this card (canonical row state
-   is `NOT_APPLICABLE` — not `AVAILABLE`, `STALE`, `UNAVAILABLE`, `ABSENT`,
-   or `SOURCE_UNAVAILABLE`), and `native_short_scope_state == SUPPORTED`
-   with `native_short_row_state` of `ABSENT` (missing) or `PARTIAL`
-   respectively. **Never** collapsed into `NOT_APPLICABLE` — that would
-   silently suppress a real supported-native coverage gap. When a usable
-   canonical 4h row *does* exist, the overall reason stays
-   `FIB_MAP_AVAILABLE` instead (rule 1 takes precedence); the native gap
-   remains visible only through `native_short_scope_state` /
-   `native_short_row_state`, which are always populated independently of
-   `fib_coverage_reason`.
+   is `NOT_APPLICABLE` **and** `canonical_fallback_usable` is false — see
+   below), and `native_short_scope_state == SUPPORTED` with
+   `native_short_row_state` of `ABSENT` (missing) or `PARTIAL` respectively.
+   **Never** collapsed into `NOT_APPLICABLE` — that would silently suppress
+   a real supported-native coverage gap. When a usable canonical 4h row (or
+   fallback) *does* exist, the overall reason stays `FIB_MAP_AVAILABLE`
+   instead (rule 1 takes precedence); the native gap remains visible only
+   through `native_short_scope_state` / `native_short_row_state`, which are
+   always populated independently of `fib_coverage_reason`.
 7. `NOT_APPLICABLE` — native SHORT is not expected to support this symbol
    (`native_short_scope_state` is `NOT_APPLICABLE` or `UNKNOWN`) or legacy
    1d context already supplies authority; canonical-row absence is not the
