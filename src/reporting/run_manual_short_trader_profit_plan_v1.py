@@ -91,6 +91,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ReentryContext,
     TargetHistoryCandle,
     apply_card_deltas,
+    apply_fib_coverage_classification,
     apply_portfolio_account_evidence,
     apply_price_tick_normalization,
     build_json_snapshot,
@@ -691,6 +692,32 @@ def summarize_short_context_coverage(
         status = coverage_status_by_symbol.get(symbol, "CONTEXT_INVALID_OR_STALE")
         summary[status] = summary.get(status, 0) + 1
     return summary
+
+
+def load_native_short_scope_state_by_symbol(rows_path: Path) -> dict[str, str]:
+    """Read-only per-symbol native SHORT scope_support_state (Issue #489).
+
+    Same source file as ``load_native_short_context_rows`` -- the row
+    provenance columns carry ``scope_support_state`` (SUPPORTED /
+    NOT_APPLICABLE, per
+    ``src.market_data.native_short_scope_status_v1.NativeShortScopeSupportEventState``)
+    independent of whether the row's lifecycle ``context_status`` is
+    AVAILABLE. A symbol absent from the file classifies as UNKNOWN, never
+    fabricated as SUPPORTED or NOT_APPLICABLE.
+    """
+    scope_state_by_symbol: dict[str, str] = {}
+    if not rows_path.is_file():
+        return scope_state_by_symbol
+    try:
+        with rows_path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                symbol = str(row.get("symbol") or "").strip().upper()
+                state = str(row.get("scope_support_state") or "").strip().upper()
+                if symbol and state in {"SUPPORTED", "NOT_APPLICABLE"}:
+                    scope_state_by_symbol[symbol] = state
+    except (OSError, UnicodeError, csv.Error):
+        return {}
+    return scope_state_by_symbol
 
 
 def summarize_native_short_snapshot_evidence(
@@ -1932,6 +1959,18 @@ def main() -> int:
         portfolio_asset_markets=portfolio_asset_markets,
         market_selected_markets=market_selected_markets,
         core_sensor_markets=core_sensor_markets,
+    )
+
+    # Issue #489: truthful per-symbol Fib coverage classification. Read-only
+    # composition over the overlay facts apply_portfolio_account_evidence()
+    # just attached (is_market_selected/is_core_sensor/is_wallet_held/
+    # is_portfolio_asset) plus open-order presence and native SHORT scope
+    # state -- must run after apply_portfolio_account_evidence().
+    native_short_scope_state_by_symbol = load_native_short_scope_state_by_symbol(native_short_rows_path)
+    cards = apply_fib_coverage_classification(
+        cards,
+        open_order_count_by_market=context.open_order_count_by_market,
+        native_short_scope_state_by_symbol=native_short_scope_state_by_symbol,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
