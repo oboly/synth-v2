@@ -4501,6 +4501,10 @@ def test_ppp_ppt_ppv_display_uses_real_ppp_and_unknown_time_fields() -> None:
         reload_reentry_zone=(Decimal("0.4000"), Decimal("0.3900")),
         buy_zone=(Decimal("0.4000"), Decimal("0.3900")),
         target_exit_zone=(Decimal("0.5000"), Decimal("0.5200")),
+        planning_provenance=_pp_module.make_planning_provenance(
+            entry_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+            target_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+        ),
     )
     html = render_plan_card(card)
 
@@ -4579,6 +4583,10 @@ def test_ppp_uses_highest_planned_target_from_target_lifecycle() -> None:
         buy_zone=(Decimal("0.1000"),),
         target_exit_zone=(Decimal("0.1200"),),
         target_level_statuses=(higher_target,),
+        planning_provenance=_pp_module.make_planning_provenance(
+            entry_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+            target_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+        ),
     )
 
     ppp = _pp_module._profit_plan_potential_pct(card)
@@ -6246,6 +6254,12 @@ def _fresh_canonical_card() -> ProfitPlanCard:
             _active_level_status(Decimal("0.6200")),
         ),
         ladder_states=("LADDER_MISSING",),
+        # "Fresh canonical case: every authority is independently
+        # fresh/confirmed" (see docstring) -- a single coherent native source.
+        planning_provenance=_pp_module.make_planning_provenance(
+            entry_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+            target_source=_pp_module.PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+        ),
     )
 
 

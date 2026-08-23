@@ -78,9 +78,15 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     VISIBILITY_NATIVE_ATTENTION,
     VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
     VISIBILITY_CONTEXT_UNAVAILABLE,
+    PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+    PLANNING_SOURCE_LEGACY_REFERENCE,
+    PLANNING_SOURCE_MANUAL_REFERENCE,
+    PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+    PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE,
     CardEvidence,
     FibExtContext,
     FibNavContext,
+    PlanningProvenance,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
@@ -89,6 +95,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     apply_price_tick_normalization,
     build_json_snapshot,
     build_profit_plan_card,
+    make_planning_provenance,
     render_full_html,
 )
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
@@ -139,6 +146,7 @@ class ZoneContextLoadResult:
     native_source_missing: bool = False
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = field(default_factory=dict)
     evidence_by_symbol: dict[str, CardEvidence] = field(default_factory=dict)
+    planning_provenance_by_symbol: dict[str, PlanningProvenance] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1017,6 +1025,15 @@ def load_zone_contexts(
     display_state_by_symbol: dict[str, str] = {}
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = {}
     evidence_by_symbol: dict[str, CardEvidence] = {}
+    # Per-symbol Planning PPP source attribution (Issue #457). load_zone_contexts()
+    # is the only layer that sees which authority actually produced each of
+    # entry (reentry) vs target (fib_ext) -- component sources are tracked here
+    # and combined into PlanningProvenance once the loop completes.
+    entry_source_by_symbol: dict[str, str] = {}
+    target_source_by_symbol: dict[str, str] = {}
+    source_map_id_by_symbol: dict[str, str] = {}
+    source_map_cycle_id_by_symbol: dict[str, str] = {}
+    source_as_of_by_symbol: dict[str, str] = {}
 
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -1047,8 +1064,10 @@ def load_zone_contexts(
                 )
                 if fib_ext is not None:
                     fib_ext_by_symbol[symbol] = fib_ext
+                    target_source_by_symbol[symbol] = PLANNING_SOURCE_MANUAL_REFERENCE
                 if reentry is not None:
                     reentry_by_symbol[symbol] = reentry
+                    entry_source_by_symbol[symbol] = PLANNING_SOURCE_MANUAL_REFERENCE
                 activation_ts_by_symbol[symbol] = None
                 input_status_by_symbol[symbol] = (
                     "MANUAL_ZONE_CONTEXT_USED"
@@ -1117,6 +1136,16 @@ def load_zone_contexts(
                         deepest_touched_label=None,
                         missed_main_rebuy_by_pct=None,
                     )
+                    _native_planning_source = (
+                        PLANNING_SOURCE_NATIVE_SHORT_CANONICAL
+                        if row_is_canonical
+                        else PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE
+                    )
+                    entry_source_by_symbol[symbol] = _native_planning_source
+                    target_source_by_symbol[symbol] = _native_planning_source
+                    source_map_id_by_symbol[symbol] = evidence_by_symbol[symbol].native_map_id
+                    source_map_cycle_id_by_symbol[symbol] = evidence_by_symbol[symbol].map_cycle_id
+                    source_as_of_by_symbol[symbol] = evidence_by_symbol[symbol].context_ts_utc
                     # When the primary map is exhausted (all targets passed), record anchor
                     # metadata so build_cards() can attempt a candle-driven rebuild.
                     # active_target_levels==() signals MAP_COMPLETED in the native context lifecycle.
@@ -1152,6 +1181,12 @@ def load_zone_contexts(
                         ext_1_272_touched_and_rejected=False,
                         retesting_breakout_gate=False,
                     )
+                    # Partial/non-AVAILABLE native rows are never proven canonical
+                    # (row_is_canonical requires context_status == AVAILABLE).
+                    target_source_by_symbol[symbol] = PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE
+                    source_map_id_by_symbol[symbol] = evidence_by_symbol[symbol].native_map_id
+                    source_map_cycle_id_by_symbol[symbol] = evidence_by_symbol[symbol].map_cycle_id
+                    source_as_of_by_symbol[symbol] = evidence_by_symbol[symbol].context_ts_utc
             # Planning-PPP fallback (Issue #238): a present-but-non-AVAILABLE native
             # row is authoritative for native SHORT lifecycle display, but it must
             # not block a read-only canonical 4h reference for portfolio planning
@@ -1171,8 +1206,15 @@ def load_zone_contexts(
                     )
                     if _fallback_built is not None:
                         _fallback_fib_ext, _fallback_reentry = _fallback_built
-                        fib_ext_by_symbol.setdefault(symbol, _fallback_fib_ext)
-                        reentry_by_symbol.setdefault(symbol, _fallback_reentry)
+                        _fallback_as_of = _fmt_unavailable((_fallback_row or {}).get("asof_ts_utc"))
+                        if symbol not in fib_ext_by_symbol:
+                            fib_ext_by_symbol[symbol] = _fallback_fib_ext
+                            target_source_by_symbol[symbol] = PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+                            source_as_of_by_symbol[symbol] = _fallback_as_of
+                        if symbol not in reentry_by_symbol:
+                            reentry_by_symbol[symbol] = _fallback_reentry
+                            entry_source_by_symbol[symbol] = PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+                            source_as_of_by_symbol[symbol] = _fallback_as_of
             continue
 
         canonical_row = canonical_fib_rows_by_symbol.get(symbol)
@@ -1186,6 +1228,9 @@ def load_zone_contexts(
                 fib_ext, reentry = built
                 fib_ext_by_symbol[symbol] = fib_ext
                 reentry_by_symbol[symbol] = reentry
+                target_source_by_symbol[symbol] = PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+                entry_source_by_symbol[symbol] = PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+                source_as_of_by_symbol[symbol] = _fmt_unavailable((canonical_row or {}).get("asof_ts_utc"))
                 activation_ts_by_symbol[symbol] = fib_ext.anchor_end_ts_utc
                 input_status_by_symbol[symbol] = CANONICAL_4H_CONTEXT_AVAILABLE
                 coverage_status_by_symbol[symbol] = CANONICAL_4H_CONTEXT_AVAILABLE
@@ -1250,8 +1295,12 @@ def load_zone_contexts(
         )
         if fib_ext is not None:
             fib_ext_by_symbol[symbol] = fib_ext
+            target_source_by_symbol[symbol] = PLANNING_SOURCE_LEGACY_REFERENCE
         if reentry is not None:
             reentry_by_symbol[symbol] = reentry
+            entry_source_by_symbol[symbol] = PLANNING_SOURCE_LEGACY_REFERENCE
+        if fib_ext is not None or reentry is not None:
+            source_as_of_by_symbol[symbol] = _fmt_unavailable(fib_row.get("anchor_end_ts"))
         if not native_reference_only:
             input_status_by_symbol[symbol] = (
                 "HAS_ZONE_CONTEXT"
@@ -1267,6 +1316,16 @@ def load_zone_contexts(
             coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
             display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
 
+    planning_provenance_by_symbol: dict[str, PlanningProvenance] = {}
+    for symbol in set(entry_source_by_symbol) | set(target_source_by_symbol):
+        planning_provenance_by_symbol[symbol] = make_planning_provenance(
+            entry_source=entry_source_by_symbol.get(symbol, "DATA_UNAVAILABLE"),
+            target_source=target_source_by_symbol.get(symbol, "DATA_UNAVAILABLE"),
+            source_map_id=source_map_id_by_symbol.get(symbol, "DATA_UNAVAILABLE"),
+            source_map_cycle_id=source_map_cycle_id_by_symbol.get(symbol, "DATA_UNAVAILABLE"),
+            source_as_of_ts_utc=source_as_of_by_symbol.get(symbol, "DATA_UNAVAILABLE"),
+        )
+
     return ZoneContextLoadResult(
         fib_ext_by_symbol=fib_ext_by_symbol,
         reentry_by_symbol=reentry_by_symbol,
@@ -1279,6 +1338,7 @@ def load_zone_contexts(
         native_source_missing=native_source_missing,
         prior_map_meta_by_symbol=prior_map_meta_by_symbol,
         evidence_by_symbol=evidence_by_symbol,
+        planning_provenance_by_symbol=planning_provenance_by_symbol,
     )
 
 
@@ -1527,6 +1587,7 @@ def build_cards(
     evidence_by_symbol: Mapping[str, CardEvidence] | None = None,
     price_ts_by_market: Mapping[str, datetime | None] | None = None,
     order_snapshot_ts_utc: datetime | None = None,
+    planning_provenance_by_symbol: Mapping[str, PlanningProvenance] | None = None,
 ) -> list[ProfitPlanCard]:
     _prior = prior_map_meta_by_symbol or {}
     _now = now_utc or datetime.now(UTC)
@@ -1588,6 +1649,7 @@ def build_cards(
                 ),
                 breath_curve=(breath_curve_by_symbol or {}).get(symbol),
                 evidence=card_evidence,
+                planning_provenance=(planning_provenance_by_symbol or {}).get(symbol),
             )
         )
     return cards
@@ -1814,6 +1876,7 @@ def main() -> int:
         evidence_by_symbol=zone_contexts.evidence_by_symbol,
         price_ts_by_market=price_ts_by_market,
         order_snapshot_ts_utc=context.latest_order_snapshot_ts_utc,
+        planning_provenance_by_symbol=zone_contexts.planning_provenance_by_symbol,
     )
 
     # Portfolio composition (Issue #238): compose held amount / EUR value / cost
