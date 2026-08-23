@@ -20,11 +20,12 @@ from src.market_data.canonical_fib_zone_map_v1 import (
     PRODUCER_VERSION,
     SAFETY_MARKERS,
     build_publication,
-    fetch_latest_production_rows,
     fetch_latest_trend_rows,
+    fetch_production_rows_before,
     fetch_recent_candles,
     fetch_tracked_symbols,
     publish,
+    resolve_candidate_asof_ts_utc,
 )
 
 
@@ -54,6 +55,63 @@ def _emit(payload: dict[str, Any], output: str) -> None:
         print(json.dumps(payload, sort_keys=True, default=str), flush=True)
     else:
         print(" ".join(f"{key}={value}" for key, value in payload.items()), flush=True)
+
+
+def load_publication_inputs(
+    conn: Any,
+    *,
+    venue: str,
+    quote: str,
+    interval: str,
+    lookback_candles: int,
+) -> tuple[list[str], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
+    """Load current public inputs for the normal recurring writer.
+
+    Prior continuity is read via ``fetch_production_rows_before``, bound
+    strictly before the candidate ``asof_ts_utc``. The candidate is not known
+    in advance -- it is derived from live candles via
+    ``resolve_candidate_asof_ts_utc`` *before* the prior-continuity read, so
+    a rerun of the same asof can never read its own just-published cohort
+    (or a later one) as prior context. This is the same
+    ``fetch_production_rows_before`` bound used by the historical/operator
+    repair path (``build_historical_publication``), so the two share prior-
+    continuity semantics.
+
+    Returns ``(symbols, candles, prior_rows, trend_rows, metrics)``.
+    """
+    symbols = fetch_tracked_symbols(conn, venue=venue, quote_currency=quote)
+    candles = fetch_recent_candles(
+        conn,
+        venue=venue,
+        interval_code=interval,
+        symbols=symbols,
+        lookback_candles=lookback_candles,
+    )
+    candidate_asof_ts_utc = resolve_candidate_asof_ts_utc(candles)
+    prior_rows = (
+        fetch_production_rows_before(
+            conn,
+            venue=venue,
+            quote_currency=quote,
+            interval_code=interval,
+            before_asof_ts_utc=candidate_asof_ts_utc,
+        )
+        if candidate_asof_ts_utc is not None
+        else {}
+    )
+    trend_rows = fetch_latest_trend_rows(
+        conn,
+        venue=venue,
+        interval_code=interval,
+        symbols=symbols,
+    )
+    metrics = {
+        "tracked_symbols": len(symbols),
+        "candle_rows": sum(len(rows) for rows in candles.values()),
+        "prior_rows": len(prior_rows),
+        "trend_rows": len(trend_rows),
+    }
+    return symbols, candles, prior_rows, trend_rows, metrics
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -95,39 +153,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             conn = get_connection()
             phase = time.monotonic()
-            symbols = fetch_tracked_symbols(
+            symbols, candles, prior_rows, trend_rows, metrics = load_publication_inputs(
                 conn,
                 venue=args.venue,
-                quote_currency=args.quote,
-            )
-            prior_rows = fetch_latest_production_rows(
-                conn,
-                venue=args.venue,
-                quote_currency=args.quote,
-                interval_code=args.interval,
-            )
-            candles = fetch_recent_candles(
-                conn,
-                venue=args.venue,
-                interval_code=args.interval,
-                symbols=symbols,
+                quote=args.quote,
+                interval=args.interval,
                 lookback_candles=args.lookback_candles,
-            )
-            trend_rows = fetch_latest_trend_rows(
-                conn,
-                venue=args.venue,
-                interval_code=args.interval,
-                symbols=symbols,
             )
             conn.rollback()
             _emit(
                 {
                     "event": "PHASE_FINISHED",
                     "phase": "load_public_inputs",
-                    "tracked_symbols": len(symbols),
-                    "candle_rows": sum(len(rows) for rows in candles.values()),
-                    "prior_rows": len(prior_rows),
-                    "trend_rows": len(trend_rows),
+                    **metrics,
                     "elapsed_ms": round((time.monotonic() - phase) * 1000),
                     "database_writes": 0,
                 },
