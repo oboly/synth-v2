@@ -43,6 +43,8 @@ A card with native SHORT lifecycle context unavailable remains valid and visible
 
 Planning PPP is a reporting reference and does not require native SHORT lifecycle verification.
 
+A numeric Planning PPP additionally requires its entry and target levels to resolve to one coherent, identified provenance source; a mixed-source composition renders unavailable with a precise reason instead of an ordinary number. See `docs/architecture/profit_plan_planning_ppp_provenance_v1.md` (Issue #457) for the full provenance contract.
+
 The invariant accepts either:
 
 ```text

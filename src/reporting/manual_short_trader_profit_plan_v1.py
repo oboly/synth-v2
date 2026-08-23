@@ -395,6 +395,111 @@ class CardEvidence:
     native_context_freshness_status: str = DATA_UNAVAILABLE
 
 
+# ---------------------------------------------------------------------------
+# Planning PPP provenance (Issue #457)
+#
+# Planning PPP is reporting-only and must never gate actionability, ranking,
+# permission or execution (see _actionable_ppp_eligible for the separate,
+# fail-closed Actionable PPP contract). It must, however, prove that its
+# entry level and target level were composed from one identified source —
+# otherwise a numeric value silently implies a coherence that does not exist.
+# ---------------------------------------------------------------------------
+
+# Canonical native SHORT map truth: entry/target both read from a native row
+# proven canonical (validated snapshot root + AVAILABLE + FRESH contract).
+PLANNING_SOURCE_NATIVE_SHORT_CANONICAL = "NATIVE_SHORT_CANONICAL"
+# Native row present and AVAILABLE, but not yet proven canonical (unverified
+# snapshot root, or row not FRESH). Native-shaped, not native-authoritative.
+PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE = "NATIVE_SHORT_TRANSIENT_REFERENCE"
+# canonical_fib_zone_map_latest_v1 market-only 4h reference, or the
+# candle-driven post-completion navigation rebuild (same authority class:
+# neither carries native SHORT map/cycle identity).
+PLANNING_SOURCE_CANONICAL_4H_NAVIGATION = "CANONICAL_4H_NAVIGATION"
+# Legacy 1d fib-map bridge row.
+PLANNING_SOURCE_LEGACY_REFERENCE = "LEGACY_REFERENCE"
+# Operator-supplied manual swing anchor.
+PLANNING_SOURCE_MANUAL_REFERENCE = "MANUAL_REFERENCE"
+# Entry and target were composed from two different source classes above.
+# Derived only -- never assigned directly as a component source.
+PLANNING_SOURCE_HYBRID_REFERENCE_ONLY = "HYBRID_REFERENCE_ONLY"
+
+# Component source classes a caller may assign to entry_source/target_source.
+# HYBRID_REFERENCE_ONLY and DATA_UNAVAILABLE are derived outcomes, not inputs.
+_PLANNING_SOURCE_COMPONENT_CLASSES: frozenset[str] = frozenset({
+    PLANNING_SOURCE_NATIVE_SHORT_CANONICAL,
+    PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE,
+    PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+    PLANNING_SOURCE_LEGACY_REFERENCE,
+    PLANNING_SOURCE_MANUAL_REFERENCE,
+})
+
+
+@dataclass(frozen=True)
+class PlanningProvenance:
+    """Immutable provenance contract for one card's Planning PPP inputs.
+
+    ``entry_source``/``target_source`` name the authority that produced the
+    reload/re-entry level and the target level respectively. ``reference_source``
+    is the derived overall classification: equal to entry_source/target_source
+    when they agree (coherent single-source), HYBRID_REFERENCE_ONLY when they
+    disagree, or DATA_UNAVAILABLE when either side is missing.
+
+    ``source_map_id``/``source_map_cycle_id`` are populated only when
+    reference_source is a single coherent native class -- never fabricated for
+    canonical/legacy/manual/hybrid sources that carry no map identity.
+    """
+    reference_source: str = DATA_UNAVAILABLE
+    entry_source: str = DATA_UNAVAILABLE
+    target_source: str = DATA_UNAVAILABLE
+    source_map_id: str = DATA_UNAVAILABLE
+    source_map_cycle_id: str = DATA_UNAVAILABLE
+    source_as_of_ts_utc: str = DATA_UNAVAILABLE
+    is_coherent: bool = False
+    is_hybrid_reference_only: bool = False
+
+
+def make_planning_provenance(
+    *,
+    entry_source: str,
+    target_source: str,
+    source_map_id: str = DATA_UNAVAILABLE,
+    source_map_cycle_id: str = DATA_UNAVAILABLE,
+    source_as_of_ts_utc: str = DATA_UNAVAILABLE,
+) -> PlanningProvenance:
+    """Build a PlanningProvenance, deriving reference_source/is_coherent/
+    is_hybrid_reference_only from the two component sources. entry_source and
+    target_source must each be DATA_UNAVAILABLE or a component class from
+    _PLANNING_SOURCE_COMPONENT_CLASSES -- never HYBRID_REFERENCE_ONLY."""
+    entry = entry_source or DATA_UNAVAILABLE
+    target = target_source or DATA_UNAVAILABLE
+    if entry == DATA_UNAVAILABLE or target == DATA_UNAVAILABLE:
+        return PlanningProvenance(entry_source=entry, target_source=target)
+    if entry == target:
+        return PlanningProvenance(
+            reference_source=entry,
+            entry_source=entry,
+            target_source=target,
+            source_map_id=source_map_id or DATA_UNAVAILABLE,
+            source_map_cycle_id=source_map_cycle_id or DATA_UNAVAILABLE,
+            source_as_of_ts_utc=source_as_of_ts_utc or DATA_UNAVAILABLE,
+            is_coherent=True,
+            is_hybrid_reference_only=False,
+        )
+    # Different authorities produced entry vs target: never invent a shared
+    # map identity for a source pairing that does not have one.
+    return PlanningProvenance(
+        reference_source=PLANNING_SOURCE_HYBRID_REFERENCE_ONLY,
+        entry_source=entry,
+        target_source=target,
+        is_coherent=False,
+        is_hybrid_reference_only=True,
+    )
+
+
+def _planning_provenance_json(provenance: PlanningProvenance) -> dict[str, Any]:
+    return dataclasses.asdict(provenance)
+
+
 @dataclass(frozen=True)
 class CardDelta:
     delta_status: str = "NO_PREVIOUS_SNAPSHOT"
@@ -469,6 +574,7 @@ class ProfitPlanCard:
     breath_curve: dict[str, Any] | None = None
     evidence: CardEvidence = field(default_factory=CardEvidence)
     delta: CardDelta = field(default_factory=CardDelta)
+    planning_provenance: PlanningProvenance = field(default_factory=PlanningProvenance)
 
 
 @dataclass(frozen=True)
@@ -949,8 +1055,13 @@ def _profit_plan_potential_pct(card: ProfitPlanCard) -> Decimal | None:
     """Planning PPP: lowest planned entry to highest planned target.
 
     Theoretical map potential / plan reference quality. Reference display only —
-    must never promote a card into the actionable bucket.
+    must never promote a card into the actionable bucket. Requires entry and
+    target to resolve to one identified, coherent provenance source (Issue
+    #457) -- a HYBRID_REFERENCE_ONLY or DATA_UNAVAILABLE provenance must never
+    silently render an ordinary numeric Planning PPP.
     """
+    if not card.planning_provenance.is_coherent:
+        return None
     return _profit_plan_potential_pct_from_levels(
         card.reload_reentry_zone or card.buy_zone,
         _profit_plan_target_levels(card),
@@ -1067,7 +1178,8 @@ def _price_is_fresh_enough(card: ProfitPlanCard) -> bool:
 
 
 def _map_lifecycle_blocks_action(card: ProfitPlanCard) -> bool:
-    """True when the map is expired/completed/invalidated (no actionable claim)."""
+    """True when the map is expired/completed/invalidated, or lifecycle
+    authority is unavailable (no actionable claim without proven authority)."""
     if card.all_sell_targets_completed:
         return True
     if card.actionability_state in {
@@ -1080,7 +1192,13 @@ def _map_lifecycle_blocks_action(card: ProfitPlanCard) -> bool:
         return True
     if card.primary_state in _ACTION_BLOCKING_PRIMARY_STATES:
         return True
-    if str(card.evidence.lifecycle_state or "").strip().upper() in _ACTION_BLOCKING_LIFECYCLE_STATES:
+    lifecycle_state = str(card.evidence.lifecycle_state or "").strip().upper()
+    # Unavailable lifecycle authority (DATA_UNAVAILABLE/NONE/NULL/empty) must
+    # block, not pass by omission (Issue #457): Actionable PPP requires proven,
+    # available lifecycle authority, never absence-of-evidence.
+    if lifecycle_state in _UNAVAILABLE_TOKENS:
+        return True
+    if lifecycle_state in _ACTION_BLOCKING_LIFECYCLE_STATES:
         return True
     return False
 
@@ -1153,11 +1271,23 @@ def _entry_activation_proof(card: ProfitPlanCard) -> bool:
 
 
 def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
+    """Fail-closed Actionable PPP eligibility (Issue #457).
+
+    Numeric Actionable PPP requires proven current-map/current-cycle native
+    authority: canonical native map truth, a confirmed CURRENT_ACTIVE_MAP
+    selection tier, and available (non-blocking) lifecycle authority -- not
+    merely a present map_cycle_id, which a transient/non-canonical or
+    non-current row can also carry.
+    """
     if not _price_is_fresh_enough(card):
         return False
     if card.actionability_state != CARD_ACTIONABILITY_ACTIVE:
         return False
+    if not _canonical_native_map_truth_available(card.evidence):
+        return False
     if _is_unavailable(card.evidence.map_cycle_id):
+        return False
+    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
         return False
     if _map_lifecycle_blocks_action(card):
         return False
@@ -1203,6 +1333,13 @@ def _planning_ppp_unavailable_reason(card: ProfitPlanCard) -> str | None:
         return None
     if card.current_price is None or card.current_price <= 0:
         return "Current price snapshot unavailable."
+    if card.planning_provenance.is_hybrid_reference_only:
+        return (
+            "Entry and target come from different sources (entry="
+            f"{card.planning_provenance.entry_source}, target="
+            f"{card.planning_provenance.target_source}); Planning PPP requires "
+            "one coherent source."
+        )
     if not (card.reload_reentry_zone or card.buy_zone):
         return "No reference re-entry/buy zone available (no canonical 4h or native context)."
     if not _profit_plan_target_levels(card):
@@ -1216,6 +1353,16 @@ def _format_planning_ppp(card: ProfitPlanCard) -> str:
         return _pct(ppp)
     reason = _planning_ppp_unavailable_reason(card)
     return f"— · {reason}" if reason else "—"
+
+
+def _format_planning_ppp_source(card: ProfitPlanCard) -> str:
+    """Plain-language Planning PPP provenance shown beside the value (Issue
+    #457). A hybrid pairing is spelled out explicitly rather than shown as
+    an ordinary single source name."""
+    provenance = card.planning_provenance
+    if provenance.is_hybrid_reference_only:
+        return f"HYBRID — entry: {provenance.entry_source}, target: {provenance.target_source}"
+    return provenance.reference_source
 
 
 def _format_actionable_ppp(card: ProfitPlanCard) -> str:
@@ -3273,8 +3420,8 @@ def _evidence_authority_row_html(row: EvidenceRow) -> str:
 
 _EVIDENCE_ROW_DISPLAY_LABELS: dict[str, str] = {
     "projection_status": "Fibonacci map projection",
-    "current_map_selection": "Selected Fibonacci map",
-    "map_lifecycle": "Fibonacci map lifecycle",
+    "current_map_selection": "Selected native SHORT map",
+    "map_lifecycle": "Native SHORT map lifecycle",
     "per_level_status": "Fibonacci level status",
     "price_snapshot": "Market price snapshot",
     "wallet_snapshot": "Wallet snapshot",
@@ -3305,10 +3452,10 @@ _EVIDENCE_ROW_DOMAIN_GROUPS: dict[str, tuple[str, int]] = {
 # <details> block so nothing is deleted, only made secondary.
 _REASON_CODE_OPERATOR_LABELS: dict[str, str] = {
     "NATIVE_MAP_DATA_UNAVAILABLE": "Native Fibonacci map data unavailable",
-    "MAP_TIER_NOT_CONFIRMED_CURRENT": "Selected Fibonacci map — NOT CONFIRMED",
-    "MAP_SELECTION_UNAVAILABLE": "Fibonacci map selection unavailable",
-    "MAP_LIFECYCLE_UNAVAILABLE": "Fibonacci map lifecycle unavailable",
-    "MAP_LIFECYCLE_BLOCKS_ACTION": "Fibonacci map lifecycle blocks action",
+    "MAP_TIER_NOT_CONFIRMED_CURRENT": "Selected native SHORT map — NOT CONFIRMED",
+    "MAP_SELECTION_UNAVAILABLE": "Native SHORT map selection unavailable",
+    "MAP_LIFECYCLE_UNAVAILABLE": "Native SHORT map lifecycle unavailable",
+    "MAP_LIFECYCLE_BLOCKS_ACTION": "Native SHORT map lifecycle blocks action",
     "MAP_CYCLE_UNAVAILABLE": "Fibonacci map cycle unavailable",
     "MAP_SWITCH_UNVERIFIED": "Fibonacci map switch not yet verified",
     "TRANSIENT_LIFECYCLE_NOT_CANONICAL": "Map lifecycle is a non-canonical reference only",
@@ -3526,9 +3673,19 @@ def build_profit_plan_card(
     presentation_mode: str = CARD_MODE_MARKET_SELECTED,
     breath_curve: dict[str, Any] | None = None,
     evidence: CardEvidence | None = None,
+    planning_provenance: PlanningProvenance | None = None,
 ) -> ProfitPlanCard:
     card_evidence = evidence or CardEvidence()
     canonical_native_map_truth_available = _canonical_native_map_truth_available(card_evidence)
+    # Issue #457: provenance must be explicit, never inferred from the mere
+    # presence of fib_ext + reentry. A caller that has not attributed
+    # entry/target sources (e.g. a single-source construction path or a test
+    # fixture that has not been updated) gets DATA_UNAVAILABLE, and Planning
+    # PPP fails closed -- only load_zone_contexts() (or another caller that
+    # actually knows the per-authority composition) may supply a coherent
+    # PlanningProvenance.
+    if planning_provenance is None:
+        planning_provenance = PlanningProvenance()
     if not canonical_native_map_truth_available and (fib_ext is not None or reentry is not None):
         short_context_display_state = "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
         if short_context_coverage_status == "NATIVE_SHORT_CONTEXT_AVAILABLE":
@@ -3722,6 +3879,12 @@ def build_profit_plan_card(
             reasons = (
                 "Old sell targets are historically completed. Navigation levels from the extended cycle map are shown for reference.",
                 *reasons,
+            )
+            # Both entry and target now come from the same candle-driven
+            # navigation rebuild -- coherent, but never native map authority.
+            planning_provenance = make_planning_provenance(
+                entry_source=PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+                target_source=PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
             )
 
     (
@@ -3933,6 +4096,7 @@ def build_profit_plan_card(
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
         evidence=card_evidence,
+        planning_provenance=planning_provenance,
     )
 
 
@@ -5385,15 +5549,16 @@ def render_plan_card(
         _metric_block(target_label, target_line),
         _metric_block(invalidation_label, invalidation_line),
         _metric_block("Planning PPP", planning_ppp_text),
+        _metric_block("Planning PPP source", _format_planning_ppp_source(card)),
         _metric_block("Actionable PPP", actionable_ppp_text),
     ]
     if _map_selection_row is not None:
         fib_blocks.append(
-            _metric_block("Selected Fibonacci map", _operator_map_selection_text(_map_selection_row))
+            _metric_block("Selected native SHORT map", _operator_map_selection_text(_map_selection_row))
         )
     if _map_lifecycle_row is not None:
         fib_blocks.append(
-            _metric_block("Fibonacci map lifecycle", _operator_map_lifecycle_text(_map_lifecycle_row))
+            _metric_block("Native SHORT map lifecycle", _operator_map_lifecycle_text(_map_lifecycle_row))
         )
     fib_section_html = (
         "<div class='plan-section fib-levels-section'>"
@@ -5619,6 +5784,10 @@ def render_plan_card(
         f" data-selected-map-reason='{esc(card.evidence.selected_map_reason)}'"
         f" data-selected-map-tier='{esc(card.evidence.selected_map_tier)}'"
         f" data-map-lifecycle-state='{esc(card.evidence.lifecycle_state)}'"
+        f" data-planning-reference-source='{esc(card.planning_provenance.reference_source)}'"
+        f" data-planning-entry-source='{esc(card.planning_provenance.entry_source)}'"
+        f" data-planning-target-source='{esc(card.planning_provenance.target_source)}'"
+        f" data-planning-hybrid-reference-only='{esc(str(card.planning_provenance.is_hybrid_reference_only).lower())}'"
         f" data-price-source-ts='{esc(card.evidence.price_ts_utc)}'"
         f" data-price-freshness-state='{esc(card.evidence.price_freshness_state)}'"
         f" data-delta-status='{esc(card.delta.delta_status)}'"
@@ -6036,6 +6205,7 @@ def build_json_snapshot(
                 "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
                 "planning_ppp_display": _pct_display(_planning_ppp(c)),
                 "planning_ppp_unavailable_reason": _planning_ppp_unavailable_reason(c),
+                "planning_provenance": _planning_provenance_json(c.planning_provenance),
                 "is_portfolio_asset": c.is_portfolio_asset,
                 "is_wallet_held": c.is_wallet_held,
                 "is_market_selected": c.is_market_selected,

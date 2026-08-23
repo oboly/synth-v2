@@ -154,8 +154,10 @@ def test_load_zone_contexts_partial_native_row_fills_reentry_from_canonical_for_
     """Root cause of the BTC-only Planning PPP gap (Issue #238): a present
     native row in a non-AVAILABLE lifecycle state (e.g. ETH 'Wait for entry')
     must not block the read-only canonical 4h reference from filling in the
-    missing reentry context, so a held token still gets a numeric Planning PPP
-    without requiring native SHORT lifecycle proof."""
+    missing reentry context. This composition mixes native-transient target
+    provenance with canonical-4h entry provenance, so Planning PPP itself
+    stays unavailable as HYBRID_REFERENCE_ONLY (Issue #457) even though both
+    zones are now populated -- see the following test."""
     with tempfile.TemporaryDirectory() as tmpdir:
         fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
         fib_rows.write_text(
@@ -183,25 +185,32 @@ def test_load_zone_contexts_partial_native_row_fills_reentry_from_canonical_for_
         assert result.display_state_by_symbol["ETH"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
         # Native-derived fib_ext values are preserved, not overwritten by canonical.
         assert result.fib_ext_by_symbol["ETH"].ext_1_618 == Decimal("0.515600")
-        # Reentry (reference re-entry zone) is now filled in from canonical 4h —
-        # this is the missing input that previously left Planning PPP unavailable
-        # for every held token except BTC.
+        # Reentry (reference re-entry zone) is now filled in from canonical 4h,
+        # attributed to CANONICAL_4H_NAVIGATION provenance -- a different
+        # authority than the native-transient target (Issue #457).
         assert "ETH" in result.reentry_by_symbol
         assert result.reentry_by_symbol["ETH"].r382_price == Decimal("1.10")
+        provenance = result.planning_provenance_by_symbol["ETH"]
+        assert provenance.entry_source == "CANONICAL_4H_NAVIGATION"
+        assert provenance.target_source == "NATIVE_SHORT_TRANSIENT_REFERENCE"
+        assert provenance.is_hybrid_reference_only is True
 
 
-def test_planning_ppp_numeric_once_reference_entry_and_target_are_both_present() -> None:
-    """Planning PPP only needs a reference entry (reload/buy zone) and a
-    reference target — it must never require native SHORT lifecycle proof to
-    produce a number. This is the composition the load_zone_contexts fallback
-    above unlocks for held tokens that only have a partial/non-AVAILABLE
-    native row plus a canonical 4h reference."""
+def test_planning_ppp_unavailable_when_entry_and_target_are_hybrid_mixed_sources() -> None:
+    """Issue #457: a numeric Planning PPP must prove entry and target resolve
+    to one identified, coherent provenance source. The Issue #238
+    partial-native-target + canonical-4h-fallback-entry composition mixes two
+    different authorities and must render HYBRID_REFERENCE_ONLY -- Planning
+    PPP unavailable with a precise reason, not a silently coherent number."""
     import dataclasses
 
     from src.reporting.manual_short_trader_profit_plan_v1 import (
+        PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+        PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE,
         TargetLevelStatus,
         _planning_ppp,
         _planning_ppp_unavailable_reason,
+        make_planning_provenance,
     )
 
     card = build_profit_plan_card(
@@ -232,11 +241,16 @@ def test_planning_ppp_numeric_once_reference_entry_and_target_are_both_present()
                 is_active_target=True,
             ),
         ),
+        planning_provenance=make_planning_provenance(
+            entry_source=PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+            target_source=PLANNING_SOURCE_NATIVE_SHORT_TRANSIENT_REFERENCE,
+        ),
     )
     ppp = _planning_ppp(card)
-    assert ppp is not None
-    assert ppp == Decimal("50")  # (0.60 - 0.40) / 0.40 * 100
-    assert _planning_ppp_unavailable_reason(card) is None
+    assert ppp is None
+    reason = _planning_ppp_unavailable_reason(card)
+    assert reason is not None
+    assert "different sources" in reason
 
 
 def test_planning_ppp_unavailable_reason_is_precise_when_zone_context_missing() -> None:
