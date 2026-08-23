@@ -458,7 +458,7 @@ def test_failed_generation_rolls_back_without_replacing_prior_cohort(
     connection = Connection()
     monkeypatch.setattr(runner, "get_connection", lambda: connection)
     monkeypatch.setattr(runner, "fetch_tracked_symbols", lambda *args, **kwargs: ["BTC"])
-    monkeypatch.setattr(runner, "fetch_latest_production_rows", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "fetch_production_rows_before", lambda *args, **kwargs: {})
     monkeypatch.setattr(runner, "fetch_recent_candles", lambda *args, **kwargs: {"BTC": candles()})
     monkeypatch.setattr(
         runner,

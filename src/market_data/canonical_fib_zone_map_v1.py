@@ -695,6 +695,30 @@ def fetch_latest_trend_rows(
     }
 
 
+def resolve_candidate_asof_ts_utc(
+    candles_by_symbol: Mapping[str, Sequence[FibNavCandle]],
+) -> datetime | None:
+    """Candidate publication ``asof_ts_utc``, derived directly from fetched
+    candles, independent of prior continuity, trend alignment, or per-symbol
+    availability.
+
+    Mirrors exactly what ``build_publication`` will later derive from the
+    resulting rows: the max, across symbols with any candle data, of that
+    symbol's own latest ``close_ts_utc`` (``build_row`` sorts a symbol's
+    candles and uses the last one as ``latest``, regardless of whether the
+    row ends up available or unavailable). The normal recurring writer uses
+    this to bound prior-continuity strictly before this identity *before*
+    the identity is known any other way -- so a rerun of the same asof never
+    reads its own just-published cohort (or a later one) as prior context.
+    """
+    candidates = [
+        _utc(max(rows, key=lambda candle: candle.close_ts_utc).close_ts_utc)
+        for rows in candles_by_symbol.values()
+        if rows
+    ]
+    return max(candidates) if candidates else None
+
+
 def fetch_latest_production_rows(
     conn: Any,
     *,
