@@ -87,10 +87,23 @@ already-resolved facts into one explicit classification.
    account overlay (held asset, open order, or manual asset config).
 5. `FIB_MAP_NOT_ENROLLED` — not enrolled and no known overlay origin
    (fallback; expected to be rare given the account-scoped market universe).
-6. `NOT_APPLICABLE` — native SHORT or legacy 1d context already supplies
-   authority; canonical-row absence is not the operative reason for this
-   card.
-7. `FIB_MAP_SOURCE_UNAVAILABLE` — the whole canonical Fib source
+6. `NATIVE_SHORT_EXPECTED_BUT_MISSING` / `NATIVE_SHORT_CONTEXT_PARTIAL` —
+   canonical 4h has no usable authority for this card (canonical row state
+   is `NOT_APPLICABLE` — not `AVAILABLE`, `STALE`, `UNAVAILABLE`, `ABSENT`,
+   or `SOURCE_UNAVAILABLE`), and `native_short_scope_state == SUPPORTED`
+   with `native_short_row_state` of `ABSENT` (missing) or `PARTIAL`
+   respectively. **Never** collapsed into `NOT_APPLICABLE` — that would
+   silently suppress a real supported-native coverage gap. When a usable
+   canonical 4h row *does* exist, the overall reason stays
+   `FIB_MAP_AVAILABLE` instead (rule 1 takes precedence); the native gap
+   remains visible only through `native_short_scope_state` /
+   `native_short_row_state`, which are always populated independently of
+   `fib_coverage_reason`.
+7. `NOT_APPLICABLE` — native SHORT is not expected to support this symbol
+   (`native_short_scope_state` is `NOT_APPLICABLE` or `UNKNOWN`) or legacy
+   1d context already supplies authority; canonical-row absence is not the
+   operative reason for this card.
+8. `FIB_MAP_SOURCE_UNAVAILABLE` — the whole canonical Fib source
    (`short_context_coverage_status == FIB_MAP_SOURCE_MISSING`) failed to
    load. **Never** classified as `FIB_MAP_EXPECTED_BUT_MISSING`,
    `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or `FIB_MAP_NOT_ENROLLED` — a source
@@ -104,7 +117,11 @@ already-resolved facts into one explicit classification.
 
 Native SHORT unsupported/not-enrolled (`native_short_scope_state ==
 NOT_APPLICABLE`) is tracked independently of `fib_coverage_reason` and never
-overrides a valid canonical 4h navigation row — see items E/F below.
+overrides a valid canonical 4h navigation row — see items E/F below. Native
+SHORT *supported*-but-missing/partial (`native_short_scope_state ==
+SUPPORTED`) is the opposite failure mode guarded by rule 6 above: it must
+never be silently absorbed into `NOT_APPLICABLE` just because canonical 4h
+also has no usable row.
 
 ## Wiring
 

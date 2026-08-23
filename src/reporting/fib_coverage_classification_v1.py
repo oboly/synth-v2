@@ -45,6 +45,15 @@ Reason vocabulary is intentionally compact and mutually exclusive per card:
                                         itself is unreadable, no per-symbol
                                         enrollment or absence conclusion is
                                         truthful for anyone in that render.
+    NATIVE_SHORT_EXPECTED_BUT_MISSING -- native SHORT scope SUPPORTED for
+                                        this symbol, no native row, and no
+                                        usable canonical 4h fallback either.
+                                        Never collapsed into NOT_APPLICABLE.
+    NATIVE_SHORT_CONTEXT_PARTIAL    -- native SHORT scope SUPPORTED, native
+                                        context only partially available,
+                                        and no usable canonical 4h fallback
+                                        either. Never collapsed into
+                                        NOT_APPLICABLE.
 
 Native SHORT scope/row state are tracked as two independent fields so that
 "unsupported/not enrolled" never collapses into the same bucket as
@@ -106,6 +115,14 @@ REASON_NOT_APPLICABLE = "NOT_APPLICABLE"
 # per-row truth (and therefore any enrollment-relative conclusion) is
 # unknown, not "missing" or "out of scope".
 REASON_FIB_MAP_SOURCE_UNAVAILABLE = "FIB_MAP_SOURCE_UNAVAILABLE"
+# Native SHORT scope is SUPPORTED (the symbol is expected to have a native
+# row) but no usable canonical 4h fallback exists either. Never collapsed
+# into NOT_APPLICABLE -- that would silently hide a real supported-native
+# coverage gap. When a usable canonical 4h row *does* exist, the overall
+# reason stays FIB_MAP_AVAILABLE and this gap remains visible only via
+# native_short_scope_state/native_short_row_state, never overriding it.
+REASON_NATIVE_SHORT_CONTEXT_PARTIAL = "NATIVE_SHORT_CONTEXT_PARTIAL"
+REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING = "NATIVE_SHORT_EXPECTED_BUT_MISSING"
 
 # Reasons that already carry usable/expected Fib authority — never appended
 # as a supplemental card reason and never counted as a coverage gap.
@@ -234,6 +251,15 @@ def classify_fib_coverage(
             fib_coverage_reason = REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
         else:
             fib_coverage_reason = REASON_FIB_MAP_NOT_ENROLLED
+    elif native_short_scope_state == NATIVE_SCOPE_SUPPORTED and native_short_row_state == NATIVE_ROW_ABSENT:
+        # No usable canonical 4h authority (canonical row is
+        # NOT_APPLICABLE here -- neither available, stale, unavailable,
+        # absent, nor source-unavailable) and native SHORT was expected to
+        # support this symbol but has no row. Expose the gap explicitly;
+        # never collapse it into NOT_APPLICABLE.
+        fib_coverage_reason = REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+    elif native_short_scope_state == NATIVE_SCOPE_SUPPORTED and native_short_row_state == NATIVE_ROW_PARTIAL:
+        fib_coverage_reason = REASON_NATIVE_SHORT_CONTEXT_PARTIAL
     else:
         fib_coverage_reason = REASON_NOT_APPLICABLE
 
@@ -267,6 +293,15 @@ _REASON_DISPLAY_TEXT: dict[str, str] = {
         "symbol is enrolled or has a row is currently unknown -- not missing, not "
         "out of scope."
     ),
+    REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING: (
+        "Native SHORT scope supports this symbol, but no native SHORT row is "
+        "available, and no usable canonical 4h fallback exists either."
+    ),
+    REASON_NATIVE_SHORT_CONTEXT_PARTIAL: (
+        "Native SHORT scope supports this symbol, but the native SHORT context is "
+        "only partially available, and no usable canonical 4h fallback exists "
+        "either."
+    ),
 }
 
 
@@ -291,6 +326,8 @@ def summarize_fib_coverage_reasons(
         REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE: 0,
         REASON_FIB_MAP_NOT_ENROLLED: 0,
         REASON_FIB_MAP_SOURCE_UNAVAILABLE: 0,
+        REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING: 0,
+        REASON_NATIVE_SHORT_CONTEXT_PARTIAL: 0,
         REASON_NOT_APPLICABLE: 0,
     }
     for classification in classifications:

@@ -6,6 +6,7 @@ from src.reporting.fib_coverage_classification_v1 import (
     CANONICAL_SCOPE_ENROLLED,
     CANONICAL_SCOPE_NOT_ENROLLED,
     NATIVE_ROW_ABSENT,
+    NATIVE_ROW_PARTIAL,
     NATIVE_SCOPE_NOT_APPLICABLE,
     NATIVE_SCOPE_SUPPORTED,
     NATIVE_SCOPE_UNKNOWN,
@@ -20,6 +21,8 @@ from src.reporting.fib_coverage_classification_v1 import (
     REASON_FIB_MAP_EXPECTED_BUT_MISSING,
     REASON_FIB_MAP_NOT_ENROLLED,
     REASON_FIB_MAP_SOURCE_UNAVAILABLE,
+    REASON_NATIVE_SHORT_CONTEXT_PARTIAL,
+    REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING,
     REASON_NOT_APPLICABLE,
     classify_fib_coverage,
     fib_coverage_reason_text,
@@ -185,6 +188,52 @@ def test_manual_asset_config_overlay_origin():
     assert result.fib_coverage_reason == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
 
 
+def test_native_supported_absent_no_canonical_exposes_gap_not_not_applicable():
+    """native SHORT SUPPORTED + ABSENT + no usable canonical authority must
+    expose NATIVE_SHORT_EXPECTED_BUT_MISSING, never silently collapse into
+    NOT_APPLICABLE (that would suppress a real supported-native coverage
+    gap)."""
+    result = _classify(
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_input_status="LEGACY_1D_CONTEXT_ONLY",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+    )
+    assert result.native_short_scope_state == NATIVE_SCOPE_SUPPORTED
+    assert result.native_short_row_state == NATIVE_ROW_ABSENT
+    assert result.fib_coverage_reason == REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+    assert result.fib_coverage_reason != REASON_NOT_APPLICABLE
+
+
+def test_native_supported_partial_no_canonical_exposes_gap_not_not_applicable():
+    """native SHORT SUPPORTED + PARTIAL + no usable canonical authority must
+    expose NATIVE_SHORT_CONTEXT_PARTIAL, never NOT_APPLICABLE."""
+    result = _classify(
+        short_context_coverage_status="MARKET_DATA_MISSING",
+        short_context_input_status="MARKET_DATA_MISSING",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+    )
+    assert result.native_short_scope_state == NATIVE_SCOPE_SUPPORTED
+    assert result.native_short_row_state == NATIVE_ROW_PARTIAL
+    assert result.fib_coverage_reason == REASON_NATIVE_SHORT_CONTEXT_PARTIAL
+    assert result.fib_coverage_reason != REASON_NOT_APPLICABLE
+
+
+def test_native_supported_absent_with_canonical_available_stays_available_but_explicit():
+    """native SHORT SUPPORTED + ABSENT, but canonical 4h IS available: overall
+    usable Fib authority stays FIB_MAP_AVAILABLE, while the native gap
+    remains explicit via native_short_scope_state/native_short_row_state
+    (never silently dropped)."""
+    result = _classify(
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        is_market_selected=True,
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+    )
+    assert result.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+    assert result.native_short_scope_state == NATIVE_SCOPE_SUPPORTED
+    assert result.native_short_row_state == NATIVE_ROW_ABSENT
+
+
 def test_production_shape_seven_no_row_cards_are_not_all_broken():
     """L. the observed 60/53/7 production shape can be represented without
     calling all seven no-row cards broken -- some are truthfully not-enrolled
@@ -277,6 +326,37 @@ def test_j_json_and_html_reason_expose_same_state():
     assert json_entry == card.fib_coverage.to_json()
     assert json_entry["fib_coverage_reason"] == REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE
     assert snapshot["fib_coverage_summary"][REASON_ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE] == 1
+
+
+def test_native_short_gap_json_and_html_reason_expose_same_final_reason():
+    """A supported-but-missing native SHORT gap (no usable canonical
+    fallback) must show the actual final fib_coverage_reason -- not merely
+    a native_short_row_state assertion -- identically in card.reasons
+    (HTML's source) and the JSON classification block."""
+    card = _card_with_overlays()
+    card = dataclasses.replace(
+        card,
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_input_status="LEGACY_1D_CONTEXT_ONLY",
+    )
+    out = apply_fib_coverage_classification(
+        [card],
+        open_order_count_by_market={},
+        native_short_scope_state_by_symbol={"PLUME": "SUPPORTED"},
+    )
+    result_card = out[0]
+    assert result_card.fib_coverage.fib_coverage_reason == REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+
+    reason_text = fib_coverage_reason_text(result_card.fib_coverage)
+    assert reason_text is not None
+    assert reason_text in result_card.reasons
+
+    snapshot = build_json_snapshot(out)
+    json_entry = snapshot["symbols"][0]["fib_coverage_classification"]
+    assert json_entry["fib_coverage_reason"] == REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING
+    assert json_entry == result_card.fib_coverage.to_json()
+    assert snapshot["fib_coverage_summary"][REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING] == 1
+    assert snapshot["fib_coverage_summary"][REASON_NOT_APPLICABLE] == 0
 
 
 def test_apply_fib_coverage_classification_does_not_duplicate_reason_on_reapply():
