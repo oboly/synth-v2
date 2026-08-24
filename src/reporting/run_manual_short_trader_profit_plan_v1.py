@@ -413,6 +413,21 @@ def _fmt_unavailable(value: Any) -> str:
     return text if text else "DATA_UNAVAILABLE"
 
 
+# Loader-side placeholder tokens that mean "no authoritative value was ever
+# persisted", not a real canonical enum value. native_short_fib_context_v1's
+# CSV/JSON round-trip defaults a blank primary_4h_lifecycle_state to the
+# literal string "UNKNOWN" (see load_context_rows); that placeholder must
+# never reach the fail-closed lifecycle gates (_map_lifecycle_blocks_action,
+# _actionable_ppp_eligible, _fix_ladder_allowed) as if it were proven,
+# non-blocking lifecycle authority.
+_NON_AUTHORITATIVE_LIFECYCLE_TOKENS: frozenset[str] = frozenset({"", "UNKNOWN", "DATA_UNAVAILABLE", "NONE", "NULL"})
+
+
+def _fmt_lifecycle_state(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    return "DATA_UNAVAILABLE" if text in _NON_AUTHORITATIVE_LIFECYCLE_TOKENS else str(value).strip()
+
+
 def _map_age_min(*, anchor_end_ts_utc: datetime | None, now_utc: datetime) -> str:
     if anchor_end_ts_utc is None:
         return "DATA_UNAVAILABLE"
@@ -472,8 +487,10 @@ def _evidence_from_native_row(
         # (NativeShortContextRow.primary_4h_lifecycle_state / rollover_state /
         # previous_map_cycle_id / previous_map_lifecycle_state), not derived or
         # inferred here. Stays DATA_UNAVAILABLE only when the row itself never
-        # populated a value (e.g. SINGLE_MAP cycles have no previous map).
-        lifecycle_state = _fmt_unavailable(native_row.primary_4h_lifecycle_state)
+        # populated a value (e.g. SINGLE_MAP cycles have no previous map), or
+        # when the loader's own "UNKNOWN" round-trip placeholder stands in for
+        # a genuinely absent lifecycle value (_fmt_lifecycle_state).
+        lifecycle_state = _fmt_lifecycle_state(native_row.primary_4h_lifecycle_state)
         rollover_state = _fmt_unavailable(native_row.rollover_state)
         previous_map_cycle_id = _fmt_unavailable(native_row.previous_map_cycle_id)
         previous_map_lifecycle_state = _fmt_unavailable(native_row.previous_map_lifecycle_state)

@@ -433,9 +433,14 @@ def test_load_zone_contexts_canonical_row_surfaces_rollover_and_previous_cycle()
 
 
 def test_load_zone_contexts_canonical_row_with_no_lifecycle_stays_data_unavailable() -> None:
-    """Issue #494 Regression B: a canonical row whose own lifecycle field was
-    never populated upstream must stay DATA_UNAVAILABLE -- reporting must not
-    invent a lifecycle value merely because the row is otherwise canonical."""
+    """Issue #494 Regression B (P1 follow-up): a canonical row whose own
+    lifecycle field was never populated upstream must project as the exact
+    string DATA_UNAVAILABLE, not the loader's "UNKNOWN" round-trip
+    placeholder. UNKNOWN is not a proven lifecycle enum value and must not
+    silently pass the fail-closed lifecycle gates (_map_lifecycle_blocks_action,
+    _actionable_ppp_eligible, _fix_ladder_allowed) as if it were non-blocking
+    canonical truth -- this test asserts both the projected field and the
+    real consumer-path behavior."""
     with tempfile.TemporaryDirectory() as tmpdir:
         fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
         fib_rows.write_text(
@@ -462,9 +467,29 @@ def test_load_zone_contexts_canonical_row_with_no_lifecycle_stays_data_unavailab
         assert evidence.native_map_status == "AVAILABLE"
         # The native SHORT CSV round-trip itself defaults a blank lifecycle
         # field to "UNKNOWN" (native_short_fib_context_v1.load_context_rows);
-        # reporting must not turn that into a fabricated active-sounding state.
-        assert evidence.lifecycle_state in {"DATA_UNAVAILABLE", "UNKNOWN"}
-        assert evidence.lifecycle_state not in _pp_module._ACTION_BLOCKING_LIFECYCLE_STATES
+        # the reporting projection trust boundary must normalize that
+        # non-authoritative loader placeholder to DATA_UNAVAILABLE, exactly.
+        assert evidence.lifecycle_state == "DATA_UNAVAILABLE"
+
+        card = build_profit_plan_card(
+            symbol="AAVE",
+            market="AAVE-EUR",
+            current_price=Decimal("0.34"),
+            short_context_input_status=result.input_status_by_symbol["AAVE"],
+            short_context_coverage_status=result.coverage_status_by_symbol["AAVE"],
+            short_context_display_state=result.display_state_by_symbol["AAVE"],
+            fib_ext=result.fib_ext_by_symbol.get("AAVE"),
+            reentry=result.reentry_by_symbol.get("AAVE"),
+            evidence=evidence,
+            planning_provenance=result.planning_provenance_by_symbol.get("AAVE"),
+        )
+        # Real consumer path, not just enum membership: absent/unproven
+        # lifecycle authority must never enable Actionable PPP or FIX LADDER,
+        # even though map identity (native_map_status/selected_map_tier) is
+        # otherwise proven canonical/current on this same card.
+        assert _pp_module._map_lifecycle_blocks_action(card) is True
+        assert _pp_module._actionable_ppp(card) is None
+        assert _pp_module._effective_workflow_action(card) != "FIX LADDER"
 
 
 def test_load_zone_contexts_unverified_snapshot_status_stays_transient() -> None:
