@@ -17,6 +17,7 @@ import pytest
 from src.research.run_market_rotation_history_v1 import (
     AssetRow,
     CandleRecord,
+    CANDLE_INTERVAL,
     FETCH_BATCH_ROWS,
     GlobalContextResult,
     HorizonObservation,
@@ -184,6 +185,11 @@ def test_floor_to_hour():
 def test_floor_to_hour_already_on_boundary():
     ts = datetime(2026, 1, 15, 8, 0, 0)
     assert floor_to_hour(ts) == ts
+
+
+def test_canonical_rotation_pressure_source_is_closed_hourly_candles():
+    assert CANDLE_INTERVAL == "1h"
+    assert floor_to_hour(datetime(2026, 1, 15, 8, 59, 59)) == datetime(2026, 1, 15, 8)
 
 
 def test_compute_price_change_pct_positive():
