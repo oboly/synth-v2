@@ -4731,7 +4731,8 @@ def test_card_body_omits_header_duplicate_fields() -> None:
     assert "<div class='field-label'>Market</div>" not in html
     assert "<div class='field-label'>Horizon</div>" not in html
     assert "<div class='field-label'>Quality</div>" not in html
-    assert "<div class='field-label'>Current price</div>" in html
+    assert "<div class='field-label' title='Latest rendered market-price observation;" in html
+    assert ">Current price</div>" in html
 
 
 def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None:
@@ -7353,6 +7354,100 @@ def test_sort_ppp_rail_still_prioritizes_wallet_held_in_action_priority_mode() -
     ]
     result = _run_profit_plan_sort_js("action", cards)
     assert result["rail_order"][0] == "bbb"
+
+
+# ---------------------------------------------------------------------------
+# Issue #516 — current-state operator UX summary and ordering.
+# ---------------------------------------------------------------------------
+
+def test_current_card_summary_has_aligned_fields_and_bounded_tooltips() -> None:
+    html = render_plan_card(_fresh_canonical_card(), buy_orders=(), sell_orders=())
+    summary = re.search(r"card-summary-grid'>(.*?)</div>\s*<div class='plan-section fib-levels-section", html, re.S)
+    assert summary is not None
+    labels = re.findall(r"field-label'(?: title='[^']*')?>([^<]+)<", summary.group(1))
+    assert labels == ["Current price", "Setup", "Actionability", "Map context", "Market event", "Candidate evidence"]
+    assert "title='Reporting eligibility state derived from canonical current map" in summary.group(1)
+    assert "MAP | ACTIONABLE PPP" not in html
+
+
+def test_default_ordering_places_actionable_cards_before_presentation_mode() -> None:
+    actionable = _fresh_canonical_card()
+    non_actionable = dataclasses.replace(
+        actionable,
+        symbol="AAA",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
+    )
+    actionable = dataclasses.replace(actionable, symbol="ZZZ", presentation_mode=CARD_MODE_MARKET_SELECTED)
+
+    ordered = sort_cards_action_priority([non_actionable, actionable])
+
+    assert [card.symbol for card in ordered] == ["ZZZ", "AAA"]
+
+
+def test_default_ordering_uses_symbol_as_deterministic_tie_break() -> None:
+    first = dataclasses.replace(_fresh_canonical_card(), symbol="ZZZ")
+    second = dataclasses.replace(_fresh_canonical_card(), symbol="AAA")
+
+    ordered = sort_cards_action_priority([first, second])
+
+    assert [card.symbol for card in ordered] == ["AAA", "ZZZ"]
+
+
+def test_default_browser_ordering_places_actionable_cards_first() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="held_non_actionable", ppp=None, wallet_held=True),
+        _sort_ppp_fixture_card(symbol="actionable", ppp="1.5", wallet_held=False),
+    ]
+    result = _run_profit_plan_sort_js("action", cards)
+    assert result["main_order"] == ["actionable", "held_non_actionable"]
+
+
+def test_operator_state_summary_counts_existing_actionable_truth() -> None:
+    actionable = _fresh_canonical_card()
+    inactive = dataclasses.replace(
+        actionable,
+        symbol="INACTIVE",
+        actionability_state=_pp_module.CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
+    )
+
+    summary = _pp_module.build_operator_state_summary([actionable, inactive])
+    snapshot = build_json_snapshot([actionable, inactive])
+
+    assert summary.actionable_candidate_count == 1
+    assert snapshot["operator_state"]["actionable_candidate_count"] == 1
+
+
+def test_operator_state_renders_valid_zero_distinct_from_unavailable() -> None:
+    fresh_non_actionable = dataclasses.replace(
+        _fresh_canonical_card(),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+    )
+    zero_html = render_full_html([fresh_non_actionable], rendered_at="now", broker_mode="test")
+    unavailable_html = render_full_html([], rendered_at="now", broker_mode="test")
+
+    assert "Zero actionable candidates from current evidence" in zero_html
+    assert "Source unavailable — no Profit Plan cards loaded" in unavailable_html
+
+
+def test_operator_state_renders_nonempty_unavailable_source_state() -> None:
+    html = render_full_html([_ldo_like_card()], rendered_at="now", broker_mode="test")
+
+    assert "No actionable candidates — source evidence is stale or unavailable" in html
+    assert "Unavailable: 1" in html
+
+
+def test_card_candidate_evidence_preserves_fresh_price_and_unavailable_map() -> None:
+    card = _ldo_like_card()
+    card = dataclasses.replace(
+        card,
+        evidence=dataclasses.replace(card.evidence, price_freshness_state="FRESH"),
+    )
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert "Candidate evidence" in html
+    assert "Price FRESH · map DATA_UNAVAILABLE" in html
+    assert "ACCOUNT_ORDER_DATA_UNAVAILABLE" in html
 
 
 # ---------------------------------------------------------------------------

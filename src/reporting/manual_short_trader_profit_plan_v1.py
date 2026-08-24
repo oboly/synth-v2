@@ -1713,12 +1713,13 @@ def _card_action_sort_value(card: ProfitPlanCard) -> int:
 
 
 def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCard]:
-    """Default UI sort: portfolio position cards first, then watch-only rotation cards last."""
-    def key(card: ProfitPlanCard) -> tuple[int, bool, int, Decimal, Decimal, str]:
+    """Default operator sort: actionable candidates first, then stable review order."""
+    def key(card: ProfitPlanCard) -> tuple[bool, int, bool, int, Decimal, Decimal, str]:
         dist = _nearest_distance(card)
         # Actionable PPP (not Planning PPP) is the only PPP allowed to influence ranking.
         ppp = _actionable_ppp(card)
         return (
+            ppp is None,
             _PRESENTATION_MODE_SORT_RANK.get(card.presentation_mode, 99),
             not card.is_relevant,
             _card_action_sort_value(card),
@@ -1728,6 +1729,45 @@ def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCa
         )
 
     return sorted(cards, key=key)
+
+
+@dataclass(frozen=True)
+class OperatorStateSummary:
+    """Read-only count and source-health summary for the operator header."""
+
+    actionable_candidate_count: int
+    current_evidence_count: int
+    stale_evidence_count: int
+    unavailable_evidence_count: int
+
+
+def _operator_candidate_evidence_health(card: ProfitPlanCard) -> str:
+    """Classify only the current map/price evidence used by reporting.
+
+    Account/order projections deliberately remain separate evidence rows: a
+    missing narrower account projection must not relabel a fresh price/map
+    observation as unavailable.
+    """
+    if card.evidence.native_context_freshness_status in _NATIVE_SOURCE_STALE_FRESHNESS_STATES:
+        return "STALE"
+    if not _price_is_fresh_enough(card):
+        return "STALE" if card.evidence.price_freshness_state == "STALE" else DATA_UNAVAILABLE
+    if not _canonical_native_map_truth_available(card.evidence):
+        return DATA_UNAVAILABLE
+    return "CURRENT"
+
+
+def build_operator_state_summary(cards: list[ProfitPlanCard]) -> OperatorStateSummary:
+    """Summarize existing reporting truth without creating new authority."""
+    health_counts = {"CURRENT": 0, "STALE": 0, DATA_UNAVAILABLE: 0}
+    for card in cards:
+        health_counts[_operator_candidate_evidence_health(card)] += 1
+    return OperatorStateSummary(
+        actionable_candidate_count=sum(_actionable_ppp(card) is not None for card in cards),
+        current_evidence_count=health_counts["CURRENT"],
+        stale_evidence_count=health_counts["STALE"],
+        unavailable_evidence_count=health_counts[DATA_UNAVAILABLE],
+    )
 
 
 def _presentation_mode_sort_rank(card: ProfitPlanCard) -> int:
@@ -4390,6 +4430,14 @@ _CSS = """
       margin-bottom: 3px;
     }
     .field-value { font-size: 13px; color: var(--text); }
+    .operator-state-summary {
+      display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+      margin: 8px 0 2px; font-size: 12px;
+    }
+    .operator-state-summary strong { color: var(--text); }
+    .operator-state-summary-current { color: var(--ok); }
+    .operator-state-summary-stale, .operator-state-summary-unavailable { color: var(--warn); }
+    .operator-state-summary-unavailable { color: var(--bad); }
     .plan-section { margin: 10px 0; }
     .section-heading {
       font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--blue);
@@ -4676,6 +4724,13 @@ def _build_client_js(storage_scope: str) -> str:
 
         return (a.dataset.sortSymbol || '').localeCompare(b.dataset.sortSymbol || '');
       }}
+
+      // Default operator order consumes the same Actionable PPP truth as the
+      // server renderer: actionable cards first, then existing presentation
+      // and workflow ordering. Planning PPP never participates.
+      var aActionable = hasUsablePpp(a);
+      var bActionable = hasUsablePpp(b);
+      if (aActionable !== bActionable) return aActionable ? -1 : 1;
 
       var presentationDelta = numericDataset(a, 'sortPresentation', '999') - numericDataset(b, 'sortPresentation', '999');
       if (presentationDelta !== 0) return presentationDelta;
@@ -5087,11 +5142,62 @@ def _order_summary_html(
     )
 
 
+_PROFIT_PLAN_FIELD_TOOLTIPS: dict[str, str] = {
+    "Current price": "Latest rendered market-price observation; its age and source status are shown in Evidence.",
+    "Setup": "Market setup classification from the current Profit Plan card. It is not an execution instruction.",
+    "Actionability": "Reporting eligibility state derived from canonical current map and price evidence; it is not execution permission.",
+    "Map context": "Current map-context classification and provenance. Navigation-only or non-canonical context is shown explicitly.",
+    "Market event": "Current market-event label displayed for review only; it does not grant account or execution permission.",
+    "Candidate evidence": "Read-only current-price and canonical map evidence. Account and order projections remain separate in Evidence.",
+    "Planning PPP": "Theoretical map potential from the stated planning provenance; it does not establish actionability.",
+    "Planning PPP source": "Provenance for the planning entry and target values used to calculate Planning PPP.",
+    "Actionable PPP": "Current-price-to-active-target potential only when canonical current-map and activation evidence are present.",
+    "Selected native SHORT map": "Canonical selected-map status used for this card; missing tier metadata is not inferred.",
+    "Native SHORT map lifecycle": "Lifecycle evidence for the selected native SHORT map; unavailable lifecycle truth remains unavailable.",
+    "Wallet snapshot": "Read-only wallet-balance snapshot status, independent from position cost basis and orders.",
+    "Cost basis": "Read-only position cost-basis status, independent from wallet balance and order snapshots.",
+}
+
+
 def _metric_block(label: str, value: str) -> str:
+    tooltip = _PROFIT_PLAN_FIELD_TOOLTIPS.get(label)
+    title_attr = f" title='{esc(tooltip)}'" if tooltip else ""
     return (
         "<div class='field-block'>"
-        f"<div class='field-label'>{esc(label)}</div>"
+        f"<div class='field-label'{title_attr}>{esc(label)}</div>"
         f"<div class='field-value mono'>{esc(value)}</div>"
+        "</div>"
+    )
+
+
+def _candidate_evidence_text(evidence_rows: tuple[EvidenceRow, ...]) -> str:
+    """Compact provenance that preserves independent price/map truth."""
+    rows = {row.key: row for row in evidence_rows}
+    price_status = rows.get("price_snapshot", EvidenceRow("", "", "", DATA_UNAVAILABLE)).status
+    map_status = rows.get("projection_status", EvidenceRow("", "", "", DATA_UNAVAILABLE)).status
+    return f"Price {price_status} · map {map_status}"
+
+
+def _operator_state_summary_html(summary: OperatorStateSummary, *, total_count: int) -> str:
+    health_html = (
+        "<span class='operator-state-summary-current'>"
+        f"Current evidence: {summary.current_evidence_count}</span>"
+        "<span class='operator-state-summary-stale'>"
+        f"Stale: {summary.stale_evidence_count}</span>"
+        "<span class='operator-state-summary-unavailable'>"
+        f"Unavailable: {summary.unavailable_evidence_count}</span>"
+    )
+    if total_count == 0:
+        headline = "Source unavailable — no Profit Plan cards loaded"
+    elif summary.actionable_candidate_count:
+        headline = f"Actionable candidates: {summary.actionable_candidate_count}"
+    elif summary.stale_evidence_count or summary.unavailable_evidence_count:
+        headline = "No actionable candidates — source evidence is stale or unavailable"
+    else:
+        headline = "Zero actionable candidates from current evidence"
+    return (
+        "<div class='operator-state-summary' aria-live='polite'>"
+        f"<strong>{esc(headline)}</strong>{health_html}"
         "</div>"
     )
 
@@ -5684,16 +5790,10 @@ def render_plan_card(
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
+        _metric_block("Map context", _short_context_display_label(card.short_context_display_state)),
+        _metric_block("Market event", event_label),
+        _metric_block("Candidate evidence", _candidate_evidence_text(evidence_rows)),
     ]
-    if card.short_context_display_state in {
-        "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT",
-        SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE,
-    }:
-        summary_blocks.append(
-            _metric_block("Map context", _short_context_display_label(card.short_context_display_state))
-        )
-    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
-        summary_blocks.append(_metric_block("Market event", event_label))
     summary_html = "".join(summary_blocks)
 
     # --- Fibonacci Levels (market/map fields only) ---------------------
@@ -5974,7 +6074,7 @@ def render_plan_card(
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
-        f"<div class='field-grid'>{summary_html}</div>"
+        f"<div class='field-grid card-summary-grid'>{summary_html}</div>"
         f"{fib_section_html}"
         f"{account_section_html}"
         f"{order_section_html}"
@@ -6008,6 +6108,11 @@ def render_full_html(
     display_cards = sort_cards_action_priority(cards) if sort else list(cards)
     attention_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
+    operator_state_summary = build_operator_state_summary(cards)
+    operator_state_summary_html = _operator_state_summary_html(
+        operator_state_summary,
+        total_count=total_count,
+    )
     cards_html = "\n".join(
         render_plan_card(
             c,
@@ -6039,6 +6144,7 @@ def render_full_html(
         f"  <meta name='synth-writer-instance-id' content='{esc(snapshot_writer_id)}'>\n"
         f"  <meta name='synth-attention-count' content='{attention_count}'>\n"
         f"  <meta name='synth-total-count' content='{total_count}'>\n"
+        f"  <meta name='synth-actionable-candidate-count' content='{operator_state_summary.actionable_candidate_count}'>\n"
         "  <title>Synth — Profit Plan</title>\n"
         f"{synth_favicon_head_html()}"
         f"  <style>{_CSS}</style>\n"
@@ -6048,6 +6154,7 @@ def render_full_html(
         "    <h1>Synth v2 — Profit Plan</h1>\n"
         f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Cards: {total_count} · Attention: {attention_count}</span>\n"
         "    </div>\n"
+        f"    {operator_state_summary_html}\n"
         f"{nav_section_html}"
         "  </header>\n"
         f"{pipeline_banner_section_html}"
@@ -6264,6 +6371,7 @@ def build_json_snapshot(
     total_count = len(cards)
     wallet_held_count = sum(1 for c in cards if c.is_wallet_held)
     portfolio_asset_count = sum(1 for c in cards if c.is_portfolio_asset)
+    operator_state_summary = build_operator_state_summary(cards)
     _rotation_projection = rotation_projection or unavailable_rotation_projection()
     return {
         "report": REPORT_NAME,
@@ -6284,6 +6392,12 @@ def build_json_snapshot(
         # wallet-driven inclusion, not strategic portfolio membership,
         # despite its old name. Canonical field is "wallet_held_count".
         "portfolio_held_count": wallet_held_count,
+        "operator_state": {
+            "actionable_candidate_count": operator_state_summary.actionable_candidate_count,
+            "current_evidence_count": operator_state_summary.current_evidence_count,
+            "stale_evidence_count": operator_state_summary.stale_evidence_count,
+            "unavailable_evidence_count": operator_state_summary.unavailable_evidence_count,
+        },
         "broker_mode": broker_mode,
         "broker_writes": 0,
         "order_submission": 0,
