@@ -2772,6 +2772,58 @@ def test_cli_promote_scope_rejects_symbol_not_bulk_rollout_ready(
     assert conn.commit_count == 0
 
 
+def test_cli_write_revalidates_immediately_before_transaction_and_blocks_staleness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TOCTOU regression test (Issue #276 v2): the upfront guard in main()
+    runs its own audit on its own connection, then closes it, before
+    _run_write opens a fresh connection for the actual transaction. If
+    readiness changed in that window, the write must still be blocked --
+    execute_scope_administration itself only checks ledger state, never
+    market readiness. Simulates this with a call-counting report factory:
+    the guard's call (1st) sees READY, the write-time revalidation (2nd,
+    same _load_bulk_rollout_report seam, immediately before
+    execute_scope_administration) sees the symbol has since become
+    ineligible. Mirrors the bulk CLI's own equivalent regression test."""
+    conn = _FakeConn()
+    calls: list[int] = []
+
+    def _report_factory(as_of_utc: datetime) -> AuditReport:
+        calls.append(1)
+        if len(calls) == 1:
+            return _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc, supported=False)
+        market = MarketMetadata(
+            asset_id=1, venue_market_id=1, market="BTC-EUR",
+            asset_enabled=False, market_data_enabled=True, market_tradeable=True,
+        )
+        candidate = CandidateInput(
+            symbol="BTC", markets=(market,),
+            primary=CandleWindow(), supporting=CandleWindow(),
+            ledger=LedgerState(), context_status=STATUS_AVAILABLE,
+        )
+        result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+        return AuditReport(
+            as_of_utc=as_of_utc, results=(result,), proposed_sequential_queue=(),
+            counts={}, writer_run_count=0, attributable_writer_run_count=0,
+            legacy_unattributed_writer_run_count=0, invalid_provenance_writer_run_count=0,
+            provenance_audit_run_found=True, provenance_audit_run_attributed=True,
+            provenance_contract_implemented=True, attributable_production_run_observed=True,
+            operational_acceptance_completed=True, writer_provenance_blocker_active=False,
+            global_blocker_codes=(),
+        )
+
+    _stub_write_auth(monkeypatch)
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn,
+        bulk_rollout_report_factory=_report_factory,
+    )
+    assert len(calls) == 2  # guard, then write-time revalidation
+    assert code == 2
+    assert stdout_docs[0]["event"] == "FAILED"
+    assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_PROMOTE_SCOPE_READY"
+    assert conn.commit_count == 0
+
+
 def test_cli_promote_scope_allows_already_supported_symbol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

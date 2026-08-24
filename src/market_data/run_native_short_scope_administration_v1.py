@@ -475,6 +475,22 @@ def _run_write(
     conn = None
     try:
         conn = get_connection()
+        # Immediately-before-transaction revalidation (Issue #276 v2 TOCTOU
+        # fix): the upfront guard in main() ran its own audit on its own
+        # connection, then closed it -- by the time this write transaction
+        # actually opens, that snapshot may be stale, and
+        # execute_scope_administration never checks market readiness itself
+        # (only ledger state). Mirrors the bulk CLI's own per-entry
+        # revalidate hook: one more fresh, single-symbol check on the exact
+        # connection this write is about to use, fail closed.
+        if request.operation_type == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
+            report = _load_bulk_rollout_report(conn, as_of_utc=datetime.now(UTC))
+            still_eligible, reason = is_symbol_promote_scope_ready(report, request.scope_key.symbol)
+            if not still_eligible:
+                _emit_document(
+                    _error_document("SYMBOL_NOT_PROMOTE_SCOPE_READY", reason, write=True)
+                )
+                return 2
         outcome = execute_scope_administration(
             conn, request, authorization=authorization
         )
