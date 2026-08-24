@@ -342,15 +342,31 @@ class _GuardHeartbeat:
 
 
 def _load_bulk_rollout_report(conn: Any, *, as_of_utc: datetime) -> Any:
-    """Thin, monkeypatchable seam around ``run_audit`` for the ``PROMOTE_SCOPE``
-    readiness guard below. Exists so tests can substitute a canned
-    ``AuditReport`` without needing a fake connection that also implements
-    ``run_audit``'s complete multi-table canonical-market query surface (the
-    existing CLI test fakes are deliberately shaped only for
+    """Thin, monkeypatchable seam around ``run_audit`` for the upfront
+    ``PROMOTE_SCOPE`` readiness guard below. This connection is used only for
+    that one read-only check and is closed immediately after, so forcing the
+    session into read-only mode here is safe. Exists so tests can substitute
+    a canned ``AuditReport`` without needing a fake connection that also
+    implements ``run_audit``'s complete multi-table canonical-market query
+    surface (the existing CLI test fakes are deliberately shaped only for
     ``execute_scope_administration``/``plan_scope_administration``)."""
     with conn.cursor() as cur:
         cur.execute("SET TRANSACTION READ ONLY")
     return run_audit(conn, as_of_utc=as_of_utc)
+
+
+def _load_report_for_write_revalidation(
+    conn: Any, *, as_of_utc: datetime, symbol: str
+) -> Any:
+    """Immediately-before-transaction revalidation seam for the write path
+    (Issue #276 v2 TOCTOU fix), narrowed to exactly the one symbol about to
+    be promoted for speed. Deliberately distinct from
+    ``_load_bulk_rollout_report``: this call shares its connection with the
+    ``PROMOTE_SCOPE`` write transaction that immediately follows it, so it
+    must never set the session to read-only -- doing so would make that
+    write fail (this was a real defect in an earlier version of this fix,
+    caught in review)."""
+    return run_audit(conn, as_of_utc=as_of_utc, symbols=(symbol,))
 
 
 def _enforce_promote_scope_readiness_guard(symbol: str, *, write: bool) -> int | None:
@@ -484,7 +500,9 @@ def _run_write(
         # revalidate hook: one more fresh, single-symbol check on the exact
         # connection this write is about to use, fail closed.
         if request.operation_type == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
-            report = _load_bulk_rollout_report(conn, as_of_utc=datetime.now(UTC))
+            report = _load_report_for_write_revalidation(
+                conn, as_of_utc=datetime.now(UTC), symbol=request.scope_key.symbol
+            )
             still_eligible, reason = is_symbol_promote_scope_ready(report, request.scope_key.symbol)
             if not still_eligible:
                 _emit_document(

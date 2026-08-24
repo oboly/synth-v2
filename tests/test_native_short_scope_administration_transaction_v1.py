@@ -1853,6 +1853,19 @@ def _stub_bulk_rollout_universe_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         "_load_bulk_rollout_report",
         lambda conn, *, as_of_utc: _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc),
     )
+    # Write-time revalidation (_load_report_for_write_revalidation) calls
+    # run_audit directly rather than going through _load_bulk_rollout_report
+    # (it must never set the session read-only -- see that helper's
+    # docstring). Default it the same way for every test in this module; an
+    # individual test may still override cli.run_audit itself to exercise
+    # write-time revalidation rejection.
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc
+        ),
+    )
 
 
 def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") -> None:
@@ -2653,6 +2666,7 @@ def _run_cli(
     conn: _FakeConn | None,
     global_blockers: tuple[str, ...] = (),
     bulk_rollout_report_factory: Any = None,
+    run_audit_factory: Any = None,
 ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     import src.common.db as dbmod
 
@@ -2676,6 +2690,18 @@ def _run_cli(
         cli,
         "_load_bulk_rollout_report",
         lambda conn, *, as_of_utc: report_factory(as_of_utc),
+    )
+    # cli.run_audit backs _load_report_for_write_revalidation (the write-time
+    # TOCTOU recheck); same re-apply-per-call need, and a test may supply its
+    # own run_audit_factory to exercise write-time revalidation rejection
+    # independently of the upfront guard's report.
+    audit_factory = run_audit_factory or (
+        lambda as_of_utc, symbols: _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc)
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: audit_factory(as_of_utc, symbols),
     )
     if conn is not None:
         monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
@@ -2780,18 +2806,15 @@ def test_cli_write_revalidates_immediately_before_transaction_and_blocks_stalene
     _run_write opens a fresh connection for the actual transaction. If
     readiness changed in that window, the write must still be blocked --
     execute_scope_administration itself only checks ledger state, never
-    market readiness. Simulates this with a call-counting report factory:
-    the guard's call (1st) sees READY, the write-time revalidation (2nd,
-    same _load_bulk_rollout_report seam, immediately before
-    execute_scope_administration) sees the symbol has since become
-    ineligible. Mirrors the bulk CLI's own equivalent regression test."""
+    market readiness. The upfront guard (_load_bulk_rollout_report) sees
+    READY; the write-time revalidation, through the real (unmocked)
+    _load_report_for_write_revalidation -- only its run_audit call is
+    stubbed -- sees the symbol has since become ineligible. Exercises the
+    real helper's actual session behavior (see the next test) rather than
+    mocking the helper itself away."""
     conn = _FakeConn()
-    calls: list[int] = []
 
-    def _report_factory(as_of_utc: datetime) -> AuditReport:
-        calls.append(1)
-        if len(calls) == 1:
-            return _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc, supported=False)
+    def _not_ready_report(as_of_utc: datetime, symbols: tuple[str, ...] | None = None) -> AuditReport:
         market = MarketMetadata(
             asset_id=1, venue_market_id=1, market="BTC-EUR",
             asset_enabled=False, market_data_enabled=True, market_tradeable=True,
@@ -2813,15 +2836,47 @@ def test_cli_write_revalidates_immediately_before_transaction_and_blocks_stalene
         )
 
     _stub_write_auth(monkeypatch)
+    executions_before_write_revalidation = len(conn.executions)
     code, stdout_docs, _ = _run_cli(
         monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn,
-        bulk_rollout_report_factory=_report_factory,
+        bulk_rollout_report_factory=lambda as_of_utc: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc, supported=False
+        ),
+        run_audit_factory=lambda as_of_utc, symbols: _not_ready_report(as_of_utc, symbols),
     )
-    assert len(calls) == 2  # guard, then write-time revalidation
     assert code == 2
     assert stdout_docs[0]["event"] == "FAILED"
     assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_PROMOTE_SCOPE_READY"
     assert conn.commit_count == 0
+    # The exact real-connection defect caught in review: the write-time
+    # revalidation must never set the session read-only, since it shares the
+    # connection with the PROMOTE_SCOPE write transaction that would
+    # otherwise immediately follow it.
+    assert "SET TRANSACTION READ ONLY" not in conn.executions[executions_before_write_revalidation:]
+
+
+def test_load_report_for_write_revalidation_never_sets_session_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct unit test on the real helper (not the CLI flow): calling
+    _load_report_for_write_revalidation must issue no SQL of its own beyond
+    whatever run_audit itself performs -- specifically, it must never
+    execute SET TRANSACTION READ ONLY, unlike its upfront-guard sibling
+    _load_bulk_rollout_report which safely may (that connection is closed
+    right after)."""
+    import src.market_data.run_native_short_scope_administration_v1 as cli_module
+
+    conn = _FakeConn()
+    monkeypatch.setattr(
+        cli_module,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc
+        ),
+    )
+    cli_module._load_report_for_write_revalidation(conn, as_of_utc=datetime(2026, 7, 18, 10, 0, tzinfo=UTC), symbol="BTC")
+    monkeypatch.undo()
+    assert "SET TRANSACTION READ ONLY" not in conn.executions
 
 
 def test_cli_promote_scope_allows_already_supported_symbol(
