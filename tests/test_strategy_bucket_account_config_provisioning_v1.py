@@ -151,7 +151,62 @@ def test_duplicate_account_identity_binding_rejected_not_silently_resolved() -> 
         provision_strategy_bucket_account_config_v1(_MultiMatchConnection(), request=_request())
 
 
-def test_offset_aware_timestamp_normalized_to_utc_before_resolution_and_insert() -> None:
+class _RawParamCapturingCursor:
+    """Wraps a real cursor and records every datetime bound as a raw execute()
+    parameter, *before* any downstream adapter (e.g. the shared FakeConnection
+    fixture's own `_adapt()`, which already UTC-normalizes every aware
+    datetime on its own) gets a chance to mask whether the code under test
+    did its own normalization."""
+
+    def __init__(self, real_cursor: object, sink: list[datetime]) -> None:
+        self._real = real_cursor
+        self._sink = sink
+
+    def __enter__(self) -> "_RawParamCapturingCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...] = ()) -> "_RawParamCapturingCursor":
+        self._sink.extend(p for p in params if isinstance(p, datetime))
+        self._real.execute(sql, params)  # type: ignore[attr-defined]
+        return self
+
+    def fetchone(self) -> object:
+        return self._real.fetchone()  # type: ignore[attr-defined]
+
+    def fetchall(self) -> object:
+        return self._real.fetchall()  # type: ignore[attr-defined]
+
+    @property
+    def lastrowid(self) -> int:
+        return self._real.lastrowid  # type: ignore[attr-defined]
+
+
+class _RawParamCapturingConnection:
+    def __init__(self, inner: FakeConnection) -> None:
+        self._inner = inner
+        self.captured_datetimes: list[datetime] = []
+
+    def cursor(self) -> _RawParamCapturingCursor:
+        return _RawParamCapturingCursor(self._inner.cursor(), self.captured_datetimes)
+
+    def commit(self) -> None:
+        self._inner.commit()
+
+    def rollback(self) -> None:
+        self._inner.rollback()
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def test_offset_aware_timestamp_normalized_to_utc_in_the_raw_insert_parameter() -> None:
+    """PR #499/#503 Codex review: the fixture's own adapter already
+    UTC-normalizes every aware datetime, so asserting on stored/read-back
+    values cannot distinguish fixed from unfixed code. Assert on the raw
+    parameter handed to execute() instead, before that adapter runs."""
     from datetime import timedelta, timezone as _timezone
 
     conn = FakeConnection()
@@ -159,21 +214,13 @@ def test_offset_aware_timestamp_normalized_to_utc_before_resolution_and_insert()
     offset_ts = TS.astimezone(_timezone(timedelta(hours=2)))
     assert offset_ts.utcoffset() != timedelta(0)
 
-    result = provision_strategy_bucket_account_config_v1(conn, request=_request(effective_from_ts_utc=offset_ts))
+    capturing = _RawParamCapturingConnection(conn)
+    provision_strategy_bucket_account_config_v1(capturing, request=_request(effective_from_ts_utc=offset_ts))
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT effective_from_ts_utc FROM strategy_bucket_account_config_v1 WHERE strategy_bucket_account_config_id = %s",
-            (result.strategy_bucket_account_config_id,),
-        )
-        stored = cur.fetchone()["effective_from_ts_utc"]
-    assert stored.replace(tzinfo=UTC) == TS
-
-    # A rerun using the equivalent UTC instant (not the offset form) must
-    # resolve to the same normalized identity and be treated as idempotent.
-    rerun = provision_strategy_bucket_account_config_v1(conn, request=_request(effective_from_ts_utc=TS))
-    assert rerun.idempotent is True
-    assert rerun.strategy_bucket_account_config_id == result.strategy_bucket_account_config_id
+    assert capturing.captured_datetimes, "no datetime parameter was ever bound"
+    for captured in capturing.captured_datetimes:
+        assert captured.utcoffset() == timedelta(0), captured
+        assert captured == TS
 
 
 @pytest.mark.parametrize("bad_bucket_id", ["", "   ", "has space", "bad/slash", "x" * 65])
