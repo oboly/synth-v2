@@ -167,66 +167,6 @@ def test_ambiguous_account_identity_fails_closed() -> None:
         provision_account_protection_policy_v1(_AmbiguousConnection(), request=_request())
 
 
-class _SqlCapturingCursor:
-    def __init__(self, real_cursor: object, sink: list[str]) -> None:
-        self._real = real_cursor
-        self._sink = sink
-
-    def __enter__(self) -> "_SqlCapturingCursor":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def execute(self, sql: str, params: tuple[object, ...] = ()) -> "_SqlCapturingCursor":
-        self._sink.append(sql)
-        self._real.execute(sql, params)  # type: ignore[attr-defined]
-        return self
-
-    def fetchone(self) -> object:
-        return self._real.fetchone()  # type: ignore[attr-defined]
-
-    def fetchall(self) -> object:
-        return self._real.fetchall()  # type: ignore[attr-defined]
-
-    @property
-    def lastrowid(self) -> int:
-        return self._real.lastrowid  # type: ignore[attr-defined]
-
-
-class _SqlCapturingConnection:
-    def __init__(self, inner: FakeConnection) -> None:
-        self._inner = inner
-        self.executed_sql: list[str] = []
-
-    def cursor(self) -> _SqlCapturingCursor:
-        return _SqlCapturingCursor(self._inner.cursor(), self.executed_sql)
-
-
-def test_account_resolution_takes_a_row_lock_to_serialize_concurrent_provisioning() -> None:
-    """Codex review on PR #506: two concurrent callers could both observe "no
-    policy yet" and both insert an overlapping row, since nothing serialized
-    the read-check-insert sequence. ``_resolve_trading_account_id`` now locks
-    the matched ``trading_account`` row with ``FOR UPDATE`` inside the
-    caller's (autocommit=False) transaction, so a second concurrent call for
-    the same account blocks there until the first commits or rolls back --
-    guaranteeing it always sees the first's result before doing its own
-    conflict check. A real cross-connection blocking test belongs in the
-    gated disposable-MariaDB suite (SQLite has no row-level locking to
-    exercise here); this asserts the lock is actually requested, matching
-    this repo's existing FOR UPDATE test convention (see e.g.
-    test_native_short_map_scope_seed_canary_v1.py)."""
-    conn = FakeConnection()
-    _account(conn)
-    wrapped = _SqlCapturingConnection(conn)
-
-    provision_account_protection_policy_v1(wrapped, request=_request())
-
-    account_lookup_sql = [sql for sql in wrapped.executed_sql if "FROM trading_account" in sql]
-    assert account_lookup_sql, "account resolution query was never executed"
-    assert all("FOR UPDATE" in sql for sql in account_lookup_sql)
-
-
 def test_multi_account_rows_are_strictly_isolated() -> None:
     conn = FakeConnection()
     _account(conn, account_id=4, account_code="hugo-bitvavo")

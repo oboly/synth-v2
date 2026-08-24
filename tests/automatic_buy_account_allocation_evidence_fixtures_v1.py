@@ -268,11 +268,7 @@ class _Cursor:
         self.lastrowid = 0
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> "_Cursor":
-        # SQLite has no row-level locking clause; strip MariaDB's FOR UPDATE
-        # (sqlite otherwise raises a syntax error) while leaving production
-        # SQL unchanged -- callers that need to prove a query requests the
-        # lock should assert on the SQL text before it reaches this fake.
-        normalized = sql.replace("FOR UPDATE", "").replace("%s", "?")
+        normalized = sql.replace("%s", "?")
         values = tuple(_adapt(value) for value in params)
         self._cursor.execute(normalized, values)
         self.lastrowid = self._cursor.lastrowid
