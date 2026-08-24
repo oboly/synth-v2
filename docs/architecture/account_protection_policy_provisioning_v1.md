@@ -44,6 +44,14 @@ revocation fact. Exact same-value reruns are idempotent and return the
 existing row; differing or overlapping requests fail closed. This prevents a
 new row from creating an immediately or future-ambiguous effective policy.
 
+Account resolution takes a `FOR UPDATE` row lock on the matched
+`trading_account` row for the lifetime of the caller's (autocommit-disabled)
+transaction, serializing concurrent provisioning calls for the same account:
+a second concurrent call blocks until the first commits or rolls back, so it
+always observes the first's result before running its own conflict check.
+This closes the race where two concurrent callers could otherwise both
+observe no effective policy and both append an overlapping row.
+
 Missing policy configuration remains unresolved and therefore remains
 `BLOCKED / PROTECTION_CONFIGURATION_UNRESOLVED` in the existing #318
 evaluator. Provisioning does not grant LIVE permission, create a decision,

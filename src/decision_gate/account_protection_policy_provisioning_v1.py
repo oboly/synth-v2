@@ -11,6 +11,12 @@ Rows are immutable.  This module never updates or deletes a configuration or
 revocation fact.  A same-value rerun returns the existing row; a conflicting
 or overlapping rerun fails closed.  It has no broker, executor, planner, or
 order dependency.
+
+Concurrency: account resolution takes a ``FOR UPDATE`` row lock on the
+matched ``trading_account`` row for the lifetime of the caller's transaction,
+serializing concurrent provisioning calls for the same account so two
+concurrent callers cannot both observe "no policy yet" and both insert an
+overlapping row (see ``_resolve_trading_account_id``).
 """
 from __future__ import annotations
 
@@ -120,8 +126,20 @@ def _validate_request(request: AccountProtectionPolicyProvisioningRequestV1) -> 
 
 
 def _resolve_trading_account_id(conn: Any, *, account_code: str, venue: str) -> int:
-    """Resolve exactly one canonical account identity; never use ``LIMIT 1``."""
-    sql = "SELECT trading_account_id FROM trading_account WHERE account_code = %s AND venue = %s"
+    """Resolve exactly one canonical account identity; never use ``LIMIT 1``.
+
+    ``FOR UPDATE`` takes an exclusive row lock on the matched ``trading_account``
+    row for the lifetime of the caller's transaction (the connection is
+    ``autocommit=False``; the caller commits/rolls back only after the whole
+    provisioning call returns). This serializes concurrent
+    ``provision_account_protection_policy_v1`` calls for the *same* account:
+    a second call blocks here until the first commits or rolls back, so it
+    always sees the first's newly-inserted row (or its rollback) before its
+    own read-check-insert sequence runs, closing the race where two
+    concurrent callers could both observe "no policy yet" and both insert an
+    overlapping row.
+    """
+    sql = "SELECT trading_account_id FROM trading_account WHERE account_code = %s AND venue = %s FOR UPDATE"
     with conn.cursor() as cur:
         cur.execute(sql, (account_code, venue))
         rows = cur.fetchall()
