@@ -1836,6 +1836,38 @@ def _stub_writer_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_bulk_rollout_universe_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PROMOTE_SCOPE universe-parity guard (Issue #276 v2): every CLI test in
+    this module exercises BTC via ``_BASE_CLI_ARGS``, and the ``_FakeConn``
+    fixtures here are deliberately shaped only for
+    ``execute_scope_administration``/``plan_scope_administration``, not
+    ``run_audit``'s full canonical-market query surface. Default the guard's
+    canned report to BTC READY (a fresh, not-yet-supported scope) for every
+    test in this module; an individual test may still override this
+    monkeypatch itself to exercise guard rejection."""
+    from src.market_data import run_native_short_scope_administration_v1 as cli
+
+    monkeypatch.setattr(
+        cli,
+        "_load_bulk_rollout_report",
+        lambda conn, *, as_of_utc: _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc),
+    )
+    # Write-time revalidation (_load_report_for_write_revalidation) calls
+    # run_audit directly rather than going through _load_bulk_rollout_report
+    # (it must never set the session read-only -- see that helper's
+    # docstring). Default it the same way for every test in this module; an
+    # individual test may still override cli.run_audit itself to exercise
+    # write-time revalidation rejection.
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc
+        ),
+    )
+
+
 def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") -> None:
     scope_id = state.next_scope_id
     state.next_scope_id += 1
@@ -2528,6 +2560,84 @@ from src.market_data import run_native_short_scope_administration_v1 as cli
 from src.market_data.native_short_repository_source_identity_v1 import (
     NativeShortRepositorySourceState,
 )
+from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE
+from src.market_data.native_short_multi_asset_audit_v1 import (
+    AuditReport,
+    CandidateInput,
+    CandleWindow,
+    LedgerState,
+    MarketMetadata,
+    evaluate_candidate,
+    expected_closed_candle,
+)
+
+
+def _bulk_rollout_report_for(
+    symbol: str, *, as_of_utc: datetime, supported: bool = False
+) -> AuditReport:
+    """Canned single-candidate AuditReport for the CLI's PROMOTE_SCOPE
+    universe-parity guard (Issue #276 v2). The existing CLI test fakes
+    (``_FakeConn``) are deliberately shaped only for
+    ``execute_scope_administration``/``plan_scope_administration``, not for
+    ``run_audit``'s full multi-table canonical-market query surface, so the
+    guard's audit call is monkeypatched via ``cli._load_bulk_rollout_report``
+    (see ``_run_cli`` below) rather than exercised against ``_FakeConn``.
+    """
+    market = MarketMetadata(
+        asset_id=1,
+        venue_market_id=1,
+        market=f"{symbol}-EUR",
+        asset_enabled=True,
+        market_data_enabled=True,
+        market_tradeable=True,
+        # No venue_market.price_precision: resolves via the static
+        # bitvavo_eur fallback table (BTC has an entry there) instead of
+        # colliding with it and producing TICK_RULE_AMBIGUOUS.
+        db_price_precisions=(),
+    )
+    ledger = (
+        LedgerState(
+            scope_states=("SUPPORTED",),
+            map_ids=(1,),
+            active_map_ids=(1,),
+            generation_events=(("attempt-1", "ATTEMPT_STARTED", None), ("attempt-1", "PUBLISHED", 1)),
+            published_attempt_by_map=((1, "attempt-1"),),
+            lifecycle_event_count=1,
+            latest_lifecycle_by_map=((1, "ACTIVATED"),),
+            current_status_map_ids=(1,),
+            scope_status_codes=("CURRENT_EVALUATION",),
+            source_freshness_states=("SOURCE_CURRENT",),
+            actionability_states=("ACTIONABLE_ACTIVE_MAP",),
+        )
+        if supported
+        else LedgerState()
+    )
+    candidate = CandidateInput(
+        symbol=symbol,
+        markets=(market,),
+        primary=CandleWindow(count=100, latest_close_ts_utc=expected_closed_candle(as_of_utc, 4)),
+        supporting=CandleWindow(count=200, latest_close_ts_utc=expected_closed_candle(as_of_utc, 1)),
+        ledger=ledger,
+        context_status=STATUS_AVAILABLE,
+    )
+    result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+    return AuditReport(
+        as_of_utc=as_of_utc,
+        results=(result,),
+        proposed_sequential_queue=(),
+        counts={},
+        writer_run_count=0,
+        attributable_writer_run_count=0,
+        legacy_unattributed_writer_run_count=0,
+        invalid_provenance_writer_run_count=0,
+        provenance_audit_run_found=True,
+        provenance_audit_run_attributed=True,
+        provenance_contract_implemented=True,
+        attributable_production_run_observed=True,
+        operational_acceptance_completed=True,
+        writer_provenance_blocker_active=False,
+        global_blocker_codes=(),
+    )
 
 
 _BASE_CLI_ARGS = [
@@ -2555,6 +2665,8 @@ def _run_cli(
     *,
     conn: _FakeConn | None,
     global_blockers: tuple[str, ...] = (),
+    bulk_rollout_report_factory: Any = None,
+    run_audit_factory: Any = None,
 ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     import src.common.db as dbmod
 
@@ -2564,6 +2676,32 @@ def _run_cli(
     # (this helper may be invoked more than once per test).
     monkeypatch.setattr(
         txn, "evaluate_current_global_blockers", lambda conn: (global_blockers, {})
+    )
+    # Same re-apply-per-call need as the blocker patch above: this helper's
+    # own monkeypatch.undo() reverts the autouse
+    # _stub_bulk_rollout_universe_guard patch too when called more than once
+    # per test (e.g. test_cli_result_json_is_deterministic).
+    # bulk_rollout_report_factory lets a test override the canned BTC-READY
+    # report to exercise the guard's rejection path.
+    report_factory = bulk_rollout_report_factory or (
+        lambda as_of_utc: _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_bulk_rollout_report",
+        lambda conn, *, as_of_utc: report_factory(as_of_utc),
+    )
+    # cli.run_audit backs _load_report_for_write_revalidation (the write-time
+    # TOCTOU recheck); same re-apply-per-call need, and a test may supply its
+    # own run_audit_factory to exercise write-time revalidation rejection
+    # independently of the upfront guard's report.
+    audit_factory = run_audit_factory or (
+        lambda as_of_utc, symbols: _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc)
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: audit_factory(as_of_utc, symbols),
     )
     if conn is not None:
         monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
@@ -2617,6 +2755,186 @@ def _stub_write_auth(monkeypatch: pytest.MonkeyPatch) -> None:
         authmod, "require_writer_mutation_authorization",
         lambda authorization, capability_id: authorization,
     )
+
+
+def test_cli_promote_scope_rejects_symbol_not_bulk_rollout_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #276 v2 parity guard: PROMOTE_SCOPE for a symbol the current
+    audit does not classify READY (here, market-ineligible: asset disabled)
+    is rejected before any transaction is attempted -- closing the bypass
+    where this CLI previously accepted an arbitrary --symbol with no
+    reference to the approved rollout universe at all."""
+    conn = _FakeConn()
+
+    def _not_ready_report(as_of_utc: datetime) -> AuditReport:
+        market = MarketMetadata(
+            asset_id=1, venue_market_id=1, market="BTC-EUR",
+            asset_enabled=False, market_data_enabled=True, market_tradeable=True,
+        )
+        candidate = CandidateInput(
+            symbol="BTC", markets=(market,),
+            primary=CandleWindow(), supporting=CandleWindow(),
+            ledger=LedgerState(), context_status=STATUS_AVAILABLE,
+        )
+        result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+        return AuditReport(
+            as_of_utc=as_of_utc, results=(result,), proposed_sequential_queue=(),
+            counts={}, writer_run_count=0, attributable_writer_run_count=0,
+            legacy_unattributed_writer_run_count=0, invalid_provenance_writer_run_count=0,
+            provenance_audit_run_found=True, provenance_audit_run_attributed=True,
+            provenance_contract_implemented=True, attributable_production_run_observed=True,
+            operational_acceptance_completed=True, writer_provenance_blocker_active=False,
+            global_blocker_codes=(),
+        )
+
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn,
+        bulk_rollout_report_factory=_not_ready_report,
+    )
+    assert code == 2
+    assert stdout_docs[0]["event"] == "FAILED"
+    assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_PROMOTE_SCOPE_READY"
+    assert conn.commit_count == 0
+
+
+def test_cli_write_revalidates_immediately_before_transaction_and_blocks_staleness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TOCTOU regression test (Issue #276 v2): the upfront guard in main()
+    runs its own audit on its own connection, then closes it, before
+    _run_write opens a fresh connection for the actual transaction. If
+    readiness changed in that window, the write must still be blocked --
+    execute_scope_administration itself only checks ledger state, never
+    market readiness. The upfront guard (_load_bulk_rollout_report) sees
+    READY; the write-time revalidation, through the real (unmocked)
+    _load_report_for_write_revalidation -- only its run_audit call is
+    stubbed -- sees the symbol has since become ineligible. Exercises the
+    real helper's actual session behavior (see the next test) rather than
+    mocking the helper itself away."""
+    conn = _FakeConn()
+
+    def _not_ready_report(as_of_utc: datetime, symbols: tuple[str, ...] | None = None) -> AuditReport:
+        market = MarketMetadata(
+            asset_id=1, venue_market_id=1, market="BTC-EUR",
+            asset_enabled=False, market_data_enabled=True, market_tradeable=True,
+        )
+        candidate = CandidateInput(
+            symbol="BTC", markets=(market,),
+            primary=CandleWindow(), supporting=CandleWindow(),
+            ledger=LedgerState(), context_status=STATUS_AVAILABLE,
+        )
+        result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+        return AuditReport(
+            as_of_utc=as_of_utc, results=(result,), proposed_sequential_queue=(),
+            counts={}, writer_run_count=0, attributable_writer_run_count=0,
+            legacy_unattributed_writer_run_count=0, invalid_provenance_writer_run_count=0,
+            provenance_audit_run_found=True, provenance_audit_run_attributed=True,
+            provenance_contract_implemented=True, attributable_production_run_observed=True,
+            operational_acceptance_completed=True, writer_provenance_blocker_active=False,
+            global_blocker_codes=(),
+        )
+
+    _stub_write_auth(monkeypatch)
+    executions_before_write_revalidation = len(conn.executions)
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn,
+        bulk_rollout_report_factory=lambda as_of_utc: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc, supported=False
+        ),
+        run_audit_factory=lambda as_of_utc, symbols: _not_ready_report(as_of_utc, symbols),
+    )
+    assert code == 2
+    assert stdout_docs[0]["event"] == "FAILED"
+    assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_PROMOTE_SCOPE_READY"
+    assert conn.commit_count == 0
+    # The exact real-connection defect caught in review: the write-time
+    # revalidation must never set the session read-only, since it shares the
+    # connection with the PROMOTE_SCOPE write transaction that would
+    # otherwise immediately follow it.
+    assert "SET TRANSACTION READ ONLY" not in conn.executions[executions_before_write_revalidation:]
+
+
+def test_load_report_for_write_revalidation_never_sets_session_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct unit test on the real helper (not the CLI flow): calling
+    _load_report_for_write_revalidation must issue no SQL of its own beyond
+    whatever run_audit itself performs -- specifically, it must never
+    execute SET TRANSACTION READ ONLY, unlike its upfront-guard sibling
+    _load_bulk_rollout_report which safely may (that connection is closed
+    right after)."""
+    import src.market_data.run_native_short_scope_administration_v1 as cli_module
+
+    conn = _FakeConn()
+    monkeypatch.setattr(
+        cli_module,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _bulk_rollout_report_for(
+            "BTC", as_of_utc=as_of_utc
+        ),
+    )
+    cli_module._load_report_for_write_revalidation(conn, as_of_utc=datetime(2026, 7, 18, 10, 0, tzinfo=UTC), symbol="BTC")
+    monkeypatch.undo()
+    assert "SET TRANSACTION READ ONLY" not in conn.executions
+
+
+def test_cli_promote_scope_allows_already_supported_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parity guard permits ALREADY_SUPPORTED (idempotent replay of an
+    already-completed promotion), not only a fresh READY first promotion."""
+    conn = _FakeConn()
+
+    def _already_supported_report(as_of_utc: datetime) -> AuditReport:
+        return _bulk_rollout_report_for("BTC", as_of_utc=as_of_utc, supported=True)
+
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, _BASE_CLI_ARGS, conn=conn,
+        bulk_rollout_report_factory=_already_supported_report,
+    )
+    assert code in (0, 1)  # guard passes; outcome depends on the (unrelated) fake ledger state
+    assert stdout_docs[0]["reason_code" if stdout_docs[0]["event"] == "FAILED" else "event"] != (
+        "SYMBOL_NOT_PROMOTE_SCOPE_READY"
+    )
+
+
+def test_cli_adopt_legacy_scope_is_not_gated_by_promote_scope_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The universe-parity guard applies only to PROMOTE_SCOPE; ADOPT_LEGACY_SCOPE
+    (BTC's own separate legacy-adoption path) must proceed unaffected even
+    when the canned bulk-rollout report would reject BTC."""
+    conn = _FakeConn()
+    argv = [
+        arg if arg != "PROMOTE_SCOPE" else "ADOPT_LEGACY_SCOPE" for arg in _BASE_CLI_ARGS
+    ]
+
+    def _not_ready_report(as_of_utc: datetime) -> AuditReport:
+        market = MarketMetadata(
+            asset_id=1, venue_market_id=1, market="BTC-EUR",
+            asset_enabled=False, market_data_enabled=True, market_tradeable=True,
+        )
+        candidate = CandidateInput(
+            symbol="BTC", markets=(market,),
+            primary=CandleWindow(), supporting=CandleWindow(),
+            ledger=LedgerState(), context_status=STATUS_AVAILABLE,
+        )
+        result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+        return AuditReport(
+            as_of_utc=as_of_utc, results=(result,), proposed_sequential_queue=(),
+            counts={}, writer_run_count=0, attributable_writer_run_count=0,
+            legacy_unattributed_writer_run_count=0, invalid_provenance_writer_run_count=0,
+            provenance_audit_run_found=True, provenance_audit_run_attributed=True,
+            provenance_contract_implemented=True, attributable_production_run_observed=True,
+            operational_acceptance_completed=True, writer_provenance_blocker_active=False,
+            global_blocker_codes=(),
+        )
+
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, argv, conn=conn, bulk_rollout_report_factory=_not_ready_report,
+    )
+    assert stdout_docs[0].get("reason_code") != "SYMBOL_NOT_PROMOTE_SCOPE_READY"
 
 
 def _run_cli_raw(

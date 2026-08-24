@@ -146,12 +146,17 @@ _SUCCESS_RESULT_CLASSES = frozenset({"SUCCESS", "IDEMPOTENT_SUCCESS"})
 
 @dataclass(frozen=True)
 class RolloutSymbolEntry:
-    """One checked-in, reviewed rollout-universe entry."""
+    """One rollout entry: exactly one operation for exactly one canonical
+    scope. ``approval_reference``/``note`` are optional free-text provenance
+    carried through into ``canonical_metadata`` (see
+    ``build_request_for_entry``) -- default to empty for a caller (e.g. a
+    readiness-derived rollout) that has no per-symbol approval document to
+    cite; ``APPROVED_ROLLOUT_UNIVERSE_V1`` below still populates them."""
 
     symbol: str
     operation_type: OperationType
-    approval_reference: str
-    note: str
+    approval_reference: str = ""
+    note: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -467,6 +472,7 @@ def build_request_for_entry(
 
 RequestBuilder = Callable[[RolloutSymbolEntry], NativeShortScopeAdministrationRequest]
 _ScopeStep = Callable[[NativeShortScopeAdministrationRequest], AdministrationTransactionOutcome]
+RevalidationCheck = Callable[[RolloutSymbolEntry], "tuple[bool, str]"]
 
 
 @dataclass(frozen=True)
@@ -561,6 +567,7 @@ def _run_rollout(
     mode: str,
     build_request: RequestBuilder,
     run_step: _ScopeStep,
+    revalidate: RevalidationCheck | None = None,
 ) -> RolloutOutcome:
     requested_symbols = tuple(entry.symbol for entry in entries)
     completed: list[RolloutScopeOutcome] = []
@@ -576,6 +583,36 @@ def _run_rollout(
     first_failure_reason: str | None = None
 
     for entry in entries:
+        # Optional immediately-before-transaction revalidation: the ledger
+        # snapshot execute_scope_administration reads is always fresh (it
+        # reads at call time), but market/readiness eligibility is not
+        # something the transaction layer checks at all -- that determination
+        # comes entirely from whatever produced this entry list, evaluated
+        # once, before the loop started. For a long-running multi-entry
+        # rollout, a scope's market eligibility can change between that
+        # initial evaluation and this entry's actual turn. When a caller
+        # supplies `revalidate`, it is consulted here, immediately before
+        # each entry's own transaction, so staleness cannot silently persist
+        # across a long batch. `revalidate` decides nothing about ledger
+        # state or blockers -- those remain exclusively
+        # native_short_scope_administration_transaction_v1's job.
+        if revalidate is not None:
+            still_eligible, reason = revalidate(entry)
+            if not still_eligible:
+                completed.append(
+                    RolloutScopeOutcome(
+                        symbol=entry.symbol,
+                        operation_type=str(entry.operation_type),
+                        outcome=None,
+                        error=f"REVALIDATION_FAILED: {reason}",
+                    )
+                )
+                if first_failure_reason is None:
+                    first_failure_reason = (
+                        f"revalidation failed on symbol={entry.symbol}: {reason}"
+                    )
+                continue
+
         request = build_request(entry)
         try:
             outcome = run_step(request)
@@ -630,15 +667,20 @@ def plan_rollout(
     entries: Sequence[RolloutSymbolEntry],
     *,
     build_request: RequestBuilder,
+    revalidate: RevalidationCheck | None = None,
 ) -> RolloutOutcome:
     """Read-only dry run over every requested entry in order, delegating each
     scope entirely to ``plan_scope_administration``. Attempts every entry
-    regardless of any other entry's result, mirroring what write mode does."""
+    regardless of any other entry's result, mirroring what write mode does.
+
+    ``revalidate`` is optional and defaults to ``None`` (no change from prior
+    behavior for any existing caller). See ``_run_rollout``."""
     return _run_rollout(
         entries,
         mode="DRY_RUN",
         build_request=build_request,
         run_step=lambda request: plan_scope_administration(conn, request),
+        revalidate=revalidate,
     )
 
 
@@ -648,6 +690,7 @@ def execute_rollout(
     *,
     build_request: RequestBuilder,
     authorization: Any,
+    revalidate: RevalidationCheck | None = None,
 ) -> RolloutOutcome:
     """Write mode: process every requested entry in order, one bounded
     transaction per scope via ``execute_scope_administration`` on the same
@@ -659,7 +702,11 @@ def execute_rollout(
     unready scope never suppresses an unrelated qualified scope. Each entry's
     transaction remains fully isolated inside
     ``execute_scope_administration``, so a later entry's work is never
-    entangled with an earlier entry's rollback."""
+    entangled with an earlier entry's rollback.
+
+    ``revalidate`` is optional and defaults to ``None`` (no change from prior
+    behavior for any existing caller, including ``APPROVED_ROLLOUT_UNIVERSE_V1``'s
+    small, individually-approved batch). See ``_run_rollout``."""
     return _run_rollout(
         entries,
         mode="WRITE",
@@ -667,12 +714,14 @@ def execute_rollout(
         run_step=lambda request: execute_scope_administration(
             conn, request, authorization=authorization
         ),
+        revalidate=revalidate,
     )
 
 
 __all__ = [
     "APPROVED_ROLLOUT_UNIVERSE_V1",
     "RequestBuilder",
+    "RevalidationCheck",
     "RolloutConfigurationError",
     "RolloutOutcome",
     "RolloutScopeOutcome",

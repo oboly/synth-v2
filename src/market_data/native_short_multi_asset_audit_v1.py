@@ -875,21 +875,47 @@ def _phase(progress: Progress | None, name: str, rows: int, started: datetime) -
         progress(name, rows, (datetime.now(UTC) - started).total_seconds())
 
 
-def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = None) -> AuditReport:
+def run_audit(
+    conn: Any,
+    *,
+    as_of_utc: datetime,
+    progress: Progress | None = None,
+    symbols: Sequence[str] | None = None,
+) -> AuditReport:
+    """Run the full canonical readiness audit, or -- when ``symbols`` is
+    given -- the identical evaluation narrowed to exactly those canonical
+    base symbols. ``symbols=None`` (the default) is byte-for-byte the
+    original full-universe behavior; every existing caller is unaffected.
+
+    The narrowed form exists for cheap, fresh, single-scope (or small-batch)
+    revalidation immediately before a ``PROMOTE_SCOPE`` transaction -- see
+    ``native_short_scope_administration_rollout_v1``'s ``revalidate`` hook --
+    without duplicating this function's evaluation logic or query shape.
+    """
     as_of = _as_utc(as_of_utc)
     started = datetime.now(UTC)
+    symbol_filter = (
+        None if symbols is None else tuple(dict.fromkeys(s.strip().upper() for s in symbols))
+    )
+    if symbol_filter is not None and not symbol_filter:
+        raise RuntimeError("CANONICAL_MARKET_UNIVERSE_EMPTY")
+    symbol_clause = ""
+    symbol_params: tuple[Any, ...] = ()
+    if symbol_filter is not None:
+        symbol_clause = f" AND a.symbol IN ({','.join(['%s'] * len(symbol_filter))})"
+        symbol_params = symbol_filter
     market_rows = _fetch_all(
         conn,
-        """
+        f"""
         SELECT vm.venue_market_id, vm.base_asset_id AS asset_id, vm.market,
                vm.is_tradeable, vm.is_market_data_enabled, vm.price_precision,
                a.symbol, a.is_enabled
         FROM venue_market vm
         JOIN asset a ON a.asset_id = vm.base_asset_id
-        WHERE vm.venue = %s AND vm.quote_currency = %s
+        WHERE vm.venue = %s AND vm.quote_currency = %s{symbol_clause}
         ORDER BY a.symbol, vm.market, vm.venue_market_id
         """,
-        (VENUE, QUOTE_CURRENCY),
+        (VENUE, QUOTE_CURRENCY, *symbol_params),
     )
     _phase(progress, "market_metadata", len(market_rows), started)
     asset_ids = sorted({int(row["asset_id"]) for row in market_rows})

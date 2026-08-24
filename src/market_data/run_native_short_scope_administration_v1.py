@@ -25,9 +25,15 @@ executor=none
 import argparse
 import json
 import sys
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
+from src.market_data.native_short_multi_asset_audit_v1 import run_audit
+from src.market_data.native_short_rollout_universe_v2 import (
+    is_symbol_promote_scope_ready,
+)
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationActorType,
     NativeShortScopeAdministrationKey,
@@ -205,23 +211,28 @@ def build_request(args: argparse.Namespace) -> NativeShortScopeAdministrationReq
     )
 
 
-def _emit_progress(args: argparse.Namespace) -> None:
-    """Operational progress goes to stderr so stdout carries exactly one JSON
-    result document."""
-    payload = {
-        "event": "STARTED",
-        "runner": RUNNER_NAME,
-        "runner_version": RUNNER_VERSION,
-        "operation": args.operation,
-        "symbol": args.symbol.strip().upper(),
-        "venue": args.venue,
-        "quote_currency": args.quote_currency,
-        "write": bool(args.write),
-        "dry_run": not args.write,
-        "production_db_writes": 1 if args.write else 0,
-        **_SAFETY_MARKERS,
-    }
+def _emit_stderr_json(payload: dict[str, Any]) -> None:
+    """Operational progress goes to stderr, one JSON document per line, so
+    stdout carries exactly one JSON result document."""
     print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _emit_progress(args: argparse.Namespace) -> None:
+    _emit_stderr_json(
+        {
+            "event": "STARTED",
+            "runner": RUNNER_NAME,
+            "runner_version": RUNNER_VERSION,
+            "operation": args.operation,
+            "symbol": args.symbol.strip().upper(),
+            "venue": args.venue,
+            "quote_currency": args.quote_currency,
+            "write": bool(args.write),
+            "dry_run": not args.write,
+            "production_db_writes": 1 if args.write else 0,
+            **_SAFETY_MARKERS,
+        }
+    )
 
 
 def _emit_document(payload: dict[str, Any]) -> None:
@@ -280,12 +291,140 @@ def main(
         _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
         return 2
 
+    # STARTED before the guard's own (potentially several-second) readiness
+    # audit call: a runner must announce it has begun before any phase that
+    # can take longer than a few seconds, not only before the mutation.
     _emit_progress(args)
+
+    if args.operation == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
+        guard_result = _enforce_promote_scope_readiness_guard(args.symbol, write=write)
+        if guard_result is not None:
+            return guard_result
 
     if not write:
         return _run_dry_run(request)
 
     return _run_write(request, inspect_repository_source=inspect_repository_source)
+
+
+_GUARD_HEARTBEAT_SECONDS = 15.0
+
+
+class _GuardHeartbeat:
+    """Periodic stderr heartbeat while the PROMOTE_SCOPE readiness guard's
+    audit call runs. Mirrors ``run_native_short_multi_asset_audit_v1.Heartbeat``
+    -- an independent, ~15-line duplicate rather than a shared import,
+    consistent with this codebase's existing preference for small
+    independent helpers over cross-module coupling for unrelated CLIs."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.started = time.monotonic()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(_GUARD_HEARTBEAT_SECONDS):
+            _emit_stderr_json(
+                {
+                    "event": "HEARTBEAT",
+                    "runner": RUNNER_NAME,
+                    "phase": "promote_scope_readiness_guard",
+                    "elapsed_s": round(time.monotonic() - self.started, 1),
+                }
+            )
+
+
+def _load_bulk_rollout_report(conn: Any, *, as_of_utc: datetime) -> Any:
+    """Thin, monkeypatchable seam around ``run_audit`` for the upfront
+    ``PROMOTE_SCOPE`` readiness guard below. This connection is used only for
+    that one read-only check and is closed immediately after, so forcing the
+    session into read-only mode here is safe. Exists so tests can substitute
+    a canned ``AuditReport`` without needing a fake connection that also
+    implements ``run_audit``'s complete multi-table canonical-market query
+    surface (the existing CLI test fakes are deliberately shaped only for
+    ``execute_scope_administration``/``plan_scope_administration``)."""
+    with conn.cursor() as cur:
+        cur.execute("SET TRANSACTION READ ONLY")
+    return run_audit(conn, as_of_utc=as_of_utc)
+
+
+def _load_report_for_write_revalidation(
+    conn: Any, *, as_of_utc: datetime, symbol: str
+) -> Any:
+    """Immediately-before-transaction revalidation seam for the write path
+    (Issue #276 v2 TOCTOU fix), narrowed to exactly the one symbol about to
+    be promoted for speed. Deliberately distinct from
+    ``_load_bulk_rollout_report``: this call shares its connection with the
+    ``PROMOTE_SCOPE`` write transaction that immediately follows it, so it
+    must never set the session to read-only -- doing so would make that
+    write fail (this was a real defect in an earlier version of this fix,
+    caught in review)."""
+    return run_audit(conn, as_of_utc=as_of_utc, symbols=(symbol,))
+
+
+def _enforce_promote_scope_readiness_guard(symbol: str, *, write: bool) -> int | None:
+    """Single-scope/bulk-rollout readiness parity guard for ``PROMOTE_SCOPE``
+    (Issue #276 v2). Before #276 v2, this CLI accepted an arbitrary
+    ``--symbol`` for ``PROMOTE_SCOPE`` with no readiness check at all -- the
+    approved-universe check lived only inside the batch orchestrator's
+    ``resolve_rollout_entries``, so a direct single-scope CLI invocation was
+    an unguarded bypass of it. This applies the identical, unchanged
+    ``native_short_rollout_universe_v2`` readiness definition a bulk run
+    would apply, so a single-scope ``PROMOTE_SCOPE`` and a bulk-rollout
+    ``PROMOTE_SCOPE`` for the same symbol always agree.
+
+    Read-only: runs the same audit a bulk run would, decides nothing about
+    mutation itself. Returns ``None`` to proceed, or the process exit code to
+    return immediately (guard failed or could not be evaluated -- fail
+    closed either way).
+    """
+    from src.common.db import get_connection
+
+    guard_started = time.monotonic()
+    heartbeat = _GuardHeartbeat()
+    heartbeat.start()
+    conn = None
+    try:
+        conn = get_connection()
+        report = _load_bulk_rollout_report(conn, as_of_utc=datetime.now(UTC))
+    except Exception as exc:  # noqa: BLE001 - fail closed: guard failure blocks the operation.
+        _emit_document(
+            _error_document(
+                "PROMOTE_SCOPE_READINESS_GUARD_FAILED", f"{type(exc).__name__}: {exc}", write=write
+            )
+        )
+        return 1
+    finally:
+        heartbeat.stop()
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            conn.close()
+    _emit_stderr_json(
+        {
+            "event": "PHASE_FINISHED",
+            "runner": RUNNER_NAME,
+            "phase": "promote_scope_readiness_guard",
+            "elapsed_s": round(time.monotonic() - guard_started, 3),
+        }
+    )
+
+    eligible, reason = is_symbol_promote_scope_ready(report, symbol)
+    if not eligible:
+        _emit_document(
+            _error_document("SYMBOL_NOT_PROMOTE_SCOPE_READY", reason, write=write)
+        )
+        return 2
+    return None
 
 
 def _run_dry_run(request: NativeShortScopeAdministrationRequest) -> int:
@@ -352,6 +491,24 @@ def _run_write(
     conn = None
     try:
         conn = get_connection()
+        # Immediately-before-transaction revalidation (Issue #276 v2 TOCTOU
+        # fix): the upfront guard in main() ran its own audit on its own
+        # connection, then closed it -- by the time this write transaction
+        # actually opens, that snapshot may be stale, and
+        # execute_scope_administration never checks market readiness itself
+        # (only ledger state). Mirrors the bulk CLI's own per-entry
+        # revalidate hook: one more fresh, single-symbol check on the exact
+        # connection this write is about to use, fail closed.
+        if request.operation_type == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
+            report = _load_report_for_write_revalidation(
+                conn, as_of_utc=datetime.now(UTC), symbol=request.scope_key.symbol
+            )
+            still_eligible, reason = is_symbol_promote_scope_ready(report, request.scope_key.symbol)
+            if not still_eligible:
+                _emit_document(
+                    _error_document("SYMBOL_NOT_PROMOTE_SCOPE_READY", reason, write=True)
+                )
+                return 2
         outcome = execute_scope_administration(
             conn, request, authorization=authorization
         )
