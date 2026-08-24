@@ -153,16 +153,16 @@ def test_publisher_service_does_not_reference_forbidden_layers():
 # Timers
 # ---------------------------------------------------------------------------
 
-_ONCALENDAR_MINUTE_RE = re.compile(r"OnCalendar=\*-\*-\* \*:(\d{2}):00 UTC")
+_ONCALENDAR_MINUTES_RE = re.compile(r"OnCalendar=\*-\*-\* \*:(\d{2}(?:,\d{2})*):00 UTC")
 
 
-def _timer_minute(path: Path) -> int:
+def _timer_minutes(path: Path) -> tuple[int, ...]:
     sections = _parse_unit(path)
     value = _get(sections, "Timer", "OnCalendar")
     assert value is not None, f"{path} must define an explicit OnCalendar"
-    match = _ONCALENDAR_MINUTE_RE.match(f"OnCalendar={value}")
+    match = _ONCALENDAR_MINUTES_RE.match(f"OnCalendar={value}")
     assert match is not None, f"{path} OnCalendar must be an explicit UTC wall-clock minute, got {value!r}"
-    return int(match.group(1))
+    return tuple(int(minute) for minute in match.group(1).split(","))
 
 
 def test_writer_timer_points_to_writer_service():
@@ -181,7 +181,12 @@ def test_timers_use_explicit_utc_wall_clock_cadence_not_relative_interval():
         assert _get(sections, "Timer", "OnUnitActiveSec") is None, (
             f"{path} must not use a repeating OnUnitActiveSec timer for candle-aligned cadence"
         )
-        _timer_minute(path)  # raises if OnCalendar is missing/not wall-clock UTC
+        _timer_minutes(path)  # raises if OnCalendar is missing/not wall-clock UTC
+
+
+def test_writer_timer_uses_deterministic_native_15m_cadence():
+    assert _timer_minutes(WRITER_TIMER) == (12, 27, 42, 57)
+    assert _get(_parse_unit(WRITER_TIMER), "Timer", "RandomizedDelaySec") == "0"
 
 
 def test_timers_are_persistent():
@@ -190,18 +195,19 @@ def test_timers_are_persistent():
         assert _get(sections, "Timer", "Persistent") == "true"
 
 
-def test_timers_have_bounded_randomized_delay():
-    for path in (WRITER_TIMER, PUBLISHER_TIMER):
-        sections = _parse_unit(path)
-        value = _get(sections, "Timer", "RandomizedDelaySec")
-        assert value is not None
-        seconds = int(re.sub(r"[^0-9]", "", value))
-        assert 0 < seconds <= 900, f"{path} RandomizedDelaySec={value} is not a bounded delay"
+def test_publisher_timer_has_bounded_randomized_delay():
+    value = _get(_parse_unit(PUBLISHER_TIMER), "Timer", "RandomizedDelaySec")
+    assert value is not None
+    seconds = int(re.sub(r"[^0-9]", "", value))
+    assert 0 < seconds <= 900, f"publisher RandomizedDelaySec={value} is not a bounded delay"
 
 
 def test_writer_to_publisher_minimum_separation_is_preserved():
-    writer_minute = _timer_minute(WRITER_TIMER)
-    publisher_minute = _timer_minute(PUBLISHER_TIMER)
+    writer_minutes = _timer_minutes(WRITER_TIMER)
+    publisher_minutes = _timer_minutes(PUBLISHER_TIMER)
+    assert publisher_minutes == (35,)
+    publisher_minute = publisher_minutes[0]
+    writer_minute = max(minute for minute in writer_minutes if minute < publisher_minute)
 
     writer_delay = int(re.sub(r"[^0-9]", "", _get(_parse_unit(WRITER_TIMER), "Timer", "RandomizedDelaySec")))
     publisher_delay = int(re.sub(r"[^0-9]", "", _get(_parse_unit(PUBLISHER_TIMER), "Timer", "RandomizedDelaySec")))
@@ -214,7 +220,7 @@ def test_writer_to_publisher_minimum_separation_is_preserved():
         "publisher must not be able to start before writer worst-case start "
         f"plus 5 minutes; got {effective_separation_sec}s"
     )
-    assert publisher_minute != writer_minute
+    assert publisher_minute not in writer_minutes
 
 
 def test_timers_do_not_declare_cross_host_dependency():

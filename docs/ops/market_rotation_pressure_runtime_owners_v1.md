@@ -361,11 +361,11 @@ confirmed correct on both hosts.
 
 ### Source availability / cadence evidence
 
-The rotation-pressure source chain is `obs_market_candle (1h)` ->
+The rotation-pressure source chain is `obs_market_candle (15m)` ->
 `market_rotation_history_v1` -> `market_rotation_pressure_v1`
-(`CANDLE_INTERVAL = "1h"` in `src/research/run_market_rotation_history_v1.py`).
+(`CANDLE_INTERVAL = "15m"` in `src/research/run_market_rotation_history_v1.py`).
 
-The repository target assigns `obs_market_candle` 1h-interval freshness to the
+The repository target assigns `obs_market_candle` 15m-interval freshness to the
 devlap `synth-market-candle-freshness-writer.timer`, which refreshes
 `15m/1h/4h/1d/1w` through the canonical host-neutral wrapper. The prior Odroid
 timer evidence below is historical cadence evidence only; that timer is no
@@ -383,35 +383,33 @@ start=18:51:22 finish=(in progress at audit time)
 ```
 
 Spacing is consistently ~15m30s between starts, and each run's own duration
-is ~6-7 minutes. For any hourly candle close at `HH:00:00`, the next
-candle-freshness run starts no later than `HH:04:52`-class offset within its
-own phase and completes persistence by `HH:11:28`-class offset in the
-observed pattern. This is consistent with the accepted production evidence's
-source timestamp of `18:00:00 UTC` being fully resolved and available for the
-writer well before the top of the following cycle.
+is ~6-7 minutes. For each canonical 15-minute candle close, the next
+candle-freshness run completes persistence within that observed window.
+Rotation Pressure therefore runs at deterministic UTC minutes `:12`, `:27`,
+`:42`, and `:57`, preserving a source-completion margin while keeping
+append-only history at its native 15-minute cadence.
 
 ### Cadence decision
 
 Required relationship:
 
 ```text
-hourly source data available from the separately authorized candle capability
+15-minute source data available from the separately authorized candle capability
 -> safety margin
--> devlap historical pressure writer: HH:20:00 UTC
+-> Rotation Pressure writer: HH:12,27,42,57 UTC
 -> additional separation
 -> Odroid read-only publisher:        HH:35:00 UTC
 ```
 
-- writer_timer_utc = `*:20:00 UTC` (`RandomizedDelaySec=180`, worst-case
-  latest start `HH:23:00`)
+- writer_timer_utc = `*:12,27,42,57:00 UTC` (`RandomizedDelaySec=0`)
 - publisher_timer_utc = `*:35:00 UTC` (`RandomizedDelaySec=180`, worst-case
   earliest start `HH:35:00`)
-- minimum effective separation = `HH:35:00 - HH:23:00` = 12 minutes, which
-  exceeds the required minimum of 5 minutes.
+- minimum effective separation before publication = `HH:35:00 - HH:27:00` =
+  8 minutes, which exceeds the required minimum of 5 minutes.
 
-The writer minute (`:20`) carries an ~8-9 minute margin beyond the observed
-candle-freshness completion offset (`~:11:28`). The publisher cannot start
-before the writer under normal `RandomizedDelaySec` bounds.
+Each writer slot carries at least a three-minute margin beyond the observed
+candle-freshness completion window. The publisher cannot start before the
+latest preceding writer slot.
 
 ## Installation Commands
 
