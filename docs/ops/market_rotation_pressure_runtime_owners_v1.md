@@ -392,6 +392,14 @@ writer well before the top of the following cycle.
 
 ### Cadence decision
 
+`market_rotation_history_v1` reads only closed `1h` observations and aligns
+every requested `as_of_ts` to the hour boundary. Its 24h and 7d windows
+therefore contain 24 and 168 source candles respectively. A 5m or 15m run
+before the next closed hourly observation cannot produce a new canonical
+Rotation Pressure value; it would only repeat the same source window. The
+meaningful canonical cadence is hourly, preserving append-only history without
+duplicate sub-hourly snapshots.
+
 Required relationship:
 
 ```text
