@@ -25,6 +25,8 @@ executor=none
 import argparse
 import json
 import sys
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -209,23 +211,28 @@ def build_request(args: argparse.Namespace) -> NativeShortScopeAdministrationReq
     )
 
 
-def _emit_progress(args: argparse.Namespace) -> None:
-    """Operational progress goes to stderr so stdout carries exactly one JSON
-    result document."""
-    payload = {
-        "event": "STARTED",
-        "runner": RUNNER_NAME,
-        "runner_version": RUNNER_VERSION,
-        "operation": args.operation,
-        "symbol": args.symbol.strip().upper(),
-        "venue": args.venue,
-        "quote_currency": args.quote_currency,
-        "write": bool(args.write),
-        "dry_run": not args.write,
-        "production_db_writes": 1 if args.write else 0,
-        **_SAFETY_MARKERS,
-    }
+def _emit_stderr_json(payload: dict[str, Any]) -> None:
+    """Operational progress goes to stderr, one JSON document per line, so
+    stdout carries exactly one JSON result document."""
     print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _emit_progress(args: argparse.Namespace) -> None:
+    _emit_stderr_json(
+        {
+            "event": "STARTED",
+            "runner": RUNNER_NAME,
+            "runner_version": RUNNER_VERSION,
+            "operation": args.operation,
+            "symbol": args.symbol.strip().upper(),
+            "venue": args.venue,
+            "quote_currency": args.quote_currency,
+            "write": bool(args.write),
+            "dry_run": not args.write,
+            "production_db_writes": 1 if args.write else 0,
+            **_SAFETY_MARKERS,
+        }
+    )
 
 
 def _emit_document(payload: dict[str, Any]) -> None:
@@ -284,17 +291,54 @@ def main(
         _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
         return 2
 
+    # STARTED before the guard's own (potentially several-second) readiness
+    # audit call: a runner must announce it has begun before any phase that
+    # can take longer than a few seconds, not only before the mutation.
+    _emit_progress(args)
+
     if args.operation == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
         guard_result = _enforce_promote_scope_readiness_guard(args.symbol, write=write)
         if guard_result is not None:
             return guard_result
 
-    _emit_progress(args)
-
     if not write:
         return _run_dry_run(request)
 
     return _run_write(request, inspect_repository_source=inspect_repository_source)
+
+
+_GUARD_HEARTBEAT_SECONDS = 15.0
+
+
+class _GuardHeartbeat:
+    """Periodic stderr heartbeat while the PROMOTE_SCOPE readiness guard's
+    audit call runs. Mirrors ``run_native_short_multi_asset_audit_v1.Heartbeat``
+    -- an independent, ~15-line duplicate rather than a shared import,
+    consistent with this codebase's existing preference for small
+    independent helpers over cross-module coupling for unrelated CLIs."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.started = time.monotonic()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(_GUARD_HEARTBEAT_SECONDS):
+            _emit_stderr_json(
+                {
+                    "event": "HEARTBEAT",
+                    "runner": RUNNER_NAME,
+                    "phase": "promote_scope_readiness_guard",
+                    "elapsed_s": round(time.monotonic() - self.started, 1),
+                }
+            )
 
 
 def _load_bulk_rollout_report(conn: Any, *, as_of_utc: datetime) -> Any:
@@ -327,6 +371,9 @@ def _enforce_promote_scope_readiness_guard(symbol: str, *, write: bool) -> int |
     """
     from src.common.db import get_connection
 
+    guard_started = time.monotonic()
+    heartbeat = _GuardHeartbeat()
+    heartbeat.start()
     conn = None
     try:
         conn = get_connection()
@@ -339,12 +386,21 @@ def _enforce_promote_scope_readiness_guard(symbol: str, *, write: bool) -> int |
         )
         return 1
     finally:
+        heartbeat.stop()
         if conn is not None:
             try:
                 conn.rollback()
             except Exception:
                 pass
             conn.close()
+    _emit_stderr_json(
+        {
+            "event": "PHASE_FINISHED",
+            "runner": RUNNER_NAME,
+            "phase": "promote_scope_readiness_guard",
+            "elapsed_s": round(time.monotonic() - guard_started, 3),
+        }
+    )
 
     eligible, reason = is_symbol_promote_scope_ready(report, symbol)
     if not eligible:

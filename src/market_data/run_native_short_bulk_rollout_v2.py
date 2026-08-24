@@ -50,6 +50,8 @@ reporting_writes=0
 import argparse
 import json
 import sys
+import threading
+import time
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
@@ -80,6 +82,7 @@ RUNNER_NAME = "native_short_bulk_rollout_v2"
 RUNNER_VERSION = "0.1"
 DEFAULT_SCHEMA_VERSION = "native_short_scope_administration_v1"
 WRITER_SERVICE = "synth-chain-4h.service"
+HEARTBEAT_SECONDS = 15.0
 
 _ACTOR_CHOICES = (
     NativeShortScopeAdministrationActorType.HUMAN_OPERATOR.value,
@@ -179,20 +182,95 @@ def _parse_metadata(value: str) -> dict[str, Any]:
     return metadata
 
 
-def _emit_progress(args: argparse.Namespace, entries: Sequence[RolloutSymbolEntry]) -> None:
-    payload = {
-        "event": "STARTED",
-        "runner": RUNNER_NAME,
-        "runner_version": RUNNER_VERSION,
-        "ready_scope_source": "native_short_rollout_universe_v2.ready_symbols",
-        "ready_scope_count": len(entries),
-        "requested_symbols": [entry.symbol for entry in entries],
-        "write": bool(args.write),
-        "dry_run": not args.write,
-        "production_db_writes": 1 if args.write else 0,
-        **_SAFETY_MARKERS,
-    }
+def _emit_stderr_json(payload: dict[str, Any]) -> None:
+    """Operational progress goes to stderr, one JSON document per line, so
+    stdout carries exactly one JSON result document."""
     print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+class _Heartbeat:
+    """Periodic stderr heartbeat while the readiness audit runs. Mirrors
+    ``run_native_short_multi_asset_audit_v1.Heartbeat`` -- an independent,
+    ~15-line duplicate rather than a shared import, consistent with this
+    codebase's existing preference for small independent helpers over
+    cross-module coupling for unrelated CLIs."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self.started = time.monotonic()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(HEARTBEAT_SECONDS):
+            _emit_stderr_json(
+                {
+                    "event": "HEARTBEAT",
+                    "runner": RUNNER_NAME,
+                    "phase": "audit",
+                    "elapsed_s": round(time.monotonic() - self.started, 1),
+                }
+            )
+
+
+def _audit_progress(phase: str, rows: int, elapsed_s: float) -> None:
+    _emit_stderr_json(
+        {
+            "event": "PHASE_FINISHED",
+            "runner": RUNNER_NAME,
+            "phase": phase,
+            "rows": rows,
+            "elapsed_s": round(elapsed_s, 3),
+        }
+    )
+
+
+def _emit_started(args: argparse.Namespace) -> None:
+    _emit_stderr_json(
+        {
+            "event": "STARTED",
+            "runner": RUNNER_NAME,
+            "runner_version": RUNNER_VERSION,
+            "phase": "audit",
+            "write": bool(args.write),
+            "dry_run": not args.write,
+            "production_db_writes": 1 if args.write else 0,
+            **_SAFETY_MARKERS,
+        }
+    )
+
+
+def _emit_audit_finished(entries: Sequence[RolloutSymbolEntry], *, elapsed_s: float) -> None:
+    _emit_stderr_json(
+        {
+            "event": "AUDIT_FINISHED",
+            "runner": RUNNER_NAME,
+            "runner_version": RUNNER_VERSION,
+            "ready_scope_source": "native_short_rollout_universe_v2.ready_symbols",
+            "ready_scope_count": len(entries),
+            "requested_symbols": [entry.symbol for entry in entries],
+            "elapsed_s": round(elapsed_s, 3),
+            **_SAFETY_MARKERS,
+        }
+    )
+
+
+def _emit_finished(*, elapsed_s: float, exit_code: int) -> None:
+    _emit_stderr_json(
+        {"event": "FINISHED", "runner": RUNNER_NAME, "elapsed_s": round(elapsed_s, 3), "exit_code": exit_code}
+    )
+
+
+def _emit_interrupted(*, elapsed_s: float) -> None:
+    _emit_stderr_json(
+        {"event": "INTERRUPTED", "runner": RUNNER_NAME, "elapsed_s": round(elapsed_s, 3)}
+    )
 
 
 def _emit_document(payload: dict[str, Any]) -> None:
@@ -227,6 +305,17 @@ def _error_document(reason_code: str, detail: str, *, write: bool) -> dict[str, 
     }
 
 
+def _load_report(conn: Any, *, as_of_utc: datetime) -> Any:
+    """Thin, monkeypatchable seam around ``run_audit``. Exists so tests can
+    substitute a canned ``AuditReport`` without needing a fake connection
+    that also implements ``run_audit``'s complete multi-table
+    canonical-market query surface (mirrors
+    ``run_native_short_scope_administration_v1._load_bulk_rollout_report``)."""
+    with conn.cursor() as cur:
+        cur.execute("SET TRANSACTION READ ONLY")
+    return run_audit(conn, as_of_utc=as_of_utc, progress=_audit_progress)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -246,70 +335,86 @@ def main(
         _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
         return 2
 
-    # Fresh, read-only readiness audit: the set of scopes this run processes
-    # is re-derived from current market/ledger state every invocation, never
-    # a frozen repository list.
-    conn = None
+    started = time.monotonic()
+    _emit_started(args)
+
     try:
-        conn = get_connection()
-        with conn.cursor() as cur:
-            cur.execute("SET TRANSACTION READ ONLY")
-        report = run_audit(conn, as_of_utc=datetime.now(UTC))
-    except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
-        _emit_document(_error_document("AUDIT_FAILED", f"{type(exc).__name__}: {exc}", write=write))
-        return 1
-    finally:
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            conn.close()
-
-    entries = derive_bulk_rollout_entries(report)
-
-    def build_request(entry: RolloutSymbolEntry) -> NativeShortScopeAdministrationRequest:
-        return build_request_for_entry(
-            entry,
-            actor_type=args.actor_type,
-            actor_id=args.actor_id,
-            trigger_type=args.trigger_type,
-            request_source=args.request_source,
-            reason=args.reason,
-            requested_at_utc=requested_at_utc,
-            repository_sha=args.repository_commit,
-            schema_version=args.schema_version,
-            metadata=metadata,
-        )
-
-    _emit_progress(args, entries)
-
-    if not entries:
-        _emit_document(
-            _result_document(
-                {
-                    "mode": "DRY_RUN" if not write else "WRITE",
-                    "requested_symbols": [],
-                    "completed": [],
-                    "completed_symbols": [],
-                    "remaining_symbols": [],
-                    "stopped_early": False,
-                    "stop_reason": None,
-                    "all_succeeded": True,
-                }
+        # Fresh, read-only readiness audit: the set of scopes this run
+        # processes is re-derived from current market/ledger state every
+        # invocation, never a frozen repository list. This is the
+        # potentially long phase (the full canonical Bitvavo EUR market
+        # universe), so it gets its own heartbeat and phase-finished events,
+        # matching run_native_short_multi_asset_audit_v1's own runner.
+        heartbeat = _Heartbeat()
+        heartbeat.start()
+        conn = None
+        try:
+            conn = get_connection()
+            report = _load_report(conn, as_of_utc=datetime.now(UTC))
+        except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
+            _emit_document(
+                _error_document("AUDIT_FAILED", f"{type(exc).__name__}: {exc}", write=write)
             )
-        )
-        return 0
+            _emit_finished(elapsed_s=time.monotonic() - started, exit_code=1)
+            return 1
+        finally:
+            heartbeat.stop()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                conn.close()
 
-    if not write:
-        return _run_dry_run(entries, build_request)
+        entries = derive_bulk_rollout_entries(report)
+        _emit_audit_finished(entries, elapsed_s=time.monotonic() - started)
 
-    return _run_write(
-        entries,
-        build_request,
-        repository_sha=args.repository_commit,
-        inspect_repository_source=inspect_repository_source,
-    )
+        def build_request(entry: RolloutSymbolEntry) -> NativeShortScopeAdministrationRequest:
+            return build_request_for_entry(
+                entry,
+                actor_type=args.actor_type,
+                actor_id=args.actor_id,
+                trigger_type=args.trigger_type,
+                request_source=args.request_source,
+                reason=args.reason,
+                requested_at_utc=requested_at_utc,
+                repository_sha=args.repository_commit,
+                schema_version=args.schema_version,
+                metadata=metadata,
+            )
+
+        if not entries:
+            _emit_document(
+                _result_document(
+                    {
+                        "mode": "DRY_RUN" if not write else "WRITE",
+                        "requested_symbols": [],
+                        "completed": [],
+                        "completed_symbols": [],
+                        "remaining_symbols": [],
+                        "stopped_early": False,
+                        "stop_reason": None,
+                        "all_succeeded": True,
+                    }
+                )
+            )
+            _emit_finished(elapsed_s=time.monotonic() - started, exit_code=0)
+            return 0
+
+        if not write:
+            exit_code = _run_dry_run(entries, build_request)
+        else:
+            exit_code = _run_write(
+                entries,
+                build_request,
+                repository_sha=args.repository_commit,
+                inspect_repository_source=inspect_repository_source,
+            )
+        _emit_finished(elapsed_s=time.monotonic() - started, exit_code=exit_code)
+        return exit_code
+    except KeyboardInterrupt:
+        _emit_interrupted(elapsed_s=time.monotonic() - started)
+        return 130
 
 
 def _run_dry_run(entries: Sequence[RolloutSymbolEntry], build_request: Any) -> int:
