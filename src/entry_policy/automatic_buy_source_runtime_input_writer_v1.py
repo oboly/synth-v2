@@ -415,7 +415,7 @@ def resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
           SELECT 1
           FROM execution_zone_context ezc
           WHERE ezc.asset_id = vm.base_asset_id
-            AND ezc.venue = vm.venue
+            AND ezc.venue COLLATE utf8mb4_unicode_ci = vm.venue COLLATE utf8mb4_unicode_ci
             AND ezc.interval_code = %s
       )
     ORDER BY vm.market, vm.base_asset_id, vm.venue_market_id
