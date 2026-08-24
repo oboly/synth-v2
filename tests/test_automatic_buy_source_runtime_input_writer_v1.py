@@ -17,6 +17,7 @@ from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
     AutomaticBuySourceRuntimeInputWriterError,
     derive_source_snapshot_key_v1,
     resolve_canonical_zone_source_runtime_input_request_v1,
+    resolve_actionable_canonical_zone_source_runtime_input_requests_v1,
     resolve_first_actionable_canonical_zone_source_runtime_input_request_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
@@ -218,8 +219,9 @@ class _UniverseCursor:
         return None
 
     def execute(self, sql: str, params: tuple[object, ...]) -> None:
-        assert "FROM account_asset" in sql
-        assert params == (7, "bitvavo", "EUR")
+        assert "FROM account_asset" not in sql
+        assert "FROM venue_market" in sql
+        assert params == ("bitvavo", "EUR", "4h")
 
     def fetchall(self) -> list[dict[str, object]]:
         return self.rows
@@ -416,6 +418,30 @@ def test_universe_source_selects_first_actionable_canonical_market_deterministic
         now_utc=TS,
     )
     assert result.market == "BTC-EUR"
+
+
+def test_universe_source_enumeration_is_market_only_and_returns_all_actionable_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.entry_policy.automatic_buy_source_runtime_input_writer_v1 as writer
+
+    def resolve(*_args: object, candidate: AutomaticBuyCanonicalZoneSourceRequestV1, **_kwargs: object) -> AutomaticBuySourceRuntimeInputRequestV1:
+        return _request(
+            trading_account_id=candidate.trading_account_id,
+            asset_id=candidate.asset_id,
+            market=candidate.market,
+        )
+
+    monkeypatch.setattr(writer, "resolve_canonical_zone_source_runtime_input_request_v1", resolve)
+    results = resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
+        _UniverseConn([{"asset_id": 1, "market": "BTC-EUR"}, {"asset_id": 2, "market": "ETH-EUR"}]),
+        universe=_canonical_zone_universe(trading_account_id=999),
+        now_utc=TS,
+    )
+
+    assert [(result.market, result.trading_account_id) for result in results] == [
+        ("BTC-EUR", 999), ("ETH-EUR", 999),
+    ]
 
 
 def test_universe_source_fails_closed_when_no_market_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:

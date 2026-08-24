@@ -119,7 +119,9 @@ class AutomaticBuyCanonicalZoneUniverseSourceRequestV1:
     """Identity for deterministic resolution within the canonical BUY universe.
 
     Asset, market, price, geometry, timestamps, and provenance remain source-
-    owned; callers can neither nominate nor edit a setup.
+    owned; callers can neither nominate nor edit a setup. ``trading_account_id``
+    is carried into resolved runtime input only; it never filters the market
+    universe.
     """
 
     trading_account_id: int
@@ -385,37 +387,44 @@ def resolve_canonical_zone_source_runtime_input_request_v1(
     )
 
 
-def resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+def resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
     conn: Any,
     *,
     universe: AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
     now_utc: datetime,
     max_price_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
-) -> AutomaticBuySourceRuntimeInputRequestV1:
-    """Resolve the first actionable setup from the canonical account market universe.
+) -> tuple[AutomaticBuySourceRuntimeInputRequestV1, ...]:
+    """Resolve actionable setups from the canonical market-only BUY universe.
 
     Enumeration is deterministic by canonical market identity. Each market is
     independently resolved through the existing 4h geometry/current-price
     source and then evaluated by the unchanged candidate contract; no ranking
-    or setup geometry is introduced here.
+    or setup geometry is introduced here. Account identity is only propagated
+    into each returned runtime input for the downstream decision gate.
     """
     _validate_canonical_zone_universe_source_request(universe)
     if not _aware(now_utc) or max_price_age_seconds < 0:
         raise AutomaticBuySourceRuntimeInputWriterError("INVALID_EVALUATION_TIMESTAMP")
     sql = """
     SELECT vm.base_asset_id AS asset_id, vm.market
-    FROM account_asset aa
-    JOIN venue_market vm ON vm.venue_market_id = aa.venue_market_id
-    WHERE aa.trading_account_id = %s
-      AND vm.venue = %s
+    FROM venue_market vm
+    WHERE vm.venue = %s
       AND vm.quote_currency = %s
       AND vm.is_tradeable = 1
+      AND EXISTS (
+          SELECT 1
+          FROM execution_zone_context ezc
+          WHERE ezc.asset_id = vm.base_asset_id
+            AND ezc.venue = vm.venue
+            AND ezc.interval_code = %s
+      )
     ORDER BY vm.market, vm.base_asset_id, vm.venue_market_id
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (universe.trading_account_id, universe.venue, QUOTE_CURRENCY_EUR))
+        cur.execute(sql, (universe.venue, QUOTE_CURRENCY_EUR, CANONICAL_BUY_GEOMETRY_INTERVAL))
         rows = [dict(row) for row in cur.fetchall()]
 
+    actionable: list[AutomaticBuySourceRuntimeInputRequestV1] = []
     for row in rows:
         try:
             request = resolve_canonical_zone_source_runtime_input_request_v1(
@@ -454,8 +463,26 @@ def resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
             evaluation_ts_utc=request.evaluation_ts_utc,
         )
         if evaluation.state == STATE_CANDIDATE:
-            return request
+            actionable.append(request)
+    if actionable:
+        return tuple(actionable)
     raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_ACTIONABLE_CANDIDATE_MISSING")
+
+
+def resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+    conn: Any,
+    *,
+    universe: AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
+    now_utc: datetime,
+    max_price_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
+) -> AutomaticBuySourceRuntimeInputRequestV1:
+    """Return the deterministic first actionable canonical market setup."""
+    return resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
+        conn,
+        universe=universe,
+        now_utc=now_utc,
+        max_price_age_seconds=max_price_age_seconds,
+    )[0]
 
 
 def validate_source_runtime_input_request_v1(
