@@ -12,6 +12,12 @@ from typing import Any, Mapping
 from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_now
 from src.reporting.current_price_snapshot_v1 import DEFAULT_CURRENT_PRICE_FRESH_AFTER
+from src.reporting.fib_coverage_classification_v1 import (
+    FibCoverageClassification,
+    classify_fib_coverage,
+    fib_coverage_reason_text,
+    summarize_fib_coverage_reasons,
+)
 from src.reporting.market_rotation_profit_plan_projection_v1 import (
     RotationProfitPlanProjection,
     get_market_projection,
@@ -575,6 +581,10 @@ class ProfitPlanCard:
     evidence: CardEvidence = field(default_factory=CardEvidence)
     delta: CardDelta = field(default_factory=CardDelta)
     planning_provenance: PlanningProvenance = field(default_factory=PlanningProvenance)
+    # Issue #489: truthful per-symbol classification of Fib authority
+    # coverage, distinguishing not-enrolled from expected-but-missing. None
+    # until apply_fib_coverage_classification() has run.
+    fib_coverage: FibCoverageClassification | None = None
 
 
 @dataclass(frozen=True)
@@ -1446,6 +1456,67 @@ def apply_portfolio_account_evidence(
                 is_core_sensor=is_core_sensor,
             )
         )
+    return out
+
+
+def apply_fib_coverage_classification(
+    cards: list[ProfitPlanCard],
+    *,
+    open_order_count_by_market: Mapping[str, int] = {},
+    native_short_scope_state_by_symbol: Mapping[str, str] = {},
+    canonical_fib_source_available: bool = True,
+) -> list[ProfitPlanCard]:
+    """Attach a truthful per-symbol Fib coverage classification (Issue #489).
+
+    Read-only composition over already-resolved canonical facts already
+    carried on each card (``is_market_selected`` / ``is_core_sensor`` from the
+    canonical publication cohort / core-sensor overlay, ``is_wallet_held`` /
+    ``is_portfolio_asset`` from the rendered account scope, and
+    ``planning_provenance`` proving whether canonical 4h data actually
+    filled in usable levels via the Planning-PPP fallback) plus the caller's
+    open-order, native-SHORT-scope, and canonical-4h-DB-fetch-health facts.
+    Must run after ``apply_portfolio_account_evidence`` so the overlay flags
+    are populated.
+
+    ``canonical_fib_source_available`` is the caller's own canonical 4h DB
+    fetch success/failure (e.g. the ``fetch_canonical_fib_map_rows()``
+    try/except in ``run_manual_short_trader_profit_plan_v1.main()``) --
+    never derived from a card's legacy-CSV-only ``FIB_MAP_SOURCE_MISSING``
+    status, which says nothing about canonical 4h DB health.
+
+    When the classification identifies a coverage gap (not simply
+    "available" or "not applicable"), the truthful reason is appended to
+    ``card.reasons`` so JSON and HTML render the identical explanation --
+    neither derives its own separate wording.
+    """
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        # A partial native row's short_context_coverage_status stays
+        # unchanged even when load_zone_contexts()'s Planning-PPP fallback
+        # (Issue #238) silently fills fib_ext/reentry from canonical 4h
+        # underneath it -- only planning_provenance proves that actually
+        # happened, so overall availability must be read from there, not
+        # reconstructed from the coverage/input status strings.
+        canonical_fallback_usable = card.planning_provenance.entry_source == PLANNING_SOURCE_CANONICAL_4H_NAVIGATION or (
+            card.planning_provenance.target_source == PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+        )
+        classification = classify_fib_coverage(
+            short_context_coverage_status=card.short_context_coverage_status,
+            short_context_input_status=card.short_context_input_status,
+            is_market_selected=card.is_market_selected,
+            is_core_sensor=card.is_core_sensor,
+            is_wallet_held=card.is_wallet_held,
+            is_portfolio_asset=card.is_portfolio_asset,
+            has_open_order=open_order_count_by_market.get(card.market, 0) > 0,
+            native_short_scope_state=native_short_scope_state_by_symbol.get(
+                card.symbol, "UNKNOWN"
+            ),
+            canonical_fallback_usable=canonical_fallback_usable,
+            canonical_fib_source_available=canonical_fib_source_available,
+        )
+        reason_text = fib_coverage_reason_text(classification)
+        reasons = card.reasons if reason_text is None or reason_text in card.reasons else (*card.reasons, reason_text)
+        out.append(dataclasses.replace(card, fib_coverage=classification, reasons=reasons))
     return out
 
 
@@ -6254,7 +6325,11 @@ def build_json_snapshot(
                 "breath_curve": c.breath_curve,
                 "market_context": (market_context_by_symbol or {}).get(c.symbol),
                 "rotation": market_projection_to_json_dict(get_market_projection(_rotation_projection, c.market)),
+                "fib_coverage_classification": c.fib_coverage.to_json() if c.fib_coverage is not None else None,
             }
             for c in cards
         ],
+        "fib_coverage_summary": summarize_fib_coverage_reasons(
+            c.fib_coverage for c in cards if c.fib_coverage is not None
+        ),
     }
