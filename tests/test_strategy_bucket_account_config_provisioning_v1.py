@@ -123,6 +123,59 @@ def test_unknown_account_rejected() -> None:
         provision_strategy_bucket_account_config_v1(conn, request=_request())
 
 
+class _MultiMatchCursor:
+    def __enter__(self) -> "_MultiMatchCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        return None
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return [{"trading_account_id": 1}, {"trading_account_id": 2}]
+
+
+class _MultiMatchConnection:
+    """A duplicate (account_code, venue) binding should never occur given the
+    real `uq_trading_account_code` UNIQUE constraint, but the resolver must
+    still fail closed rather than trust `LIMIT 1` to silently pick one."""
+
+    def cursor(self) -> _MultiMatchCursor:
+        return _MultiMatchCursor()
+
+
+def test_duplicate_account_identity_binding_rejected_not_silently_resolved() -> None:
+    with pytest.raises(StrategyBucketAccountConfigProvisioningError, match="AMBIGUOUS_TRADING_ACCOUNT_IDENTITY"):
+        provision_strategy_bucket_account_config_v1(_MultiMatchConnection(), request=_request())
+
+
+def test_offset_aware_timestamp_normalized_to_utc_before_resolution_and_insert() -> None:
+    from datetime import timedelta, timezone as _timezone
+
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    offset_ts = TS.astimezone(_timezone(timedelta(hours=2)))
+    assert offset_ts.utcoffset() != timedelta(0)
+
+    result = provision_strategy_bucket_account_config_v1(conn, request=_request(effective_from_ts_utc=offset_ts))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT effective_from_ts_utc FROM strategy_bucket_account_config_v1 WHERE strategy_bucket_account_config_id = %s",
+            (result.strategy_bucket_account_config_id,),
+        )
+        stored = cur.fetchone()["effective_from_ts_utc"]
+    assert stored.replace(tzinfo=UTC) == TS
+
+    # A rerun using the equivalent UTC instant (not the offset form) must
+    # resolve to the same normalized identity and be treated as idempotent.
+    rerun = provision_strategy_bucket_account_config_v1(conn, request=_request(effective_from_ts_utc=TS))
+    assert rerun.idempotent is True
+    assert rerun.strategy_bucket_account_config_id == result.strategy_bucket_account_config_id
+
+
 @pytest.mark.parametrize("bad_bucket_id", ["", "   ", "has space", "bad/slash", "x" * 65])
 def test_unknown_or_malformed_strategy_bucket_identity_rejected(bad_bucket_id: str) -> None:
     conn = FakeConnection()
