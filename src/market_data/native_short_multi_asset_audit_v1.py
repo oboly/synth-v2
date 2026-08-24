@@ -29,6 +29,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     classify_persisted_native_short_writer_provenance,
 )
 from src.market_rules.price_tick_normalization_v1 import resolve_tick_rule_from_static
+from src.market_rules.venue_execution_constraints_v1 import load_constraints_from_db
 
 
 AUDIT_VERSION = "0.2"
@@ -298,6 +299,15 @@ class CandidateInput:
     trailing_30d_quote_volume: Decimal | None = None
     ledger: LedgerState = LedgerState()
     context_status: str | None = None
+    # Decimal-place tick precision(s) derived from the canonical
+    # venue_execution_constraint.tick_size (see _decimal_places_from_tick_size).
+    # Populated by run_audit from src.market_rules.venue_execution_constraints_v1
+    # -- the same table execution_planner/canonical_rounding_v1 already trust.
+    # venue_market.price_precision alone is stale: Bitvavo's /v2/markets no
+    # longer populates pricePrecision (see bitvavo_venue_adapter_v1 docstring),
+    # so any market synced since then has NULL price_precision even though its
+    # execution-constraint tick size is fresh.
+    execution_constraint_decimal_places: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -449,23 +459,67 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _tick_state(markets: Sequence[MarketMetadata], symbol: str) -> tuple[str, int | None, tuple[str, ...]]:
+def _decimal_places_from_tick_size(tick_size: Decimal) -> int | None:
+    """Convert a venue_execution_constraint tick_size to a decimal-place count,
+    or ``None`` if it is not a clean power of ten. The existing tick-rule model
+    (``price_tick_normalization_v1.TickRule``) represents every tick purely as
+    a decimal-place count, so a non-power-of-ten tick_size cannot be expressed
+    in it and must fail closed rather than be silently rounded."""
+    if tick_size <= 0:
+        return None
+    normalized = tick_size.normalize()
+    _sign, digits, exponent = normalized.as_tuple()
+    if digits != (1,) or not isinstance(exponent, int):
+        return None
+    return -exponent if exponent < 0 else 0
+
+
+def _tick_state(
+    markets: Sequence[MarketMetadata],
+    symbol: str,
+    execution_constraint_decimal_places: Sequence[int] = (),
+) -> tuple[str, int | None, tuple[str, ...]]:
+    """Resolve tick precision with the same DB-first-then-static precedence
+    ``price_tick_normalization_v1.resolve_tick_rule`` already uses, with
+    ``venue_execution_constraint`` (the canonical, currently-synced source --
+    see ``bitvavo_venue_adapter_v1``) standing in front of the older
+    ``venue_market.price_precision`` column as the new authoritative "DB"
+    step.
+
+    This is deliberately a precedence chain, not a multi-source consensus
+    vote: ``venue_market.price_precision`` is permanently NULL for any market
+    synced since Bitvavo stopped returning ``pricePrecision``, and the static
+    fallback table is documented stale (confirmed wrong for BTC-EUR). Voting
+    a fresh, correct value against sources already known to be dead/stale
+    would misclassify every currently-supported scope whose static entry has
+    drifted as ``TICK_RULE_AMBIGUOUS`` -- a regression, not a fix. When the
+    canonical source has an answer, it wins outright; the legacy sources are
+    consulted, with their existing internal-conflict check, only when it does
+    not.
+    """
+    constraint_values = sorted(set(execution_constraint_decimal_places))
+    if constraint_values:
+        sources = ("venue_execution_constraint.tick_size",)
+        if len(constraint_values) != 1:
+            return TICK_RULE_AMBIGUOUS, None, sources
+        return "TICK_RULE_AVAILABLE", constraint_values[0], sources
+
     db_values = sorted({value for row in markets for value in row.db_price_precisions})
     static = resolve_tick_rule_from_static(VENUE, f"{symbol}-{QUOTE_CURRENCY}")
     static_value = None if static is None else static.decimal_places
-    sources: list[str] = []
+    sources_list: list[str] = []
     if db_values:
-        sources.append("venue_market.price_precision")
+        sources_list.append("venue_market.price_precision")
     if static_value is not None:
-        sources.append("static_bitvavo_eur")
+        sources_list.append("static_bitvavo_eur")
     values = set(db_values)
     if static_value is not None:
         values.add(static_value)
     if not values:
-        return TICK_RULE_MISSING, None, tuple(sources)
+        return TICK_RULE_MISSING, None, tuple(sources_list)
     if len(values) != 1 or len(db_values) > 1:
-        return TICK_RULE_AMBIGUOUS, None, tuple(sources)
-    return "TICK_RULE_AVAILABLE", next(iter(values)), tuple(sources)
+        return TICK_RULE_AMBIGUOUS, None, tuple(sources_list)
+    return "TICK_RULE_AVAILABLE", next(iter(values)), tuple(sources_list)
 
 
 def generation_chain_is_valid(ledger: LedgerState) -> bool:
@@ -547,7 +601,9 @@ def evaluate_candidate(
         if not context_available:
             market_reasons.append(PRIMARY_CONTEXT_UNAVAILABLE)
 
-    tick_state, tick_places, tick_sources = _tick_state(candidate.markets, symbol)
+    tick_state, tick_places, tick_sources = _tick_state(
+        candidate.markets, symbol, candidate.execution_constraint_decimal_places
+    )
     if tick_state != "TICK_RULE_AVAILABLE":
         market_reasons.append(tick_state)
 
@@ -841,6 +897,23 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         raise RuntimeError("CANONICAL_MARKET_UNIVERSE_EMPTY")
     placeholders = ",".join(["%s"] * len(asset_ids))
 
+    # venue_execution_constraint is the canonical, currently-synced source of
+    # tick precision (venue_market.price_precision alone is stale: Bitvavo's
+    # /v2/markets stopped populating pricePrecision -- see
+    # bitvavo_venue_adapter_v1 docstring). Reused read-only via the existing
+    # loader; no new table, no new tick model.
+    constraint_markets = sorted({str(row["market"]) for row in market_rows})
+    execution_constraints = load_constraints_from_db(conn, venue=VENUE, markets=constraint_markets)
+    constraint_decimal_places_by_symbol: dict[str, list[int]] = defaultdict(list)
+    for market_name, constraint in execution_constraints.items():
+        symbol = market_name[: -len(f"-{QUOTE_CURRENCY}")] if market_name.endswith(f"-{QUOTE_CURRENCY}") else None
+        if symbol is None:
+            continue
+        dp = _decimal_places_from_tick_size(constraint.tick_size)
+        if dp is not None:
+            constraint_decimal_places_by_symbol[symbol].append(dp)
+    _phase(progress, "venue_execution_constraint", len(execution_constraints), started)
+
     candle_started = datetime.now(UTC)
     candle_stats_rows = _fetch_all(
         conn,
@@ -1077,6 +1150,7 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
                 supporting,
             ),
             trailing_30d_quote_volume=volumes.get(symbol), ledger=ledger,
+            execution_constraint_decimal_places=tuple(constraint_decimal_places_by_symbol.get(symbol, ())),
         ), as_of_utc=as_of, global_blockers=active_blockers))
 
     ranked = rank_sequential_candidates(evaluated)
