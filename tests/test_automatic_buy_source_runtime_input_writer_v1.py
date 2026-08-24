@@ -10,12 +10,14 @@ import pytest
 from src.entry_policy.automatic_buy_runtime_contract_v1 import RUNTIME_INPUT_LIVE_CONTRACT_VERSION
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
     AutomaticBuyCanonicalZoneSourceRequestV1,
+    AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
     AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
     derive_source_snapshot_key_v1,
     resolve_canonical_zone_source_runtime_input_request_v1,
+    resolve_first_actionable_canonical_zone_source_runtime_input_request_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
@@ -205,6 +207,32 @@ class _CanonicalZoneConn:
         return _CanonicalZoneCursor(self)
 
 
+class _UniverseCursor:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def __enter__(self) -> "_UniverseCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        assert "FROM account_asset" in sql
+        assert params == (7, "bitvavo", "EUR")
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return self.rows
+
+
+class _UniverseConn:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def cursor(self) -> _UniverseCursor:
+        return _UniverseCursor(self.rows)
+
+
 def _request(**overrides: object) -> AutomaticBuySourceRuntimeInputRequestV1:
     base = dict(
         evaluation_ts_utc=TS,
@@ -262,6 +290,18 @@ def _canonical_zone_candidate(**overrides: object) -> AutomaticBuyCanonicalZoneS
     )
     base.update(overrides)
     return AutomaticBuyCanonicalZoneSourceRequestV1(**base)  # type: ignore[arg-type]
+
+
+def _canonical_zone_universe(**overrides: object) -> AutomaticBuyCanonicalZoneUniverseSourceRequestV1:
+    base = dict(
+        trading_account_id=7,
+        venue="bitvavo",
+        strategy_bucket_id="SHORT_TERM_ROTATION",
+        strategy_id="strategy-a",
+        strategy_version="1",
+    )
+    base.update(overrides)
+    return AutomaticBuyCanonicalZoneUniverseSourceRequestV1(**base)  # type: ignore[arg-type]
 
 
 def test_request_contract_carries_no_account_permission_field() -> None:
@@ -351,6 +391,46 @@ def test_canonical_zone_source_rejects_geometry_that_lags_latest_4h_candle() -> 
     with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="CANONICAL_BUY_GEOMETRY_NOT_CURRENT"):
         resolve_canonical_zone_source_runtime_input_request_v1(
             conn, candidate=_canonical_zone_candidate(), now_utc=TS,
+        )
+
+
+def test_universe_source_selects_first_actionable_canonical_market_deterministically(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.entry_policy.automatic_buy_source_runtime_input_writer_v1 as writer
+
+    def resolve(*_args: object, candidate: AutomaticBuyCanonicalZoneSourceRequestV1, **_kwargs: object) -> AutomaticBuySourceRuntimeInputRequestV1:
+        return _request(
+            asset_id=candidate.asset_id,
+            market=candidate.market,
+            current_price=Decimal("100") if candidate.market == "BTC-EUR" else Decimal("120"),
+            entry_zone_low=Decimal("95"),
+            entry_zone_high=Decimal("105"),
+        )
+
+    monkeypatch.setattr(writer, "resolve_canonical_zone_source_runtime_input_request_v1", resolve)
+    result = resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+        _UniverseConn([
+            {"asset_id": 2, "market": "ETH-EUR"},
+            {"asset_id": 1, "market": "BTC-EUR"},
+        ]),
+        universe=_canonical_zone_universe(),
+        now_utc=TS,
+    )
+    assert result.market == "BTC-EUR"
+
+
+def test_universe_source_fails_closed_when_no_market_is_actionable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.entry_policy.automatic_buy_source_runtime_input_writer_v1 as writer
+
+    monkeypatch.setattr(
+        writer,
+        "resolve_canonical_zone_source_runtime_input_request_v1",
+        lambda *_args, **_kwargs: _request(current_price=Decimal("120"), entry_zone_low=Decimal("95"), entry_zone_high=Decimal("105")),
+    )
+    with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="CANONICAL_BUY_ACTIONABLE_CANDIDATE_MISSING"):
+        resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+            _UniverseConn([{"asset_id": 1, "market": "BTC-EUR"}]),
+            universe=_canonical_zone_universe(),
+            now_utc=TS,
         )
 
 
