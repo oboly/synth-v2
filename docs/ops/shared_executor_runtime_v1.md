@@ -58,10 +58,28 @@ long-running so every invocation has one STARTED and exactly one terminal line.
 - `PAPER` is intentionally unavailable as `PAPER_ADAPTER_NOT_CONFIGURED`.
   The older paper executor uses a different plan/account-state contract; it
   is not a safe shared-paper adapter and must not be reused.
-- `LIVE` is intentionally unavailable as `LIVE_RUNTIME_NOT_AUTHORIZED`.
-  The dormant handoff-bound Bitvavo adapter, credential binding, kill switch,
-  and finite LIVE authority remain separate prerequisites and are not composed
-  by this runtime.
+- `LIVE` is reviewed and library-composable (`build_runtime_adapter_factory_v1`
+  in `src/executor/shared_execution_runtime_v1.py`) but is never reached by
+  the installed unit or any deployed CLI invocation. `config_from_args`
+  independently hard-requires both `SYNTH_LIVE_EXECUTION_PERMISSION` and
+  `SYNTH_BROKER_WRITE_PERMISSION` to remain `NOT_GRANTED` before this module
+  is ever invoked from the CLI entrypoint, so the composed LIVE gate below is
+  reachable only by direct/test callers of the library function today. See
+  `docs/ops/executor_live_authority_kill_switch_runbook_v1.md` for the full
+  operator kill-switch procedure and `src/executor/live_canary_bounds_v1.py`
+  for the frozen first-LIVE canary contract (exactly one account, one market,
+  BUY only, `max_orders_per_cycle=1`, tiny `max_notional_eur`).
+
+  The composed LIVE sequence, all fail-closed: `SYNTH_LIVE_EXECUTION_PERMISSION
+  == GRANTED` -> `SYNTH_BROKER_WRITE_PERMISSION == GRANTED` -> executor
+  identity exactly `shared-executor-v1` -> canary bounds resolved -> master
+  key resolved -> DB connection resolved -> (per handoff) canary scope match
+  -> canary notional bound -> `execution_live_authority_v1` resolves exactly
+  one effective grant -> kill switch confirmed `DISENGAGED` -> TRADE_EXECUTION
+  credential scope resolves with `allowed_order_write=1` and
+  `allowed_withdrawal=0` -> only then is a broker-write client constructed.
+  No credential secret is loaded and no client is built until every earlier
+  gate passes.
 
 The unit sets `DRY_RUN`, `SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED`, and
 `SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED` explicitly. Host configuration
@@ -125,13 +143,16 @@ migration `20260819_shared_executor_persisted_consumer_v1.sql`; a selected
 runtime operator ID; host-only DB configuration; unit installation; controlled
 acceptance; and explicit timer enablement. None are performed by this change.
 
-Read-only gurkDB inventory on 2026-08-19 found
-`executor_credential_binding` present and all of the following absent:
-`executor_execution_handoff`, `executor_execution_handoff_plan_leg`,
-`executor_execution_handoff_consumption`, `executor_execution_leg`,
-`executor_live_authority_grant`, and `executor_kill_switch_event`. This is
-schema-presence evidence only; it does not inspect credentials or grant any
-deployment authority.
+Read-only gurkDB inventory on 2026-08-24 (Issue #512) found
+`executor_credential_binding`, `executor_execution_handoff`,
+`executor_execution_handoff_plan_leg`, `executor_execution_handoff_consumption`,
+and `executor_execution_leg` present and empty, and confirmed
+`executor_live_authority_grant`, `executor_live_authority_revocation`, and
+`executor_kill_switch_event` were absent. `db/migrations/20260817_executor_live_authority_v1.sql`
+was then applied (schema only: 3 tables, 6 immutability triggers, 0 rows).
+This is schema-presence evidence and one reviewed schema application only; it
+does not inspect credentials, create a grant/kill-switch row, or activate any
+deployment.
 
 LIVE authorization is a later independent operation requiring, at minimum:
 the LIVE-authority/kill-switch migration; an authoritative engaged/disengaged
