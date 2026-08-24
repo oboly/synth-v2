@@ -2041,9 +2041,31 @@ def _projection_status_row(card: ProfitPlanCard) -> EvidenceRow:
 
 
 def _current_map_selection_row(card: ProfitPlanCard) -> EvidenceRow:
+    """Selected-map TIER metadata row (Issue #496).
+
+    ``selected_map_tier`` (native_row.current_map_status) is optional,
+    non-canonical bridge metadata layered on top of an already-selected map
+    -- it is never canonical native map identity/status/lifecycle truth
+    (see _canonical_native_map_truth_available). The current native SHORT
+    snapshot contract permanently retires this field and its siblings and
+    always emits an unavailable placeholder for them, even on a fully
+    AVAILABLE/canonical row. When the tier metadata is unavailable but
+    native map identity/status (_native_map_status) is independently proven
+    AVAILABLE, this row must say the tier metadata is unpublished, not imply
+    the native map itself is unavailable.
+    """
     raw_tier = str(card.evidence.selected_map_tier or "").strip().upper()
     authority = "Selected-map tier (map-selection authority)"
+    native_available = _native_map_status(card) == "AVAILABLE"
     if raw_tier in _UNAVAILABLE_TOKENS:
+        if native_available:
+            return EvidenceRow(
+                key="current_map_selection",
+                label="Current map selection",
+                authority=authority,
+                status="TIER_METADATA_UNAVAILABLE",
+                reason_codes=("MAP_SELECTION_TIER_METADATA_UNAVAILABLE",),
+            )
         return EvidenceRow(
             key="current_map_selection",
             label="Current map selection",
@@ -2051,7 +2073,7 @@ def _current_map_selection_row(card: ProfitPlanCard) -> EvidenceRow:
             status="UNKNOWN",
             reason_codes=("MAP_SELECTION_UNAVAILABLE",),
         )
-    if _native_map_status(card) == "AVAILABLE":
+    if native_available:
         return EvidenceRow(
             key="current_map_selection",
             label="Current map selection",
@@ -3525,6 +3547,9 @@ _REASON_CODE_OPERATOR_LABELS: dict[str, str] = {
     "NATIVE_MAP_DATA_UNAVAILABLE": "Native Fibonacci map data unavailable",
     "MAP_TIER_NOT_CONFIRMED_CURRENT": "Selected native SHORT map — NOT CONFIRMED",
     "MAP_SELECTION_UNAVAILABLE": "Native SHORT map selection unavailable",
+    "MAP_SELECTION_TIER_METADATA_UNAVAILABLE": (
+        "Native SHORT map is available; selected-map tier metadata not published"
+    ),
     "MAP_LIFECYCLE_UNAVAILABLE": "Native SHORT map lifecycle unavailable",
     "MAP_LIFECYCLE_BLOCKS_ACTION": "Native SHORT map lifecycle blocks action",
     "MAP_CYCLE_UNAVAILABLE": "Fibonacci map cycle unavailable",
@@ -3554,6 +3579,7 @@ _MAP_SELECTION_STATUS_OPERATOR_TEXT: dict[str, str] = {
     "CURRENT_ACTIVE_MAP": "CONFIRMED CURRENT",
     "REPORTING_FALLBACK": "NOT CONFIRMED",
     "UNKNOWN": "UNKNOWN",
+    "TIER_METADATA_UNAVAILABLE": "AVAILABLE — TIER METADATA NOT PUBLISHED",
 }
 
 
