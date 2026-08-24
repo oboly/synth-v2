@@ -29,8 +29,10 @@ for the full narrative):
 - ``automatic_buy_execution_enabled``: resolved from
   ``automatic_buy_account_permission_contract_v1`` (new decision-gate-owned
   permission table; no canonical owner existed before #474).
-- ``free_quote_balance_eur``: bound from the COMPLETE account-state bundle's
-  ``trading_account_balance_snapshot`` EUR row.
+- ``free_quote_balance_eur``: for LIVE, bound from the COMPLETE account-state
+  bundle's ``trading_account_balance_snapshot`` EUR row. PAPER has no broker
+  funding authority; when its canonical bundle has no EUR row this is zero
+  with no balance-snapshot identity, and the gate uses bucket limits instead.
 - ``current_open_positions`` / ``current_bucket_amount_eur``: derived from the
   same COMPLETE bundle's ``account_position_snapshot`` rows, valued in EUR at
   the latest fresh market price. Scoped to the whole account, not the
@@ -100,7 +102,7 @@ class AutomaticBuyAccountAllocationEvidenceV1:
     current_open_positions: int
     current_asset_exposure_pct: Decimal
     account_state_snapshot_run_id: int
-    trading_account_balance_snapshot_id: int
+    trading_account_balance_snapshot_id: int | None
 
 
 def _aware(value: datetime) -> bool:
@@ -130,7 +132,6 @@ def validate_automatic_buy_account_allocation_evidence_v1(
         or not _nonempty(value.market)
         or not _nonempty(value.strategy_bucket_id)
         or value.account_state_snapshot_run_id <= 0
-        or value.trading_account_balance_snapshot_id <= 0
     ):
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_IDENTITY")
 
@@ -143,7 +144,7 @@ def validate_automatic_buy_account_allocation_evidence_v1(
 
     if max_age_seconds < 0:
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_MAX_AGE")
-    for observed in (value.account_observed_ts_utc, value.free_quote_balance_observed_ts_utc):
+    for observed in (value.account_observed_ts_utc,):
         if _stale(observed, value.evaluation_ts_utc, max_age_seconds):
             raise AutomaticBuyAccountAllocationEvidenceContractError("STALE_ACCOUNT_ALLOCATION_EVIDENCE")
 
@@ -155,6 +156,14 @@ def validate_automatic_buy_account_allocation_evidence_v1(
         or value.account_mode not in SUPPORTED_ACCOUNT_MODES
     ):
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_ACCOUNT_STATE")
+
+    if value.account_mode == ACCOUNT_MODE_LIVE:
+        if value.trading_account_balance_snapshot_id is None or value.trading_account_balance_snapshot_id <= 0:
+            raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_IDENTITY")
+        if _stale(value.free_quote_balance_observed_ts_utc, value.evaluation_ts_utc, max_age_seconds):
+            raise AutomaticBuyAccountAllocationEvidenceContractError("STALE_ACCOUNT_ALLOCATION_EVIDENCE")
+    elif value.trading_account_balance_snapshot_id is not None and value.trading_account_balance_snapshot_id <= 0:
+        raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_IDENTITY")
 
     # Deliberately NOT rejected here: `account_mode == "live"` with
     # `live_trading_enabled == False` is a normal, expected, faithfully-bound

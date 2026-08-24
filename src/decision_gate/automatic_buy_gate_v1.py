@@ -203,13 +203,6 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE, candidate)
     if _stale(candidate.observed_ts_utc, context.evaluation_ts_utc, context.max_candidate_age_seconds):
         return _decision(STATE_NON_ACTIONABLE, REASON_CANDIDATE_EVIDENCE_STALE, candidate)
-    if _stale(
-        context.free_quote_balance_observed_ts_utc,
-        context.evaluation_ts_utc,
-        context.max_free_quote_balance_age_seconds,
-    ):
-        return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate)
-
     if context.free_quote_balance_eur < 0:
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_FREE_QUOTE_BALANCE, candidate)
     if context.proposed_position_amount_eur <= 0:
@@ -227,6 +220,12 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         if context.live_trading_enabled:
             return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
     else:
+        if _stale(
+            context.free_quote_balance_observed_ts_utc,
+            context.evaluation_ts_utc,
+            context.max_free_quote_balance_age_seconds,
+        ):
+            return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate)
         if not context.live_trading_enabled:
             return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
         live_permission = context.automatic_buy_live_permission_evaluation
@@ -249,7 +248,7 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
 
     if context.blocking_conflict:
         return _decision(STATE_DENIED, REASON_BLOCKING_CONFLICT, candidate)
-    if context.free_quote_balance_eur == 0:
+    if context.account_mode == ACCOUNT_MODE_LIVE and context.free_quote_balance_eur == 0:
         return _decision(STATE_DENIED, REASON_NO_FREE_QUOTE_BALANCE, candidate)
 
     bucket_request = StrategyBucketParticipationRequestV1(
@@ -283,7 +282,9 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             bucket_reason=bucket_decision.reason_code,
         )
 
-    ceiling = min(context.proposed_position_amount_eur, context.free_quote_balance_eur)
+    ceiling = context.proposed_position_amount_eur
+    if context.account_mode == ACCOUNT_MODE_LIVE:
+        ceiling = min(ceiling, context.free_quote_balance_eur)
     if context.max_automatic_buy_notional_eur is not None:
         ceiling = min(ceiling, context.max_automatic_buy_notional_eur)
     if ceiling <= 0:

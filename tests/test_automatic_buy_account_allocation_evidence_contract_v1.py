@@ -48,6 +48,12 @@ def test_valid_paper_evidence_passes() -> None:
     validate_automatic_buy_account_allocation_evidence_v1(_evidence())
 
 
+def test_paper_without_real_quote_balance_identity_passes() -> None:
+    validate_automatic_buy_account_allocation_evidence_v1(
+        _evidence(free_quote_balance_eur=Decimal("0"), trading_account_balance_snapshot_id=None)
+    )
+
+
 def test_valid_live_evidence_passes() -> None:
     validate_automatic_buy_account_allocation_evidence_v1(
         _evidence(account_mode="live", live_trading_enabled=True)
@@ -72,11 +78,22 @@ def test_stale_account_observation_fails_closed() -> None:
         )
 
 
-def test_stale_balance_observation_fails_closed() -> None:
+def test_live_stale_balance_observation_fails_closed() -> None:
     with pytest.raises(AutomaticBuyAccountAllocationEvidenceContractError):
         validate_automatic_buy_account_allocation_evidence_v1(
-            _evidence(free_quote_balance_observed_ts_utc=TS - timedelta(hours=1)),
+            _evidence(
+                account_mode="live",
+                live_trading_enabled=True,
+                free_quote_balance_observed_ts_utc=TS - timedelta(hours=1),
+            ),
             max_age_seconds=900,
+        )
+
+
+def test_live_without_real_quote_balance_identity_fails_closed() -> None:
+    with pytest.raises(AutomaticBuyAccountAllocationEvidenceContractError):
+        validate_automatic_buy_account_allocation_evidence_v1(
+            _evidence(account_mode="live", live_trading_enabled=True, trading_account_balance_snapshot_id=None)
         )
 
 
