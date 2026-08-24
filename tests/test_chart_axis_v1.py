@@ -1,4 +1,8 @@
-from src.reporting.chart_axis_v1 import format_tick_label, nice_domain_and_ticks
+from src.reporting.chart_axis_v1 import (
+    decimal_places_for_step,
+    format_tick_label,
+    nice_domain_and_ticks,
+)
 
 
 def test_spans_zero_produces_nice_symmetric_style_ticks() -> None:
@@ -84,3 +88,27 @@ def test_format_tick_label_trims_trailing_decimal_zero() -> None:
 
 def test_format_tick_label_keeps_two_decimals_when_needed() -> None:
     assert format_tick_label(0.02) == "+0.02"
+
+
+def test_sub_cent_range_produces_distinct_non_colliding_labels() -> None:
+    # Codex review on PR #515: a visible range narrower than 0.01 must not
+    # collapse every distinct tick onto the same "+0.00"-style label.
+    axis = nice_domain_and_ticks(0.0, 0.0001)
+    decimals = decimal_places_for_step(axis.step)
+    labels = [format_tick_label(tick, decimals=decimals) for tick in axis.ticks]
+    assert len(labels) == len(set(labels))
+    assert "0" in labels
+
+
+def test_decimal_places_for_step_matches_nice_step_magnitude() -> None:
+    assert decimal_places_for_step(20.0) == 0
+    assert decimal_places_for_step(5.0) == 0
+    assert decimal_places_for_step(0.5) == 1
+    assert decimal_places_for_step(0.02) == 2
+    assert decimal_places_for_step(0.00002) == 5
+
+
+def test_format_tick_label_with_explicit_decimals_zero_pads_correctly() -> None:
+    assert format_tick_label(0.00002, decimals=5) == "+0.00002"
+    assert format_tick_label(20.0, decimals=0) == "+20"
+    assert format_tick_label(0.0, decimals=5) == "0"

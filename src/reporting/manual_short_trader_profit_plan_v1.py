@@ -29,7 +29,7 @@ from src.reporting.market_rotation_pressure_dashboard_v1 import (
     build_history_view as build_rotation_history_view,
     format_history_window_label as format_rotation_history_window_label,
 )
-from src.reporting.chart_axis_v1 import format_tick_label, nice_domain_and_ticks
+from src.reporting.chart_axis_v1 import decimal_places_for_step, format_tick_label, nice_domain_and_ticks
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -5156,6 +5156,7 @@ def _rotation_history_axis_svg(
     domain_min: float,
     domain_max: float,
     ticks: tuple[float, ...],
+    tick_decimals: int,
     width: int = 600,
     height: int = 120,
     left_padding: int = 40,
@@ -5200,7 +5201,7 @@ def _rotation_history_axis_svg(
         )
         grid_parts.append(
             f"<text class='rotation-history-tick-label' x='{plot_left - 6}' y='{y:.1f}' "
-            f"dominant-baseline='middle' text-anchor='end'>{esc(format_tick_label(tick))}</text>"
+            f"dominant-baseline='middle' text-anchor='end'>{esc(format_tick_label(tick, decimals=tick_decimals))}</text>"
         )
     axis_line = (
         f"<line class='rotation-history-axis' x1='{plot_left}' y1='{plot_top}' "
@@ -5239,6 +5240,7 @@ def _rotation_history_html(projection: RotationProfitPlanProjection) -> str:
         domain_min=axis.domain_min,
         domain_max=axis.domain_max,
         ticks=axis.ticks,
+        tick_decimals=decimal_places_for_step(axis.step),
         aria_label="Persisted aggregate pressure history, scaled to visible min, zero, and max",
     )
     return (

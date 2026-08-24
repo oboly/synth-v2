@@ -3443,6 +3443,27 @@ def test_rotation_history_zero_only_series_renders_nonzero_span_axis() -> None:
     assert ">0</text>" in rendered
 
 
+def test_rotation_history_sub_cent_range_produces_distinct_tick_labels() -> None:
+    # Codex review on PR #515: a visible window narrower than 0.01 must not
+    # render every tick as the same collapsed "+0.00" label.
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 0.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 0.00005},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 0.0001},
+    ]
+    projection = build_rotation_projection(
+        _rotation_header(market_score=0.0001), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    import re
+    labels = re.findall(r"rotation-history-tick-label'[^>]*>([^<]+)</text>", rendered)
+    assert len(labels) >= 2
+    assert len(labels) == len(set(labels))
+
+
 def test_rotation_history_rendering_is_deterministic_for_identical_input() -> None:
     from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
 
