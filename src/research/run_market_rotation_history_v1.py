@@ -15,8 +15,8 @@ from src.common.db import get_connection
 RUNNER_NAME = "market_rotation_history_v1"
 VERSION = "1.0"
 
-CANDLE_INTERVAL = "15m"
-CANDLE_INTERVAL_MINUTES = 15
+CANDLE_INTERVAL = "1h"
+CANDLE_INTERVAL_H = 1
 HORIZONS_H = (24, 168)
 MIN_COVERAGE_RATIO = Decimal("0.90")
 MAX_STALENESS_H = 2
@@ -104,17 +104,8 @@ class GlobalContextResult:
 # Pure computation functions
 # ---------------------------------------------------------------------------
 
-def floor_to_candle_interval(ts: datetime) -> datetime:
-    """Return the canonical 15-minute UTC close boundary for ``ts``."""
-    return ts.replace(
-        minute=(ts.minute // CANDLE_INTERVAL_MINUTES) * CANDLE_INTERVAL_MINUTES,
-        second=0,
-        microsecond=0,
-    )
-
-
-def expected_candle_count(horizon_h: int) -> int:
-    return horizon_h * 60 // CANDLE_INTERVAL_MINUTES
+def floor_to_hour(ts: datetime) -> datetime:
+    return ts.replace(minute=0, second=0, microsecond=0)
 
 
 def compute_price_change_pct(price_open: Decimal, price_close: Decimal) -> Decimal:
@@ -161,7 +152,7 @@ def check_eligibility(
     min_coverage: Decimal = MIN_COVERAGE_RATIO,
     max_staleness_h: int = MAX_STALENESS_H,
 ) -> tuple[bool, str]:
-    expected = expected_candle_count(horizon_h)
+    expected = horizon_h // CANDLE_INTERVAL_H
     if not current_candles:
         return False, "NO_CURRENT_CANDLES"
     if not baseline_candles:
@@ -189,7 +180,7 @@ def compute_observation(
     baseline_candles: list[CandleRecord],
     as_of_ts: datetime,
 ) -> HorizonObservation:
-    expected = expected_candle_count(horizon_h)
+    expected = horizon_h // CANDLE_INTERVAL_H
     last_baseline = max(baseline_candles, key=lambda c: c.close_ts_utc)
     first_current = min(current_candles, key=lambda c: c.close_ts_utc)
     last_current = max(current_candles, key=lambda c: c.close_ts_utc)
@@ -671,7 +662,7 @@ def print_validate_config(as_of_ts: datetime, args: argparse.Namespace) -> None:
             f"HORIZON {h}h  "
             f"current=({cur_start.isoformat()}Z, {as_of_ts.isoformat()}Z]  "
             f"baseline=({base_start.isoformat()}Z, {cur_start.isoformat()}Z]  "
-            f"expected_candles={expected_candle_count(h)}"
+            f"expected_candles={h}"
         )
     api_key_set = bool(os.getenv(COINGECKO_API_KEY_ENV))
     status = "SET" if api_key_set else "NOT_SET -> SKIPPED_NO_CREDENTIAL"
@@ -764,8 +755,8 @@ def resolve_as_of_ts(asof_arg: str | None) -> datetime:
         if ts.tzinfo is not None:
             from datetime import timezone
             ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
-        return floor_to_candle_interval(ts)
-    return floor_to_candle_interval(datetime.now(UTC).replace(tzinfo=None))
+        return floor_to_hour(ts)
+    return floor_to_hour(datetime.now(UTC).replace(tzinfo=None))
 
 
 def main(argv: list[str] | None = None) -> int:

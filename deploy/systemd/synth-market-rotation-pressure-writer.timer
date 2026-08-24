@@ -4,14 +4,19 @@ Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/market_rotati
 Requires=synth-market-rotation-pressure-writer.service
 
 [Timer]
-# Runs on deterministic native 15-minute boundaries after the canonical
-# obs_market_candle source. The candle-freshness writer starts at
-# :02,:17,:32,:47 UTC and has observed full-universe completion in ~4-7
-# minutes. Starting at :12,:27,:42,:57 retains at least a three-minute
-# margin after that completion window without inventing 5-minute snapshots.
-OnCalendar=*-*-* *:12,27,42,57:00 UTC
+# Runs at minute :20 of every hour, UTC. Evidence (see
+# docs/ops/market_rotation_pressure_runtime_owners_v1.md): the canonical
+# obs_market_candle 1h source is populated by the gurkDB
+# synth-market-candle-freshness-writer.timer, which fires every 15 minutes
+# (minutes :02,17,32,47 UTC, RandomizedDelaySec=30) and has observed
+# full-universe completion in ~4-7 minutes. For an hourly candle closing at
+# HH:00:00, the first candle-freshness run at HH:02:xx (worst case
+# HH:02:30) persists it by roughly HH:06-HH:09. Minute :20 keeps at least an
+# ~11 minute safety margin beyond that observed completion window before the
+# writer reads the hourly rotation-history source.
+OnCalendar=*-*-* *:20:00 UTC
 Persistent=true
-RandomizedDelaySec=0
+RandomizedDelaySec=180
 Unit=synth-market-rotation-pressure-writer.service
 
 [Install]

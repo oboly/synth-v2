@@ -28,10 +28,9 @@ from src.research.run_market_rotation_history_v1 import (
     compute_observation,
     compute_price_change_pct,
     compute_relative_volume,
-    expected_candle_count,
     fetch_candles_bulk,
     fetch_coingecko_global,
-    floor_to_candle_interval,
+    floor_to_hour,
     main,
     normalize_coingecko_global,
     split_missing_tables,
@@ -70,7 +69,7 @@ _MOD = "src.research.run_market_rotation_history_v1"
 def _candle(asset_id: int, close_ts: datetime, price: float, volume: float) -> CandleRecord:
     return CandleRecord(
         asset_id=asset_id,
-        open_ts_utc=close_ts - timedelta(minutes=15),
+        open_ts_utc=close_ts - timedelta(hours=1),
         close_ts_utc=close_ts,
         close_price=Decimal(str(price)),
         volume_quote_eur=Decimal(str(volume)),
@@ -78,19 +77,19 @@ def _candle(asset_id: int, close_ts: datetime, price: float, volume: float) -> C
 
 
 def _make_current_24h(asset_id: int = 1, price: float = 1050.0, volume: float = 50.0) -> list[CandleRecord]:
-    return [_candle(asset_id, AS_OF - timedelta(minutes=15 * (95 - i)), price, volume) for i in range(96)]
+    return [_candle(asset_id, AS_OF - timedelta(hours=23 - i), price, volume) for i in range(24)]
 
 
 def _make_baseline_24h(asset_id: int = 1, price: float = 1000.0, volume: float = 40.0) -> list[CandleRecord]:
-    return [_candle(asset_id, AS_OF - timedelta(minutes=15 * (191 - i)), price, volume) for i in range(96)]
+    return [_candle(asset_id, AS_OF - timedelta(hours=47 - i), price, volume) for i in range(24)]
 
 
 def _make_current_7d(asset_id: int = 1, price: float = 1100.0, volume: float = 60.0) -> list[CandleRecord]:
-    return [_candle(asset_id, AS_OF - timedelta(minutes=15 * (671 - i)), price, volume) for i in range(672)]
+    return [_candle(asset_id, AS_OF - timedelta(hours=167 - i), price, volume) for i in range(168)]
 
 
 def _make_baseline_7d(asset_id: int = 1, price: float = 1000.0, volume: float = 50.0) -> list[CandleRecord]:
-    return [_candle(asset_id, AS_OF - timedelta(minutes=15 * (1343 - i)), price, volume) for i in range(672)]
+    return [_candle(asset_id, AS_OF - timedelta(hours=335 - i), price, volume) for i in range(168)]
 
 
 def _make_obs(asset_id: int = 1, market: str = "BTC-EUR") -> HorizonObservation:
@@ -106,11 +105,11 @@ def _make_obs(asset_id: int = 1, market: str = "BTC-EUR") -> HorizonObservation:
         quote_volume=Decimal("1200.000000"),
         baseline_quote_volume=Decimal("960.000000"),
         relative_volume=Decimal("1.250000"),
-        candle_count=96,
-        expected_candle_count=96,
+        candle_count=24,
+        expected_candle_count=24,
         coverage_ratio=Decimal("1.0000"),
-        baseline_candle_count=96,
-        baseline_expected_candle_count=96,
+        baseline_candle_count=24,
+        baseline_expected_candle_count=24,
         baseline_coverage_ratio=Decimal("1.0000"),
         as_of_ts_utc=AS_OF,
     )
@@ -178,18 +177,13 @@ def _make_conn_mock(fetchone_return=None, fetchone_side_effect=None):
 # Pure math
 # ---------------------------------------------------------------------------
 
-def test_floor_to_candle_interval():
-    assert floor_to_candle_interval(datetime(2026, 1, 15, 14, 37, 52, 123456)) == datetime(2026, 1, 15, 14, 30, 0)
+def test_floor_to_hour():
+    assert floor_to_hour(datetime(2026, 1, 15, 14, 37, 52, 123456)) == datetime(2026, 1, 15, 14, 0, 0)
 
 
-def test_floor_to_candle_interval_already_on_boundary():
-    ts = datetime(2026, 1, 15, 8, 15, 0)
-    assert floor_to_candle_interval(ts) == ts
-
-
-def test_expected_candle_count_uses_native_15m_cadence():
-    assert expected_candle_count(24) == 96
-    assert expected_candle_count(168) == 672
+def test_floor_to_hour_already_on_boundary():
+    ts = datetime(2026, 1, 15, 8, 0, 0)
+    assert floor_to_hour(ts) == ts
 
 
 def test_compute_price_change_pct_positive():
@@ -236,7 +230,7 @@ def test_compute_coverage_ratio_zero_expected():
 
 def test_partition_candles_24h_counts():
     c, b = _partition_candles(_make_current_24h() + _make_baseline_24h(), AS_OF, 24)
-    assert len(c) == 96 and len(b) == 96
+    assert len(c) == 24 and len(b) == 24
 
 
 def test_partition_candles_24h_boundaries():
@@ -247,7 +241,7 @@ def test_partition_candles_24h_boundaries():
 
 def test_partition_candles_7d_counts():
     c, b = _partition_candles(_make_current_7d() + _make_baseline_7d(), AS_OF, 168)
-    assert len(c) == 672 and len(b) == 672
+    assert len(c) == 168 and len(b) == 168
 
 
 def test_partition_candles_excludes_out_of_range():
@@ -290,13 +284,13 @@ def test_check_eligibility_low_baseline_coverage():
 
 
 def test_check_eligibility_stale_data():
-    current = [_candle(1, AS_OF - timedelta(hours=3), 1000.0, 50.0) for _ in range(96)]
+    current = [_candle(1, AS_OF - timedelta(hours=i + 3), 1000.0, 50.0) for i in range(24)]
     ok, reason = check_eligibility(current, _make_baseline_24h(), AS_OF, 24)
     assert ok is False and reason.startswith("STALE_DATA:")
 
 
 def test_check_eligibility_baseline_zero_volume():
-    baseline = [_candle(1, AS_OF - timedelta(minutes=15 * (191 - i)), 1000.0, 0.0) for i in range(96)]
+    baseline = [_candle(1, AS_OF - timedelta(hours=47 - i), 1000.0, 0.0) for i in range(24)]
     ok, reason = check_eligibility(_make_current_24h(), baseline, AS_OF, 24)
     assert ok is False and reason == "BASELINE_ZERO_VOLUME"
 
@@ -308,16 +302,16 @@ def test_check_eligibility_baseline_zero_volume():
 def test_compute_observation_24h():
     obs = compute_observation(1, "BTC-EUR", 24, _make_current_24h(), _make_baseline_24h(), AS_OF)
     assert obs.price_change_pct == Decimal("5.000000")
-    assert obs.quote_volume == Decimal("4800.000000")
+    assert obs.quote_volume == Decimal("1200.000000")
     assert obs.relative_volume == Decimal("1.250000")
-    assert obs.candle_count == 96
+    assert obs.candle_count == 24
     assert obs.window_close_ts_utc == AS_OF
 
 
 def test_compute_observation_7d():
     obs = compute_observation(2, "ETH-EUR", 168, _make_current_7d(), _make_baseline_7d(), AS_OF)
     assert obs.price_change_pct == Decimal("10.000000")
-    assert obs.quote_volume == Decimal("40320.000000")
+    assert obs.quote_volume == Decimal("10080.000000")
     assert obs.relative_volume == Decimal("1.200000")
 
 
@@ -892,9 +886,6 @@ def test_validate_only_output_contains_key_fields():
     out = buf.getvalue()
     assert "validate-only" in out
     assert "coingecko" in out
-    assert "interval=15m" in out
-    assert "expected_candles=96" in out
-    assert "expected_candles=672" in out
 
 
 # ---------------------------------------------------------------------------
