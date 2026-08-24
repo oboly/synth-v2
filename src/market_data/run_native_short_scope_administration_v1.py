@@ -30,7 +30,7 @@ from typing import Any
 
 from src.market_data.native_short_multi_asset_audit_v1 import run_audit
 from src.market_data.native_short_rollout_universe_v2 import (
-    classify_symbol_for_single_scope_promotion,
+    is_symbol_promote_scope_ready,
 )
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationActorType,
@@ -285,7 +285,7 @@ def main(
         return 2
 
     if args.operation == NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE.value:
-        guard_result = _enforce_bulk_rollout_universe_parity(args.symbol, write=write)
+        guard_result = _enforce_promote_scope_readiness_guard(args.symbol, write=write)
         if guard_result is not None:
             return guard_result
 
@@ -299,7 +299,7 @@ def main(
 
 def _load_bulk_rollout_report(conn: Any, *, as_of_utc: datetime) -> Any:
     """Thin, monkeypatchable seam around ``run_audit`` for the ``PROMOTE_SCOPE``
-    universe-parity guard below. Exists so tests can substitute a canned
+    readiness guard below. Exists so tests can substitute a canned
     ``AuditReport`` without needing a fake connection that also implements
     ``run_audit``'s complete multi-table canonical-market query surface (the
     existing CLI test fakes are deliberately shaped only for
@@ -309,15 +309,15 @@ def _load_bulk_rollout_report(conn: Any, *, as_of_utc: datetime) -> Any:
     return run_audit(conn, as_of_utc=as_of_utc)
 
 
-def _enforce_bulk_rollout_universe_parity(symbol: str, *, write: bool) -> int | None:
-    """Single-scope/bulk-rollout parity guard for ``PROMOTE_SCOPE`` (Issue
-    #276 v2). Before #276 v2, this CLI accepted an arbitrary ``--symbol`` for
-    ``PROMOTE_SCOPE`` with no reference to the approved rollout universe at
-    all -- the universe check lived only inside the batch orchestrator's
+def _enforce_promote_scope_readiness_guard(symbol: str, *, write: bool) -> int | None:
+    """Single-scope/bulk-rollout readiness parity guard for ``PROMOTE_SCOPE``
+    (Issue #276 v2). Before #276 v2, this CLI accepted an arbitrary
+    ``--symbol`` for ``PROMOTE_SCOPE`` with no readiness check at all -- the
+    approved-universe check lived only inside the batch orchestrator's
     ``resolve_rollout_entries``, so a direct single-scope CLI invocation was
     an unguarded bypass of it. This applies the identical, unchanged
-    ``native_short_rollout_universe_v2`` universe+readiness definition a bulk
-    run would apply, so a single-scope ``PROMOTE_SCOPE`` and a bulk-rollout
+    ``native_short_rollout_universe_v2`` readiness definition a bulk run
+    would apply, so a single-scope ``PROMOTE_SCOPE`` and a bulk-rollout
     ``PROMOTE_SCOPE`` for the same symbol always agree.
 
     Read-only: runs the same audit a bulk run would, decides nothing about
@@ -334,7 +334,7 @@ def _enforce_bulk_rollout_universe_parity(symbol: str, *, write: bool) -> int | 
     except Exception as exc:  # noqa: BLE001 - fail closed: guard failure blocks the operation.
         _emit_document(
             _error_document(
-                "BULK_ROLLOUT_UNIVERSE_GUARD_FAILED", f"{type(exc).__name__}: {exc}", write=write
+                "PROMOTE_SCOPE_READINESS_GUARD_FAILED", f"{type(exc).__name__}: {exc}", write=write
             )
         )
         return 1
@@ -346,10 +346,10 @@ def _enforce_bulk_rollout_universe_parity(symbol: str, *, write: bool) -> int | 
                 pass
             conn.close()
 
-    eligible, reason = classify_symbol_for_single_scope_promotion(report, symbol)
+    eligible, reason = is_symbol_promote_scope_ready(report, symbol)
     if not eligible:
         _emit_document(
-            _error_document("SYMBOL_NOT_BULK_ROLLOUT_ELIGIBLE", reason, write=write)
+            _error_document("SYMBOL_NOT_PROMOTE_SCOPE_READY", reason, write=write)
         )
         return 2
     return None

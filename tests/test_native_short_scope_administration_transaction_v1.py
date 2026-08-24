@@ -2768,7 +2768,7 @@ def test_cli_promote_scope_rejects_symbol_not_bulk_rollout_ready(
     )
     assert code == 2
     assert stdout_docs[0]["event"] == "FAILED"
-    assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_BULK_ROLLOUT_ELIGIBLE"
+    assert stdout_docs[0]["reason_code"] == "SYMBOL_NOT_PROMOTE_SCOPE_READY"
     assert conn.commit_count == 0
 
 
@@ -2788,7 +2788,7 @@ def test_cli_promote_scope_allows_already_supported_symbol(
     )
     assert code in (0, 1)  # guard passes; outcome depends on the (unrelated) fake ledger state
     assert stdout_docs[0]["reason_code" if stdout_docs[0]["event"] == "FAILED" else "event"] != (
-        "SYMBOL_NOT_BULK_ROLLOUT_ELIGIBLE"
+        "SYMBOL_NOT_PROMOTE_SCOPE_READY"
     )
 
 
@@ -2827,7 +2827,7 @@ def test_cli_adopt_legacy_scope_is_not_gated_by_promote_scope_guard(
     code, stdout_docs, _ = _run_cli(
         monkeypatch, argv, conn=conn, bulk_rollout_report_factory=_not_ready_report,
     )
-    assert stdout_docs[0].get("reason_code") != "SYMBOL_NOT_BULK_ROLLOUT_ELIGIBLE"
+    assert stdout_docs[0].get("reason_code") != "SYMBOL_NOT_PROMOTE_SCOPE_READY"
 
 
 def _run_cli_raw(

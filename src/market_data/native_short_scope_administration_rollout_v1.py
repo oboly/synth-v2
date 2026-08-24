@@ -146,12 +146,17 @@ _SUCCESS_RESULT_CLASSES = frozenset({"SUCCESS", "IDEMPOTENT_SUCCESS"})
 
 @dataclass(frozen=True)
 class RolloutSymbolEntry:
-    """One checked-in, reviewed rollout-universe entry."""
+    """One rollout entry: exactly one operation for exactly one canonical
+    scope. ``approval_reference``/``note`` are optional free-text provenance
+    carried through into ``canonical_metadata`` (see
+    ``build_request_for_entry``) -- default to empty for a caller (e.g. a
+    readiness-derived rollout) that has no per-symbol approval document to
+    cite; ``APPROVED_ROLLOUT_UNIVERSE_V1`` below still populates them."""
 
     symbol: str
     operation_type: OperationType
-    approval_reference: str
-    note: str
+    approval_reference: str = ""
+    note: str = ""
 
 
 # --------------------------------------------------------------------------- #

@@ -3,10 +3,11 @@ from __future__ import annotations
 """Manual market-only Native SHORT deterministic bulk-rollout CLI (v2).
 
 Processes every scope the current, fresh
-``native_short_multi_asset_audit_v1.run_audit`` classifies ``READY``, via
-``native_short_rollout_universe_v2.derive_bulk_rollout_entries`` -- the
-deterministic universe derivation, not a checked-in per-symbol list. Every
-scope is delegated unchanged to the same canonical rollout orchestrator
+``native_short_multi_asset_audit_v1.run_audit`` classifies ready for a first
+``PROMOTE_SCOPE`` (``native_short_rollout_universe_v2.ready_symbols``) --
+derived fresh from readiness on every invocation, not a checked-in
+per-symbol list and not a separate approval concept. Every scope is
+delegated unchanged to the same canonical rollout orchestrator
 already used by ``run_native_short_scope_administration_rollout_v1.py``
 (``native_short_scope_administration_rollout_v1.plan_rollout`` /
 ``execute_rollout``), which delegates each scope unchanged to
@@ -183,7 +184,7 @@ def _emit_progress(args: argparse.Namespace, entries: Sequence[RolloutSymbolEntr
         "event": "STARTED",
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
-        "universe_source": "native_short_rollout_universe_v2.derive_bulk_rollout_entries",
+        "ready_scope_source": "native_short_rollout_universe_v2.ready_symbols",
         "ready_scope_count": len(entries),
         "requested_symbols": [entry.symbol for entry in entries],
         "write": bool(args.write),
@@ -245,9 +246,9 @@ def main(
         _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
         return 2
 
-    # Fresh, read-only readiness audit: the deterministic universe this run
-    # processes is re-derived from current market/ledger state every
-    # invocation, never a frozen repository list.
+    # Fresh, read-only readiness audit: the set of scopes this run processes
+    # is re-derived from current market/ledger state every invocation, never
+    # a frozen repository list.
     conn = None
     try:
         conn = get_connection()
