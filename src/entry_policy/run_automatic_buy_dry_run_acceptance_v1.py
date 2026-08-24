@@ -59,11 +59,13 @@ from src.entry_policy.automatic_buy_execution_handoff_application_v1 import (
 )
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
     AutomaticBuyCanonicalZoneSourceRequestV1,
+    AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
     AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
     resolve_canonical_zone_source_runtime_input_request_v1,
+    resolve_first_actionable_canonical_zone_source_runtime_input_request_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
@@ -135,6 +137,9 @@ CANONICAL_ZONE_SOURCE_INPUT_KEYS: Final[frozenset[str]] = frozenset({
     "strategy_bucket_id",
     "strategy_id",
     "strategy_version",
+})
+CANONICAL_ZONE_UNIVERSE_SOURCE_INPUT_KEYS: Final[frozenset[str]] = frozenset({
+    "trading_account_id", "venue", "strategy_bucket_id", "strategy_id", "strategy_version",
 })
 
 
@@ -397,6 +402,30 @@ def parse_canonical_zone_source_request_from_json(payload: dict[str, Any]) -> Au
     )
 
 
+def parse_canonical_zone_universe_source_request_from_json(
+    payload: dict[str, Any],
+) -> AutomaticBuyCanonicalZoneUniverseSourceRequestV1:
+    if not isinstance(payload, dict):
+        raise AutomaticBuyDryRunAcceptanceCliError("INPUT_JSON_MUST_BE_OBJECT")
+    unexpected = set(payload) - CANONICAL_ZONE_UNIVERSE_SOURCE_INPUT_KEYS
+    if unexpected:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "FORBIDDEN_OR_UNKNOWN_CANONICAL_ZONE_UNIVERSE_SOURCE_FIELDS:" + ",".join(sorted(unexpected))
+        )
+    missing = CANONICAL_ZONE_UNIVERSE_SOURCE_INPUT_KEYS - set(payload)
+    if missing:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "MISSING_REQUIRED_CANONICAL_ZONE_UNIVERSE_SOURCE_FIELDS:" + ",".join(sorted(missing))
+        )
+    return AutomaticBuyCanonicalZoneUniverseSourceRequestV1(
+        trading_account_id=_parse_int(payload["trading_account_id"], field="trading_account_id"),
+        venue=str(payload["venue"]),
+        strategy_bucket_id=str(payload["strategy_bucket_id"]),
+        strategy_id=str(payload["strategy_id"]),
+        strategy_version=str(payload["strategy_version"]),
+    )
+
+
 def _load_payload(input_json: Path) -> dict[str, Any]:
     text = sys.stdin.read() if str(input_json) == "-" else input_json.read_text()
     try:
@@ -435,6 +464,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "4h execution-zone context supply setup facts."
         ),
     )
+    input_group.add_argument(
+        "--canonical-zone-universe-source-json", type=Path,
+        help="Identity only; resolves the first actionable setup from canonical account markets, 4h zones, and prices.",
+    )
     return parser.parse_args(argv)
 
 
@@ -451,6 +484,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         input_json = next(item for item in (
             args.input_json, args.fresh_source_json, args.canonical_zone_source_json,
+            args.canonical_zone_universe_source_json,
         ) if item is not None)
         payload = _load_payload(input_json)
         request = parse_source_request_from_json(payload) if args.input_json is not None else None
@@ -460,6 +494,10 @@ def run(args: argparse.Namespace) -> int:
         canonical_zone_candidate = (
             None if args.canonical_zone_source_json is None
             else parse_canonical_zone_source_request_from_json(payload)
+        )
+        canonical_zone_universe = (
+            None if args.canonical_zone_universe_source_json is None
+            else parse_canonical_zone_universe_source_request_from_json(payload)
         )
     except (OSError, AutomaticBuyDryRunAcceptanceCliError) as exc:
         print(f"FAILED runner={RUNNER_NAME} result=invalid_input detail={exc}", file=sys.stderr)
@@ -483,6 +521,12 @@ def run(args: argparse.Namespace) -> int:
                 request = resolve_canonical_zone_source_runtime_input_request_v1(
                     conn,
                     candidate=canonical_zone_candidate,
+                    now_utc=datetime.now(UTC),
+                )
+            if canonical_zone_universe is not None:
+                request = resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+                    conn,
+                    universe=canonical_zone_universe,
                     now_utc=datetime.now(UTC),
                 )
             assert request is not None

@@ -11,10 +11,12 @@ from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
 from src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 import (
     ALLOWED_INPUT_KEYS,
     CANONICAL_ZONE_SOURCE_INPUT_KEYS,
+    CANONICAL_ZONE_UNIVERSE_SOURCE_INPUT_KEYS,
     FRESH_SOURCE_INPUT_KEYS,
     AutomaticBuyDryRunAcceptanceCliError,
     parse_fresh_source_candidate_from_json,
     parse_canonical_zone_source_request_from_json,
+    parse_canonical_zone_universe_source_request_from_json,
     parse_source_request_from_json,
     run_automatic_buy_dry_run_acceptance_v1,
 )
@@ -264,6 +266,16 @@ def test_canonical_zone_source_parser_accepts_identity_and_rejects_operator_geom
         parse_canonical_zone_source_request_from_json(payload)
 
 
+def test_canonical_zone_universe_source_parser_accepts_identity_only() -> None:
+    payload = _canonical_zone_universe_source_payload()
+    candidate = parse_canonical_zone_universe_source_request_from_json(payload)
+    assert candidate.strategy_bucket_id == "SHORT_TERM_ROTATION"
+    assert set(payload) == CANONICAL_ZONE_UNIVERSE_SOURCE_INPUT_KEYS
+    payload["market"] = "BTC-EUR"
+    with pytest.raises(AutomaticBuyDryRunAcceptanceCliError, match="FORBIDDEN_OR_UNKNOWN_CANONICAL_ZONE_UNIVERSE_SOURCE_FIELDS"):
+        parse_canonical_zone_universe_source_request_from_json(payload)
+
+
 def _valid_payload() -> dict[str, object]:
     return {
         "evaluation_ts_utc": "2026-08-22T12:00:00+00:00",
@@ -307,6 +319,16 @@ def _canonical_zone_source_payload() -> dict[str, object]:
         "venue": "bitvavo",
         "asset_id": 101,
         "market": "BTC-EUR",
+        "strategy_bucket_id": "SHORT_TERM_ROTATION",
+        "strategy_id": "strategy-a",
+        "strategy_version": "1",
+    }
+
+
+def _canonical_zone_universe_source_payload() -> dict[str, object]:
+    return {
+        "trading_account_id": 7,
+        "venue": "bitvavo",
         "strategy_bucket_id": "SHORT_TERM_ROTATION",
         "strategy_id": "strategy-a",
         "strategy_version": "1",

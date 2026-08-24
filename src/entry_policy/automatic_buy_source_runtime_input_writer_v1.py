@@ -30,6 +30,11 @@ from typing import Any, Final
 from pymysql.err import IntegrityError as _MySQLIntegrityError
 
 from src.entry_policy.automatic_buy_runtime_audit_writer_v1 import canonical_json
+from src.entry_policy.automatic_buy_candidate_v1 import (
+    AutomaticBuySetupContextV1,
+    STATE_CANDIDATE,
+    evaluate_automatic_buy_candidate_v1,
+)
 from src.entry_policy.automatic_buy_runtime_contract_v1 import (
     DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
     RUNTIME_INPUT_LIVE_CONTRACT_VERSION,
@@ -53,6 +58,7 @@ _PLACEHOLDER_CURRENT_OPEN_POSITIONS: Final[int] = 0
 _PLACEHOLDER_CURRENT_ASSET_EXPOSURE_PCT: Final[Decimal] = Decimal("0")
 _PLACEHOLDER_MAX_AUTOMATIC_BUY_NOTIONAL_EUR: Final[Decimal | None] = None
 CANONICAL_BUY_GEOMETRY_INTERVAL: Final[str] = "4h"
+QUOTE_CURRENCY_EUR: Final[str] = "EUR"
 
 
 class AutomaticBuySourceRuntimeInputWriterError(RuntimeError):
@@ -103,6 +109,21 @@ class AutomaticBuyCanonicalZoneSourceRequestV1:
     venue: str
     asset_id: int
     market: str
+    strategy_bucket_id: str
+    strategy_id: str
+    strategy_version: str
+
+
+@dataclass(frozen=True)
+class AutomaticBuyCanonicalZoneUniverseSourceRequestV1:
+    """Identity for deterministic resolution within the canonical BUY universe.
+
+    Asset, market, price, geometry, timestamps, and provenance remain source-
+    owned; callers can neither nominate nor edit a setup.
+    """
+
+    trading_account_id: int
+    venue: str
     strategy_bucket_id: str
     strategy_id: str
     strategy_version: str
@@ -194,6 +215,21 @@ def _validate_canonical_zone_source_request(request: AutomaticBuyCanonicalZoneSo
         ))
     ):
         raise AutomaticBuySourceRuntimeInputWriterError("INVALID_CANONICAL_ZONE_SOURCE_REQUEST")
+
+
+def _validate_canonical_zone_universe_source_request(
+    request: AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
+) -> None:
+    if (
+        not _positive_int(request.trading_account_id)
+        or not all(_nonempty(item) for item in (
+            request.venue,
+            request.strategy_bucket_id,
+            request.strategy_id,
+            request.strategy_version,
+        ))
+    ):
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_CANONICAL_ZONE_UNIVERSE_SOURCE_REQUEST")
 
 
 def _load_fresh_market_price_row(
@@ -347,6 +383,79 @@ def resolve_canonical_zone_source_runtime_input_request_v1(
         setup_observed_ts_utc=price_observed_ts_utc,
         source_provenance="execution_zone_context_v1+market_price_snapshot_v1",
     )
+
+
+def resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+    conn: Any,
+    *,
+    universe: AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
+    now_utc: datetime,
+    max_price_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
+) -> AutomaticBuySourceRuntimeInputRequestV1:
+    """Resolve the first actionable setup from the canonical account market universe.
+
+    Enumeration is deterministic by canonical market identity. Each market is
+    independently resolved through the existing 4h geometry/current-price
+    source and then evaluated by the unchanged candidate contract; no ranking
+    or setup geometry is introduced here.
+    """
+    _validate_canonical_zone_universe_source_request(universe)
+    if not _aware(now_utc) or max_price_age_seconds < 0:
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_EVALUATION_TIMESTAMP")
+    sql = """
+    SELECT vm.base_asset_id AS asset_id, vm.market
+    FROM account_asset aa
+    JOIN venue_market vm ON vm.venue_market_id = aa.venue_market_id
+    WHERE aa.trading_account_id = %s
+      AND vm.venue = %s
+      AND vm.quote_currency = %s
+      AND vm.is_tradeable = 1
+    ORDER BY vm.market, vm.base_asset_id, vm.venue_market_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (universe.trading_account_id, universe.venue, QUOTE_CURRENCY_EUR))
+        rows = [dict(row) for row in cur.fetchall()]
+
+    for row in rows:
+        try:
+            request = resolve_canonical_zone_source_runtime_input_request_v1(
+                conn,
+                candidate=AutomaticBuyCanonicalZoneSourceRequestV1(
+                    trading_account_id=universe.trading_account_id,
+                    venue=universe.venue,
+                    asset_id=int(row["asset_id"]),
+                    market=str(row["market"]),
+                    strategy_bucket_id=universe.strategy_bucket_id,
+                    strategy_id=universe.strategy_id,
+                    strategy_version=universe.strategy_version,
+                ),
+                now_utc=now_utc,
+                max_price_age_seconds=max_price_age_seconds,
+            )
+        except AutomaticBuySourceRuntimeInputWriterError:
+            continue
+        evaluation = evaluate_automatic_buy_candidate_v1(
+            setup_context=AutomaticBuySetupContextV1(
+                venue=request.venue,
+                asset_id=request.asset_id,
+                market=request.market,
+                strategy_id=request.strategy_id,
+                strategy_version=request.strategy_version,
+                setup_id=request.setup_id,
+                setup_ready=request.setup_ready,
+                current_price=request.current_price,
+                entry_zone_low=request.entry_zone_low,
+                entry_zone_high=request.entry_zone_high,
+                re_entry_zone_low=request.re_entry_zone_low,
+                re_entry_zone_high=request.re_entry_zone_high,
+                evidence_id=request.setup_evidence_id,
+                observed_ts_utc=request.setup_observed_ts_utc,
+            ),
+            evaluation_ts_utc=request.evaluation_ts_utc,
+        )
+        if evaluation.state == STATE_CANDIDATE:
+            return request
+    raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_ACTIONABLE_CANDIDATE_MISSING")
 
 
 def validate_source_runtime_input_request_v1(
