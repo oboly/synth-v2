@@ -3464,6 +3464,28 @@ def test_rotation_history_sub_cent_range_produces_distinct_tick_labels() -> None
     assert len(labels) == len(set(labels))
 
 
+def test_rotation_history_sub_1e9_range_does_not_collapse_to_one_zero_gridline() -> None:
+    # Second Codex review round on PR #515: a visible span narrower than
+    # 1e-9 must not render every gridline/label as a single overlapping
+    # "0" -- the sub-cent case above wasn't small enough to catch this.
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 0.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 5e-11},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 1e-10},
+    ]
+    projection = build_rotation_projection(
+        _rotation_header(market_score=1e-10), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    import re
+    labels = re.findall(r"rotation-history-tick-label'[^>]*>([^<]+)</text>", rendered)
+    assert len(labels) >= 2
+    assert len(labels) == len(set(labels))
+
+
 def test_rotation_history_rendering_is_deterministic_for_identical_input() -> None:
     from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
 

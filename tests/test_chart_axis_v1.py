@@ -90,6 +90,21 @@ def test_format_tick_label_keeps_two_decimals_when_needed() -> None:
     assert format_tick_label(0.02) == "+0.02"
 
 
+def test_sub_1e9_range_does_not_collapse_all_ticks_to_zero() -> None:
+    # Second Codex review round on PR #515: round(value, 10) and a fixed
+    # 1e-9 zero-snap silently zeroed every tick for a domain whose whole
+    # span is smaller than 1e-9 (e.g. 0..1e-10), making the axis show one
+    # overlapping "0" gridline instead of a real scale.
+    axis = nice_domain_and_ticks(0.0, 1e-10)
+    assert axis.domain_max >= 1e-10
+    assert axis.step > 0.0
+    nonzero_ticks = [tick for tick in axis.ticks if tick != 0.0]
+    assert nonzero_ticks, "domain this small must still produce distinct nonzero ticks"
+    decimals = decimal_places_for_step(axis.step)
+    labels = [format_tick_label(tick, decimals=decimals) for tick in axis.ticks]
+    assert len(labels) == len(set(labels))
+
+
 def test_sub_cent_range_produces_distinct_non_colliding_labels() -> None:
     # Codex review on PR #515: a visible range narrower than 0.01 must not
     # collapse every distinct tick onto the same "+0.00"-style label.

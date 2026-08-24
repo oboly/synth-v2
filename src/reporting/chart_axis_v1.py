@@ -47,6 +47,17 @@ def _nice_number(value: float, round_result: bool) -> float:
     return nice_fraction * (10.0 ** exponent)
 
 
+def _clean(value: float) -> float:
+    """Squash float arithmetic noise (e.g. 0.30000000000000004) without
+    losing magnitude, by rounding to 12 significant digits rather than a
+    fixed decimal-place count. A fixed ``round(value, 10)`` silently zeroes
+    any tick smaller than 5e-11 -- wrong for a domain whose whole span is
+    that small. Significant-digit rounding stays correct at any scale."""
+    if value == 0.0:
+        return 0.0
+    return float(f"{value:.12g}")
+
+
 def nice_domain_and_ticks(
     raw_min: float, raw_max: float, *, target_ticks: int = 5
 ) -> NiceAxis:
@@ -73,11 +84,22 @@ def nice_domain_and_ticks(
     step = _nice_number(nice_span / max(target_ticks - 1, 1), True)
     if step <= 0.0:
         step = 1.0
-    domain_min = math.floor(raw_min / step) * step
-    domain_max = math.ceil(raw_max / step) * step
+    domain_min = _clean(math.floor(raw_min / step) * step)
+    domain_max = _clean(math.ceil(raw_max / step) * step)
     tick_count = round((domain_max - domain_min) / step)
-    ticks = tuple(round(domain_min + index * step, 10) for index in range(tick_count + 1))
-    return NiceAxis(domain_min=domain_min, domain_max=domain_max, ticks=ticks, step=step)
+    # A tick within a tiny fraction of a step from zero is float noise from
+    # the domain_min + index * step arithmetic, not a genuinely distinct
+    # value -- snap it exactly to 0.0 so the zero gridline/label align.
+    # Scaled to `step` (not a fixed constant) so this stays correct whether
+    # step is 20 or 2e-11.
+    zero_epsilon = step * 1e-6
+    ticks = []
+    for index in range(tick_count + 1):
+        raw_tick = domain_min + index * step
+        if abs(raw_tick) < zero_epsilon:
+            raw_tick = 0.0
+        ticks.append(_clean(raw_tick))
+    return NiceAxis(domain_min=domain_min, domain_max=domain_max, ticks=tuple(ticks), step=step)
 
 
 def decimal_places_for_step(step: float) -> int:
@@ -95,7 +117,6 @@ def format_tick_label(value: float, *, decimals: int | None = None) -> str:
     (e.g. a sub-cent-wide visible window) still render as distinct values
     instead of all collapsing to the same rounded text. Without ``decimals``,
     falls back to whole numbers / trimmed-to-2-decimals for standalone use."""
-    value = 0.0 if abs(value) < 1e-9 else value
     if value == 0.0:
         return "0"
     if decimals is not None:
