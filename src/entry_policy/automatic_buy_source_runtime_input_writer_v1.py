@@ -52,6 +52,7 @@ _PLACEHOLDER_CURRENT_BUCKET_AMOUNT_EUR: Final[Decimal] = Decimal("0")
 _PLACEHOLDER_CURRENT_OPEN_POSITIONS: Final[int] = 0
 _PLACEHOLDER_CURRENT_ASSET_EXPOSURE_PCT: Final[Decimal] = Decimal("0")
 _PLACEHOLDER_MAX_AUTOMATIC_BUY_NOTIONAL_EUR: Final[Decimal | None] = None
+CANONICAL_BUY_GEOMETRY_INTERVAL: Final[str] = "4h"
 
 
 class AutomaticBuySourceRuntimeInputWriterError(RuntimeError):
@@ -87,6 +88,24 @@ class AutomaticBuyFreshSourceCandidateRequestV1:
     entry_zone_high: Decimal | None
     re_entry_zone_low: Decimal | None
     re_entry_zone_high: Decimal | None
+
+
+@dataclass(frozen=True)
+class AutomaticBuyCanonicalZoneSourceRequestV1:
+    """Identity only for a canonical 4h-zone/current-price BUY setup.
+
+    The source resolver owns all geometry, evidence, and freshness facts. The
+    caller can select a market/strategy identity, but cannot supply a price,
+    zone, timestamp, or provenance assertion.
+    """
+
+    trading_account_id: int
+    venue: str
+    asset_id: int
+    market: str
+    strategy_bucket_id: str
+    strategy_id: str
+    strategy_version: str
 
 
 @dataclass(frozen=True)
@@ -162,6 +181,50 @@ def _validate_fresh_source_candidate_request(request: AutomaticBuyFreshSourceCan
         raise AutomaticBuySourceRuntimeInputWriterError("INVALID_FRESH_SOURCE_CANDIDATE_REQUEST")
 
 
+def _validate_canonical_zone_source_request(request: AutomaticBuyCanonicalZoneSourceRequestV1) -> None:
+    if (
+        not _positive_int(request.trading_account_id)
+        or not _positive_int(request.asset_id)
+        or not all(_nonempty(item) for item in (
+            request.venue,
+            request.market,
+            request.strategy_bucket_id,
+            request.strategy_id,
+            request.strategy_version,
+        ))
+    ):
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_CANONICAL_ZONE_SOURCE_REQUEST")
+
+
+def _load_fresh_market_price_row(
+    conn: Any, *, venue: str, market: str, now_utc: datetime, max_age_seconds: int,
+) -> dict[str, Any]:
+    sql = """
+    SELECT market_price_snapshot_id, venue, market, price, observed_ts_utc
+    FROM market_price_snapshot
+    WHERE venue = %s AND market = %s
+    ORDER BY observed_ts_utc DESC, market_price_snapshot_id DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue, market))
+        row = cur.fetchone()
+    if row is None:
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_MISSING")
+    source = dict(row)
+    if str(source["venue"]) != venue or str(source["market"]).upper() != market.upper():
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_IDENTITY_MISMATCH")
+    observed_ts_utc = _aware_row_ts(source["observed_ts_utc"])
+    age = now_utc.astimezone(timezone.utc) - observed_ts_utc
+    if age < timedelta(0) or age > timedelta(seconds=max_age_seconds):
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_STALE")
+    source["observed_ts_utc"] = observed_ts_utc
+    source["price"] = Decimal(str(source["price"]))
+    if source["price"] <= 0:
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_MARKET_PRICE")
+    return source
+
+
 def resolve_fresh_source_runtime_input_request_v1(
     conn: Any,
     *,
@@ -180,29 +243,11 @@ def resolve_fresh_source_runtime_input_request_v1(
     if not _aware(now_utc) or max_age_seconds < 0:
         raise AutomaticBuySourceRuntimeInputWriterError("INVALID_EVALUATION_TIMESTAMP")
 
-    sql = """
-    SELECT market_price_snapshot_id, venue, market, price, observed_ts_utc
-    FROM market_price_snapshot
-    WHERE venue = %s AND market = %s
-    ORDER BY observed_ts_utc DESC, market_price_snapshot_id DESC
-    LIMIT 1
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (candidate.venue, candidate.market))
-        row = cur.fetchone()
-    if row is None:
-        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_MISSING")
-
-    source = dict(row)
-    if str(source["venue"]) != candidate.venue or str(source["market"]).upper() != candidate.market.upper():
-        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_IDENTITY_MISMATCH")
-    observed_ts_utc = _aware_row_ts(source["observed_ts_utc"])
-    age = now_utc.astimezone(timezone.utc) - observed_ts_utc
-    if age < timedelta(0) or age > timedelta(seconds=max_age_seconds):
-        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_STALE")
-    price = Decimal(str(source["price"]))
-    if price <= 0:
-        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_MARKET_PRICE")
+    source = _load_fresh_market_price_row(
+        conn, venue=candidate.venue, market=candidate.market,
+        now_utc=now_utc, max_age_seconds=max_age_seconds,
+    )
+    observed_ts_utc = source["observed_ts_utc"]
 
     return AutomaticBuySourceRuntimeInputRequestV1(
         evaluation_ts_utc=observed_ts_utc,
@@ -215,7 +260,7 @@ def resolve_fresh_source_runtime_input_request_v1(
         strategy_version=candidate.strategy_version,
         setup_id=candidate.setup_id,
         setup_ready=candidate.setup_ready,
-        current_price=price,
+        current_price=source["price"],
         entry_zone_low=candidate.entry_zone_low,
         entry_zone_high=candidate.entry_zone_high,
         re_entry_zone_low=candidate.re_entry_zone_low,
@@ -223,6 +268,84 @@ def resolve_fresh_source_runtime_input_request_v1(
         setup_evidence_id=f"market_price_snapshot:{int(source['market_price_snapshot_id'])}",
         setup_observed_ts_utc=observed_ts_utc,
         source_provenance="market_price_snapshot_v1",
+    )
+
+
+def resolve_canonical_zone_source_runtime_input_request_v1(
+    conn: Any,
+    *,
+    candidate: AutomaticBuyCanonicalZoneSourceRequestV1,
+    now_utc: datetime,
+    max_price_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
+) -> AutomaticBuySourceRuntimeInputRequestV1:
+    """Compose a current price with the latest completed canonical 4h map.
+
+    The 4h geometry is fresh only when its ``asof_ts_utc`` matches the latest
+    completed canonical 4h candle for the same asset/venue. Price freshness
+    remains independently bounded at the normal runtime-input threshold.
+    """
+    _validate_canonical_zone_source_request(candidate)
+    if not _aware(now_utc) or max_price_age_seconds < 0:
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_EVALUATION_TIMESTAMP")
+    price = _load_fresh_market_price_row(
+        conn, venue=candidate.venue, market=candidate.market,
+        now_utc=now_utc, max_age_seconds=max_price_age_seconds,
+    )
+    zone_sql = """
+    SELECT asof_ts_utc, expected_entry_zone_low, expected_entry_zone_high
+    FROM execution_zone_context
+    WHERE asset_id = %s AND venue = %s AND interval_code = %s
+    ORDER BY asof_ts_utc DESC
+    LIMIT 1
+    """
+    candle_sql = """
+    SELECT MAX(close_ts_utc) AS asof_ts_utc
+    FROM obs_market_candle
+    WHERE asset_id = %s AND venue = %s AND interval_code = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(zone_sql, (candidate.asset_id, candidate.venue, CANONICAL_BUY_GEOMETRY_INTERVAL))
+        zone_row = cur.fetchone()
+        cur.execute(candle_sql, (candidate.asset_id, candidate.venue, CANONICAL_BUY_GEOMETRY_INTERVAL))
+        candle_row = cur.fetchone()
+    if zone_row is None:
+        raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_GEOMETRY_MISSING")
+    if candle_row is None or candle_row["asof_ts_utc"] is None:
+        raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_GEOMETRY_CANDLE_MISSING")
+    zone = dict(zone_row)
+    zone_asof_ts_utc = _aware_row_ts(zone["asof_ts_utc"])
+    candle_asof_ts_utc = _aware_row_ts(candle_row["asof_ts_utc"])
+    if zone_asof_ts_utc != candle_asof_ts_utc:
+        raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_GEOMETRY_NOT_CURRENT")
+    entry_zone_low = _decimal_or_none(zone["expected_entry_zone_low"])
+    entry_zone_high = _decimal_or_none(zone["expected_entry_zone_high"])
+    if not _valid_zone(entry_zone_low, entry_zone_high) or entry_zone_low is None or entry_zone_high is None:
+        raise AutomaticBuySourceRuntimeInputWriterError("CANONICAL_BUY_GEOMETRY_INVALID")
+
+    price_observed_ts_utc = price["observed_ts_utc"]
+    zone_identity = (
+        f"execution_zone_context:{candidate.asset_id}:{candidate.venue}:"
+        f"{CANONICAL_BUY_GEOMETRY_INTERVAL}:{zone_asof_ts_utc.isoformat()}"
+    )
+    return AutomaticBuySourceRuntimeInputRequestV1(
+        evaluation_ts_utc=price_observed_ts_utc,
+        trading_account_id=candidate.trading_account_id,
+        venue=candidate.venue,
+        asset_id=candidate.asset_id,
+        market=candidate.market,
+        strategy_bucket_id=candidate.strategy_bucket_id,
+        strategy_id=candidate.strategy_id,
+        strategy_version=candidate.strategy_version,
+        setup_id=zone_identity,
+        setup_ready=True,
+        current_price=price["price"],
+        entry_zone_low=entry_zone_low,
+        entry_zone_high=entry_zone_high,
+        re_entry_zone_low=None,
+        re_entry_zone_high=None,
+        setup_evidence_id=f"{zone_identity}|market_price_snapshot:{int(price['market_price_snapshot_id'])}",
+        setup_observed_ts_utc=price_observed_ts_utc,
+        source_provenance="execution_zone_context_v1+market_price_snapshot_v1",
     )
 
 

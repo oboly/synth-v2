@@ -106,6 +106,15 @@ def test_price_in_re_entry_zone_is_re_enter_candidate() -> None:
     assert result.candidate.reason_code == REASON_RE_ENTRY_ZONE_REACHED
 
 
+def test_price_in_entry_zone_does_not_require_re_entry_geometry() -> None:
+    result = _evaluate(setup_context=_setup(
+        current_price=Decimal("150"), re_entry_zone_low=None, re_entry_zone_high=None,
+    ))
+    assert result.state == STATE_CANDIDATE
+    assert result.candidate is not None
+    assert result.candidate.candidate_action == ACTION_ENTER
+
+
 def test_stale_setup_context_is_non_actionable() -> None:
     result = _evaluate(setup_context=_setup(observed_ts_utc=NOW - timedelta(minutes=16)))
     assert (result.state, result.reason_code, result.candidate) == (STATE_NON_ACTIONABLE, REASON_SETUP_CONTEXT_STALE, None)

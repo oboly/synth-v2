@@ -9,11 +9,13 @@ import pytest
 
 from src.entry_policy.automatic_buy_runtime_contract_v1 import RUNTIME_INPUT_LIVE_CONTRACT_VERSION
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
+    AutomaticBuyCanonicalZoneSourceRequestV1,
     AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
     derive_source_snapshot_key_v1,
+    resolve_canonical_zone_source_runtime_input_request_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
@@ -162,6 +164,47 @@ class _PriceConn:
         return _PriceCursor(self.row)
 
 
+class _CanonicalZoneCursor:
+    def __init__(self, conn: "_CanonicalZoneConn") -> None:
+        self.conn = conn
+        self.row: dict[str, object] | None = None
+
+    def __enter__(self) -> "_CanonicalZoneCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, _params: tuple[object, ...]) -> None:
+        if "market_price_snapshot" in sql:
+            self.row = self.conn.price
+        elif "execution_zone_context" in sql:
+            self.row = self.conn.zone
+        elif "obs_market_candle" in sql:
+            self.row = self.conn.candle
+        else:
+            raise AssertionError(sql)
+
+    def fetchone(self) -> dict[str, object] | None:
+        return self.row
+
+
+class _CanonicalZoneConn:
+    def __init__(
+        self,
+        *,
+        price: dict[str, object],
+        zone: dict[str, object] | None,
+        candle: dict[str, object] | None,
+    ) -> None:
+        self.price = price
+        self.zone = zone
+        self.candle = candle
+
+    def cursor(self) -> _CanonicalZoneCursor:
+        return _CanonicalZoneCursor(self)
+
+
 def _request(**overrides: object) -> AutomaticBuySourceRuntimeInputRequestV1:
     base = dict(
         evaluation_ts_utc=TS,
@@ -207,6 +250,20 @@ def _fresh_candidate(**overrides: object) -> AutomaticBuyFreshSourceCandidateReq
     return AutomaticBuyFreshSourceCandidateRequestV1(**base)  # type: ignore[arg-type]
 
 
+def _canonical_zone_candidate(**overrides: object) -> AutomaticBuyCanonicalZoneSourceRequestV1:
+    base = dict(
+        trading_account_id=7,
+        venue="bitvavo",
+        asset_id=101,
+        market="BTC-EUR",
+        strategy_bucket_id="SHORT_TERM_ROTATION",
+        strategy_id="strategy-a",
+        strategy_version="1",
+    )
+    base.update(overrides)
+    return AutomaticBuyCanonicalZoneSourceRequestV1(**base)  # type: ignore[arg-type]
+
+
 def test_request_contract_carries_no_account_permission_field() -> None:
     field_names = {f.name.lower() for f in fields(AutomaticBuySourceRuntimeInputRequestV1)}
     for forbidden in FORBIDDEN_ACCOUNT_FIELD_SUBSTRINGS:
@@ -250,6 +307,51 @@ def test_fresh_candidate_fails_closed_for_stale_or_missing_price_snapshot() -> N
         resolve_fresh_source_runtime_input_request_v1(stale, candidate=_fresh_candidate(), now_utc=TS)
     with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="MARKET_PRICE_SNAPSHOT_MISSING"):
         resolve_fresh_source_runtime_input_request_v1(_PriceConn(None), candidate=_fresh_candidate(), now_utc=TS)
+
+
+def test_canonical_zone_source_uses_current_4h_geometry_and_separate_fresh_price() -> None:
+    geometry_asof = TS - timedelta(hours=3)
+    conn = _CanonicalZoneConn(
+        price={
+            "market_price_snapshot_id": 55, "venue": "bitvavo", "market": "BTC-EUR",
+            "price": "100.25", "observed_ts_utc": TS - timedelta(seconds=30),
+        },
+        zone={
+            "asof_ts_utc": geometry_asof,
+            "expected_entry_zone_low": "95", "expected_entry_zone_high": "105",
+        },
+        candle={"asof_ts_utc": geometry_asof},
+    )
+
+    result = resolve_canonical_zone_source_runtime_input_request_v1(
+        conn, candidate=_canonical_zone_candidate(), now_utc=TS,
+    )
+
+    assert result.current_price == Decimal("100.25")
+    assert result.setup_observed_ts_utc == TS - timedelta(seconds=30)
+    assert result.entry_zone_low == Decimal("95")
+    assert result.entry_zone_high == Decimal("105")
+    assert result.re_entry_zone_low is None and result.re_entry_zone_high is None
+    assert "execution_zone_context:101:bitvavo:4h:" in result.setup_evidence_id
+    assert result.source_provenance == "execution_zone_context_v1+market_price_snapshot_v1"
+
+
+def test_canonical_zone_source_rejects_geometry_that_lags_latest_4h_candle() -> None:
+    conn = _CanonicalZoneConn(
+        price={
+            "market_price_snapshot_id": 55, "venue": "bitvavo", "market": "BTC-EUR",
+            "price": "100.25", "observed_ts_utc": TS - timedelta(seconds=30),
+        },
+        zone={
+            "asof_ts_utc": TS - timedelta(hours=4),
+            "expected_entry_zone_low": "95", "expected_entry_zone_high": "105",
+        },
+        candle={"asof_ts_utc": TS},
+    )
+    with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="CANONICAL_BUY_GEOMETRY_NOT_CURRENT"):
+        resolve_canonical_zone_source_runtime_input_request_v1(
+            conn, candidate=_canonical_zone_candidate(), now_utc=TS,
+        )
 
 
 def test_snapshot_key_is_deterministic_and_content_sensitive() -> None:

@@ -58,10 +58,12 @@ from src.entry_policy.automatic_buy_execution_handoff_application_v1 import (
     submit_automatic_buy_plan_to_shared_handoff_v1,
 )
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
+    AutomaticBuyCanonicalZoneSourceRequestV1,
     AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
+    resolve_canonical_zone_source_runtime_input_request_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
@@ -125,6 +127,15 @@ FRESH_SOURCE_INPUT_KEYS: Final[frozenset[str]] = frozenset({
 _FRESH_SOURCE_REQUIRED_INPUT_KEYS: Final[frozenset[str]] = (
     FRESH_SOURCE_INPUT_KEYS - _OPTIONAL_INPUT_KEYS
 )
+CANONICAL_ZONE_SOURCE_INPUT_KEYS: Final[frozenset[str]] = frozenset({
+    "trading_account_id",
+    "venue",
+    "asset_id",
+    "market",
+    "strategy_bucket_id",
+    "strategy_id",
+    "strategy_version",
+})
 
 
 class AutomaticBuyDryRunAcceptanceCliError(ValueError):
@@ -362,6 +373,30 @@ def parse_fresh_source_candidate_from_json(payload: dict[str, Any]) -> Automatic
     )
 
 
+def parse_canonical_zone_source_request_from_json(payload: dict[str, Any]) -> AutomaticBuyCanonicalZoneSourceRequestV1:
+    if not isinstance(payload, dict):
+        raise AutomaticBuyDryRunAcceptanceCliError("INPUT_JSON_MUST_BE_OBJECT")
+    unexpected = set(payload) - CANONICAL_ZONE_SOURCE_INPUT_KEYS
+    if unexpected:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "FORBIDDEN_OR_UNKNOWN_CANONICAL_ZONE_SOURCE_FIELDS:" + ",".join(sorted(unexpected))
+        )
+    missing = CANONICAL_ZONE_SOURCE_INPUT_KEYS - set(payload)
+    if missing:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "MISSING_REQUIRED_CANONICAL_ZONE_SOURCE_FIELDS:" + ",".join(sorted(missing))
+        )
+    return AutomaticBuyCanonicalZoneSourceRequestV1(
+        trading_account_id=_parse_int(payload["trading_account_id"], field="trading_account_id"),
+        venue=str(payload["venue"]),
+        asset_id=_parse_int(payload["asset_id"], field="asset_id"),
+        market=str(payload["market"]),
+        strategy_bucket_id=str(payload["strategy_bucket_id"]),
+        strategy_id=str(payload["strategy_id"]),
+        strategy_version=str(payload["strategy_version"]),
+    )
+
+
 def _load_payload(input_json: Path) -> dict[str, Any]:
     text = sys.stdin.read() if str(input_json) == "-" else input_json.read_text()
     try:
@@ -393,6 +428,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "the latest canonical public price snapshot supplies those facts."
         ),
     )
+    input_group.add_argument(
+        "--canonical-zone-source-json", type=Path,
+        help=(
+            "Path to source identity only; canonical current price and the latest completed "
+            "4h execution-zone context supply setup facts."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -407,11 +449,17 @@ def run(args: argparse.Namespace) -> int:
     )
 
     try:
-        input_json = args.input_json if args.input_json is not None else args.fresh_source_json
+        input_json = next(item for item in (
+            args.input_json, args.fresh_source_json, args.canonical_zone_source_json,
+        ) if item is not None)
         payload = _load_payload(input_json)
         request = parse_source_request_from_json(payload) if args.input_json is not None else None
         fresh_candidate = (
-            None if args.input_json is not None else parse_fresh_source_candidate_from_json(payload)
+            None if args.fresh_source_json is None else parse_fresh_source_candidate_from_json(payload)
+        )
+        canonical_zone_candidate = (
+            None if args.canonical_zone_source_json is None
+            else parse_canonical_zone_source_request_from_json(payload)
         )
     except (OSError, AutomaticBuyDryRunAcceptanceCliError) as exc:
         print(f"FAILED runner={RUNNER_NAME} result=invalid_input detail={exc}", file=sys.stderr)
@@ -429,6 +477,12 @@ def run(args: argparse.Namespace) -> int:
                 request = resolve_fresh_source_runtime_input_request_v1(
                     conn,
                     candidate=fresh_candidate,
+                    now_utc=datetime.now(UTC),
+                )
+            if canonical_zone_candidate is not None:
+                request = resolve_canonical_zone_source_runtime_input_request_v1(
+                    conn,
+                    candidate=canonical_zone_candidate,
                     now_utc=datetime.now(UTC),
                 )
             assert request is not None
