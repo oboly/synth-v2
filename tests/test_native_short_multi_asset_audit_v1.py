@@ -109,6 +109,7 @@ def candidate(
     supporting_ts: datetime = AS_OF,
     ledger: LedgerState | None = None,
     volume: str = "1",
+    execution_constraint_decimal_places: tuple[int, ...] = (),
 ) -> CandidateInput:
     return CandidateInput(
         symbol=symbol,
@@ -118,6 +119,7 @@ def candidate(
         trailing_30d_quote_volume=Decimal(volume),
         ledger=ledger if ledger is not None else LedgerState(),
         context_status=STATUS_AVAILABLE,
+        execution_constraint_decimal_places=execution_constraint_decimal_places,
     )
 
 
@@ -167,6 +169,69 @@ def test_missing_and_ambiguous_tick_rules() -> None:
     assert missing.tick_rule_state == TICK_RULE_MISSING
     assert TICK_RULE_MISSING in missing.market_reason_codes
     assert ambiguous.tick_rule_state == TICK_RULE_AMBIGUOUS
+
+
+def test_venue_execution_constraint_resolves_tick_state_when_price_precision_absent() -> None:
+    """AERO/ARB/BILL/CHIP/PENDLE/POL/TIA class defect: venue_market.price_precision
+    is NULL (Bitvavo stopped populating pricePrecision) but the canonical,
+    already-synced venue_execution_constraint.tick_size is available. The
+    resolver must use it instead of reporting TICK_RULE_MISSING."""
+    result = evaluate_candidate(
+        candidate(
+            "AERO",
+            metadata=(market("AERO", precision=()),),
+            execution_constraint_decimal_places=(5,),
+        ),
+        as_of_utc=AS_OF,
+    )
+    assert result.tick_rule_state == "TICK_RULE_AVAILABLE"
+    assert result.tick_decimal_places == 5
+    assert "venue_execution_constraint.tick_size" in result.tick_rule_sources
+    assert TICK_RULE_MISSING not in result.market_reason_codes
+
+
+def test_conflicting_execution_constraint_decimal_places_are_ambiguous() -> None:
+    result = evaluate_candidate(
+        candidate(
+            "AERO",
+            metadata=(market("AERO", precision=()),),
+            execution_constraint_decimal_places=(5, 6),
+        ),
+        as_of_utc=AS_OF,
+    )
+    assert result.tick_rule_state == TICK_RULE_AMBIGUOUS
+
+
+def test_execution_constraint_takes_precedence_over_stale_venue_market_value() -> None:
+    """venue_market.price_precision and the static table are legacy/stale
+    sources (see bitvavo_venue_adapter_v1); venue_execution_constraint must
+    win outright rather than being voted into TICK_RULE_AMBIGUOUS against a
+    source already known to disagree with the live exchange -- this is
+    exactly the BTC-EUR drift bitvavo_venue_adapter_v1 documents."""
+    result = evaluate_candidate(
+        candidate(
+            "AERO",
+            metadata=(market("AERO", precision=(4,)),),
+            execution_constraint_decimal_places=(5,),
+        ),
+        as_of_utc=AS_OF,
+    )
+    assert result.tick_rule_state == "TICK_RULE_AVAILABLE"
+    assert result.tick_decimal_places == 5
+    assert result.tick_rule_sources == ("venue_execution_constraint.tick_size",)
+
+
+def test_decimal_places_from_tick_size_rejects_non_power_of_ten() -> None:
+    from decimal import Decimal
+
+    from src.market_data.native_short_multi_asset_audit_v1 import (
+        _decimal_places_from_tick_size,
+    )
+
+    assert _decimal_places_from_tick_size(Decimal("0.00001")) == 5
+    assert _decimal_places_from_tick_size(Decimal("1")) == 0
+    assert _decimal_places_from_tick_size(Decimal("0.0025")) is None
+    assert _decimal_places_from_tick_size(Decimal("0")) is None
 
 
 def test_stale_primary_and_supporting_sources() -> None:
