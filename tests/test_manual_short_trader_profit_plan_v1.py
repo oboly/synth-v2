@@ -432,6 +432,76 @@ def test_load_zone_contexts_canonical_row_surfaces_rollover_and_previous_cycle()
         assert evidence.previous_map_lifecycle_state == "MAP_COMPLETED"
 
 
+def test_load_zone_contexts_canonical_row_with_legacy_tier_placeholder_normalizes() -> None:
+    """Issue #496: native_short_fib_context_snapshot_v1 permanently retires
+    current_map_status/previous_map_lifecycle_state/rollover_state and always
+    publishes the literal placeholder "UNAVAILABLE" for them, even on a fully
+    AVAILABLE/canonical row (see _UNAVAILABLE_LEGACY_FIELDS). That placeholder
+    is not a real enum value and must normalize to this loader's own
+    DATA_UNAVAILABLE token instead of leaking through unrecognized."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        legacy_placeholder_row = dataclasses.replace(
+            _native_short_row(symbol="AAVE"),
+            current_map_status="UNAVAILABLE",
+            rollover_state="UNAVAILABLE",
+            previous_map_lifecycle_state="UNAVAILABLE",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[legacy_placeholder_row], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["AAVE-EUR"],
+            prices={"AAVE-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        evidence = result.evidence_by_symbol["AAVE"]
+        # Native map identity/status/lifecycle are proven available/current --
+        # the legacy tier/rollover placeholder must not contaminate them.
+        assert evidence.native_map_status == "AVAILABLE"
+        assert evidence.lifecycle_state == "ACTIVE_4H_EXTENSION"
+        assert evidence.map_cycle_id == "AAVE|SHORT|4h|demo"
+        # The legacy placeholder normalizes to the reporting layer's own
+        # unavailable token, not a bare passthrough "UNAVAILABLE" string.
+        assert evidence.selected_map_tier == "DATA_UNAVAILABLE"
+        assert evidence.rollover_state == "DATA_UNAVAILABLE"
+        assert evidence.previous_map_lifecycle_state == "DATA_UNAVAILABLE"
+
+        card = build_profit_plan_card(
+            symbol="AAVE",
+            market="AAVE-EUR",
+            current_price=Decimal("0.34"),
+            short_context_input_status=result.input_status_by_symbol["AAVE"],
+            short_context_coverage_status=result.coverage_status_by_symbol["AAVE"],
+            short_context_display_state=result.display_state_by_symbol["AAVE"],
+            fib_ext=result.fib_ext_by_symbol.get("AAVE"),
+            reentry=result.reentry_by_symbol.get("AAVE"),
+            evidence=evidence,
+            planning_provenance=result.planning_provenance_by_symbol.get("AAVE"),
+        )
+        rows = build_card_evidence_rows(card)
+        current_map = _row_by_key(rows, "current_map_selection")
+        # The "Selected native SHORT map" row must not say UNAVAILABLE (or echo
+        # the raw legacy placeholder) when native map identity/status is
+        # already proven AVAILABLE -- it must distinguish "map available, tier
+        # metadata not published" from a genuinely unavailable native map.
+        assert current_map.status == "TIER_METADATA_UNAVAILABLE"
+        assert current_map.status != "UNAVAILABLE"
+        assert "MAP_SELECTION_TIER_METADATA_UNAVAILABLE" in current_map.reason_codes
+
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "Selected native SHORT map" in html
+        assert "AVAILABLE — TIER METADATA NOT PUBLISHED" in html
+
+
 def test_load_zone_contexts_canonical_row_with_no_lifecycle_stays_data_unavailable() -> None:
     """Issue #494 Regression B (P1 follow-up): a canonical row whose own
     lifecycle field was never populated upstream must project as the exact

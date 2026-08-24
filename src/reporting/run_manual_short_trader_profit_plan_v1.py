@@ -413,6 +413,26 @@ def _fmt_unavailable(value: Any) -> str:
     return text if text else "DATA_UNAVAILABLE"
 
 
+# native_short_fib_context_snapshot_v1's _UNAVAILABLE_LEGACY_FIELDS
+# (current_map_status / previous_map_lifecycle_state / rollover_state)
+# permanently retires these three fields: build_snapshot() always emits the
+# literal placeholder "UNAVAILABLE" for them, even on a fully AVAILABLE/
+# canonical row, and never overwrites it. That placeholder is not a real
+# enum value and must normalize to this loader's own DATA_UNAVAILABLE token
+# so downstream unavailable-token checks (_UNAVAILABLE_TOKENS in
+# manual_short_trader_profit_plan_v1) recognize it, instead of a bare
+# "UNAVAILABLE" string leaking through unrecognized and being echoed to the
+# operator as if it were a confirmed tier/rollover/lifecycle value (#496).
+_LEGACY_SNAPSHOT_PLACEHOLDER = "UNAVAILABLE"
+
+
+def _fmt_legacy_bridge_field(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.upper() == _LEGACY_SNAPSHOT_PLACEHOLDER:
+        return "DATA_UNAVAILABLE"
+    return text
+
+
 # Loader-side placeholder tokens that mean "no authoritative value was ever
 # persisted", not a real canonical enum value. native_short_fib_context_v1's
 # CSV/JSON round-trip defaults a blank primary_4h_lifecycle_state to the
@@ -481,7 +501,7 @@ def _evidence_from_native_row(
         native_map_id = _fmt_unavailable(f"{snapshot_id}:{native_row.symbol}:{native_row.map_cycle_id}")
         native_map_status = "AVAILABLE"
         selected_map_reason = _fmt_unavailable(native_row.selection_reason)
-        selected_map_tier = _fmt_unavailable(native_row.current_map_status)
+        selected_map_tier = _fmt_legacy_bridge_field(native_row.current_map_status)
         # Same canonical trust boundary as map identity above: lifecycle/
         # rollover/previous-cycle truth is real persisted native SHORT state
         # (NativeShortContextRow.primary_4h_lifecycle_state / rollover_state /
@@ -491,9 +511,9 @@ def _evidence_from_native_row(
         # when the loader's own "UNKNOWN" round-trip placeholder stands in for
         # a genuinely absent lifecycle value (_fmt_lifecycle_state).
         lifecycle_state = _fmt_lifecycle_state(native_row.primary_4h_lifecycle_state)
-        rollover_state = _fmt_unavailable(native_row.rollover_state)
+        rollover_state = _fmt_legacy_bridge_field(native_row.rollover_state)
         previous_map_cycle_id = _fmt_unavailable(native_row.previous_map_cycle_id)
-        previous_map_lifecycle_state = _fmt_unavailable(native_row.previous_map_lifecycle_state)
+        previous_map_lifecycle_state = _fmt_legacy_bridge_field(native_row.previous_map_lifecycle_state)
     else:
         # Native scope-status projection is not proven canonical (snapshot not
         # verified loaded, row not AVAILABLE, or row not FRESH); stays
