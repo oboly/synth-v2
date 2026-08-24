@@ -37,6 +37,7 @@ def _evidence(**overrides: object) -> AutomaticBuyAccountAllocationEvidenceV1:
         current_bucket_amount_eur=Decimal("0"),
         current_open_positions=0,
         current_asset_exposure_pct=Decimal("0"),
+        unavailable_position_asset_ids=(),
         account_state_snapshot_run_id=1,
         trading_account_balance_snapshot_id=1,
     )

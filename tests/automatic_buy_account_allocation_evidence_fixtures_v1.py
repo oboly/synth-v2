@@ -31,7 +31,9 @@ CREATE TABLE trading_account (
 
 CREATE TABLE asset (
     asset_id INTEGER PRIMARY KEY,
-    symbol TEXT NOT NULL
+    symbol TEXT NOT NULL,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    is_tradeable INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE venue_market (

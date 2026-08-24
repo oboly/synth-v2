@@ -34,8 +34,11 @@ for the full narrative):
   funding authority; when its canonical bundle has no EUR row this is zero
   with no balance-snapshot identity, and the gate uses bucket limits instead.
 - ``current_open_positions`` / ``current_bucket_amount_eur``: derived from the
-  same COMPLETE bundle's ``account_position_snapshot`` rows, valued in EUR at
-  the latest fresh market price. Scoped to the whole account, not the
+  same COMPLETE bundle's *tradably-valued* ``account_position_snapshot`` rows,
+  valued in EUR at the latest fresh market price. Held assets without a
+  current tradeable market or fresh price remain recorded in
+  ``unavailable_position_asset_ids`` but are excluded rather than assigned a
+  fabricated value. Scoped to the whole account, not the
   individual strategy bucket, because the schema does not (yet) tag a
   position with the strategy bucket that opened it; this is a documented,
   deliberately conservative (never permission-widening) approximation.
@@ -101,6 +104,7 @@ class AutomaticBuyAccountAllocationEvidenceV1:
     current_bucket_amount_eur: Decimal
     current_open_positions: int
     current_asset_exposure_pct: Decimal
+    unavailable_position_asset_ids: tuple[int, ...]
     account_state_snapshot_run_id: int
     trading_account_balance_snapshot_id: int | None
 
@@ -182,5 +186,7 @@ def validate_automatic_buy_account_allocation_evidence_v1(
         or value.current_open_positions < 0
         or value.current_asset_exposure_pct < 0
         or value.current_asset_exposure_pct > 100
+        or tuple(sorted(set(value.unavailable_position_asset_ids))) != value.unavailable_position_asset_ids
+        or any(asset_id <= 0 for asset_id in value.unavailable_position_asset_ids)
     ):
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_AMOUNTS")

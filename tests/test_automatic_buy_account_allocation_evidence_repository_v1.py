@@ -222,18 +222,36 @@ def test_asset_exposure_zero_when_candidate_asset_not_held() -> None:
     assert evidence.current_asset_exposure_pct == Decimal("0")
 
 
-def test_unresolved_asset_market_binding_fails_closed() -> None:
+def test_unavailable_held_market_is_preserved_but_excluded_from_allocation() -> None:
     conn = FakeConnection()
     seed_happy_path(conn, position_count=1)
     insert_position(conn, asset_id=303, symbol="XRP", quantity_base=Decimal("10"))
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO asset (asset_id, symbol, is_enabled, is_tradeable) VALUES (%s,%s,%s,%s)",
+            (303, "XRP", 1, 0),
+        )
+    evidence = load_automatic_buy_account_allocation_evidence_v1(
+        conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
+    )
+    assert evidence.unavailable_position_asset_ids == (303,)
+    assert evidence.current_open_positions == 0
+    assert evidence.current_bucket_amount_eur == Decimal("0")
+
+
+def test_candidate_without_a_tradeable_market_binding_fails_closed() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
     with pytest.raises(AutomaticBuyAccountAllocationEvidenceRepositoryError) as excinfo:
         load_automatic_buy_account_allocation_evidence_v1(
-            conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
+            conn,
+            resolved_bucket_config=_resolved_config(),
+            **{**DEFAULT_ARGS, "asset_id": 303, "market": "XRP-EUR"},
         )
     assert excinfo.value.args[0] == "ASSET_MARKET_BINDING_MISSING"
 
 
-def test_non_eur_quote_currency_fails_closed() -> None:
+def test_non_eur_held_market_is_marked_unavailable() -> None:
     conn = FakeConnection()
     seed_happy_path(conn, position_count=1)
     usdt_venue_market_id = insert_venue_market(
@@ -241,34 +259,31 @@ def test_non_eur_quote_currency_fails_closed() -> None:
     )
     bind_account_market(conn, venue_market_id=usdt_venue_market_id)
     insert_position(conn, asset_id=303, symbol="XRP", quantity_base=Decimal("10"))
-    with pytest.raises(AutomaticBuyAccountAllocationEvidenceRepositoryError) as excinfo:
-        load_automatic_buy_account_allocation_evidence_v1(
-            conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
-        )
-    assert excinfo.value.args[0] == "UNSUPPORTED_POSITION_QUOTE_CURRENCY"
+    evidence = load_automatic_buy_account_allocation_evidence_v1(
+        conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
+    )
+    assert evidence.unavailable_position_asset_ids == (303,)
 
 
-def test_missing_market_price_for_held_position_fails_closed() -> None:
+def test_missing_market_price_for_held_position_is_marked_unavailable() -> None:
     conn = FakeConnection()
     seed_happy_path(conn, position_count=1)
     insert_position(conn, asset_id=101, quantity_base=Decimal("1"))
-    with pytest.raises(AutomaticBuyAccountAllocationEvidenceRepositoryError) as excinfo:
-        load_automatic_buy_account_allocation_evidence_v1(
-            conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
-        )
-    assert excinfo.value.args[0] == "POSITION_MARKET_PRICE_MISSING"
+    evidence = load_automatic_buy_account_allocation_evidence_v1(
+        conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
+    )
+    assert evidence.unavailable_position_asset_ids == (101,)
 
 
-def test_stale_market_price_for_held_position_fails_closed() -> None:
+def test_stale_market_price_for_held_position_is_marked_unavailable() -> None:
     conn = FakeConnection()
     seed_happy_path(conn, position_count=1)
     insert_position(conn, asset_id=101, quantity_base=Decimal("1"))
     insert_market_price(conn, market="BTC-EUR", price=Decimal("50000"), observed_ts_utc=TS - timedelta(hours=2))
-    with pytest.raises(AutomaticBuyAccountAllocationEvidenceRepositoryError) as excinfo:
-        load_automatic_buy_account_allocation_evidence_v1(
-            conn, resolved_bucket_config=_resolved_config(), max_market_price_age_seconds=900, **DEFAULT_ARGS,
-        )
-    assert excinfo.value.args[0] == "POSITION_MARKET_PRICE_STALE"
+    evidence = load_automatic_buy_account_allocation_evidence_v1(
+        conn, resolved_bucket_config=_resolved_config(), max_market_price_age_seconds=900, **DEFAULT_ARGS,
+    )
+    assert evidence.unavailable_position_asset_ids == (101,)
 
 
 def test_execution_enabled_false_with_no_permission_row() -> None:

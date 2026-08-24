@@ -38,6 +38,11 @@ from src.decision_gate.automatic_buy_account_permission_repository_v1 import (
     load_automatic_buy_account_permission_revocation_history_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import StrategyBucketAccountConfigV1
+from src.market_data.held_market_coverage_v1 import (
+    AssetRegistryRow,
+    HeldBalance,
+    resolve_held_markets,
+)
 
 COMPLETE_STATE: Final[str] = "COMPLETE"
 QUOTE_CURRENCY_EUR: Final[str] = "EUR"
@@ -105,6 +110,7 @@ class _AccountStateBundle:
 @dataclass(frozen=True)
 class _PositionRow:
     asset_id: int
+    symbol: str
     quantity_base: Decimal
 
 
@@ -184,7 +190,7 @@ def _load_positive_positions(conn: Any, *, bundle: _AccountStateBundle) -> list[
     WHERE trading_account_id = %s AND venue = %s AND source_name = %s AND snapshot_ts_utc = %s
     """
     select_sql = """
-    SELECT asset_id, quantity_base
+    SELECT asset_id, symbol, quantity_base
     FROM account_position_snapshot
     WHERE trading_account_id = %s AND venue = %s AND source_name = %s AND snapshot_ts_utc = %s
       AND quantity_base > 0
@@ -201,9 +207,40 @@ def _load_positive_positions(conn: Any, *, bundle: _AccountStateBundle) -> list[
         "POSITION_SNAPSHOT_COUNT_MISMATCH",
     )
     return [
-        _PositionRow(asset_id=int(row["asset_id"]), quantity_base=Decimal(str(row["quantity_base"])))
+        _PositionRow(
+            asset_id=int(row["asset_id"]),
+            symbol=str(row["symbol"]).strip().upper(),
+            quantity_base=Decimal(str(row["quantity_base"])),
+        )
         for row in rows
     ]
+
+
+def _load_asset_registry_for_positions(
+    conn: Any, *, positions: list[_PositionRow],
+) -> dict[str, AssetRegistryRow]:
+    if not positions:
+        return {}
+    placeholders = ", ".join(["%s"] * len(positions))
+    sql = f"""
+    SELECT asset_id, symbol, is_enabled, is_tradeable
+    FROM asset
+    WHERE asset_id IN ({placeholders})
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(position.asset_id for position in positions))
+        rows = _fetch_all(cur)
+    return {
+        str(row["symbol"]).strip().upper(): AssetRegistryRow(
+            asset_id=int(row["asset_id"]),
+            symbol=str(row["symbol"]).strip().upper(),
+            is_enabled=bool(row["is_enabled"]),
+            is_tradeable=bool(row["is_tradeable"]),
+            is_publication_cohort=False,
+            is_core_sensor=False,
+        )
+        for row in rows
+    }
 
 
 def _load_free_quote_balance(
@@ -271,6 +308,7 @@ def _resolve_account_asset_market(
     FROM account_asset aa
     JOIN venue_market vm ON vm.venue_market_id = aa.venue_market_id
     WHERE aa.trading_account_id = %s AND vm.venue = %s AND vm.base_asset_id = %s
+      AND vm.is_tradeable = 1
     ORDER BY vm.venue_market_id
     """
     with conn.cursor() as cur:
@@ -312,24 +350,54 @@ def _value_positions_in_eur(
     positions: list[_PositionRow],
     now: datetime,
     max_market_price_age_seconds: int,
-) -> dict[int, Decimal]:
-    """EUR value of every positive held position, keyed by asset_id.
+) -> tuple[dict[int, Decimal], tuple[int, ...]]:
+    """Return tradably-valued holdings plus explicitly unavailable holdings.
 
-    Every held asset must resolve to exactly one EUR-quoted, freshly-priced
-    market; any held asset that does not fails the whole evidence load
-    closed rather than silently omitting it from exposure/bucket totals.
+    A held asset can outlive its market. Such a holding remains in the
+    canonical account snapshot, but cannot receive an invented EUR value or
+    consume a tradeable allocation/exposure slot. Candidate identity is
+    resolved separately and therefore still fails closed when unavailable.
     """
     values: dict[int, Decimal] = {}
+    unavailable_asset_ids: list[int] = []
+    asset_registry_by_symbol = _load_asset_registry_for_positions(conn, positions=positions)
     for position in positions:
-        binding = _resolve_account_asset_market(
-            conn, trading_account_id=trading_account_id, venue=venue, asset_id=position.asset_id,
-        )
-        _reject(binding.quote_currency != QUOTE_CURRENCY_EUR, "UNSUPPORTED_POSITION_QUOTE_CURRENCY")
-        price = _load_latest_market_price(
-            conn, venue=venue, market=binding.market, now=now, max_age_seconds=max_market_price_age_seconds,
-        )
+        coverage = resolve_held_markets(
+            held_balances=(
+                HeldBalance(
+                    trading_account_id=trading_account_id,
+                    account_code="automatic_buy_allocation",
+                    currency_code=position.symbol,
+                    total_amount=position.quantity_base,
+                ),
+            ),
+            quote_currency=QUOTE_CURRENCY_EUR,
+            asset_registry_by_symbol=asset_registry_by_symbol,
+        )[0]
+        if not coverage.resolvable:
+            unavailable_asset_ids.append(position.asset_id)
+            continue
+        try:
+            binding = _resolve_account_asset_market(
+                conn, trading_account_id=trading_account_id, venue=venue, asset_id=position.asset_id,
+            )
+            _reject(binding.quote_currency != QUOTE_CURRENCY_EUR, "UNSUPPORTED_POSITION_QUOTE_CURRENCY")
+            price = _load_latest_market_price(
+                conn, venue=venue, market=binding.market, now=now, max_age_seconds=max_market_price_age_seconds,
+            )
+        except AutomaticBuyAccountAllocationEvidenceRepositoryError as exc:
+            if exc.args and exc.args[0] in {
+                "ASSET_MARKET_BINDING_MISSING",
+                "ASSET_MARKET_BINDING_AMBIGUOUS",
+                "UNSUPPORTED_POSITION_QUOTE_CURRENCY",
+                "POSITION_MARKET_PRICE_MISSING",
+                "POSITION_MARKET_PRICE_STALE",
+            }:
+                unavailable_asset_ids.append(position.asset_id)
+                continue
+            raise
         values[position.asset_id] = values.get(position.asset_id, Decimal("0")) + position.quantity_base * price
-    return values
+    return values, tuple(sorted(unavailable_asset_ids))
 
 
 def load_automatic_buy_account_allocation_evidence_v1(
@@ -388,7 +456,7 @@ def load_automatic_buy_account_allocation_evidence_v1(
     )
     blocking_conflict = _load_blocking_conflict(conn, bundle=bundle, market=market)
 
-    position_values_eur = _value_positions_in_eur(
+    position_values_eur, unavailable_position_asset_ids = _value_positions_in_eur(
         conn,
         trading_account_id=trading_account_id,
         venue=venue,
@@ -439,8 +507,9 @@ def load_automatic_buy_account_allocation_evidence_v1(
         blocking_conflict=blocking_conflict,
         proposed_position_amount_eur=proposed_position_amount_eur,
         current_bucket_amount_eur=total_position_value_eur,
-        current_open_positions=len(positions),
+        current_open_positions=len(position_values_eur),
         current_asset_exposure_pct=current_asset_exposure_pct,
+        unavailable_position_asset_ids=unavailable_position_asset_ids,
         account_state_snapshot_run_id=bundle.account_state_snapshot_run_id,
         trading_account_balance_snapshot_id=balance_snapshot_id,
     )
