@@ -3269,7 +3269,8 @@ def test_rotation_strip_leads_with_pressure_scale_and_persisted_participation() 
     projection = build_rotation_projection(header, rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history)
     rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
     assert "+20.0" in rendered
-    assert "-100</span><span>0</span><span>+100" in rendered
+    # Old decorative -100/0/+100 current-value rail must be gone.
+    assert "rotation-scale" not in rendered
     assert "IN 100%" in rendered
     assert "rotation-composition-out rotation-composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
     assert "rotation-composition-mixed rotation-composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
@@ -3308,9 +3309,16 @@ def test_rotation_strip_history_uses_dynamic_visible_scale_and_cadence_label() -
     )
     rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
     assert "history: 30d · 1h snapshots" in rendered
-    assert "<span>+5.0</span><span>0</span><span>+20.0</span>" in rendered
-    # headline keeps the fixed persisted-domain scale; only the history chart is dynamic
-    assert "-100</span><span>0</span><span>+100" in rendered
+    # Detached header-label scale is gone; a real y-axis with nice, readable
+    # ticks (derived from the visible 0..20 window) renders instead.
+    assert "rotation-history-scale" not in rendered
+    for label in ("0", "+5", "+10", "+15", "+20"):
+        assert f">{label}</text>" in rendered
+    assert "rotation-history-axis" in rendered
+    assert "rotation-history-gridline" in rendered
+    assert "rotation-history-zero" in rendered
+    # Old decorative -100/0/+100 current-value rail must be gone.
+    assert "rotation-scale" not in rendered
 
 
 def test_rotation_strip_history_scale_shows_true_extrema_not_zero_folded() -> None:
@@ -3343,10 +3351,120 @@ def test_rotation_strip_history_scale_shows_true_extrema_not_zero_folded() -> No
         header, rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history
     )
     rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
-    assert "<span>-20.0</span><span>0</span><span>-12.0</span>" in rendered
-    # zero stays drawn as a reference marker even though it falls outside the
-    # true (all-negative) visible extrema
+    # visible scores are -18, -12, -20 -> zero-folded domain is -20..0, nice
+    # ticks -20,-15,-10,-5,0
+    for label in ("0", "-5", "-10", "-15", "-20"):
+        assert f">{label}</text>" in rendered
+    # zero stays drawn as a reference marker (and visually stronger, via the
+    # dedicated class) even though it falls outside the true (all-negative)
+    # visible extrema
     assert "rotation-history-zero" in rendered
+
+
+def _rotation_header(*, market_score: float, direction: str = "ROTATION_IN") -> dict:
+    return {
+        "pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0),
+        "venue": "bitvavo", "model_version": "1.0", "eligible_asset_count": 1,
+        "excluded_missing_pair_count": 0, "positive_count": 1, "neutral_count": 0,
+        "negative_count": 0, "market_score": market_score, "positive_breadth_ratio": 1.0,
+        "negative_breadth_ratio": 0.0, "acceleration_state": "ACCELERATING_IN",
+        "concentration_state": "SELECTIVE", "confirmation_state": "CONFIRMED",
+        "market_direction": direction, "evidence_light_count": 2,
+    }
+
+
+_ROTATION_ROWS = [{"asset_id": 1, "market": "OTHER-EUR", "score_total": 40.0,
+    "pressure_state": "ROTATION_IN", "phase_state": "ACCELERATING_IN",
+    "raw_return_24h_pct": 4.0, "raw_return_7d_pct": 10.0,
+    "raw_relative_volume_24h": 1.5, "raw_relative_volume_7d": 1.2,
+    "score_acceleration": 2.0, "score_persistence": 1.3}]
+
+
+def test_rotation_history_empty_shows_no_snapshots_message_not_a_chart() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    projection = build_rotation_projection(
+        _rotation_header(market_score=20.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=[],
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "No prior persisted pressure snapshots" in rendered
+    assert "<line class='rotation-history-axis'" not in rendered
+    # current value stays present even with no history to chart
+    assert "+20.0" in rendered
+
+
+def test_rotation_history_single_point_renders_nonzero_span_axis() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [{"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 7.0}]
+    projection = build_rotation_projection(
+        _rotation_header(market_score=7.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "rotation-history-axis" in rendered
+    assert "rotation-history-line" in rendered
+    assert ">0</text>" in rendered
+
+
+def test_rotation_history_constant_series_renders_nonzero_span_axis() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 9.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 9.0},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 9.0},
+    ]
+    projection = build_rotation_projection(
+        _rotation_header(market_score=9.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "rotation-history-axis" in rendered
+    # A constant visible series must still yield a readable (non-collapsed)
+    # axis, not a single flat tick.
+    assert rendered.count("rotation-history-tick-label") >= 2
+
+
+def test_rotation_history_zero_only_series_renders_nonzero_span_axis() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 0.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 0.0},
+    ]
+    projection = build_rotation_projection(
+        _rotation_header(market_score=0.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "rotation-history-axis" in rendered
+    assert ">0</text>" in rendered
+
+
+def test_rotation_history_rendering_is_deterministic_for_identical_input() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    history = [
+        {"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": 5.0},
+        {"pressure_snapshot_id": 2, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 12.0},
+        {"pressure_snapshot_id": 3, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 20.0},
+    ]
+    first = build_rotation_projection(
+        _rotation_header(market_score=20.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    second = build_rotation_projection(
+        _rotation_header(market_score=20.0), _ROTATION_ROWS,
+        now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history,
+    )
+    # Render the rotation strip snippet directly (not the full page, which
+    # embeds a fresh writer-instance uuid per call and is not itself meant
+    # to be byte-identical) to isolate axis/tick determinism.
+    rendered_first = _pp_module._rotation_strip_html(first)
+    rendered_second = _pp_module._rotation_strip_html(second)
+    assert rendered_first == rendered_second
 
 
 def test_html_and_json_render_id_match_when_same_id_passed() -> None:
