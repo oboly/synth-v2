@@ -65,6 +65,31 @@ class AutomaticBuySourceRuntimeInputConflictError(AutomaticBuySourceRuntimeInput
 
 
 @dataclass(frozen=True)
+class AutomaticBuyFreshSourceCandidateRequestV1:
+    """Source/setup identity for one current canonical market observation.
+
+    Price, observation time, and evidence identity are deliberately absent:
+    ``resolve_fresh_source_runtime_input_request_v1`` obtains all three from
+    the latest canonical public ``market_price_snapshot`` row. This prevents
+    a DRY_RUN producer from accepting operator-supplied timestamps or prices.
+    """
+
+    trading_account_id: int
+    venue: str
+    asset_id: int
+    market: str
+    strategy_bucket_id: str
+    strategy_id: str
+    strategy_version: str
+    setup_id: str
+    setup_ready: bool
+    entry_zone_low: Decimal | None
+    entry_zone_high: Decimal | None
+    re_entry_zone_low: Decimal | None
+    re_entry_zone_high: Decimal | None
+
+
+@dataclass(frozen=True)
 class AutomaticBuySourceRuntimeInputRequestV1:
     """Caller-controlled market/setup evidence and identity only.
 
@@ -116,6 +141,89 @@ def _valid_zone(low: Decimal | None, high: Decimal | None) -> bool:
     if low is not None and high is not None and high < low:
         return False
     return True
+
+
+def _validate_fresh_source_candidate_request(request: AutomaticBuyFreshSourceCandidateRequestV1) -> None:
+    if (
+        not _positive_int(request.trading_account_id)
+        or not _positive_int(request.asset_id)
+        or not all(_nonempty(item) for item in (
+            request.venue,
+            request.market,
+            request.strategy_bucket_id,
+            request.strategy_id,
+            request.strategy_version,
+            request.setup_id,
+        ))
+        or type(request.setup_ready) is not bool
+        or not _valid_zone(request.entry_zone_low, request.entry_zone_high)
+        or not _valid_zone(request.re_entry_zone_low, request.re_entry_zone_high)
+    ):
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_FRESH_SOURCE_CANDIDATE_REQUEST")
+
+
+def resolve_fresh_source_runtime_input_request_v1(
+    conn: Any,
+    *,
+    candidate: AutomaticBuyFreshSourceCandidateRequestV1,
+    now_utc: datetime,
+    max_age_seconds: int = DEFAULT_MAX_RUNTIME_INPUT_AGE_SECONDS,
+) -> AutomaticBuySourceRuntimeInputRequestV1:
+    """Build one idempotent source input from a fresh canonical price row.
+
+    The public price observation is the source evidence, so its immutable row
+    id and observed timestamp become the evidence id and evaluation timestamp.
+    Re-resolving the same row yields the exact same source input; no caller
+    can manufacture a newer timestamp or price.
+    """
+    _validate_fresh_source_candidate_request(candidate)
+    if not _aware(now_utc) or max_age_seconds < 0:
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_EVALUATION_TIMESTAMP")
+
+    sql = """
+    SELECT market_price_snapshot_id, venue, market, price, observed_ts_utc
+    FROM market_price_snapshot
+    WHERE venue = %s AND market = %s
+    ORDER BY observed_ts_utc DESC, market_price_snapshot_id DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (candidate.venue, candidate.market))
+        row = cur.fetchone()
+    if row is None:
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_MISSING")
+
+    source = dict(row)
+    if str(source["venue"]) != candidate.venue or str(source["market"]).upper() != candidate.market.upper():
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_IDENTITY_MISMATCH")
+    observed_ts_utc = _aware_row_ts(source["observed_ts_utc"])
+    age = now_utc.astimezone(timezone.utc) - observed_ts_utc
+    if age < timedelta(0) or age > timedelta(seconds=max_age_seconds):
+        raise AutomaticBuySourceRuntimeInputWriterError("MARKET_PRICE_SNAPSHOT_STALE")
+    price = Decimal(str(source["price"]))
+    if price <= 0:
+        raise AutomaticBuySourceRuntimeInputWriterError("INVALID_MARKET_PRICE")
+
+    return AutomaticBuySourceRuntimeInputRequestV1(
+        evaluation_ts_utc=observed_ts_utc,
+        trading_account_id=candidate.trading_account_id,
+        venue=candidate.venue,
+        asset_id=candidate.asset_id,
+        market=candidate.market,
+        strategy_bucket_id=candidate.strategy_bucket_id,
+        strategy_id=candidate.strategy_id,
+        strategy_version=candidate.strategy_version,
+        setup_id=candidate.setup_id,
+        setup_ready=candidate.setup_ready,
+        current_price=price,
+        entry_zone_low=candidate.entry_zone_low,
+        entry_zone_high=candidate.entry_zone_high,
+        re_entry_zone_low=candidate.re_entry_zone_low,
+        re_entry_zone_high=candidate.re_entry_zone_high,
+        setup_evidence_id=f"market_price_snapshot:{int(source['market_price_snapshot_id'])}",
+        setup_observed_ts_utc=observed_ts_utc,
+        source_provenance="market_price_snapshot_v1",
+    )
 
 
 def validate_source_runtime_input_request_v1(

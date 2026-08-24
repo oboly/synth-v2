@@ -9,10 +9,12 @@ import pytest
 
 from src.entry_policy.automatic_buy_runtime_contract_v1 import RUNTIME_INPUT_LIVE_CONTRACT_VERSION
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
+    AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
     derive_source_snapshot_key_v1,
+    resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
 
@@ -134,6 +136,32 @@ class _RaceConn:
         return _RaceCursor(self)
 
 
+class _PriceCursor:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+
+    def __enter__(self) -> "_PriceCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        assert "market_price_snapshot" in sql
+        assert params == ("bitvavo", "BTC-EUR")
+
+    def fetchone(self) -> dict[str, object] | None:
+        return self.row
+
+
+class _PriceConn:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+
+    def cursor(self) -> _PriceCursor:
+        return _PriceCursor(self.row)
+
+
 def _request(**overrides: object) -> AutomaticBuySourceRuntimeInputRequestV1:
     base = dict(
         evaluation_ts_utc=TS,
@@ -159,10 +187,69 @@ def _request(**overrides: object) -> AutomaticBuySourceRuntimeInputRequestV1:
     return AutomaticBuySourceRuntimeInputRequestV1(**base)  # type: ignore[arg-type]
 
 
+def _fresh_candidate(**overrides: object) -> AutomaticBuyFreshSourceCandidateRequestV1:
+    base = dict(
+        trading_account_id=7,
+        venue="bitvavo",
+        asset_id=101,
+        market="BTC-EUR",
+        strategy_bucket_id="SHORT_TERM_ROTATION",
+        strategy_id="strategy-a",
+        strategy_version="1",
+        setup_id="setup-1",
+        setup_ready=True,
+        entry_zone_low=Decimal("95"),
+        entry_zone_high=Decimal("105"),
+        re_entry_zone_low=None,
+        re_entry_zone_high=None,
+    )
+    base.update(overrides)
+    return AutomaticBuyFreshSourceCandidateRequestV1(**base)  # type: ignore[arg-type]
+
+
 def test_request_contract_carries_no_account_permission_field() -> None:
     field_names = {f.name.lower() for f in fields(AutomaticBuySourceRuntimeInputRequestV1)}
     for forbidden in FORBIDDEN_ACCOUNT_FIELD_SUBSTRINGS:
         assert not any(forbidden in name for name in field_names), forbidden
+
+
+def test_fresh_candidate_resolves_price_time_and_evidence_from_canonical_snapshot() -> None:
+    observed = TS - timedelta(seconds=30)
+    conn = _PriceConn({
+        "market_price_snapshot_id": 55,
+        "venue": "bitvavo",
+        "market": "BTC-EUR",
+        "price": "100.25",
+        "observed_ts_utc": observed,
+    })
+
+    first = resolve_fresh_source_runtime_input_request_v1(
+        conn, candidate=_fresh_candidate(), now_utc=TS,
+    )
+    second = resolve_fresh_source_runtime_input_request_v1(
+        conn, candidate=_fresh_candidate(), now_utc=TS,
+    )
+
+    assert first == second
+    assert first.evaluation_ts_utc == observed
+    assert first.setup_observed_ts_utc == observed
+    assert first.current_price == Decimal("100.25")
+    assert first.setup_evidence_id == "market_price_snapshot:55"
+    assert first.source_provenance == "market_price_snapshot_v1"
+
+
+def test_fresh_candidate_fails_closed_for_stale_or_missing_price_snapshot() -> None:
+    stale = _PriceConn({
+        "market_price_snapshot_id": 55,
+        "venue": "bitvavo",
+        "market": "BTC-EUR",
+        "price": "100.25",
+        "observed_ts_utc": TS - timedelta(seconds=901),
+    })
+    with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="MARKET_PRICE_SNAPSHOT_STALE"):
+        resolve_fresh_source_runtime_input_request_v1(stale, candidate=_fresh_candidate(), now_utc=TS)
+    with pytest.raises(AutomaticBuySourceRuntimeInputWriterError, match="MARKET_PRICE_SNAPSHOT_MISSING"):
+        resolve_fresh_source_runtime_input_request_v1(_PriceConn(None), candidate=_fresh_candidate(), now_utc=TS)
 
 
 def test_snapshot_key_is_deterministic_and_content_sensitive() -> None:

@@ -58,9 +58,11 @@ from src.entry_policy.automatic_buy_execution_handoff_application_v1 import (
     submit_automatic_buy_plan_to_shared_handoff_v1,
 )
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
+    AutomaticBuyFreshSourceCandidateRequestV1,
     AutomaticBuySourceRuntimeInputConflictError,
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
+    resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
 from src.entry_policy.automatic_buy_runtime_contract_v1 import AutomaticBuyRuntimeContractError
@@ -105,6 +107,24 @@ _OPTIONAL_INPUT_KEYS: Final[frozenset[str]] = frozenset({
     "entry_zone_low", "entry_zone_high", "re_entry_zone_low", "re_entry_zone_high",
 })
 _REQUIRED_INPUT_KEYS: Final[frozenset[str]] = ALLOWED_INPUT_KEYS - _OPTIONAL_INPUT_KEYS
+FRESH_SOURCE_INPUT_KEYS: Final[frozenset[str]] = frozenset({
+    "trading_account_id",
+    "venue",
+    "asset_id",
+    "market",
+    "strategy_bucket_id",
+    "strategy_id",
+    "strategy_version",
+    "setup_id",
+    "setup_ready",
+    "entry_zone_low",
+    "entry_zone_high",
+    "re_entry_zone_low",
+    "re_entry_zone_high",
+})
+_FRESH_SOURCE_REQUIRED_INPUT_KEYS: Final[frozenset[str]] = (
+    FRESH_SOURCE_INPUT_KEYS - _OPTIONAL_INPUT_KEYS
+)
 
 
 class AutomaticBuyDryRunAcceptanceCliError(ValueError):
@@ -309,6 +329,39 @@ def parse_source_request_from_json(payload: dict[str, Any]) -> AutomaticBuySourc
     )
 
 
+def parse_fresh_source_candidate_from_json(payload: dict[str, Any]) -> AutomaticBuyFreshSourceCandidateRequestV1:
+    """Parse source/setup identity while forbidding caller price and time facts."""
+    if not isinstance(payload, dict):
+        raise AutomaticBuyDryRunAcceptanceCliError("INPUT_JSON_MUST_BE_OBJECT")
+    unexpected = set(payload) - FRESH_SOURCE_INPUT_KEYS
+    if unexpected:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "FORBIDDEN_OR_UNKNOWN_FRESH_SOURCE_FIELDS:" + ",".join(sorted(unexpected))
+        )
+    missing = _FRESH_SOURCE_REQUIRED_INPUT_KEYS - set(payload)
+    if missing:
+        raise AutomaticBuyDryRunAcceptanceCliError(
+            "MISSING_REQUIRED_FRESH_SOURCE_FIELDS:" + ",".join(sorted(missing))
+        )
+    if not isinstance(payload["setup_ready"], bool):
+        raise AutomaticBuyDryRunAcceptanceCliError("INVALID_BOOLEAN_FIELD:setup_ready")
+    return AutomaticBuyFreshSourceCandidateRequestV1(
+        trading_account_id=_parse_int(payload["trading_account_id"], field="trading_account_id"),
+        venue=str(payload["venue"]),
+        asset_id=_parse_int(payload["asset_id"], field="asset_id"),
+        market=str(payload["market"]),
+        strategy_bucket_id=str(payload["strategy_bucket_id"]),
+        strategy_id=str(payload["strategy_id"]),
+        strategy_version=str(payload["strategy_version"]),
+        setup_id=str(payload["setup_id"]),
+        setup_ready=payload["setup_ready"],
+        entry_zone_low=_parse_decimal_or_none(payload.get("entry_zone_low"), field="entry_zone_low"),
+        entry_zone_high=_parse_decimal_or_none(payload.get("entry_zone_high"), field="entry_zone_high"),
+        re_entry_zone_low=_parse_decimal_or_none(payload.get("re_entry_zone_low"), field="re_entry_zone_low"),
+        re_entry_zone_high=_parse_decimal_or_none(payload.get("re_entry_zone_high"), field="re_entry_zone_high"),
+    )
+
+
 def _load_payload(input_json: Path) -> dict[str, Any]:
     text = sys.stdin.read() if str(input_json) == "-" else input_json.read_text()
     try:
@@ -328,9 +381,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "is always sourced from canonical Issue #474 evidence, never from input."
         ),
     )
-    parser.add_argument(
-        "--input-json", type=Path, required=True,
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--input-json", type=Path,
         help="Path to bounded source/setup evidence JSON, or '-' for stdin.",
+    )
+    input_group.add_argument(
+        "--fresh-source-json", type=Path,
+        help=(
+            "Path to source/setup identity JSON without price, evidence id, or timestamps; "
+            "the latest canonical public price snapshot supplies those facts."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -346,8 +407,12 @@ def run(args: argparse.Namespace) -> int:
     )
 
     try:
-        payload = _load_payload(args.input_json)
-        request = parse_source_request_from_json(payload)
+        input_json = args.input_json if args.input_json is not None else args.fresh_source_json
+        payload = _load_payload(input_json)
+        request = parse_source_request_from_json(payload) if args.input_json is not None else None
+        fresh_candidate = (
+            None if args.input_json is not None else parse_fresh_source_candidate_from_json(payload)
+        )
     except (OSError, AutomaticBuyDryRunAcceptanceCliError) as exc:
         print(f"FAILED runner={RUNNER_NAME} result=invalid_input detail={exc}", file=sys.stderr)
         return 1
@@ -360,6 +425,13 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         try:
+            if fresh_candidate is not None:
+                request = resolve_fresh_source_runtime_input_request_v1(
+                    conn,
+                    candidate=fresh_candidate,
+                    now_utc=datetime.now(UTC),
+                )
+            assert request is not None
             result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
         except (
             AutomaticBuySourceRuntimeInputWriterError,

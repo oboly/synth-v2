@@ -10,7 +10,9 @@ from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
 )
 from src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 import (
     ALLOWED_INPUT_KEYS,
+    FRESH_SOURCE_INPUT_KEYS,
     AutomaticBuyDryRunAcceptanceCliError,
+    parse_fresh_source_candidate_from_json,
     parse_source_request_from_json,
     run_automatic_buy_dry_run_acceptance_v1,
 )
@@ -225,6 +227,31 @@ def test_parser_accepts_exactly_the_bounded_source_field_set() -> None:
     assert set(payload) <= ALLOWED_INPUT_KEYS
 
 
+@pytest.mark.parametrize("forbidden_field,value", [
+    ("evaluation_ts_utc", "2026-08-22T12:00:00+00:00"),
+    ("setup_observed_ts_utc", "2026-08-22T12:00:00+00:00"),
+    ("current_price", "100"),
+    ("setup_evidence_id", "operator-evidence"),
+    ("source_provenance", "operator"),
+    ("free_quote_balance_eur", "1000"),
+])
+def test_fresh_source_json_rejects_operator_time_price_evidence_and_account_fields(
+    forbidden_field: str, value: object,
+) -> None:
+    payload = _fresh_source_payload()
+    payload[forbidden_field] = value
+    with pytest.raises(AutomaticBuyDryRunAcceptanceCliError, match="FORBIDDEN_OR_UNKNOWN_FRESH_SOURCE_FIELDS"):
+        parse_fresh_source_candidate_from_json(payload)
+
+
+def test_fresh_source_parser_accepts_source_identity_only() -> None:
+    payload = _fresh_source_payload()
+    candidate = parse_fresh_source_candidate_from_json(payload)
+    assert candidate.market == "BTC-EUR"
+    assert candidate.entry_zone_low == Decimal("95")
+    assert set(payload) <= FRESH_SOURCE_INPUT_KEYS
+
+
 def _valid_payload() -> dict[str, object]:
     return {
         "evaluation_ts_utc": "2026-08-22T12:00:00+00:00",
@@ -243,4 +270,20 @@ def _valid_payload() -> dict[str, object]:
         "setup_evidence_id": "ev-1",
         "setup_observed_ts_utc": "2026-08-22T12:00:00+00:00",
         "source_provenance": "test",
+    }
+
+
+def _fresh_source_payload() -> dict[str, object]:
+    return {
+        "trading_account_id": 7,
+        "venue": "bitvavo",
+        "asset_id": 101,
+        "market": "BTC-EUR",
+        "strategy_bucket_id": "SHORT_TERM_ROTATION",
+        "strategy_id": "strategy-a",
+        "strategy_version": "1",
+        "setup_id": "setup-1",
+        "setup_ready": True,
+        "entry_zone_low": "95",
+        "entry_zone_high": "105",
     }
