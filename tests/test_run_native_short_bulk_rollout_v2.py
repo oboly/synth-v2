@@ -136,6 +136,52 @@ def test_dry_run_reports_started_before_audit_and_one_result_document(
     assert conn.commit_count == 0
 
 
+def test_write_reports_post_commit_uncertain_write_separately_not_as_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the exact defect flagged in review:
+    `production_db_writes` must never silently drop a scope whose commit
+    outcome is genuinely uncertain (`persisted=None`/`COMMIT_STATUS_UNKNOWN`,
+    e.g. the connection was lost right after the server committed). Simulate
+    that exact condition (`_FakeConn.commit_behavior = "raise_after"`, the
+    same mechanism `native_short_scope_administration_transaction_v1`'s own
+    tests use) and assert the write is surfaced as uncertain, not silently
+    counted as zero writes."""
+    import src.common.db as dbmod
+    from src.market_data import native_short_scope_administration_transaction_v1 as txn
+
+    _stub_write_auth(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_load_report", lambda conn, *, as_of_utc: _combined_report(as_of_utc, ("BTC",))
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _combined_report(as_of_utc, ("BTC",)),
+    )
+    monkeypatch.setattr(txn, "evaluate_current_global_blockers", lambda conn: ((), {}))
+    conn = _FakeConn()
+    conn.commit_behavior = "raise_after"
+    monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
+    code = cli.main([*_BASE_ARGS, "--write"], inspect_repository_source=_clean_source)
+    monkeypatch.undo()
+    stdout_docs = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+
+    result = stdout_docs[0]
+    assert result["completed"][0]["symbol"] == "BTC"
+    assert result["completed"][0]["commit_state"] == "UNKNOWN"
+    assert result["completed"][0]["persisted"] is None
+    # The server-side commit actually landed (verified via the fake's own
+    # committed state), so reporting production_db_writes=0 here would be a
+    # false safety marker -- the uncertain write must be visible as such.
+    assert len(conn.committed.operations) == 1
+    assert result["production_db_writes"] == 0
+    assert result["production_db_writes_unknown_count"] == 1
+
+
 def test_dry_run_with_no_ready_scopes_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _FakeConn()
     code, stdout_docs, _ = _run_cli(monkeypatch, _BASE_ARGS, conn=conn, report_symbols=())

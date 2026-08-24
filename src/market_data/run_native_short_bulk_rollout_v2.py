@@ -282,14 +282,24 @@ def _emit_document(payload: dict[str, Any]) -> None:
 
 
 def _result_document(outcome_dict: dict[str, Any]) -> dict[str, Any]:
-    completed_writes = sum(
-        1 for c in outcome_dict.get("completed", []) if c.get("persisted") is True
-    )
+    completed = outcome_dict.get("completed", [])
+    # `persisted` is `bool | None` on each scope's own outcome: `None` means
+    # genuine post-commit uncertainty (COMMIT_STATUS_UNKNOWN -- e.g. the
+    # connection was lost after the commit was issued but before the
+    # confirmation was received), never "not written". Counting only
+    # `persisted is True` and silently treating `None` the same as `False`
+    # would let a real committed write vanish from `production_db_writes` --
+    # the dangerous direction for a safety marker. Confirmed and uncertain
+    # writes are therefore reported as two distinct, explicit counts; neither
+    # is ever folded into the other.
+    confirmed_writes = sum(1 for c in completed if c.get("persisted") is True)
+    unknown_writes = sum(1 for c in completed if "persisted" in c and c["persisted"] is None)
     return {
         "event": "RESULT",
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
-        "production_db_writes": completed_writes,
+        "production_db_writes": confirmed_writes,
+        "production_db_writes_unknown_count": unknown_writes,
         **_SAFETY_MARKERS,
         **outcome_dict,
     }
