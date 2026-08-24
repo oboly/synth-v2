@@ -254,6 +254,64 @@ def test_universe_acceptance_retries_only_after_a_normal_gate_denial(monkeypatch
     assert result.gate_state == "APPROVED"
 
 
+def test_universe_acceptance_rolls_back_and_skips_unbound_market_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 as runner
+
+    class _Conn:
+        rollbacks = 0
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    requests = (_paper_request(market="AERO-EUR", asset_id=1), _paper_request(market="BTC-EUR", asset_id=2))
+    conn = _Conn()
+    seen: list[str] = []
+    approved = runner.AutomaticBuyDryRunAcceptanceResultV1(
+        runtime_input_id=2,
+        source_snapshot_key="BTC-EUR",
+        candidate_state="CANDIDATE",
+        gate_state="APPROVED",
+        gate_reason=None,
+        planner_state="STAGED",
+        planner_reason=None,
+        handoff_id=None,
+        plan_reference_id=None,
+        plan_content_hash=None,
+        executor_mode="DRY_RUN",
+        runtime_owner="gurkdb",
+        executor_identity="shared-executor-v1",
+        safety_markers={},
+    )
+    monkeypatch.setattr(
+        runner,
+        "resolve_actionable_canonical_zone_source_runtime_input_requests_v1",
+        lambda *_args, **_kwargs: requests,
+    )
+
+    def run_once(*_args: object, request: AutomaticBuySourceRuntimeInputRequestV1, **_kwargs: object) -> runner.AutomaticBuyDryRunAcceptanceResultV1:
+        seen.append(request.market)
+        if request.market == "AERO-EUR":
+            raise runner.AutomaticBuyRuntimeRepositoryError("ASSET_MARKET_BINDING_MISSING")
+        return approved
+
+    monkeypatch.setattr(runner, "run_automatic_buy_dry_run_acceptance_v1", run_once)
+    result = _run_canonical_zone_universe_acceptance_v1(
+        conn,
+        universe=AutomaticBuyCanonicalZoneUniverseSourceRequestV1(
+            trading_account_id=7,
+            venue="bitvavo",
+            strategy_bucket_id="SHORT_TERM_ROTATION",
+            strategy_id="strategy-a",
+            strategy_version="1",
+        ),
+        now_utc=TS,
+    )
+
+    assert seen == ["AERO-EUR", "BTC-EUR"]
+    assert conn.rollbacks == 1
+    assert result is approved
+
+
 @pytest.mark.parametrize(
     "forbidden_field,value",
     [

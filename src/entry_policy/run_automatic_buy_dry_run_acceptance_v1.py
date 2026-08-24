@@ -79,6 +79,7 @@ EXECUTOR_MODE: Final[str] = RUNTIME_MODE_DRY_RUN
 RUNTIME_OWNER: Final[str] = "gurkdb"
 EXECUTOR_IDENTITY: Final[str] = "shared-executor-v1"
 GATE_STATE_DENIED: Final[str] = "DENIED"
+ASSET_MARKET_BINDING_MISSING: Final[str] = "ASSET_MARKET_BINDING_MISSING"
 
 SAFETY_MARKERS: Final[dict[str, int]] = {
     "broker_private_calls": 0,
@@ -286,7 +287,13 @@ def _run_canonical_zone_universe_acceptance_v1(
     for request in resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
         conn, universe=universe, now_utc=now_utc,
     ):
-        result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
+        try:
+            result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
+        except AutomaticBuyRuntimeRepositoryError as exc:
+            if str(exc) != ASSET_MARKET_BINDING_MISSING:
+                raise
+            conn.rollback()
+            continue
         if result.gate_state != GATE_STATE_DENIED:
             return result
     raise AutomaticBuyDryRunAcceptanceError("CANONICAL_BUY_ACTIONABLE_UNIVERSE_EXHAUSTED")
