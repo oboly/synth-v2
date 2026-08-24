@@ -491,6 +491,17 @@ silent leg removal remains in the active manual path.
 
 ### F5 — Tick size and quantity step-size metadata incomplete
 
+**P0 status (2026-08-24, #509): REMEDIATED — canonical refresh writer added.**
+The one-time seed below had no owned refresh process; every row was static
+after 2026-07-25 and eventually aged past the 7-day freshness threshold with
+no writer to correct it (see #509). `src/market/run_bitvavo_venue_execution_constraint_sync_v1.py`
+is now the single documented owner: a public-API-only, account-agnostic
+runner that upserts `venue_execution_constraint` for all active Bitvavo
+markets in a given quote currency (default EUR), not only the 8 A+ Week-1
+assets. See `docs/ops/bitvavo_venue_execution_constraint_sync_v1.md` for
+owner/cadence/usage. No timer is enabled yet — see that doc's Cadence
+section.
+
 **P0 status (2026-07-25): REMEDIATED for the 8 A+ Week-1 markets.**
 `src/market_rules/venue_execution_constraints_v1.py` is the new canonical,
 fail-closed (MISSING/STALE/FRESH) contract; `src/market_rules/bitvavo_venue_adapter_v1.py`
