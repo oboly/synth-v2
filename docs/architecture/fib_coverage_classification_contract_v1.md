@@ -87,14 +87,20 @@ already-resolved facts into one explicit classification.
 
 `fib_coverage_reason` (final, mutually exclusive, precedence order):
 
-1. `FIB_MAP_AVAILABLE` — canonical or native authority is usable. This
-   includes the case where the canonical row itself is `AVAILABLE`, the
-   native row itself is `AVAILABLE`, **and** the case where neither row
-   status string says so but `canonical_fallback_usable` (see below) proves
-   canonical 4h data actually filled in usable levels underneath a partial
-   native row via the Planning-PPP fallback (Issue #238). This always takes
-   precedence — even over a `SUPPORTED`+`PARTIAL`/`ABSENT` native gap (rule
-   6).
+1. `FIB_MAP_AVAILABLE` — **overall usable Fib authority wins, from either
+   source, checked first and unconditionally.** True when the canonical row
+   itself is `AVAILABLE`, the native row itself is `AVAILABLE`, **or**
+   `canonical_fallback_usable` (see below) proves canonical 4h data
+   actually filled in usable levels underneath a partial native row via the
+   Planning-PPP fallback (Issue #238). This always takes precedence over
+   every other rule below — **including when `canonical_fib_source_available
+   == False`**: a usable native SHORT row makes the overall
+   `fib_coverage_reason` `FIB_MAP_AVAILABLE` even while the canonical 4h DB
+   fetch is down for this render. The canonical outage stays fully visible,
+   never hidden, in the independent `canonical_fib_row_state` field
+   (`SOURCE_UNAVAILABLE`) — only the *overall* reason reflects that another
+   authoritative source is already usable. Rule 8 (`FIB_MAP_SOURCE_UNAVAILABLE`)
+   only applies when *no* usable authority exists at all.
 2. `FIB_MAP_STALE` / `FIB_MAP_UNAVAILABLE` — canonical row exists but is not
    usable (pre-existing, already-truthful reasons; unchanged by this
    contract).
@@ -122,16 +128,23 @@ already-resolved facts into one explicit classification.
 8. `FIB_MAP_SOURCE_UNAVAILABLE` — the **canonical 4h** Fib DB fetch itself
    failed for this render (`canonical_fib_source_available == False`, an
    explicit fact from the runner's own fetch try/except — see "Three
-   independent availability facts" below). **Never** classified as
-   `FIB_MAP_EXPECTED_BUT_MISSING`, `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or
-   `FIB_MAP_NOT_ENROLLED` — a canonical source outage is not per-symbol
-   evidence for or against enrollment, so no per-symbol enrollment-relative
-   conclusion is drawn. This applies regardless of the symbol's own
-   enrollment/overlay facts (enrolled or not, held/order/manual or none):
-   while the canonical source cannot be read, coverage for *every* symbol
-   is `FIB_MAP_SOURCE_UNAVAILABLE`, distinct from the per-row `ABSENT`
-   state used once the canonical source is confirmed readable and simply
-   lacks this symbol's row.
+   independent availability facts" below), **and no other authority is
+   already usable** (rule 1 did not already resolve `FIB_MAP_AVAILABLE` —
+   e.g. no native SHORT row is `AVAILABLE` for this symbol either). **Never**
+   classified as `FIB_MAP_EXPECTED_BUT_MISSING`,
+   `ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE`, or `FIB_MAP_NOT_ENROLLED` — a
+   canonical source outage is not per-symbol evidence for or against
+   enrollment, so no per-symbol enrollment-relative conclusion is drawn.
+   This applies regardless of the symbol's own enrollment/overlay facts
+   (enrolled or not, held/order/manual or none): while the canonical source
+   cannot be read *and no native authority covers this symbol*, coverage is
+   `FIB_MAP_SOURCE_UNAVAILABLE`, distinct from the per-row `ABSENT` state
+   used once the canonical source is confirmed readable and simply lacks
+   this symbol's row. A symbol with a usable native SHORT row during the
+   same canonical outage instead resolves to `FIB_MAP_AVAILABLE` under rule
+   1 — `canonical_fib_row_state` still shows `SOURCE_UNAVAILABLE` for that
+   card, the outage is never silently hidden, only the overall reason
+   differs because a usable authority exists.
 
 ### Three independent availability facts (do not conflate)
 

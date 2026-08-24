@@ -43,15 +43,26 @@ Reason vocabulary is intentionally compact and mutually exclusive per card:
                                         False -- an explicit fact from the
                                         runner's own fetch try/except, never
                                         inferred from the *legacy* 1d CSV's
-                                        FIB_MAP_SOURCE_MISSING status).
-                                        Distinct from
+                                        FIB_MAP_SOURCE_MISSING status), AND
+                                        no other authority is already usable
+                                        for this symbol (FIB_MAP_AVAILABLE
+                                        is always checked first and wins
+                                        unconditionally -- e.g. a usable
+                                        native SHORT row during a canonical
+                                        outage still resolves to
+                                        FIB_MAP_AVAILABLE overall; the
+                                        outage itself stays fully visible in
+                                        canonical_fib_row_state ==
+                                        SOURCE_UNAVAILABLE, it is never
+                                        hidden). Distinct from
                                         FIB_MAP_EXPECTED_BUT_MISSING /
                                         ACCOUNT_OVERLAY_OUTSIDE_FIB_SCOPE /
                                         FIB_MAP_NOT_ENROLLED: when the
                                         canonical source itself is
-                                        unreadable, no per-symbol enrollment
-                                        or absence conclusion is truthful
-                                        for anyone in that render.
+                                        unreadable and nothing else covers
+                                        this symbol, no per-symbol
+                                        enrollment or absence conclusion is
+                                        truthful.
     NATIVE_SHORT_EXPECTED_BUT_MISSING -- native SHORT scope SUPPORTED for
                                         this symbol, no native row, and no
                                         usable canonical 4h fallback either.
@@ -282,10 +293,18 @@ def classify_fib_coverage(
         or native_short_row_state == NATIVE_ROW_AVAILABLE
         or canonical_fallback_usable
     ):
-        # Usable canonical 4h authority always wins, even when native SHORT
-        # is SUPPORTED + PARTIAL/ABSENT -- the native gap stays visible only
-        # through native_short_scope_state/native_short_row_state below, it
-        # never replaces the overall reason once a usable fallback exists.
+        # Overall usable Fib authority wins, from either source, checked
+        # first and unconditionally -- including when
+        # canonical_fib_source_available is False: a usable native SHORT
+        # row (native_short_row_state == AVAILABLE) still makes the overall
+        # reason FIB_MAP_AVAILABLE during a canonical 4h DB outage. The
+        # outage itself is never hidden -- canonical_fib_row_state stays
+        # SOURCE_UNAVAILABLE on this same classification -- only the
+        # overall reason differs because another authority already covers
+        # this symbol. Also wins when native SHORT is SUPPORTED +
+        # PARTIAL/ABSENT: that native gap stays visible only through
+        # native_short_scope_state/native_short_row_state below, it never
+        # replaces the overall reason once a usable authority exists.
         fib_coverage_reason = REASON_FIB_MAP_AVAILABLE
     elif canonical_fib_row_state == CANONICAL_ROW_STALE:
         fib_coverage_reason = REASON_FIB_MAP_STALE

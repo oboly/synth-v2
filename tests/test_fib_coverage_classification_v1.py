@@ -158,6 +158,25 @@ def test_i_no_native_no_canonical_enrollment_expected_is_expected_but_missing():
     assert result.fib_coverage_reason == REASON_FIB_MAP_EXPECTED_BUT_MISSING
 
 
+def test_canonical_source_unavailable_with_usable_native_authority_stays_available():
+    """Overall usable Fib authority wins: canonical_fib_source_available ==
+    False (canonical 4h DB fetch down) but native SHORT is AVAILABLE for this
+    symbol => fib_coverage_reason == FIB_MAP_AVAILABLE. The canonical outage
+    must remain fully visible in canonical_fib_row_state ==
+    SOURCE_UNAVAILABLE -- only the overall reason differs, because another
+    authoritative source already covers this symbol."""
+    result = _classify(
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        native_short_scope_state=NATIVE_SCOPE_SUPPORTED,
+        canonical_fib_source_available=False,
+    )
+    assert result.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert result.native_short_scope_state == NATIVE_SCOPE_SUPPORTED
+    assert result.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+    assert result.fib_coverage_reason != REASON_FIB_MAP_SOURCE_UNAVAILABLE
+
+
 def test_a_canonical_source_unavailable_with_legacy_present_stays_source_unavailable():
     """A. canonical 4h DB fetch unavailable (explicit fact,
     canonical_fib_source_available=False) + legacy CSV/source present (a
@@ -455,6 +474,40 @@ def test_native_short_gap_json_and_html_reason_expose_same_final_reason():
     assert json_entry == result_card.fib_coverage.to_json()
     assert snapshot["fib_coverage_summary"][REASON_NATIVE_SHORT_EXPECTED_BUT_MISSING] == 1
     assert snapshot["fib_coverage_summary"][REASON_NOT_APPLICABLE] == 0
+
+
+def test_canonical_outage_with_usable_native_json_and_html_reason_expose_same_final_reason():
+    """A canonical 4h DB outage (canonical_fib_source_available=False) for a
+    symbol that has a usable native SHORT row must resolve to
+    FIB_MAP_AVAILABLE end-to-end -- card.reasons (HTML's source) gets no
+    supplemental gap reason, and JSON's fib_coverage_classification still
+    exposes canonical_fib_row_state == SOURCE_UNAVAILABLE (the outage is
+    never hidden) alongside fib_coverage_reason == FIB_MAP_AVAILABLE."""
+    card = _card_with_overlays()
+    card = dataclasses.replace(
+        card,
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+    )
+    out = apply_fib_coverage_classification(
+        [card],
+        open_order_count_by_market={},
+        native_short_scope_state_by_symbol={"PLUME": "SUPPORTED"},
+        canonical_fib_source_available=False,
+    )
+    result_card = out[0]
+    assert result_card.fib_coverage.canonical_fib_row_state == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert result_card.fib_coverage.fib_coverage_reason == REASON_FIB_MAP_AVAILABLE
+    assert fib_coverage_reason_text(result_card.fib_coverage) is None
+    assert result_card.reasons == card.reasons
+
+    snapshot = build_json_snapshot(out)
+    json_entry = snapshot["symbols"][0]["fib_coverage_classification"]
+    assert json_entry == result_card.fib_coverage.to_json()
+    assert json_entry["canonical_fib_row_state"] == CANONICAL_ROW_SOURCE_UNAVAILABLE
+    assert json_entry["fib_coverage_reason"] == REASON_FIB_MAP_AVAILABLE
+    assert snapshot["fib_coverage_summary"][REASON_FIB_MAP_AVAILABLE] == 1
+    assert snapshot["fib_coverage_summary"][REASON_FIB_MAP_SOURCE_UNAVAILABLE] == 0
 
 
 def test_apply_fib_coverage_classification_does_not_duplicate_reason_on_reapply():
