@@ -149,6 +149,31 @@ def _find_effective_raw_row(
     return matches[0]
 
 
+def _future_row_would_conflict(
+    rows: tuple[AutomaticBuyAccountPermissionV1, ...], *, trading_account_id: int, candidate_start: datetime,
+) -> bool:
+    """True if any persisted permission row for this account starts after ``candidate_start``.
+
+    A newly-inserted row is always open-ended, so once ``candidate_start``
+    passes, it stays active forever. Any row not yet active at
+    ``candidate_start`` (excluded by the caller's own-time resolve check) but
+    scheduled to become active later would collide with the new open-ended
+    row the moment it starts, making both simultaneously active and the
+    runtime resolver ambiguous -- unconditionally: the contract requires a
+    revocation's ``effective_ts_utc`` to be strictly after the row's own
+    ``effective_from_ts_utc`` (``_validate_revocation``), so a future row can
+    never already be revoked at-or-before its own start; it is always alive
+    for at least an instant once it begins, which is enough to overlap an
+    indefinitely open-ended candidate. Rows with an earlier or equal
+    ``effective_from_ts_utc`` are already covered by the caller's resolve-at-
+    ``candidate_start`` check and are skipped here.
+    """
+    return any(
+        row.trading_account_id == trading_account_id and row.effective_from_ts_utc > candidate_start
+        for row in rows
+    )
+
+
 def _same_values(
     existing: AutomaticBuyAccountPermissionV1, request: AutomaticBuyAccountPermissionProvisioningRequestV1,
 ) -> bool:
@@ -210,6 +235,11 @@ def provision_automatic_buy_account_permission_v1(
                 idempotent=True,
             )
         raise AutomaticBuyAccountPermissionConflictError("CONFLICTING_AUTOMATIC_BUY_ACCOUNT_PERMISSION")
+
+    if _future_row_would_conflict(
+        existing_rows, trading_account_id=trading_account_id, candidate_start=request.effective_from_ts_utc,
+    ):
+        raise AutomaticBuyAccountPermissionConflictError("FUTURE_AUTOMATIC_BUY_ACCOUNT_PERMISSION_OVERLAP")
 
     insert_sql = """
     INSERT INTO automatic_buy_account_permission_v1 (

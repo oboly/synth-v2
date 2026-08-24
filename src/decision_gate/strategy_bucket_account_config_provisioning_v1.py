@@ -199,6 +199,37 @@ def _find_effective_raw_row(
     return matches[0]
 
 
+def _future_row_would_conflict(
+    rows: tuple[StrategyBucketAccountConfigRowV1, ...],
+    *,
+    trading_account_id: int,
+    strategy_bucket_id: str,
+    candidate_start: datetime,
+) -> bool:
+    """True if any persisted row for this identity starts after ``candidate_start``.
+
+    A newly-inserted row is always open-ended, so once ``candidate_start``
+    passes, it stays active forever. Any row not yet active at
+    ``candidate_start`` (excluded by the caller's own-time resolve check) but
+    scheduled to become active later would collide with the new open-ended
+    row the moment it starts, making both simultaneously active and the
+    runtime resolver ambiguous -- unconditionally: the contract requires a
+    revocation's ``effective_ts_utc`` to be strictly after the row's own
+    ``effective_from_ts_utc`` (``_validate_revocation``), so a future row can
+    never already be revoked at-or-before its own start; it is always alive
+    for at least an instant once it begins, which is enough to overlap an
+    indefinitely open-ended candidate. Rows with an earlier or equal
+    ``effective_from_ts_utc`` are already covered by the caller's resolve-at-
+    ``candidate_start`` check and are skipped here.
+    """
+    return any(
+        row.trading_account_id == trading_account_id
+        and row.strategy_bucket_id == strategy_bucket_id
+        and row.effective_from_ts_utc > candidate_start
+        for row in rows
+    )
+
+
 def _same_values(
     existing: StrategyBucketAccountConfigRowV1, request: StrategyBucketAccountConfigProvisioningRequestV1,
 ) -> bool:
@@ -279,6 +310,14 @@ def provision_strategy_bucket_account_config_v1(
                 idempotent=True,
             )
         raise StrategyBucketAccountConfigConflictError("CONFLICTING_STRATEGY_BUCKET_ACCOUNT_CONFIG")
+
+    if _future_row_would_conflict(
+        existing_rows,
+        trading_account_id=trading_account_id,
+        strategy_bucket_id=request.strategy_bucket_id,
+        candidate_start=request.effective_from_ts_utc,
+    ):
+        raise StrategyBucketAccountConfigConflictError("FUTURE_STRATEGY_BUCKET_ACCOUNT_CONFIG_OVERLAP")
 
     insert_sql = """
     INSERT INTO strategy_bucket_account_config_v1 (

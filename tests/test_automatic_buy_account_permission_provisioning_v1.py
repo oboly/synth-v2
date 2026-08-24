@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -120,6 +120,67 @@ def test_ambiguous_persisted_state_fails_closed_without_inserting() -> None:
 
     with pytest.raises(AutomaticBuyAccountPermissionProvisioningError):
         provision_automatic_buy_account_permission_v1(conn, request=_request())
+
+
+def test_future_dated_existing_row_blocks_new_open_ended_insert() -> None:
+    """A row that starts after `now` but isn't active yet must still block a
+    new open-ended row -- otherwise both become simultaneously active once
+    the future row's start passes, and the runtime resolver goes ambiguous."""
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    future_start = TS + timedelta(days=7)
+    insert_buy_permission(conn, account_id=4, effective_from_ts_utc=future_start)
+
+    with pytest.raises(
+        AutomaticBuyAccountPermissionConflictError, match="FUTURE_AUTOMATIC_BUY_ACCOUNT_PERMISSION_OVERLAP",
+    ):
+        provision_automatic_buy_account_permission_v1(conn, request=_request(effective_from_ts_utc=TS))
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS c FROM automatic_buy_account_permission_v1", ())
+        assert cur.fetchone()["c"] == 1
+
+
+def test_future_dated_row_revoked_shortly_after_its_own_start_still_blocks_insert() -> None:
+    """A future row that becomes active and is only revoked afterward still had
+    a real (if brief) overlap window with an indefinitely open-ended candidate
+    starting earlier, so it must still be treated as a conflict."""
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    future_start = TS + timedelta(days=7)
+    permission_id = insert_buy_permission(conn, account_id=4, effective_from_ts_utc=future_start)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO automatic_buy_account_permission_revocation_v1 "
+            "(automatic_buy_account_permission_id, trading_account_id, revocation_version, effective_ts_utc, actor, reason) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (permission_id, 4, "1", future_start + timedelta(days=1), "operator", "revoked shortly after activation"),
+        )
+
+    with pytest.raises(
+        AutomaticBuyAccountPermissionConflictError, match="FUTURE_AUTOMATIC_BUY_ACCOUNT_PERMISSION_OVERLAP",
+    ):
+        provision_automatic_buy_account_permission_v1(conn, request=_request(effective_from_ts_utc=TS))
+
+
+def test_malformed_revocation_at_or_before_its_own_row_start_is_rejected() -> None:
+    """The contract requires a revocation to strictly post-date its row's own
+    start; a revocation timestamped at-or-before that is corrupt persisted
+    state and must fail closed, never be silently tolerated."""
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    future_start = TS + timedelta(days=7)
+    permission_id = insert_buy_permission(conn, account_id=4, effective_from_ts_utc=future_start)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO automatic_buy_account_permission_revocation_v1 "
+            "(automatic_buy_account_permission_id, trading_account_id, revocation_version, effective_ts_utc, actor, reason) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (permission_id, 4, "1", future_start, "operator", "invalid: not strictly after row start"),
+        )
+
+    with pytest.raises(AutomaticBuyAccountPermissionProvisioningError):
+        provision_automatic_buy_account_permission_v1(conn, request=_request(effective_from_ts_utc=TS))
 
 
 def test_provisioned_row_resolves_end_to_end_via_canonical_474_resolver() -> None:

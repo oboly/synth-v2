@@ -72,13 +72,14 @@ def _parse_ts(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _parse_decimal_or_none(value: str | None, *, field: str) -> Decimal | None:
-    if value is None:
-        return None
+def _decimal_arg(value: str) -> Decimal:
+    """argparse ``type=`` converter: raises ArgumentTypeError so a bad value
+    is rejected by argparse itself, before ``STARTED``/DB connection, with a
+    clean usage error rather than an uncaught exception mid-run."""
     try:
         return Decimal(value)
     except InvalidOperation as exc:
-        raise ProvisioningCliError(f"INVALID_DECIMAL_FIELD:{field}") from exc
+        raise argparse.ArgumentTypeError(f"invalid decimal value: {value!r}") from exc
 
 
 def _add_account_args(parser: argparse.ArgumentParser) -> None:
@@ -110,9 +111,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     reviews_group = bucket_parser.add_mutually_exclusive_group(required=True)
     reviews_group.add_argument("--allow-reduce-reviews", dest="allow_reduce_reviews", action="store_true")
     reviews_group.add_argument("--no-allow-reduce-reviews", dest="allow_reduce_reviews", action="store_false")
-    bucket_parser.add_argument("--max-position-amount-eur", default=None)
-    bucket_parser.add_argument("--max-bucket-amount-eur", default=None)
-    bucket_parser.add_argument("--max-asset-exposure-pct", default=None)
+    bucket_parser.add_argument("--max-position-amount-eur", type=_decimal_arg, default=None)
+    bucket_parser.add_argument("--max-bucket-amount-eur", type=_decimal_arg, default=None)
+    bucket_parser.add_argument("--max-asset-exposure-pct", type=_decimal_arg, default=None)
     bucket_parser.add_argument("--max-open-positions", type=int, default=None)
 
     permission_parser = subparsers.add_parser(
@@ -134,9 +135,9 @@ def _run_strategy_bucket_config(conn: Any, args: argparse.Namespace) -> int:
         strategy_bucket_id=args.strategy_bucket_id,
         is_enabled=args.is_enabled,
         risk_profile=args.risk_profile,
-        max_position_amount_eur=_parse_decimal_or_none(args.max_position_amount_eur, field="max_position_amount_eur"),
-        max_bucket_amount_eur=_parse_decimal_or_none(args.max_bucket_amount_eur, field="max_bucket_amount_eur"),
-        max_asset_exposure_pct=_parse_decimal_or_none(args.max_asset_exposure_pct, field="max_asset_exposure_pct"),
+        max_position_amount_eur=args.max_position_amount_eur,
+        max_bucket_amount_eur=args.max_bucket_amount_eur,
+        max_asset_exposure_pct=args.max_asset_exposure_pct,
         max_open_positions=args.max_open_positions,
         allow_new_entries=args.allow_new_entries,
         allow_reduce_reviews=args.allow_reduce_reviews,
