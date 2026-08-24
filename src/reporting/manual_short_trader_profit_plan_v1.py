@@ -28,8 +28,8 @@ from src.reporting.market_rotation_profit_plan_projection_v1 import (
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
     build_history_view as build_rotation_history_view,
     format_history_window_label as format_rotation_history_window_label,
-    render_pressure_curve_svg as render_rotation_pressure_curve_svg,
 )
+from src.reporting.chart_axis_v1 import decimal_places_for_step, format_tick_label, nice_domain_and_ticks
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -4349,8 +4349,6 @@ _CSS = """
     .rotation-headline { margin-top: 2px; font-size: 20px; font-weight: 700; }
     .rotation-score { margin-left: 6px; font-variant-numeric: tabular-nums; }
     .rotation-direction-secondary { margin-top: 3px; font-size: 10px; color: var(--muted); letter-spacing: .06em; }
-    .rotation-scale { position: relative; display: flex; justify-content: space-between; margin-top: 5px; padding-top: 6px; border-top: 2px solid var(--line); font-size: 9px; color: var(--muted); }
-    .rotation-scale i { position: absolute; top: -5px; width: 3px; height: 11px; background: var(--warn); transform: translateX(-50%); }
     .rotation-lights { display: flex; gap: 5px; }
     .rotation-light { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: rgba(0,0,0,.2); }
     .rotation-light.active.light-in    { background: var(--ok); }
@@ -4363,9 +4361,12 @@ _CSS = """
     .rotation-composition-out { background: var(--bad); } .rotation-composition-mixed { background: var(--warn); } .rotation-composition-in { background: var(--ok); }
     .rotation-history { grid-column: 1 / -1; margin-top: 2px; }
     .rotation-history-label { font-size: 10px; color: var(--muted); }
-    .rotation-history-scale { display: flex; justify-content: space-between; font-size: 9px; color: var(--muted); margin-top: 2px; }
-    .rotation-history svg { display: block; width: 100%; max-height: 80px; margin-top: 3px; background: rgba(0,0,0,.16); border-radius: 4px; }
-    .rotation-history-zero { stroke: var(--muted); stroke-dasharray: 4 4; } .rotation-history-line { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+    .rotation-history svg { display: block; width: 100%; max-height: 96px; margin-top: 3px; background: rgba(0,0,0,.16); border-radius: 4px; }
+    .rotation-history-gridline { stroke: var(--line); stroke-width: 1; }
+    .rotation-history-zero { stroke: var(--muted); stroke-width: 1.25; }
+    .rotation-history-axis { stroke: var(--line); stroke-width: 1; }
+    .rotation-history-tick-label { fill: var(--muted); font-size: 8px; font-variant-numeric: tabular-nums; }
+    .rotation-history-line { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
     .rotation-freshness-badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); }
     .rotation-freshness-fresh { color: var(--ok); }
     .rotation-freshness-stale, .rotation-freshness-future_timestamp { color: var(--bad); }
@@ -5133,11 +5134,6 @@ def _rotation_lights_html(evidence_light_count: int | None, direction: str | Non
     return "".join(lights)
 
 
-def _rotation_scale_position(score: float | None) -> float:
-    """Presentation-only mapping for the persisted fixed -100..+100 scale."""
-    return ((score or 0.0) + 100.0) / 200.0 * 100.0
-
-
 def _rotation_composition_html(projection: RotationProfitPlanProjection) -> str:
     total = projection.eligible_asset_count
     counts = (projection.negative_count, projection.neutral_count, projection.positive_count)
@@ -5154,40 +5150,106 @@ def _rotation_composition_html(projection: RotationProfitPlanProjection) -> str:
     ) + "</div>"
 
 
+def _rotation_history_axis_svg(
+    points: tuple,
+    *,
+    domain_min: float,
+    domain_max: float,
+    ticks: tuple[float, ...],
+    tick_decimals: int,
+    width: int = 600,
+    height: int = 120,
+    left_padding: int = 40,
+    right_padding: int = 12,
+    top_padding: int = 10,
+    bottom_padding: int = 10,
+    aria_label: str = "Persisted aggregate pressure history, scaled to visible min, zero, and max",
+) -> str:
+    """Presentation-only history curve with a real left-side y-axis: tick
+    labels positioned at their true y coordinate, gridlines aligned with
+    ticks, and a stronger zero line when the domain spans zero. Coordinates
+    are derived only from the caller's ``domain_min``/``domain_max``/
+    ``ticks`` (already rounded to a nice, deterministic scale) -- this never
+    recomputes or widens the persisted Rotation Pressure history itself."""
+    if not points:
+        return "<div class='curve-empty'>No prior persisted pressure snapshots</div>"
+    span = domain_max - domain_min
+    if span <= 0:
+        span = 1.0
+    plot_left = left_padding
+    plot_right = width - right_padding
+    plot_top = top_padding
+    plot_bottom = height - bottom_padding
+    plot_height = plot_bottom - plot_top
+
+    def y_for(value: float) -> float:
+        return plot_top + (domain_max - value) / span * plot_height
+
+    count = len(points)
+    coords = " ".join(
+        f"{plot_left + (index * (plot_right - plot_left) / max(count - 1, 1)):.1f},"
+        f"{y_for(point.market_score):.1f}"
+        for index, point in enumerate(points)
+    )
+    grid_parts = []
+    for tick in ticks:
+        y = y_for(tick)
+        # Ticks are already exact-zero-snapped by nice_domain_and_ticks
+        # (scaled to axis.step, not a fixed epsilon) -- exact equality here
+        # avoids misclassifying tiny nonzero ticks as the zero line on a
+        # sub-1e-9-wide domain.
+        is_zero = tick == 0.0
+        line_class = "rotation-history-zero" if is_zero else "rotation-history-gridline"
+        grid_parts.append(
+            f"<line class='{line_class}' x1='{plot_left}' y1='{y:.1f}' x2='{plot_right}' y2='{y:.1f}'></line>"
+        )
+        grid_parts.append(
+            f"<text class='rotation-history-tick-label' x='{plot_left - 6}' y='{y:.1f}' "
+            f"dominant-baseline='middle' text-anchor='end'>{esc(format_tick_label(tick, decimals=tick_decimals))}</text>"
+        )
+    axis_line = (
+        f"<line class='rotation-history-axis' x1='{plot_left}' y1='{plot_top}' "
+        f"x2='{plot_left}' y2='{plot_bottom}'></line>"
+    )
+    return (
+        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='{esc(aria_label)}'>"
+        f"{''.join(grid_parts)}"
+        f"{axis_line}"
+        f"<polyline class='rotation-history-line' points='{coords}'></polyline>"
+        "</svg>"
+    )
+
+
 def _rotation_history_html(projection: RotationProfitPlanProjection) -> str:
     # Issue #412: default 30d viewport over the same persisted history source
-    # the dedicated rotation pressure dashboard reads, scaled to the visible
-    # window's own min/zero/max rather than the fixed -100..+100 persisted
-    # validation domain. Full 24h/7d/30d/all viewport switching lives on the
-    # dedicated dashboard; this compact strip keeps the default window only.
+    # the dedicated rotation pressure dashboard reads. Full 24h/7d/30d/all
+    # viewport switching lives on the dedicated dashboard; this compact
+    # strip keeps the default window only. Issue #500: the visible window's
+    # own min/zero/max drives a deterministic "nice" axis domain/ticks
+    # (chart_axis_v1) instead of the fixed -100..+100 persisted validation
+    # domain, so the axis is presentation-only and never recomputes
+    # Rotation Pressure itself.
     view = build_rotation_history_view(projection.history)
     if not view.points:
         return "<div class='rotation-history'><span class='rotation-history-label'>No prior persisted pressure snapshots</span></div>"
     visible_min = view.visible_min if view.visible_min is not None else -1.0
     visible_max = view.visible_max if view.visible_max is not None else 1.0
-    # Plot domain always includes zero as a reference line; the displayed
-    # scale labels below stay the true visible extrema (see
-    # market_rotation_pressure_dashboard_v1.build_history_view).
-    domain_min = min(0.0, visible_min)
-    domain_max = max(0.0, visible_max)
-    curve_svg = render_rotation_pressure_curve_svg(
+    # Plot domain always includes zero as a reference line; nice_domain_and_ticks
+    # only rounds this outward to human-readable boundaries/ticks.
+    raw_min = min(0.0, visible_min)
+    raw_max = max(0.0, visible_max)
+    axis = nice_domain_and_ticks(raw_min, raw_max)
+    curve_svg = _rotation_history_axis_svg(
         view.points,
-        visible_min=domain_min,
-        visible_max=domain_max,
-        width=600,
-        height=100,
-        padding=15,
-        svg_class=None,
-        line_class="rotation-history-line",
-        zero_class="rotation-history-zero",
+        domain_min=axis.domain_min,
+        domain_max=axis.domain_max,
+        ticks=axis.ticks,
+        tick_decimals=decimal_places_for_step(axis.step),
         aria_label="Persisted aggregate pressure history, scaled to visible min, zero, and max",
     )
     return (
         "<div class='rotation-history'>"
         f"<span class='rotation-history-label'>{esc(format_rotation_history_window_label(view))}</span>"
-        "<div class='rotation-history-scale' aria-label='Visible chart scale'>"
-        f"<span>{visible_min:+.1f}</span><span>0</span><span>{visible_max:+.1f}</span>"
-        "</div>"
         f"{curve_svg}"
         "</div>"
     )
@@ -5232,7 +5294,6 @@ def _rotation_strip_html(projection: RotationProfitPlanProjection | None) -> str
         "<div class='rotation-head'>"
         "<div class='rotation-eyebrow'>MARKET ROTATION PRESSURE — market-only, account-agnostic, not verified fund flow</div>"
         f"<div class='rotation-headline'><span class='rotation-score'>{esc(score_text)}</span></div>"
-        f"<div class='rotation-scale' aria-label='Fixed pressure scale minus 100 to plus 100'><span>-100</span><span>0</span><span>+100</span><i style='left:{_rotation_scale_position(projection.aggregate_score):.1f}%'></i></div>"
         f"<div class='rotation-direction-secondary'>{esc(_rotation_direction_label(projection.aggregate_direction))}</div>"
         "</div>"
         f"<div><div class='rotation-metrics'>{''.join(metrics)}</div>{_rotation_composition_html(projection)}</div>"
