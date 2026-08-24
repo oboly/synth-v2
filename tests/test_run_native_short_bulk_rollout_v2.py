@@ -14,6 +14,7 @@ from src.market_data.native_short_repository_source_identity_v1 import (
 from tests.test_native_short_scope_administration_transaction_v1 import (
     _FakeConn,
     _bulk_rollout_report_for,
+    _stub_write_auth,
 )
 
 
@@ -46,6 +47,18 @@ def _run_cli(
         return _combined_report(as_of_utc, report_symbols)
 
     monkeypatch.setattr(cli, "_load_report", lambda conn, *, as_of_utc: _report(as_of_utc))
+    # The per-entry revalidation hook calls run_audit directly (not through
+    # _load_report), scoped to one symbol at a time -- patch it too so
+    # revalidation sees the same canned readiness the initial audit did,
+    # without needing a fake connection shaped for run_audit's full query
+    # surface.
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _combined_report(
+            as_of_utc, symbols if symbols is not None else report_symbols
+        ),
+    )
     # The FakeConn's default empty state has no writer-provenance/admin-
     # operation rows, so the real evaluate_current_global_blockers would
     # report every blocker active; bypass it here the same way the
@@ -169,6 +182,85 @@ def test_write_rejects_dirty_repository_source(monkeypatch: pytest.MonkeyPatch) 
     stdout_docs = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
     assert code == 2
     assert stdout_docs[0]["reason_code"] == "INVALID_REPOSITORY_SOURCE"
+    assert conn.commit_count == 0
+
+
+def _not_ready_report(as_of_utc: datetime, symbol: str) -> Any:
+    from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE
+    from src.market_data.native_short_multi_asset_audit_v1 import (
+        AuditReport,
+        CandidateInput,
+        CandleWindow,
+        LedgerState,
+        MarketMetadata,
+        evaluate_candidate,
+    )
+
+    market = MarketMetadata(
+        asset_id=1,
+        venue_market_id=1,
+        market=f"{symbol}-EUR",
+        asset_enabled=False,  # became disabled since the initial audit snapshot
+        market_data_enabled=True,
+        market_tradeable=True,
+    )
+    candidate = CandidateInput(
+        symbol=symbol,
+        markets=(market,),
+        primary=CandleWindow(),
+        supporting=CandleWindow(),
+        ledger=LedgerState(),
+        context_status=STATUS_AVAILABLE,
+    )
+    result = evaluate_candidate(candidate, as_of_utc=as_of_utc, global_blockers=())
+    return AuditReport(
+        as_of_utc=as_of_utc, results=(result,), proposed_sequential_queue=(),
+        counts={}, writer_run_count=0, attributable_writer_run_count=0,
+        legacy_unattributed_writer_run_count=0, invalid_provenance_writer_run_count=0,
+        provenance_audit_run_found=True, provenance_audit_run_attributed=True,
+        provenance_contract_implemented=True, attributable_production_run_observed=True,
+        operational_acceptance_completed=True, writer_provenance_blocker_active=False,
+        global_blocker_codes=(),
+    )
+
+
+def test_write_revalidates_and_blocks_a_symbol_that_became_unready_after_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the exact TOCTOU gap flagged in review: the
+    upfront audit snapshot says BTC is READY, but by the time this entry's
+    turn comes up (immediately before its own PROMOTE_SCOPE transaction),
+    fresh single-symbol revalidation finds it is no longer eligible (e.g. the
+    asset was disabled in between) -- the entry must be blocked, not
+    promoted on stale data, and the run must still complete (one entry's
+    revalidation failure is recorded on its own outcome, not raised)."""
+    import src.common.db as dbmod
+    from src.market_data import native_short_scope_administration_transaction_v1 as txn
+
+    _stub_write_auth(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_load_report", lambda conn, *, as_of_utc: _combined_report(as_of_utc, ("BTC",))
+    )
+    monkeypatch.setattr(
+        cli,
+        "run_audit",
+        lambda conn, *, as_of_utc, symbols=None, progress=None: _not_ready_report(as_of_utc, "BTC"),
+    )
+    monkeypatch.setattr(txn, "evaluate_current_global_blockers", lambda conn: ((), {}))
+    conn = _FakeConn()
+    monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
+    code = cli.main([*_BASE_ARGS, "--write"], inspect_repository_source=_clean_source)
+    monkeypatch.undo()
+    stdout_docs = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+
+    result = stdout_docs[0]
+    assert result["completed"][0]["symbol"] == "BTC"
+    assert "REVALIDATION_FAILED" in result["completed"][0]["error"]
+    assert result["completed"][0].get("persisted") is not True
+    assert code == 1  # honestly reports the block; does not crash the run
     assert conn.commit_count == 0
 
 

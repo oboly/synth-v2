@@ -56,7 +56,10 @@ from datetime import UTC, datetime
 from typing import Any, Sequence
 
 from src.market_data.native_short_multi_asset_audit_v1 import run_audit
-from src.market_data.native_short_rollout_universe_v2 import derive_bulk_rollout_entries
+from src.market_data.native_short_rollout_universe_v2 import (
+    derive_bulk_rollout_entries,
+    is_symbol_promote_scope_ready,
+)
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationActorType,
     NativeShortScopeAdministrationRequest,
@@ -417,13 +420,44 @@ def main(
         return 130
 
 
+def _make_revalidate(conn: Any) -> Any:
+    """Immediately-before-transaction revalidation for one rollout run.
+
+    The upfront audit that produced ``entries`` is one snapshot, taken once
+    before this run's loop starts. ``execute_scope_administration`` always
+    reads *ledger* state fresh at call time, but it never checks market
+    readiness (candle freshness, tick rules, market eligibility) at all --
+    that determination is entirely the audit's. For a long-running,
+    many-entry rollout, a scope's market eligibility can change between the
+    initial snapshot and this entry's actual turn, so it must be re-checked
+    here, on the same connection, immediately before that entry's own
+    transaction -- a cheap, single-symbol ``run_audit`` call (~0.1-0.2s),
+    not the full canonical-market audit repeated per entry."""
+
+    def _revalidate(entry: RolloutSymbolEntry) -> tuple[bool, str]:
+        # No SET TRANSACTION READ ONLY here: on the write path this shares
+        # the connection with each entry's own write transaction, and this
+        # call only ever issues SELECTs -- forcing a read-only mode on the
+        # session here risks leaking into the very next entry's
+        # PROMOTE_SCOPE transaction on the same connection.
+        try:
+            report = run_audit(conn, as_of_utc=datetime.now(UTC), symbols=(entry.symbol,))
+        except Exception as exc:  # noqa: BLE001 - fail closed: unrevalidatable blocks this entry.
+            return False, f"REVALIDATION_ERROR: {type(exc).__name__}: {exc}"
+        return is_symbol_promote_scope_ready(report, entry.symbol)
+
+    return _revalidate
+
+
 def _run_dry_run(entries: Sequence[RolloutSymbolEntry], build_request: Any) -> int:
     from src.common.db import get_connection
 
     conn = None
     try:
         conn = get_connection()
-        outcome = plan_rollout(conn, entries, build_request=build_request)
+        outcome = plan_rollout(
+            conn, entries, build_request=build_request, revalidate=_make_revalidate(conn)
+        )
     except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
         _emit_document(_error_document(type(exc).__name__, str(exc), write=False))
         return 1
@@ -475,7 +509,11 @@ def _run_write(
     try:
         conn = get_connection()
         outcome = execute_rollout(
-            conn, entries, build_request=build_request, authorization=authorization
+            conn,
+            entries,
+            build_request=build_request,
+            authorization=authorization,
+            revalidate=_make_revalidate(conn),
         )
     except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
         _emit_document(_error_document(type(exc).__name__, str(exc), write=True))
