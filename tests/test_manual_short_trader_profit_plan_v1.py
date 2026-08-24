@@ -388,8 +388,108 @@ def test_load_zone_contexts_marks_canonical_verified_snapshot_rows_native_availa
             assert evidence.map_cycle_id == f"{symbol}|SHORT|4h|demo"
             # Lane A (account/order evidence) stays untouched by this Lane B fix.
             assert evidence.account_order_snapshot_status == "DATA_UNAVAILABLE"
-            assert evidence.lifecycle_state == "DATA_UNAVAILABLE"
-            assert evidence.rollover_state == "DATA_UNAVAILABLE"
+            # Issue #494: lifecycle/rollover are real persisted native SHORT
+            # truth once the row is proven canonical, not fixed DATA_UNAVAILABLE.
+            assert evidence.lifecycle_state == "ACTIVE_4H_EXTENSION"
+            assert evidence.rollover_state == "SINGLE_MAP"
+            assert evidence.previous_map_cycle_id == "DATA_UNAVAILABLE"
+            assert evidence.previous_map_lifecycle_state == "DATA_UNAVAILABLE"
+
+
+def test_load_zone_contexts_canonical_row_surfaces_rollover_and_previous_cycle() -> None:
+    """Issue #494: a canonical row that actually rolled over must surface its
+    real rollover_state/previous_map_cycle_id/previous_map_lifecycle_state,
+    not the fixed DATA_UNAVAILABLE placeholder -- this is real persisted
+    NativeShortContextRow truth, never fabricated by reporting."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        rolled_row = dataclasses.replace(
+            _native_short_row(symbol="AAVE"),
+            rollover_state="CASE_A_NEWER_ACTIVE_SELECTED",
+            previous_map_cycle_id="AAVE|SHORT|4h|prior-cycle",
+            previous_map_lifecycle_state="MAP_COMPLETED",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[rolled_row], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["AAVE-EUR"],
+            prices={"AAVE-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        evidence = result.evidence_by_symbol["AAVE"]
+        assert evidence.native_map_status == "AVAILABLE"
+        assert evidence.rollover_state == "CASE_A_NEWER_ACTIVE_SELECTED"
+        assert evidence.previous_map_cycle_id == "AAVE|SHORT|4h|prior-cycle"
+        assert evidence.previous_map_lifecycle_state == "MAP_COMPLETED"
+
+
+def test_load_zone_contexts_canonical_row_with_no_lifecycle_stays_data_unavailable() -> None:
+    """Issue #494 Regression B (P1 follow-up): a canonical row whose own
+    lifecycle field was never populated upstream must project as the exact
+    string DATA_UNAVAILABLE, not the loader's "UNKNOWN" round-trip
+    placeholder. UNKNOWN is not a proven lifecycle enum value and must not
+    silently pass the fail-closed lifecycle gates (_map_lifecycle_blocks_action,
+    _actionable_ppp_eligible, _fix_ladder_allowed) as if it were non-blocking
+    canonical truth -- this test asserts both the projected field and the
+    real consumer-path behavior."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        no_lifecycle_row = dataclasses.replace(
+            _native_short_row(symbol="AAVE"),
+            primary_4h_lifecycle_state="",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[no_lifecycle_row], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["AAVE-EUR"],
+            prices={"AAVE-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        evidence = result.evidence_by_symbol["AAVE"]
+        assert evidence.native_map_status == "AVAILABLE"
+        # The native SHORT CSV round-trip itself defaults a blank lifecycle
+        # field to "UNKNOWN" (native_short_fib_context_v1.load_context_rows);
+        # the reporting projection trust boundary must normalize that
+        # non-authoritative loader placeholder to DATA_UNAVAILABLE, exactly.
+        assert evidence.lifecycle_state == "DATA_UNAVAILABLE"
+
+        card = build_profit_plan_card(
+            symbol="AAVE",
+            market="AAVE-EUR",
+            current_price=Decimal("0.34"),
+            short_context_input_status=result.input_status_by_symbol["AAVE"],
+            short_context_coverage_status=result.coverage_status_by_symbol["AAVE"],
+            short_context_display_state=result.display_state_by_symbol["AAVE"],
+            fib_ext=result.fib_ext_by_symbol.get("AAVE"),
+            reentry=result.reentry_by_symbol.get("AAVE"),
+            evidence=evidence,
+            planning_provenance=result.planning_provenance_by_symbol.get("AAVE"),
+        )
+        # Real consumer path, not just enum membership: absent/unproven
+        # lifecycle authority must never enable Actionable PPP or FIX LADDER,
+        # even though map identity (native_map_status/selected_map_tier) is
+        # otherwise proven canonical/current on this same card.
+        assert _pp_module._map_lifecycle_blocks_action(card) is True
+        assert _pp_module._actionable_ppp(card) is None
+        assert _pp_module._effective_workflow_action(card) != "FIX LADDER"
 
 
 def test_load_zone_contexts_unverified_snapshot_status_stays_transient() -> None:

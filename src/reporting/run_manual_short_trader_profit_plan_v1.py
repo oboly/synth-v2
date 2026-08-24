@@ -413,6 +413,21 @@ def _fmt_unavailable(value: Any) -> str:
     return text if text else "DATA_UNAVAILABLE"
 
 
+# Loader-side placeholder tokens that mean "no authoritative value was ever
+# persisted", not a real canonical enum value. native_short_fib_context_v1's
+# CSV/JSON round-trip defaults a blank primary_4h_lifecycle_state to the
+# literal string "UNKNOWN" (see load_context_rows); that placeholder must
+# never reach the fail-closed lifecycle gates (_map_lifecycle_blocks_action,
+# _actionable_ppp_eligible, _fix_ladder_allowed) as if it were proven,
+# non-blocking lifecycle authority.
+_NON_AUTHORITATIVE_LIFECYCLE_TOKENS: frozenset[str] = frozenset({"", "UNKNOWN", "DATA_UNAVAILABLE", "NONE", "NULL"})
+
+
+def _fmt_lifecycle_state(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    return "DATA_UNAVAILABLE" if text in _NON_AUTHORITATIVE_LIFECYCLE_TOKENS else str(value).strip()
+
+
 def _map_age_min(*, anchor_end_ts_utc: datetime | None, now_utc: datetime) -> str:
     if anchor_end_ts_utc is None:
         return "DATA_UNAVAILABLE"
@@ -467,6 +482,18 @@ def _evidence_from_native_row(
         native_map_status = "AVAILABLE"
         selected_map_reason = _fmt_unavailable(native_row.selection_reason)
         selected_map_tier = _fmt_unavailable(native_row.current_map_status)
+        # Same canonical trust boundary as map identity above: lifecycle/
+        # rollover/previous-cycle truth is real persisted native SHORT state
+        # (NativeShortContextRow.primary_4h_lifecycle_state / rollover_state /
+        # previous_map_cycle_id / previous_map_lifecycle_state), not derived or
+        # inferred here. Stays DATA_UNAVAILABLE only when the row itself never
+        # populated a value (e.g. SINGLE_MAP cycles have no previous map), or
+        # when the loader's own "UNKNOWN" round-trip placeholder stands in for
+        # a genuinely absent lifecycle value (_fmt_lifecycle_state).
+        lifecycle_state = _fmt_lifecycle_state(native_row.primary_4h_lifecycle_state)
+        rollover_state = _fmt_unavailable(native_row.rollover_state)
+        previous_map_cycle_id = _fmt_unavailable(native_row.previous_map_cycle_id)
+        previous_map_lifecycle_state = _fmt_unavailable(native_row.previous_map_lifecycle_state)
     else:
         # Native scope-status projection is not proven canonical (snapshot not
         # verified loaded, row not AVAILABLE, or row not FRESH); stays
@@ -475,16 +502,20 @@ def _evidence_from_native_row(
         native_map_status = "DATA_UNAVAILABLE"
         selected_map_reason = f"TRANSIENT_NON_CANONICAL_REFERENCE: {_fmt_unavailable(native_row.selection_reason)}"
         selected_map_tier = "TRANSIENT_NON_CANONICAL_REFERENCE"
+        lifecycle_state = "DATA_UNAVAILABLE"
+        rollover_state = "DATA_UNAVAILABLE"
+        previous_map_cycle_id = "DATA_UNAVAILABLE"
+        previous_map_lifecycle_state = "DATA_UNAVAILABLE"
     return CardEvidence(
         map_cycle_id=_fmt_unavailable(native_row.map_cycle_id),
         native_map_id=native_map_id,
         native_map_status=native_map_status,
         selected_map_reason=selected_map_reason,
         selected_map_tier=selected_map_tier,
-        lifecycle_state="DATA_UNAVAILABLE",
-        rollover_state="DATA_UNAVAILABLE",
-        previous_map_cycle_id="DATA_UNAVAILABLE",
-        previous_map_lifecycle_state="DATA_UNAVAILABLE",
+        lifecycle_state=lifecycle_state,
+        rollover_state=rollover_state,
+        previous_map_cycle_id=previous_map_cycle_id,
+        previous_map_lifecycle_state=previous_map_lifecycle_state,
         # Account/order snapshot freshness (Lane A) is not yet plumbed; kept
         # DATA_UNAVAILABLE so placeholder account panels cannot enable FIX LADDER.
         account_order_snapshot_status="DATA_UNAVAILABLE",
