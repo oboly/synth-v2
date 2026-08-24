@@ -15,6 +15,7 @@ from src.executor.execution_leg_v1 import ExecutionLegRepositoryV1
 from src.executor.run_shared_execution_consumer_once_v1 import (
     run_shared_execution_consumer_once_v1,
 )
+from src.executor.live_canary_bounds_v1 import clamp_batch_limit_to_canary_v1
 from src.executor.shared_execution_runtime_v1 import (
     DEFAULT_BATCH_LIMIT,
     DEFAULT_LEASE_SECONDS,
@@ -98,19 +99,28 @@ def config_from_args(args: argparse.Namespace) -> SharedExecutorRuntimeConfigV1:
 def run_one_cycle(config: SharedExecutorRuntimeConfigV1):
     """Consume a deterministic batch after validating its mode adapter locally."""
     adapter_factory = build_runtime_adapter_factory_v1(config)
-    return run_shared_execution_consumer_once_v1(
-        handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=db_cursor),
-        leg_repository=ExecutionLegRepositoryV1(cursor_factory=db_cursor),
-        adapter=None,
-        adapter_factory=adapter_factory,
-        operator_id=config.operator_id,
-        worker_id=config.worker_id,
-        runtime_owner=config.runtime_owner,
-        executor_identity=config.executor_identity,
-        executor_mode=config.executor_mode,
-        limit=config.batch_limit,
-        lease_seconds=config.lease_seconds,
-    )
+    canary_bounds = getattr(adapter_factory, "canary_bounds", None)
+    limit = config.batch_limit
+    if canary_bounds is not None:
+        limit = clamp_batch_limit_to_canary_v1(canary_bounds, limit)
+    try:
+        return run_shared_execution_consumer_once_v1(
+            handoff_repository=ExecutionHandoffRepositoryV1(cursor_factory=db_cursor),
+            leg_repository=ExecutionLegRepositoryV1(cursor_factory=db_cursor),
+            adapter=None,
+            adapter_factory=adapter_factory,
+            operator_id=config.operator_id,
+            worker_id=config.worker_id,
+            runtime_owner=config.runtime_owner,
+            executor_identity=config.executor_identity,
+            executor_mode=config.executor_mode,
+            limit=limit,
+            lease_seconds=config.lease_seconds,
+        )
+    finally:
+        close = getattr(adapter_factory, "close", None)
+        if callable(close):
+            close()
 
 
 def run(

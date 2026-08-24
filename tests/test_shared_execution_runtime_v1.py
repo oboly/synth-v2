@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import ast
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+import src.executor.run_shared_execution_runtime_v1 as run_shared_execution_runtime_v1
 from src.executor.execution_handoff_v1 import RUNTIME_MODE_DRY_RUN, RUNTIME_MODE_LIVE, RUNTIME_MODE_PAPER
+from src.executor.live_canary_bounds_v1 import LiveCanaryBoundsV1
 from src.executor.run_shared_execution_runtime_v1 import (
     RuntimeInterrupted,
     config_from_args,
     parse_args,
     run,
+    run_one_cycle,
 )
 from src.executor.shared_execution_consumer_v1 import SharedExecutionConsumerResultV1
 from src.executor.shared_execution_runtime_v1 import (
@@ -30,10 +34,12 @@ def _config(mode: str = RUNTIME_MODE_DRY_RUN) -> SharedExecutorRuntimeConfigV1:
     )
 
 
-def test_paper_and_live_fail_closed_before_runtime_db_composition() -> None:
+def test_paper_and_live_fail_closed_before_runtime_db_composition(monkeypatch) -> None:
+    monkeypatch.delenv("SYNTH_LIVE_EXECUTION_PERMISSION", raising=False)
+    monkeypatch.delenv("SYNTH_BROKER_WRITE_PERMISSION", raising=False)
     with pytest.raises(SharedExecutorModeAdapterUnavailableError, match="PAPER_ADAPTER_NOT_CONFIGURED"):
         build_runtime_adapter_factory_v1(_config(RUNTIME_MODE_PAPER))
-    with pytest.raises(SharedExecutorModeAdapterUnavailableError, match="LIVE_RUNTIME_NOT_AUTHORIZED"):
+    with pytest.raises(SharedExecutorModeAdapterUnavailableError, match="LIVE_EXECUTION_PERMISSION_NOT_GRANTED"):
         build_runtime_adapter_factory_v1(_config(RUNTIME_MODE_LIVE))
 
 
@@ -129,3 +135,65 @@ def test_candidate_systemd_artifacts_are_disabled_dry_run_templates() -> None:
     assert "uninstalled and disabled" in service
     assert "OnUnitActiveSec=15s" in timer
     assert "uninstalled and disabled" in timer
+
+
+class _FakeLiveAdapterFactory:
+    def __init__(self, canary_bounds: LiveCanaryBoundsV1) -> None:
+        self.canary_bounds = canary_bounds
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_run_one_cycle_clamps_batch_limit_to_canary_bound_and_closes_factory(monkeypatch) -> None:
+    factory = _FakeLiveAdapterFactory(
+        LiveCanaryBoundsV1(
+            version="v1",
+            allowed_trading_account_id=3,
+            allowed_venue="bitvavo",
+            allowed_market="BTC-EUR",
+            allowed_side="BUY",
+            max_orders_per_cycle=1,
+            max_notional_eur=Decimal("10"),
+            kill_switch_required=True,
+            withdrawal_permission=False,
+        )
+    )
+    monkeypatch.setattr(
+        run_shared_execution_runtime_v1, "build_runtime_adapter_factory_v1", lambda _config: factory
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_consumer(**kwargs: object) -> tuple:
+        captured.update(kwargs)
+        return ()
+
+    monkeypatch.setattr(
+        run_shared_execution_runtime_v1, "run_shared_execution_consumer_once_v1", _fake_consumer
+    )
+    config = SharedExecutorRuntimeConfigV1(
+        executor_mode=RUNTIME_MODE_LIVE,
+        runtime_owner="gurkdb",
+        executor_identity="shared-executor-v1",
+        worker_id="shared-executor-v1:test:1",
+        operator_id=9,
+        batch_limit=100,
+    )
+    run_one_cycle(config)
+    assert captured["limit"] == 1
+    assert factory.closed is True
+
+
+def test_run_one_cycle_leaves_dry_run_batch_limit_unchanged(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_consumer(**kwargs: object) -> tuple:
+        captured.update(kwargs)
+        return ()
+
+    monkeypatch.setattr(
+        run_shared_execution_runtime_v1, "run_shared_execution_consumer_once_v1", _fake_consumer
+    )
+    run_one_cycle(_config())
+    assert captured["limit"] == 100
