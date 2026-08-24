@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
+    AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
     AutomaticBuySourceRuntimeInputRequestV1,
 )
 from src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 import (
@@ -19,6 +20,7 @@ from src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 import (
     parse_canonical_zone_universe_source_request_from_json,
     parse_source_request_from_json,
     run_automatic_buy_dry_run_acceptance_v1,
+    _run_canonical_zone_universe_acceptance_v1,
 )
 from src.executor.execution_handoff_v1 import ExecutionHandoffV1
 from src.executor.execution_plan_reference_v1 import ApprovedExecutionPlanV1
@@ -199,6 +201,57 @@ def test_replay_is_idempotent_and_never_duplicates_evidence_or_handoff() -> None
         assert cur.fetchone()["n"] == 1
     assert len(repo.by_reference) == 1
     assert len(repo.intake_calls) == 2  # called twice, but deduped to one persisted handoff
+
+
+def test_universe_acceptance_retries_only_after_a_normal_gate_denial(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.entry_policy.run_automatic_buy_dry_run_acceptance_v1 as runner
+
+    requests = (_paper_request(market="HOT-EUR", asset_id=1), _paper_request(market="BTC-EUR", asset_id=2))
+    seen: list[str] = []
+
+    def result_for(*, market: str, gate_state: str) -> runner.AutomaticBuyDryRunAcceptanceResultV1:
+        return runner.AutomaticBuyDryRunAcceptanceResultV1(
+            runtime_input_id=1,
+            source_snapshot_key=market,
+            candidate_state="CANDIDATE",
+            gate_state=gate_state,
+            gate_reason=None,
+            planner_state="STAGED" if gate_state == "APPROVED" else "NOT_REACHED",
+            planner_reason=None,
+            handoff_id=None,
+            plan_reference_id=None,
+            plan_content_hash=None,
+            executor_mode="DRY_RUN",
+            runtime_owner="gurkdb",
+            executor_identity="shared-executor-v1",
+            safety_markers={},
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "resolve_actionable_canonical_zone_source_runtime_input_requests_v1",
+        lambda *_args, **_kwargs: requests,
+    )
+
+    def run_once(*_args: object, request: AutomaticBuySourceRuntimeInputRequestV1, **_kwargs: object) -> runner.AutomaticBuyDryRunAcceptanceResultV1:
+        seen.append(request.market)
+        return result_for(market=request.market, gate_state="DENIED" if request.market == "HOT-EUR" else "APPROVED")
+
+    monkeypatch.setattr(runner, "run_automatic_buy_dry_run_acceptance_v1", run_once)
+    result = _run_canonical_zone_universe_acceptance_v1(
+        object(),
+        universe=AutomaticBuyCanonicalZoneUniverseSourceRequestV1(
+            trading_account_id=7,
+            venue="bitvavo",
+            strategy_bucket_id="SHORT_TERM_ROTATION",
+            strategy_id="strategy-a",
+            strategy_version="1",
+        ),
+        now_utc=TS,
+    )
+
+    assert seen == ["HOT-EUR", "BTC-EUR"]
+    assert result.gate_state == "APPROVED"
 
 
 @pytest.mark.parametrize(

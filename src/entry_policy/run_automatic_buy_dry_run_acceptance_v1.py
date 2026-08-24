@@ -65,7 +65,7 @@ from src.entry_policy.automatic_buy_source_runtime_input_writer_v1 import (
     AutomaticBuySourceRuntimeInputRequestV1,
     AutomaticBuySourceRuntimeInputWriterError,
     resolve_canonical_zone_source_runtime_input_request_v1,
-    resolve_first_actionable_canonical_zone_source_runtime_input_request_v1,
+    resolve_actionable_canonical_zone_source_runtime_input_requests_v1,
     resolve_fresh_source_runtime_input_request_v1,
     write_automatic_buy_source_runtime_input_v1,
 )
@@ -78,6 +78,7 @@ RUNNER_NAME: Final[str] = "run_automatic_buy_dry_run_acceptance_v1"
 EXECUTOR_MODE: Final[str] = RUNTIME_MODE_DRY_RUN
 RUNTIME_OWNER: Final[str] = "gurkdb"
 EXECUTOR_IDENTITY: Final[str] = "shared-executor-v1"
+GATE_STATE_DENIED: Final[str] = "DENIED"
 
 SAFETY_MARKERS: Final[dict[str, int]] = {
     "broker_private_calls": 0,
@@ -267,6 +268,28 @@ def run_automatic_buy_dry_run_acceptance_v1(
         executor_identity=EXECUTOR_IDENTITY,
         safety_markers=dict(SAFETY_MARKERS),
     )
+
+
+def _run_canonical_zone_universe_acceptance_v1(
+    conn: Any,
+    *,
+    universe: AutomaticBuyCanonicalZoneUniverseSourceRequestV1,
+    now_utc: datetime,
+) -> AutomaticBuyDryRunAcceptanceResultV1:
+    """Try deterministic market candidates until the account gate permits one.
+
+    Market enumeration stays source-owned and account-agnostic. A normal
+    account-specific denial is definitive for that candidate only, so the
+    acceptance orchestration proceeds to the next unchanged source candidate.
+    Any non-denial result is returned unchanged.
+    """
+    for request in resolve_actionable_canonical_zone_source_runtime_input_requests_v1(
+        conn, universe=universe, now_utc=now_utc,
+    ):
+        result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
+        if result.gate_state != GATE_STATE_DENIED:
+            return result
+    raise AutomaticBuyDryRunAcceptanceError("CANONICAL_BUY_ACTIONABLE_UNIVERSE_EXHAUSTED")
 
 
 def _parse_ts(value: object) -> datetime:
@@ -466,7 +489,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     input_group.add_argument(
         "--canonical-zone-universe-source-json", type=Path,
-        help="Identity only; resolves the first actionable setup from canonical account markets, 4h zones, and prices.",
+        help="Identity only; tries canonical actionable market setups, 4h zones, and prices in deterministic order.",
     )
     return parser.parse_args(argv)
 
@@ -524,13 +547,14 @@ def run(args: argparse.Namespace) -> int:
                     now_utc=datetime.now(UTC),
                 )
             if canonical_zone_universe is not None:
-                request = resolve_first_actionable_canonical_zone_source_runtime_input_request_v1(
+                result = _run_canonical_zone_universe_acceptance_v1(
                     conn,
                     universe=canonical_zone_universe,
                     now_utc=datetime.now(UTC),
                 )
-            assert request is not None
-            result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
+            else:
+                assert request is not None
+                result = run_automatic_buy_dry_run_acceptance_v1(conn, request=request)
         except (
             AutomaticBuySourceRuntimeInputWriterError,
             AutomaticBuySourceRuntimeInputConflictError,
