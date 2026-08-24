@@ -5194,7 +5194,11 @@ def _rotation_history_axis_svg(
     grid_parts = []
     for tick in ticks:
         y = y_for(tick)
-        is_zero = abs(tick) < 1e-9
+        # Ticks are already exact-zero-snapped by nice_domain_and_ticks
+        # (scaled to axis.step, not a fixed epsilon) -- exact equality here
+        # avoids misclassifying tiny nonzero ticks as the zero line on a
+        # sub-1e-9-wide domain.
+        is_zero = tick == 0.0
         line_class = "rotation-history-zero" if is_zero else "rotation-history-gridline"
         grid_parts.append(
             f"<line class='{line_class}' x1='{plot_left}' y1='{y:.1f}' x2='{plot_right}' y2='{y:.1f}'></line>"

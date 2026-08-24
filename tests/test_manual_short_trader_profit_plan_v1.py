@@ -3484,6 +3484,13 @@ def test_rotation_history_sub_1e9_range_does_not_collapse_to_one_zero_gridline()
     labels = re.findall(r"rotation-history-tick-label'[^>]*>([^<]+)</text>", rendered)
     assert len(labels) >= 2
     assert len(labels) == len(set(labels))
+    # Third Codex review round: the renderer's own zero-line classification
+    # must match the axis's zero-snapping -- exactly one zero gridline, the
+    # rest ordinary, never every tick misclassified as zero.
+    zero_lines = re.findall(r"<line class='rotation-history-zero'", rendered)
+    gridlines = re.findall(r"<line class='rotation-history-gridline'", rendered)
+    assert len(zero_lines) == 1
+    assert len(gridlines) == len(labels) - 1
 
 
 def test_rotation_history_rendering_is_deterministic_for_identical_input() -> None:
