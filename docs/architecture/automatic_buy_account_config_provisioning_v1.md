@@ -37,7 +37,15 @@ with subcommands `strategy-bucket-config` and `account-permission`.
 Both writers and the CLI:
 
 - resolve the target account by canonical `(account_code, venue)` identity
-  only -- operator usage never takes a raw numeric `trading_account_id`;
+  only -- operator usage never takes a raw numeric `trading_account_id`.
+  Resolution never trusts a bare `LIMIT 1`: zero matches is an unknown
+  account, more than one match (a corrupt identity binding, since
+  `account_code` carries a real `uq_trading_account_code` UNIQUE constraint
+  in production) fails closed rather than silently picking one;
+- normalize any UTC-equivalent-offset `effective_from_ts_utc` (e.g.
+  `+02:00`) to true UTC before it is ever resolved, compared, or written --
+  MariaDB `DATETIME` columns carry no offset, so an un-normalized value would
+  otherwise persist the wrong wall-clock instant;
 - validate the request, then **pre-validate the candidate row through the
   exact same canonical resolver** (`resolve_strategy_bucket_account_config_v1`
   / `resolve_automatic_buy_account_permission_v1`) the runtime gate path uses,
@@ -50,7 +58,12 @@ Both writers and the CLI:
   identity with *different* values) -- raising
   `StrategyBucketAccountConfigConflictError` /
   `AutomaticBuyAccountPermissionConflictError` rather than silently
-  superseding it;
+  superseding it. This also covers a row scheduled to start *after* the
+  candidate: because every inserted row is open-ended, a future row would
+  otherwise become simultaneously active once its own start passes, making
+  the runtime resolver ambiguous -- so any persisted row for the identity
+  with a later `effective_from_ts_utc` blocks the insert too, not just a
+  row already effective right now;
 - never UPDATE or DELETE -- both target tables are append-only by DB trigger.
   Ending or replacing an existing effective row is a revocation action,
   deliberately out of scope for these writers (this issue adds provisioning,
