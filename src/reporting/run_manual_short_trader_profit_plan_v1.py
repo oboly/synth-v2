@@ -467,6 +467,16 @@ def _evidence_from_native_row(
         native_map_status = "AVAILABLE"
         selected_map_reason = _fmt_unavailable(native_row.selection_reason)
         selected_map_tier = _fmt_unavailable(native_row.current_map_status)
+        # Same canonical trust boundary as map identity above: lifecycle/
+        # rollover/previous-cycle truth is real persisted native SHORT state
+        # (NativeShortContextRow.primary_4h_lifecycle_state / rollover_state /
+        # previous_map_cycle_id / previous_map_lifecycle_state), not derived or
+        # inferred here. Stays DATA_UNAVAILABLE only when the row itself never
+        # populated a value (e.g. SINGLE_MAP cycles have no previous map).
+        lifecycle_state = _fmt_unavailable(native_row.primary_4h_lifecycle_state)
+        rollover_state = _fmt_unavailable(native_row.rollover_state)
+        previous_map_cycle_id = _fmt_unavailable(native_row.previous_map_cycle_id)
+        previous_map_lifecycle_state = _fmt_unavailable(native_row.previous_map_lifecycle_state)
     else:
         # Native scope-status projection is not proven canonical (snapshot not
         # verified loaded, row not AVAILABLE, or row not FRESH); stays
@@ -475,16 +485,20 @@ def _evidence_from_native_row(
         native_map_status = "DATA_UNAVAILABLE"
         selected_map_reason = f"TRANSIENT_NON_CANONICAL_REFERENCE: {_fmt_unavailable(native_row.selection_reason)}"
         selected_map_tier = "TRANSIENT_NON_CANONICAL_REFERENCE"
+        lifecycle_state = "DATA_UNAVAILABLE"
+        rollover_state = "DATA_UNAVAILABLE"
+        previous_map_cycle_id = "DATA_UNAVAILABLE"
+        previous_map_lifecycle_state = "DATA_UNAVAILABLE"
     return CardEvidence(
         map_cycle_id=_fmt_unavailable(native_row.map_cycle_id),
         native_map_id=native_map_id,
         native_map_status=native_map_status,
         selected_map_reason=selected_map_reason,
         selected_map_tier=selected_map_tier,
-        lifecycle_state="DATA_UNAVAILABLE",
-        rollover_state="DATA_UNAVAILABLE",
-        previous_map_cycle_id="DATA_UNAVAILABLE",
-        previous_map_lifecycle_state="DATA_UNAVAILABLE",
+        lifecycle_state=lifecycle_state,
+        rollover_state=rollover_state,
+        previous_map_cycle_id=previous_map_cycle_id,
+        previous_map_lifecycle_state=previous_map_lifecycle_state,
         # Account/order snapshot freshness (Lane A) is not yet plumbed; kept
         # DATA_UNAVAILABLE so placeholder account panels cannot enable FIX LADDER.
         account_order_snapshot_status="DATA_UNAVAILABLE",
