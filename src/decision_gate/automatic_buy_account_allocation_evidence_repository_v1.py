@@ -206,7 +206,9 @@ def _load_positive_positions(conn: Any, *, bundle: _AccountStateBundle) -> list[
     ]
 
 
-def _load_free_quote_balance(conn: Any, *, bundle: _AccountStateBundle) -> tuple[Decimal, int]:
+def _load_free_quote_balance(
+    conn: Any, *, bundle: _AccountStateBundle, account_mode: str,
+) -> tuple[Decimal, int | None]:
     sql = """
     SELECT trading_account_balance_snapshot_id, available_amount
     FROM trading_account_balance_snapshot
@@ -219,6 +221,11 @@ def _load_free_quote_balance(conn: Any, *, bundle: _AccountStateBundle) -> tuple
             (bundle.trading_account_id, bundle.venue, bundle.balance_source_name, bundle.snapshot_ts_utc, QUOTE_CURRENCY_EUR),
         )
         rows = _fetch_all(cur)
+    if not rows and account_mode == "paper":
+        # PAPER allocation is governed by canonical account/bucket limits, not
+        # a real broker funding row. Preserve the absence explicitly instead
+        # of inventing a EUR balance or snapshot identity.
+        return Decimal("0"), None
     _reject(len(rows) == 0, "FREE_QUOTE_BALANCE_ROW_MISSING")
     _reject(len(rows) > 1, "FREE_QUOTE_BALANCE_ROW_CONFLICT")
     row = rows[0]
@@ -376,7 +383,9 @@ def load_automatic_buy_account_allocation_evidence_v1(
         max_age_seconds=max_account_state_age_seconds,
     )
     positions = _load_positive_positions(conn, bundle=bundle)
-    free_quote_balance_eur, balance_snapshot_id = _load_free_quote_balance(conn, bundle=bundle)
+    free_quote_balance_eur, balance_snapshot_id = _load_free_quote_balance(
+        conn, bundle=bundle, account_mode=account.account_mode,
+    )
     blocking_conflict = _load_blocking_conflict(conn, bundle=bundle, market=market)
 
     position_values_eur = _value_positions_in_eur(

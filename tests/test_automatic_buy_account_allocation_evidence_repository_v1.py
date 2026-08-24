@@ -154,9 +154,22 @@ def test_stale_account_state_bundle_fails_closed() -> None:
     assert excinfo.value.args[0] == "ACCOUNT_STATE_BUNDLE_STALE"
 
 
-def test_missing_balance_row_fails_closed() -> None:
+def test_paper_missing_balance_row_has_no_broker_funding_authority() -> None:
     conn = FakeConnection()
     insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    venue_market_id = insert_venue_market(conn)
+    bind_account_market(conn, venue_market_id=venue_market_id)
+    evidence = load_automatic_buy_account_allocation_evidence_v1(
+        conn, resolved_bucket_config=_resolved_config(), **DEFAULT_ARGS,
+    )
+    assert evidence.free_quote_balance_eur == Decimal("0")
+    assert evidence.trading_account_balance_snapshot_id is None
+
+
+def test_live_missing_balance_row_fails_closed() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn, account_mode="live", live_trading_enabled=True)
     insert_complete_bundle(conn)
     venue_market_id = insert_venue_market(conn)
     bind_account_market(conn, venue_market_id=venue_market_id)

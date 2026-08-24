@@ -36,6 +36,12 @@ from src.decision_gate.automatic_buy_gate_v1 import (
     AutomaticBuyGateContextV1,
     evaluate_automatic_buy_candidate_permission_v1,
 )
+from src.decision_gate.automatic_buy_live_permission_evaluation_v1 import (
+    DECISION_GRANTED,
+    EVALUATION_CONTRACT_VERSION,
+    REASON_OK as LIVE_PERMISSION_REASON_OK,
+    AutomaticBuyLivePermissionEvaluationV1,
+)
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import StrategyBucketAccountConfigRowV1
 from src.decision_gate.strategy_bucket_participation_evaluation_v1 import (
     REASON_BUCKET_DISABLED,
@@ -94,6 +100,18 @@ def _evaluate(**changes: object):
     return evaluate_automatic_buy_candidate_permission_v1(candidate=_candidate(), context=_context(**changes))
 
 
+def _granted_live_permission() -> AutomaticBuyLivePermissionEvaluationV1:
+    return AutomaticBuyLivePermissionEvaluationV1(
+        evaluation_contract_version=EVALUATION_CONTRACT_VERSION,
+        trading_account_id=7,
+        decision_state=DECISION_GRANTED,
+        reason_code=LIVE_PERMISSION_REASON_OK,
+        permission_id=1,
+        permission_version="1",
+        evaluated_ts_utc=NOW,
+    )
+
+
 def _protection(action: str, *, manual: bool = False):
     code = PROTECTION_MANUAL_ACCOUNT_LOCK if manual else PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK
     lock = ProtectionLockFactV1(
@@ -148,7 +166,12 @@ def test_protection_evaluation_binding_mismatch_denies_an_otherwise_approved_can
 def test_stale_account_or_free_quote_balance_is_non_actionable() -> None:
     stale_account = _evaluate(account_observed_ts_utc=NOW - timedelta(minutes=16))
     assert (stale_account.state, stale_account.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE)
-    stale_balance = _evaluate(free_quote_balance_observed_ts_utc=NOW - timedelta(minutes=16))
+    stale_balance = _evaluate(
+        account_mode="live",
+        live_trading_enabled=True,
+        automatic_buy_live_permission_evaluation=_granted_live_permission(),
+        free_quote_balance_observed_ts_utc=NOW - timedelta(minutes=16),
+    )
     assert (stale_balance.state, stale_balance.reason_code) == (STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE)
 
 
@@ -160,8 +183,13 @@ def test_stale_candidate_evidence_is_non_actionable() -> None:
 
 
 def test_future_and_naive_timestamps_are_non_actionable() -> None:
-    future_result = _evaluate(free_quote_balance_observed_ts_utc=NOW + timedelta(seconds=1))
-    naive_result = _evaluate(free_quote_balance_observed_ts_utc=NOW.replace(tzinfo=None))
+    live = dict(
+        account_mode="live",
+        live_trading_enabled=True,
+        automatic_buy_live_permission_evaluation=_granted_live_permission(),
+    )
+    future_result = _evaluate(**live, free_quote_balance_observed_ts_utc=NOW + timedelta(seconds=1))
+    naive_result = _evaluate(**live, free_quote_balance_observed_ts_utc=NOW.replace(tzinfo=None))
     assert (future_result.state, future_result.reason_code) == (STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE)
     assert (naive_result.state, naive_result.reason_code) == (STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP)
 
@@ -172,10 +200,24 @@ def test_market_identity_mismatches_are_non_actionable() -> None:
     assert _evaluate(market="ETH-EUR").reason_code == REASON_IDENTITY_MISMATCH
 
 
-def test_zero_free_quote_balance_and_conflicts_are_denied() -> None:
-    assert _evaluate(free_quote_balance_eur=Decimal("0")).reason_code == REASON_NO_FREE_QUOTE_BALANCE
+def test_paper_uses_bucket_limits_without_real_quote_balance() -> None:
+    result = _evaluate(free_quote_balance_eur=Decimal("0"))
+    assert result.state == STATE_APPROVED
+    assert result.approved_notional_ceiling_eur == Decimal("100")
     result = _evaluate(blocking_conflict=True)
     assert (result.state, result.reason_code) == (STATE_DENIED, REASON_BLOCKING_CONFLICT)
+
+
+def test_live_zero_or_stale_quote_balance_remains_fail_closed() -> None:
+    live = dict(
+        account_mode="live",
+        live_trading_enabled=True,
+        automatic_buy_live_permission_evaluation=_granted_live_permission(),
+    )
+    assert _evaluate(**live, free_quote_balance_eur=Decimal("0")).reason_code == REASON_NO_FREE_QUOTE_BALANCE
+    assert _evaluate(
+        **live, free_quote_balance_observed_ts_utc=NOW - timedelta(minutes=16),
+    ).reason_code == REASON_FREE_QUOTE_BALANCE_STALE
 
 
 def test_disabled_execution_permission_is_denied() -> None:
@@ -247,7 +289,12 @@ def test_missing_strategy_bucket_configuration_denies() -> None:
 
 
 def test_ceiling_is_bounded_by_free_quote_balance_and_risk_cap() -> None:
-    capped_by_balance = _evaluate(free_quote_balance_eur=Decimal("40"))
+    capped_by_balance = _evaluate(
+        account_mode="live",
+        live_trading_enabled=True,
+        automatic_buy_live_permission_evaluation=_granted_live_permission(),
+        free_quote_balance_eur=Decimal("40"),
+    )
     assert capped_by_balance.state == STATE_APPROVED
     assert capped_by_balance.approved_notional_ceiling_eur == Decimal("40")
 
