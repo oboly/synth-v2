@@ -35,8 +35,8 @@ truth is created or modified.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
@@ -133,13 +133,21 @@ def _validate_request(request: StrategyBucketAccountConfigProvisioningRequestV1)
 
 
 def _resolve_trading_account_id(conn: Any, *, account_code: str, venue: str) -> int:
-    sql = "SELECT trading_account_id FROM trading_account WHERE account_code = %s AND venue = %s LIMIT 1"
+    """Resolve by canonical identity, never trusting a bare ``LIMIT 1``.
+
+    Zero matches is unknown-account; more than one match is a corrupt
+    identity binding (``account_code`` is expected to be globally unique in
+    production) and must fail closed rather than silently pick one.
+    """
+    sql = "SELECT trading_account_id FROM trading_account WHERE account_code = %s AND venue = %s"
     with conn.cursor() as cur:
         cur.execute(sql, (account_code, venue))
-        row = cur.fetchone()
-    if row is None:
+        rows = cur.fetchall()
+    if len(rows) == 0:
         raise StrategyBucketAccountConfigProvisioningError("UNKNOWN_TRADING_ACCOUNT")
-    return int(row["trading_account_id"])
+    if len(rows) != 1:
+        raise StrategyBucketAccountConfigProvisioningError("AMBIGUOUS_TRADING_ACCOUNT_IDENTITY")
+    return int(rows[0]["trading_account_id"])
 
 
 def _candidate_row(
@@ -258,6 +266,11 @@ def provision_strategy_bucket_account_config_v1(
     convention of ``write_automatic_buy_source_runtime_input_v1``.
     """
     _validate_request(request)
+    # A caller may pass any UTC-equivalent offset (e.g. +02:00); normalize to
+    # UTC before it is ever compared, resolved, or written -- MariaDB's
+    # DATETIME columns carry no offset, so an un-normalized offset would
+    # otherwise persist the wrong wall-clock instant.
+    request = replace(request, effective_from_ts_utc=request.effective_from_ts_utc.astimezone(UTC))
     trading_account_id = _resolve_trading_account_id(conn, account_code=request.account_code, venue=request.venue)
 
     candidate = _candidate_row(trading_account_id=trading_account_id, request=request)

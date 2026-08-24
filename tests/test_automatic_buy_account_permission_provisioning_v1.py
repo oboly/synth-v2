@@ -86,6 +86,108 @@ def test_unknown_account_rejected() -> None:
         provision_automatic_buy_account_permission_v1(conn, request=_request())
 
 
+class _MultiMatchCursor:
+    def __enter__(self) -> "_MultiMatchCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        return None
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return [{"trading_account_id": 1}, {"trading_account_id": 2}]
+
+
+class _MultiMatchConnection:
+    """A duplicate (account_code, venue) binding should never occur given the
+    real `uq_trading_account_code` UNIQUE constraint, but the resolver must
+    still fail closed rather than trust `LIMIT 1` to silently pick one."""
+
+    def cursor(self) -> _MultiMatchCursor:
+        return _MultiMatchCursor()
+
+
+def test_duplicate_account_identity_binding_rejected_not_silently_resolved() -> None:
+    with pytest.raises(
+        AutomaticBuyAccountPermissionProvisioningError, match="AMBIGUOUS_TRADING_ACCOUNT_IDENTITY",
+    ):
+        provision_automatic_buy_account_permission_v1(_MultiMatchConnection(), request=_request())
+
+
+class _RawParamCapturingCursor:
+    """Wraps a real cursor and records every datetime bound as a raw execute()
+    parameter, *before* any downstream adapter (e.g. the shared FakeConnection
+    fixture's own `_adapt()`, which already UTC-normalizes every aware
+    datetime on its own) gets a chance to mask whether the code under test
+    did its own normalization."""
+
+    def __init__(self, real_cursor: object, sink: list[datetime]) -> None:
+        self._real = real_cursor
+        self._sink = sink
+
+    def __enter__(self) -> "_RawParamCapturingCursor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: tuple[object, ...] = ()) -> "_RawParamCapturingCursor":
+        self._sink.extend(p for p in params if isinstance(p, datetime))
+        self._real.execute(sql, params)  # type: ignore[attr-defined]
+        return self
+
+    def fetchone(self) -> object:
+        return self._real.fetchone()  # type: ignore[attr-defined]
+
+    def fetchall(self) -> object:
+        return self._real.fetchall()  # type: ignore[attr-defined]
+
+    @property
+    def lastrowid(self) -> int:
+        return self._real.lastrowid  # type: ignore[attr-defined]
+
+
+class _RawParamCapturingConnection:
+    def __init__(self, inner: FakeConnection) -> None:
+        self._inner = inner
+        self.captured_datetimes: list[datetime] = []
+
+    def cursor(self) -> _RawParamCapturingCursor:
+        return _RawParamCapturingCursor(self._inner.cursor(), self.captured_datetimes)
+
+    def commit(self) -> None:
+        self._inner.commit()
+
+    def rollback(self) -> None:
+        self._inner.rollback()
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def test_offset_aware_timestamp_normalized_to_utc_in_the_raw_insert_parameter() -> None:
+    """PR #499/#503 Codex review: the fixture's own adapter already
+    UTC-normalizes every aware datetime, so asserting on stored/read-back
+    values cannot distinguish fixed from unfixed code. Assert on the raw
+    parameter handed to execute() instead, before that adapter runs."""
+    from datetime import timedelta, timezone as _timezone
+
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    offset_ts = TS.astimezone(_timezone(timedelta(hours=2)))
+    assert offset_ts.utcoffset() != timedelta(0)
+
+    capturing = _RawParamCapturingConnection(conn)
+    provision_automatic_buy_account_permission_v1(capturing, request=_request(effective_from_ts_utc=offset_ts))
+
+    assert capturing.captured_datetimes, "no datetime parameter was ever bound"
+    for captured in capturing.captured_datetimes:
+        assert captured.utcoffset() == timedelta(0), captured
+        assert captured == TS
+
+
 def test_invalid_source_provenance_rejected() -> None:
     conn = FakeConnection()
     insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
