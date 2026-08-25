@@ -1,18 +1,18 @@
 {
   "audit_version": "forecast_confluence_pit_cohort_audit/v1",
-  "baseline_outcome_count": 8175,
-  "baseline_outcome_identity_ledger_sha256": "5b6d33cf399b78701623992ce2dbe58b12156aa3ba2d523bccb5f33079a88380",
+  "baseline_outcome_count": 8081,
+  "baseline_outcome_identity_ledger_sha256": "85a01b801b7936daed5ba58e3110dd58b3078db1ddab4231fee47c8daef5d1de",
   "end_ts": "2026-08-18T00:00:00Z",
-  "enriched_outcome_count": 7938,
-  "enriched_outcome_identity_ledger_sha256": "4d9ce9bb1ad19993b733bacd92f385ef5411526a37bb7465b2f5c5e76c58fbc6",
+  "enriched_outcome_count": 7844,
+  "enriched_outcome_identity_ledger_sha256": "10fccecebd7d812c57264e0e33d3f4c7eec16ab47a3bae7b836e2d5da15f8e85",
   "exclusion_reason_counts": {
     "baseline": {
-      "neutral_direction": 942,
-      "other": 0
+      "missing_endpoint_candle": 94,
+      "neutral_direction": 942
     },
     "enriched": {
-      "neutral_direction": 1179,
-      "other": 0
+      "missing_endpoint_candle": 94,
+      "neutral_direction": 1179
     }
   },
   "forecast_count": 3039,

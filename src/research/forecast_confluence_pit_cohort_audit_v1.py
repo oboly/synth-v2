@@ -17,7 +17,7 @@ from src.research.forecast_confluence_pit_replay_v1 import (
     assess,
     fetch_candles,
     fetch_rows,
-    outcome,
+    outcome_with_exclusion,
     parse_ts,
 )
 
@@ -60,7 +60,7 @@ def forecast_identity(row: dict[str, Any]) -> dict[str, Any]:
 
 def endpoint_close_ts(row: dict[str, Any], candles: list[dict[str, Any]], horizon_hours: int) -> datetime | None:
     due = row["asof_ts_utc"] + next(h for h in HORIZONS if int(h.total_seconds() / 3600) == horizon_hours)
-    endpoint = next((c for c in candles if c["close_ts_utc"] >= due), None)
+    endpoint = next((c for c in candles if c["close_ts_utc"] == due), None)
     return None if endpoint is None else endpoint["close_ts_utc"]
 
 
@@ -80,9 +80,9 @@ def build_identity_ledgers(
             assessment = assess(row, enriched=mode == "enriched")
             for horizon in HORIZONS:
                 horizon_hours = int(horizon.total_seconds() / 3600)
-                result = outcome(row, assessment, candles, horizon)
+                result, exclusion_reason = outcome_with_exclusion(row, assessment, candles, horizon)
                 if result is None:
-                    exclusions[mode]["neutral_direction" if assessment["direction"] == "NEUTRAL" else "other"] += 1
+                    exclusions[mode][exclusion_reason or "other"] += 1
                     continue
                 close_ts = endpoint_close_ts(row, candles, horizon_hours)
                 if close_ts is None:
@@ -104,7 +104,7 @@ def build_identity_ledgers(
             )
         )
     return forecasts, outcomes, {
-        mode: {"neutral_direction": exclusions[mode]["neutral_direction"], "other": exclusions[mode]["other"]}
+        mode: dict(sorted(exclusions[mode].items()))
         for mode in outcomes
     }
 

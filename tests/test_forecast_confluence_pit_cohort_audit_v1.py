@@ -51,6 +51,17 @@ def test_naive_replay_timestamps_are_rendered_as_utc() -> None:
     assert iso_z(datetime(2026, 8, 1)) == "2026-08-01T00:00:00Z"
 
 
+def test_ledger_exclusions_retain_missing_endpoint_candle() -> None:
+    files, audit = build_artifacts(
+        rows=[_row()],
+        candles_by_market={"AAA": [{"close_ts_utc": datetime(2026, 8, 1, 8), "close_price": 101, "high_price": 102, "low_price": 99}]},
+        pipeline_stage_counts={"raw": 1, "venue": 1, "interval": 1, "fib_status": 1, "asset": 1, "same_ts_signal": 1, "dedup": 1, "final": 1},
+        start=datetime(2026, 8, 1), end=datetime(2026, 8, 2), venue="bitvavo",
+    )
+    assert len(files[BASELINE_LEDGER_FILENAME].splitlines()) == 0
+    assert audit["exclusion_reason_counts"]["baseline"]["missing_endpoint_candle"] == 3
+
+
 def test_committed_audit_and_manifest_digests_are_verifiable() -> None:
     root = Path(__file__).resolve().parents[1] / "data/research/forecast_confluence_pit_replay_v1"
     audit = json.loads((root / AUDIT_FILENAME).read_text(encoding="utf-8"))
@@ -59,3 +70,7 @@ def test_committed_audit_and_manifest_digests_are_verifiable() -> None:
     assert audit["baseline_outcome_identity_ledger_sha256"] == hashlib.sha256((root / BASELINE_LEDGER_FILENAME).read_bytes()).hexdigest()
     assert audit["enriched_outcome_identity_ledger_sha256"] == hashlib.sha256((root / ENRICHED_LEDGER_FILENAME).read_bytes()).hexdigest()
     assert manifest["canonical_audit_sha256"] == hashlib.sha256((root / AUDIT_FILENAME).read_bytes()).hexdigest()
+    assert audit["baseline_outcome_count"] == 8081
+    assert audit["enriched_outcome_count"] == 7844
+    assert audit["exclusion_reason_counts"]["baseline"]["missing_endpoint_candle"] == 94
+    assert audit["exclusion_reason_counts"]["enriched"]["missing_endpoint_candle"] == 94

@@ -42,8 +42,8 @@ Its separately timestamped metadata is
 | measure | value |
 | --- | ---: |
 | forecast count | 3039 |
-| baseline outcomes | 8175 |
-| enriched outcomes | 7938 |
+| baseline outcomes | 8081 |
+| enriched outcomes | 7844 |
 
 Pipeline stage counts:
 
@@ -62,22 +62,25 @@ Current Fib eligibility is unchanged: a forecast is a `bitvavo` canonical
 Fib-zone map in the requested time window at interval `4h`, with map status
 `FRESH`, `FALLBACK`, or `EMERGENCY_REBUILT`; it must resolve to an asset and a
 same-timestamp `signal_engine_state` row at interval `4h`. The audit does not
-change replay filtering, neutral-direction semantics, outcome generation,
-Fib eligibility, or confidence semantics.
+change replay filtering, neutral-direction semantics, Fib eligibility, or
+confidence semantics. Outcome evaluation requires the exact canonical horizon
+close; it does not advance to a later candle.
 
 ## Exclusions
 
-All non-neutral exclusion reasons are zero. The only exclusions are neutral
-directions, across all three horizons:
+The explicit exclusions across all three horizons are:
 
 ```text
 baseline neutral_direction=942  (314 forecasts * 3 horizons)
 enriched neutral_direction=1179 (393 forecasts * 3 horizons)
+baseline missing_endpoint_candle=94
+enriched missing_endpoint_candle=94
 all other exclusion reasons=0
 ```
 
-Thus baseline has `9117 - 942 = 8175` outcomes and enriched has
-`9117 - 1179 = 7938` outcomes.
+Thus baseline has `9117 - 942 - 94 = 8081` outcomes and enriched has
+`9117 - 1179 - 94 = 7844` outcomes. MFE/MAE ends at the same exact endpoint;
+a missing endpoint creates no extended window.
 
 ## Determinism evidence
 
@@ -87,9 +90,9 @@ bytes they describe:
 
 ```text
 forecast identity ledger SHA256=862fb3a2df8611e1382447da5e3ecadfcda68de7086a98caa4b729e4ebb7692b
-baseline outcome identity ledger SHA256=5b6d33cf399b78701623992ce2dbe58b12156aa3ba2d523bccb5f33079a88380
-enriched outcome identity ledger SHA256=4d9ce9bb1ad19993b733bacd92f385ef5411526a37bb7465b2f5c5e76c58fbc6
-canonical audit payload SHA256=96a5a91a44738c0e233d9c3ad7e922ddb3c96a5cc179ec7a70c7ccf39aaf8379
+baseline outcome identity ledger SHA256=85a01b801b7936daed5ba58e3110dd58b3078db1ddab4231fee47c8daef5d1de
+enriched outcome identity ledger SHA256=10fccecebd7d812c57264e0e33d3f4c7eec16ab47a3bae7b836e2d5da15f8e85
+canonical audit payload SHA256=2955d3be10bfd853a405bc7c38c2f492e527e6bb224e1fb5dbac6879ebf366fd
 ```
 
 The prior `c3f9cb32ab97b13b33481870e8f78681a48c1b6796822191c2091e484a95c0d3`
@@ -106,9 +109,10 @@ command, code/data snapshot, and identity artifact are unavailable, so it
 cannot be reproduced or promoted to canonical status.
 
 The older checked-in aggregate was `3039 / 8130 / 7895`
-(forecasts / baseline outcomes / enriched outcomes). The current persisted
-data produces `3039 / 8175 / 7938`. This is observed data drift, not a replay
-semantic change.
+(forecasts / baseline outcomes / enriched outcomes). The prior no-upper-bound
+endpoint replay yielded `3039 / 8175 / 7938`; the exact-endpoint replay yields
+`3039 / 8081 / 7844`. The latter difference is an endpoint-correctness fix,
+not source-data drift.
 
 ## Unresolved uncertainty
 
