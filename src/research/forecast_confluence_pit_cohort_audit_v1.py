@@ -7,7 +7,6 @@ import json
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic
 from typing import Any
 
 from src.common.db import get_connection
@@ -20,6 +19,7 @@ from src.research.forecast_confluence_pit_replay_v1 import (
     outcome_with_exclusion,
     parse_ts,
 )
+from src.research.runner_lifecycle_v1 import RunnerLifecycle
 
 AUDIT_VERSION = "forecast_confluence_pit_cohort_audit/v1"
 AUDIT_FILENAME = "cohort_determinism_audit_v1.json"
@@ -204,26 +204,43 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--created-from-commit", required=True)
+    parser.add_argument("--heartbeat-seconds", type=float, default=15.0)
     args = parser.parse_args(argv)
     start, end = parse_ts(args.start), parse_ts(args.end)
-    started = monotonic()
-    print(f"STARTED runner=forecast_confluence_pit_cohort_audit_v1 mode=read_only venue={args.venue} workers=1", flush=True)
-    conn = get_connection()
+    lifecycle = RunnerLifecycle(runner="forecast_confluence_pit_cohort_audit_v1", heartbeat_seconds=args.heartbeat_seconds)
+    conn = None
+    lifecycle.start(mode="read_only", venue=args.venue, output_dir=args.output_dir)
+    lifecycle.install_signal_handlers()
     try:
-        print("PHASE_START fetch_pipeline_counts", flush=True)
+        lifecycle.phase_started("FETCH_PIPELINE_COUNTS")
+        conn = get_connection()
         counts = fetch_pipeline_stage_counts(conn, start=start, end=end, venue=args.venue)
-        print(f"PHASE_END fetch_pipeline_counts elapsed_seconds={monotonic() - started:.3f}", flush=True)
-        print("PHASE_START fetch_replay_inputs", flush=True)
+        lifecycle.phase_finished("FETCH_PIPELINE_COUNTS", final_count=counts["final"])
+        lifecycle.phase_started("FETCH_FORECASTS")
         rows = fetch_rows(conn, start=start, end=end, venue=args.venue)
+        lifecycle.phase_finished("FETCH_FORECASTS", count=len(rows))
+        lifecycle.phase_started("FETCH_CANDLES")
         candles = fetch_candles(conn, rows, args.venue)
-        print(f"PHASE_END fetch_replay_inputs rows={len(rows)} elapsed_seconds={monotonic() - started:.3f}", flush=True)
+        lifecycle.phase_finished("FETCH_CANDLES", markets=len(candles), rows=sum(len(items) for items in candles.values()))
+        lifecycle.phase_started("EVALUATION")
         files, audit = build_artifacts(rows=rows, candles_by_market=candles, pipeline_stage_counts=counts, start=start, end=end, venue=args.venue)
+        lifecycle.phase_finished("EVALUATION", forecast_count=audit["forecast_count"], baseline_outcomes=audit["baseline_outcome_count"], enriched_outcomes=audit["enriched_outcome_count"])
+        lifecycle.phase_started("WRITE_ARTIFACT")
         write_artifacts(output_dir=args.output_dir, files=files, audit=audit, created_from_commit=args.created_from_commit)
-        print(f"FINISHED forecast_count={audit['forecast_count']} baseline_outcomes={audit['baseline_outcome_count']} enriched_outcomes={audit['enriched_outcome_count']}", flush=True)
+        lifecycle.phase_finished("WRITE_ARTIFACT", audit_path=args.output_dir / AUDIT_FILENAME, forecast_ledger=args.output_dir / FORECAST_LEDGER_FILENAME)
+        lifecycle.terminal("FINISHED", forecast_count=audit["forecast_count"], baseline_outcomes=audit["baseline_outcome_count"], enriched_outcomes=audit["enriched_outcome_count"], audit_path=args.output_dir / AUDIT_FILENAME, output_dir=args.output_dir)
+        return 0
+    except KeyboardInterrupt:
+        lifecycle.terminal("INTERRUPTED", signal=lifecycle.interruption_signal or "SIGINT", phase=lifecycle.current_phase or "none")
+        return 130
+    except Exception as exc:
+        lifecycle.terminal("FAILED", error=f"{type(exc).__name__}:{exc}", phase=lifecycle.current_phase or "none")
+        return 1
     finally:
-        conn.rollback()
-        conn.close()
-    return 0
+        if conn is not None:
+            conn.rollback()
+            conn.close()
+        lifecycle.close()
 
 
 if __name__ == "__main__":

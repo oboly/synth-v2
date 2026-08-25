@@ -16,6 +16,7 @@ from statistics import median
 from typing import Any
 
 from src.common.db import get_connection
+from src.research.runner_lifecycle_v1 import RunnerLifecycle
 
 VERSION = "forecast_confluence_pit_replay/v1"
 HORIZONS = (timedelta(hours=4), timedelta(hours=24), timedelta(days=7))
@@ -160,9 +161,7 @@ def grouped(items: list[dict[str, Any]], fields: tuple[str, ...]) -> list[dict[s
     return [{**dict(zip(fields, key)), **metrics(value)} for key, value in sorted(groups.items())]
 
 
-def run(conn: Any, *, start: datetime, end: datetime, venue: str) -> dict[str, Any]:
-    rows = fetch_rows(conn, start=start, end=end, venue=venue)
-    candles = fetch_candles(conn, rows, venue)
+def build_report(*, rows: list[dict[str, Any]], candles: dict[str, list[dict[str, Any]]], start: datetime, end: datetime) -> dict[str, Any]:
     all_results: dict[str, list[dict[str, Any]]] = {"baseline": [], "enriched": []}
     exclusions: dict[str, Counter[str]] = {"baseline": Counter(), "enriched": Counter()}
     for row in rows:
@@ -182,20 +181,53 @@ def run(conn: Any, *, start: datetime, end: datetime, venue: str) -> dict[str, A
     return report
 
 
+def run(conn: Any, *, start: datetime, end: datetime, venue: str) -> dict[str, Any]:
+    rows = fetch_rows(conn, start=start, end=end, venue=venue)
+    candles = fetch_candles(conn, rows, venue)
+    return build_report(rows=rows, candles=candles, start=start, end=end)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Read-only point-in-time forecast confluence replay")
     p.add_argument("--start", required=True); p.add_argument("--end", required=True); p.add_argument("--venue", default="bitvavo"); p.add_argument("--output", required=True)
+    p.add_argument("--heartbeat-seconds", type=float, default=15.0)
     args = p.parse_args(argv)
-    conn = get_connection()
+    lifecycle = RunnerLifecycle(runner="forecast_confluence_pit_replay_v1", heartbeat_seconds=args.heartbeat_seconds)
+    conn = None
+    report: dict[str, Any] | None = None
+    lifecycle.start(mode="read_only", venue=args.venue, output_path=args.output)
+    lifecycle.install_signal_handlers()
     try:
-        report = run(conn, start=parse_ts(args.start), end=parse_ts(args.end), venue=args.venue)
+        start, end = parse_ts(args.start), parse_ts(args.end)
+        lifecycle.phase_started("CONNECT")
+        conn = get_connection()
+        lifecycle.phase_finished("CONNECT")
+        lifecycle.phase_started("FETCH_FORECASTS")
+        rows = fetch_rows(conn, start=start, end=end, venue=args.venue)
+        lifecycle.phase_finished("FETCH_FORECASTS", count=len(rows))
+        lifecycle.phase_started("FETCH_CANDLES")
+        candles = fetch_candles(conn, rows, args.venue)
+        lifecycle.phase_finished("FETCH_CANDLES", markets=len(candles), rows=sum(len(items) for items in candles.values()))
+        lifecycle.phase_started("EVALUATION")
+        report = build_report(rows=rows, candles=candles, start=start, end=end)
+        lifecycle.phase_finished("EVALUATION", baseline_outcomes=report["modes"]["baseline"]["outcome_count"], enriched_outcomes=report["modes"]["enriched"]["outcome_count"])
+        lifecycle.phase_started("WRITE_ARTIFACT")
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        conn.rollback()
+        lifecycle.phase_finished("WRITE_ARTIFACT", output_path=args.output)
+        lifecycle.terminal("FINISHED", forecast_count=report["availability"]["forecast_rows"], baseline_outcomes=report["modes"]["baseline"]["outcome_count"], enriched_outcomes=report["modes"]["enriched"]["outcome_count"], output_path=args.output)
+        return 0
+    except KeyboardInterrupt:
+        lifecycle.terminal("INTERRUPTED", signal=lifecycle.interruption_signal or "SIGINT", phase=lifecycle.current_phase or "none")
+        return 130
+    except Exception as exc:
+        lifecycle.terminal("FAILED", error=f"{type(exc).__name__}:{exc}", phase=lifecycle.current_phase or "none")
+        return 1
     finally:
-        conn.close()
-    print(json.dumps({"forecast_count": report["availability"]["forecast_rows"], "baseline_outcomes": report["modes"]["baseline"]["outcome_count"], "enriched_outcomes": report["modes"]["enriched"]["outcome_count"]}, sort_keys=True))
-    return 0
+        if conn is not None:
+            conn.rollback()
+            conn.close()
+        lifecycle.close()
 
 
 if __name__ == "__main__":
