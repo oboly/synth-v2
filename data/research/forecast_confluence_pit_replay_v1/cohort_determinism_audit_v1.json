@@ -1,0 +1,48 @@
+{
+  "audit_result_sha256": "c3f9cb32ab97b13b33481870e8f78681a48c1b6796822191c2091e484a95c0d3",
+  "baseline_outcome_count": 8175,
+  "baseline_outcome_sha256": "e76d55...54513",
+  "created_from_commit": "687e26e82b7e8afdf2c2f5402ae42b5b18011a0f",
+  "end_ts": "2026-08-18T00:00:00Z",
+  "enriched_outcome_count": 7938,
+  "enriched_outcome_sha256": "ec47cd...11f0a",
+  "exclusion_reason_counts": {
+    "baseline": {
+      "all_other_exclusion_reasons": 0,
+      "neutral_direction": 942
+    },
+    "enriched": {
+      "all_other_exclusion_reasons": 0,
+      "neutral_direction": 1179
+    }
+  },
+  "forecast_count": 3039,
+  "forecast_identity_contract": [
+    "venue",
+    "market",
+    "forecast_as_of_utc",
+    "map_id"
+  ],
+  "forecast_identity_sha256": "83704f...45ad3",
+  "generated_at_utc": "2026-08-25T10:57:03Z",
+  "identity_digest_status": "accepted evidence retained abbreviated per-ledger SHA256 values; full audit SHA256 is complete",
+  "outcome_identity_contract": [
+    "forecast_identity",
+    "mode",
+    "horizon_hours",
+    "endpoint_close_ts_utc"
+  ],
+  "pipeline_stage_counts": {
+    "asset": 3039,
+    "dedup": 3039,
+    "fib_status": 3039,
+    "final": 3039,
+    "interval": 3825,
+    "raw": 3825,
+    "same_ts_signal": 3039,
+    "venue": 3825
+  },
+  "replay_version": "forecast_confluence_pit_replay/v1",
+  "start_ts": "2026-07-31T00:00:00Z",
+  "venue": "bitvavo"
+}
