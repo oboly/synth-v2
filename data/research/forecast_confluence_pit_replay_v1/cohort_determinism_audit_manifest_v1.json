@@ -1,0 +1,12 @@
+{
+  "canonical_audit_path": "cohort_determinism_audit_v1.json",
+  "canonical_audit_sha256": "96a5a91a44738c0e233d9c3ad7e922ddb3c96a5cc179ec7a70c7ccf39aaf8379",
+  "created_from_commit": "687e26e82b7e8afdf2c2f5402ae42b5b18011a0f",
+  "generated_at_utc": "2026-08-25T12:30:06Z",
+  "ledger_paths": {
+    "baseline_outcome": "baseline_outcome_identity_ledger_v1.jsonl",
+    "enriched_outcome": "enriched_outcome_identity_ledger_v1.jsonl",
+    "forecast": "forecast_identity_ledger_v1.jsonl"
+  },
+  "replay_version": "forecast_confluence_pit_replay/v1"
+}
