@@ -481,9 +481,12 @@ class RolloutScopeOutcome:
     operation_type: str
     outcome: AdministrationTransactionOutcome | None
     error: str | None
+    preclassified_status: str | None = None
 
     @property
     def succeeded(self) -> bool:
+        if self.preclassified_status == ROLLOUT_STATUS_ALREADY_SUPPORTED:
+            return True
         if self.outcome is None:
             return False
         return str(self.outcome.result.result_class) in _SUCCESS_RESULT_CLASSES
@@ -507,6 +510,8 @@ class RolloutScopeOutcome:
         - anything else (``CONFLICT``, ``CORRUPT_STATE``, ``RETRYABLE``, or an
           unexpected exception recorded in ``error``) -> ``SKIPPED_NOT_READY``
         """
+        if self.preclassified_status is not None:
+            return self.preclassified_status
         if self.outcome is None:
             return ROLLOUT_STATUS_SKIPPED_NOT_READY
         result_class = str(self.outcome.result.result_class)
@@ -519,6 +524,15 @@ class RolloutScopeOutcome:
         return ROLLOUT_STATUS_SKIPPED_NOT_READY
 
     def as_json_dict(self) -> dict[str, Any]:
+        if self.preclassified_status is not None:
+            return {
+                "symbol": self.symbol,
+                "operation_type": self.operation_type,
+                "rollout_status": self.status,
+                "error": self.error,
+                "no_op": True,
+                "detail": "scope is already SUPPORTED; PROMOTE_SCOPE not invoked",
+            }
         if self.outcome is not None:
             return {
                 "symbol": self.symbol,
@@ -598,6 +612,21 @@ def _run_rollout(
         # native_short_scope_administration_transaction_v1's job.
         if revalidate is not None:
             still_eligible, reason = revalidate(entry)
+            if (
+                still_eligible
+                and reason == ROLLOUT_STATUS_ALREADY_SUPPORTED
+                and entry.operation_type == OperationType.PROMOTE_SCOPE
+            ):
+                completed.append(
+                    RolloutScopeOutcome(
+                        symbol=entry.symbol,
+                        operation_type=str(entry.operation_type),
+                        outcome=None,
+                        error=None,
+                        preclassified_status=ROLLOUT_STATUS_ALREADY_SUPPORTED,
+                    )
+                )
+                continue
             if not still_eligible:
                 completed.append(
                     RolloutScopeOutcome(

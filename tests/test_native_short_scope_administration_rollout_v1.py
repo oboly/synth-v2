@@ -607,3 +607,74 @@ def test_execute_rollout_real_universe_is_restartable_after_partial_completion()
     assert second_pass.as_json_dict()["all_succeeded"] is True
     assert [c.symbol for c in second_pass.completed] == ["ETH", "XRP"]
     assert {op["symbol"] for op in conn.state.operations} == {"ETH", "XRP"}
+
+
+def test_execute_rollout_already_supported_is_successful_noop_before_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        return _outcome(write=True, result_class=ResultClass.CONFLICT, result_code=ResultCode.OPERATION_METADATA_MISMATCH, action=OperationAction.REJECT, persisted=False)
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+    outcome = execute_rollout(object(), (_SOL_ENTRY,), build_request=_build_request, authorization=object(), revalidate=lambda entry: (True, ROLLOUT_STATUS_ALREADY_SUPPORTED))
+
+    assert calls == []
+    completed = outcome.completed[0]
+    assert completed.succeeded is True
+    assert completed.status == ROLLOUT_STATUS_ALREADY_SUPPORTED
+    assert completed.as_json_dict()["no_op"] is True
+    assert completed.as_json_dict()["detail"] == "scope is already SUPPORTED; PROMOTE_SCOPE not invoked"
+    assert outcome.as_json_dict()["all_succeeded"] is True
+
+
+def test_plan_rollout_already_supported_does_not_call_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_plan(conn: Any, request: Any) -> AdministrationTransactionOutcome:
+        raise AssertionError("plan_scope_administration must not run")
+
+    monkeypatch.setattr(rollout, "plan_scope_administration", fail_plan)
+    outcome = plan_rollout(object(), (_SOL_ENTRY,), build_request=_build_request, revalidate=lambda entry: (True, ROLLOUT_STATUS_ALREADY_SUPPORTED))
+
+    assert outcome.completed[0].status == ROLLOUT_STATUS_ALREADY_SUPPORTED
+    assert outcome.as_json_dict()["all_succeeded"] is True
+
+
+def test_execute_rollout_ready_still_uses_normal_transaction_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        return _outcome(write=True, result_class=ResultClass.SUCCESS, result_code=ResultCode.PROMOTED_NEW_SCOPE)
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+    outcome = execute_rollout(object(), (_SOL_ENTRY,), build_request=_build_request, authorization=object(), revalidate=lambda entry: (True, "READY"))
+
+    assert calls == ["SOL"]
+    assert outcome.completed[0].status == ROLLOUT_STATUS_READY
+
+
+def test_execute_rollout_not_ready_skips_without_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rollout, "execute_scope_administration", lambda *args, **kwargs: pytest.fail("transaction must not run"))
+    outcome = execute_rollout(object(), (_SOL_ENTRY,), build_request=_build_request, authorization=object(), revalidate=lambda entry: (False, "MARKET_NOT_READY"))
+
+    assert outcome.completed[0].status == ROLLOUT_STATUS_SKIPPED_NOT_READY
+    assert outcome.as_json_dict()["all_succeeded"] is False
+
+
+def test_execute_rollout_mixed_revalidation_continues_independently(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = (_SOL_ENTRY, RolloutSymbolEntry(symbol="ETH", operation_type=OperationType.PROMOTE_SCOPE), RolloutSymbolEntry(symbol="XRP", operation_type=OperationType.PROMOTE_SCOPE))
+    calls: list[str] = []
+    statuses = {"SOL": (True, ROLLOUT_STATUS_ALREADY_SUPPORTED), "ETH": (False, "MARKET_NOT_READY"), "XRP": (True, "READY")}
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        return _outcome(write=True, result_class=ResultClass.SUCCESS, result_code=ResultCode.PROMOTED_NEW_SCOPE)
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+    outcome = execute_rollout(object(), entries, build_request=_build_request, authorization=object(), revalidate=lambda entry: statuses[entry.symbol])
+
+    assert calls == ["XRP"]
+    assert [item.status for item in outcome.completed] == [ROLLOUT_STATUS_ALREADY_SUPPORTED, ROLLOUT_STATUS_SKIPPED_NOT_READY, ROLLOUT_STATUS_READY]
+    assert outcome.as_json_dict()["all_succeeded"] is False
