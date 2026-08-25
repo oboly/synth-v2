@@ -115,13 +115,22 @@ def assess(row: dict[str, Any], *, enriched: bool) -> dict[str, Any]:
     return {"confidence": confidence, "confidence_bucket": "HIGH" if confidence >= .70 else "MEDIUM" if confidence >= .55 else "LOW", "direction": direction, "signal_combination": "+".join(support) if support else "no supporting signals"}
 
 
-def outcome(row: dict[str, Any], assessment: dict[str, Any], candles: list[dict[str, Any]], horizon: timedelta) -> dict[str, Any] | None:
+def outcome_with_exclusion(
+    row: dict[str, Any], assessment: dict[str, Any], candles: list[dict[str, Any]], horizon: timedelta
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Evaluate only the exact canonical close at the requested horizon."""
     due = row["asof_ts_utc"] + horizon
-    endpoint = next((c for c in candles if c["close_ts_utc"] >= due), None)
+    if assessment["direction"] == "NEUTRAL":
+        return None, "neutral_direction"
+    endpoint = next((c for c in candles if c["close_ts_utc"] == due), None)
+    if endpoint is None:
+        return None, "missing_endpoint_candle"
     price = _float(row["reference_price"])
-    close = _float(endpoint["close_price"]) if endpoint else None
-    if endpoint is None or not price or close is None or assessment["direction"] == "NEUTRAL":
-        return None
+    close = _float(endpoint["close_price"])
+    if not price:
+        return None, "missing_reference_price"
+    if close is None:
+        return None, "missing_endpoint_close_price"
     sign = 1 if assessment["direction"] == "LONG" else -1
     ret = ((close - price) / price * 100) * sign
     window = [c for c in candles if row["asof_ts_utc"] < c["close_ts_utc"] <= endpoint["close_ts_utc"]]
@@ -129,7 +138,12 @@ def outcome(row: dict[str, Any], assessment: dict[str, Any], candles: list[dict[
     low = min(_float(c["low_price"]) for c in window if c["low_price"] is not None)
     mfe = ((high - price) / price * 100) if sign == 1 else ((price - low) / price * 100)
     mae = ((price - low) / price * 100) if sign == 1 else ((high - price) / price * 100)
-    return {**assessment, "horizon_hours": int(horizon.total_seconds() / 3600), "return_pct": ret, "mfe_pct": mfe, "mae_pct": mae, "direction_hit": ret > 0}
+    return {**assessment, "horizon_hours": int(horizon.total_seconds() / 3600), "return_pct": ret, "mfe_pct": mfe, "mae_pct": mae, "direction_hit": ret > 0}, None
+
+
+def outcome(row: dict[str, Any], assessment: dict[str, Any], candles: list[dict[str, Any]], horizon: timedelta) -> dict[str, Any] | None:
+    """Compatibility wrapper for callers that only need an evaluable outcome."""
+    return outcome_with_exclusion(row, assessment, candles, horizon)[0]
 
 
 def metrics(items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -150,18 +164,21 @@ def run(conn: Any, *, start: datetime, end: datetime, venue: str) -> dict[str, A
     rows = fetch_rows(conn, start=start, end=end, venue=venue)
     candles = fetch_candles(conn, rows, venue)
     all_results: dict[str, list[dict[str, Any]]] = {"baseline": [], "enriched": []}
+    exclusions: dict[str, Counter[str]] = {"baseline": Counter(), "enriched": Counter()}
     for row in rows:
         for mode in all_results:
             a = assess(row, enriched=mode == "enriched")
             for horizon in HORIZONS:
-                item = outcome(row, a, candles[row["market"]], horizon)
+                item, exclusion_reason = outcome_with_exclusion(row, a, candles[row["market"]], horizon)
                 if item:
                     item.update({"rotation_pressure_state": row["pressure_state"] or "UNAVAILABLE", "sector_rotation_state": row["sector_rotation_state"] or "UNAVAILABLE"})
                     all_results[mode].append(item)
+                elif exclusion_reason:
+                    exclusions[mode][exclusion_reason] += 1
     availability = {"rotation_pressure_available": sum(r["rotation_pressure_asof_ts_utc"] is not None for r in rows), "sector_rotation_available": sum(r["sector_rotation_asof_ts_utc"] is not None for r in rows), "forecast_rows": len(rows)}
     report: dict[str, Any] = {"replay_identity": VERSION, "period": {"start": start.isoformat()+"Z", "end_exclusive": end.isoformat()+"Z"}, "horizons_hours": [4, 24, 168], "provenance": {"rotation_pressure": "market_rotation_pressure_observation_v1.score_total model_version=1.0", "sector_rotation": "sector_rotation_snapshot.rotation_score window=4h model_version=sector-rotation-v1.0.0", "breathline": "unavailable; not joined"}, "availability": availability, "future_leakage_checks": {"join_operator": "feature_asof <= forecast_asof", "freshness_hours": 4, "later_feature_rows_used": 0}, "modes": {}}
     for mode, items in all_results.items():
-        report["modes"][mode] = {"outcome_count": len(items), "metrics": metrics(items), "by_confidence": grouped(items, ("confidence_bucket",)), "by_signal_combination": grouped(items, ("signal_combination",)), "by_rotation_pressure": grouped(items, ("rotation_pressure_state",)), "by_sector_rotation": grouped(items, ("sector_rotation_state",)), "interaction": [r for r in grouped(items, ("signal_combination", "rotation_pressure_state", "sector_rotation_state")) if r["sample_count"] >= 20]}
+        report["modes"][mode] = {"outcome_count": len(items), "exclusion_reason_counts": dict(sorted(exclusions[mode].items())), "metrics": metrics(items), "by_confidence": grouped(items, ("confidence_bucket",)), "by_signal_combination": grouped(items, ("signal_combination",)), "by_rotation_pressure": grouped(items, ("rotation_pressure_state",)), "by_sector_rotation": grouped(items, ("sector_rotation_state",)), "interaction": [r for r in grouped(items, ("signal_combination", "rotation_pressure_state", "sector_rotation_state")) if r["sample_count"] >= 20]}
     return report
 
 

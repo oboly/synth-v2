@@ -19,22 +19,25 @@ treated as a calibrated probability without supporting calibration evidence.
 
 Artifact: `data/research/forecast_confluence_pit_replay_v1/result_20260731_20260817_v1.json`.
 
-The current database replay yielded 3,039 forecast rows and 8,130 evaluable
-baseline outcomes (the supplied completed replay had 2,938 / 8,814, so this is
-recorded as input/cohort drift, not claimed as a reproduction). Rotation
+The current database replay yielded 3,039 forecast rows, 8,081 evaluable
+baseline outcomes, and 7,844 evaluable enriched outcomes (the supplied
+completed replay had 2,938 / 8,814, so this is recorded as input/cohort drift,
+not claimed as a reproduction). Rotation
 Pressure was available for 1,656 rows (54.49%); sector rotation for 1,595
 rows (52.49%). Feature availability starts only on their persisted historical
 dates, so older rows remain unavailable rather than receiving later values.
 
-Baseline direction hit rate was 49.40%, mean return -1.5783%, median -0.0233%.
-The enriched score gave 48.94%, -1.6387%, and -0.0399%, respectively. This is
-not evidence of incremental aggregate value. Rotation-in was the least poor
-pressure state (+0.1467% mean, n=540); sector `INSUFFICIENT_PARTICIPATION`
-was strongly negative (-5.7881%, n=720). These are retained as observations,
-not rule proposals, because the period is short and coverage is incomplete.
+Endpoint evaluation now requires the exact canonical `4h` close at each
+requested horizon. A missing exact endpoint is excluded as
+`missing_endpoint_candle`; there were 94 such exclusions in each mode. The
+MFE/MAE window ends at that same exact endpoint and never advances to a later
+candle.
 
-Confidence does not behave as directional probability: baseline HIGH had a
-45.81% hit rate but +1.2258% mean return (n=227), while LOW had a 50.88% hit
-rate but -2.3985% mean return (n=6,134). Within this replay it is more
-defensible to describe HIGH as a return-quality / heuristic grouping than a
-calibrated directional-probability label. No production label is renamed.
+Baseline direction hit rate was 49.31%, mean return -1.6349%, median -0.0267%,
+mean MFE 3.4450%, and mean MAE 5.7613%. The enriched score gave 48.84%,
+-1.6983%, -0.0432%, 3.4356%, and 5.8442%, respectively. These aggregate
+results are not evidence of incremental feature value and do not propose a
+production rule.
+
+Confidence remains an empirical cohort label, not a calibrated directional
+probability. No production label is renamed.
