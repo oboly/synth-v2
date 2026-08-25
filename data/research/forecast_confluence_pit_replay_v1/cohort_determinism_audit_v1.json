@@ -1,0 +1,45 @@
+{
+  "audit_version": "forecast_confluence_pit_cohort_audit/v1",
+  "baseline_outcome_count": 8081,
+  "baseline_outcome_identity_ledger_sha256": "85a01b801b7936daed5ba58e3110dd58b3078db1ddab4231fee47c8daef5d1de",
+  "end_ts": "2026-08-18T00:00:00Z",
+  "enriched_outcome_count": 7844,
+  "enriched_outcome_identity_ledger_sha256": "10fccecebd7d812c57264e0e33d3f4c7eec16ab47a3bae7b836e2d5da15f8e85",
+  "exclusion_reason_counts": {
+    "baseline": {
+      "missing_endpoint_candle": 94,
+      "neutral_direction": 942
+    },
+    "enriched": {
+      "missing_endpoint_candle": 94,
+      "neutral_direction": 1179
+    }
+  },
+  "forecast_count": 3039,
+  "forecast_identity_contract": [
+    "venue",
+    "market",
+    "forecast_as_of_utc",
+    "map_id"
+  ],
+  "forecast_identity_ledger_sha256": "862fb3a2df8611e1382447da5e3ecadfcda68de7086a98caa4b729e4ebb7692b",
+  "outcome_identity_contract": [
+    "forecast identity",
+    "mode",
+    "horizon_hours",
+    "endpoint_close_ts_utc"
+  ],
+  "pipeline_stage_counts": {
+    "asset": 3039,
+    "dedup": 3039,
+    "fib_status": 3039,
+    "final": 3039,
+    "interval": 3825,
+    "raw": 3825,
+    "same_ts_signal": 3039,
+    "venue": 3825
+  },
+  "replay_version": "forecast_confluence_pit_replay/v1",
+  "start_ts": "2026-07-31T00:00:00Z",
+  "venue": "bitvavo"
+}
