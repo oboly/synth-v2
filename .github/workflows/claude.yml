@@ -14,10 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
       issues: write
       id-token: write
-      actions: read
 
     steps:
       - name: Checkout repository
@@ -33,8 +31,6 @@ jobs:
           anthropic_organization_id: 7418e2e6-9e2e-4fe0-bf59-847e76f4fce6
           anthropic_service_account_id: svac_01HU7ZCmaWhxpdh6cosJ6VP4
           base_branch: main
-          additional_permissions: |
-            actions: read
           prompt: |
             HOST: GitHub-hosted ubuntu-latest
             ROLE: issue implementer
