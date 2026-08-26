@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pymysql.cursors import SSDictCursor
 
 from src.research.run_bullish_breathline_canonical_4h_v1 import (
     FETCH_BATCH_ROWS,
@@ -81,10 +82,12 @@ class FakeConnection:
         self.candles = candles or {}
         self.executed: list[tuple[str, tuple[Any, ...] | None]] = []
         self.fetchmany_sizes: list[int] = []
+        self.cursor_classes: list[object | None] = []
         self.rollback_calls = 0
         self.close_calls = 0
 
-    def cursor(self) -> FakeCursor:
+    def cursor(self, cursor_class: object | None = None) -> FakeCursor:
+        self.cursor_classes.append(cursor_class)
         return FakeCursor(self)
 
     def rollback(self) -> None:
@@ -168,6 +171,7 @@ def test_export_streams_and_maps_open_ts_to_tracker_ts(tmp_path: Path) -> None:
         "close": "102.0000",
         "volume": "10.5000",
     }
+    assert SSDictCursor in conn.cursor_classes
     assert conn.fetchmany_sizes
     assert all(size == FETCH_BATCH_ROWS for size in conn.fetchmany_sizes)
     assert any("ORDER BY open_ts_utc ASC" in sql for sql, _ in conn.executed)
