@@ -72,12 +72,9 @@ is never treated as a passed check.
 Scope limits (what this evidence does NOT claim)
 ------------------------------------------------
 This module states only that per-scope *transaction/rollback* isolation is
-present. It makes no claim about ``BOOTSTRAP_ORCHESTRATION_BLOCKED``, which
-remains active for an independent, still-unresolved reason: the runtime
-chain deliberately treats a domain ``BLOCKED`` scope (including a brand-new
-scope's expected, transient ``NO_CURRENT_MAP`` state) as a hard stop for the
-whole run. See
-``docs/ops/native_short_bootstrap_orchestration_blocked_evidence_v1.md``.
+present. It does not classify a scope's readiness. The runtime may continue
+only after a typed expected-not-ready outcome; all other domain ``BLOCKED``
+states remain hard stops.
 
 Safety markers:
 broker_private_calls=0
@@ -117,9 +114,10 @@ RUNTIME_CHAIN_MODULE = "src.market_data.run_native_short_scope_status_chain_v1"
 # closed here.
 REQUIRED_RUNTIME_ATTRIBUTE_VALUES: Mapping[str, str] = {
     "TRANSACTION_BOUNDARY": "exact_scope",
-    "FAILURE_POLICY": "continue_on_unexpected_stop_on_blocked",
+    "FAILURE_POLICY": "continue_on_unexpected_and_expected_not_ready_stop_on_integrity_blocked",
     "SCOPE_STATUS_SUCCEEDED": "SUCCEEDED",
     "SCOPE_STATUS_SKIPPED_NOT_SUPPORTED": "SKIPPED_NOT_SUPPORTED",
+    "SCOPE_STATUS_SKIPPED_NOT_READY": "SKIPPED_NOT_READY",
     "SCOPE_STATUS_BLOCKED": "BLOCKED",
     "SCOPE_STATUS_UNEXPECTED_FAILED": "UNEXPECTED_FAILED",
 }

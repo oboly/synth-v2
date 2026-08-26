@@ -31,6 +31,7 @@ suite, so these tests focus only on this module's own new orchestration
 logic, not on re-verifying the existing geometry materializer's internals.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -1583,4 +1584,129 @@ def test_non_bootstrap_branch_still_enforces_the_expected_level_row_count() -> N
             level_branch=ACTIVE_EVALUATION,
             row_count=1,
             seen={},
+        )
+
+
+
+def test_source_stale_returns_typed_not_ready_after_fail_closed_level_block() -> None:
+    """Issue #543: SOURCE_STALE commits its authoritative scope projection,
+    emits no fresh/actionable map-level rows, and is not escalated as an
+    integrity exception."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(
+        key,
+        primary_source_freshness_limit_seconds=3600,
+        supporting_source_freshness_limit_seconds=3600,
+    )
+
+    def stale_candles(k: NativeShortMapScopeKey, as_of_utc: datetime) -> list[datetime]:
+        return [as_of_utc - timedelta(hours=2)]
+
+    def blocked_source_level(
+        connection: Any,
+        *,
+        key: NativeShortMapScopeKey,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+        never_published_any_map: bool,
+    ) -> MapLevelStatusMaterializationOutcome:
+        return MapLevelStatusMaterializationOutcome(
+            key=key,
+            branch=BLOCKED,
+            reason_code="SOURCE_STALE",
+            row_count=0,
+            current_map_id=None,
+            map_cycle_id=None,
+            level_status_as_of_utc=None,
+        )
+
+    materialize_calls: list[str] = []
+
+    def should_not_materialize(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
+        materialize_calls.append("called")
+        return _unchanged_geometry_result()
+
+    stale_context = replace(
+        _context_row(),
+        latest_primary_close_ts_utc=_AS_OF - timedelta(hours=2),
+        latest_support_close_ts_utc=_AS_OF - timedelta(hours=2),
+    )
+
+    outcome = evaluate_and_project_scope(
+        conn,
+        key=key,
+        run_id=1,
+        as_of_utc=_AS_OF,
+        provenance=_PROVENANCE,
+        operational_clock=_fixed_clock(_AS_OF),
+        fetch_context_row=lambda k, t: stale_context,
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=stale_candles,
+        fetch_supporting_candle_close_timestamps=stale_candles,
+        materialize_scope_symbol_fn=should_not_materialize,
+        materialize_map_level_status_fn=blocked_source_level,
+        authorization=_NS_AUTH,
+    )
+
+    assert materialize_calls == []
+    assert outcome.not_ready is True
+    assert outcome.not_ready_reason_code == "SOURCE_STALE"
+    assert outcome.failed is False
+    assert conn.status_upsert_count == 1
+    projection = next(iter(conn.status_rows.values()))
+    assert projection["scope_status_code"] == "SOURCE_STALE"
+    assert projection["actionability_state"] == "BLOCKED_SOURCE"
+
+
+
+def test_source_stale_with_nonzero_level_rows_remains_hard_failure() -> None:
+    """A broken level materializer may never downgrade actionable rows to
+    expected-not-ready merely because it reports SOURCE_STALE."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(
+        key,
+        primary_source_freshness_limit_seconds=3600,
+        supporting_source_freshness_limit_seconds=3600,
+    )
+    stale_context = replace(
+        _context_row(),
+        latest_primary_close_ts_utc=_AS_OF - timedelta(hours=2),
+        latest_support_close_ts_utc=_AS_OF - timedelta(hours=2),
+    )
+
+    def broken_level(*args: Any, **kwargs: Any) -> MapLevelStatusMaterializationOutcome:
+        return MapLevelStatusMaterializationOutcome(
+            key=key,
+            branch=BLOCKED,
+            reason_code="SOURCE_STALE",
+            row_count=1,
+            current_map_id=None,
+            map_cycle_id=None,
+            level_status_as_of_utc=None,
+        )
+
+    with pytest.raises(NativeShortMapLevelStatusBlockedError, match="SOURCE_STALE"):
+        evaluate_and_project_scope(
+            conn,
+            key=key,
+            run_id=1,
+            as_of_utc=_AS_OF,
+            provenance=_PROVENANCE,
+            operational_clock=_fixed_clock(_AS_OF),
+            fetch_context_row=lambda k, t: stale_context,
+            fetch_existing_maps=_no_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=_no_lifecycle_events,
+            fetch_primary_candle_close_timestamps=lambda k, t: [_AS_OF - timedelta(hours=2)],
+            fetch_supporting_candle_close_timestamps=lambda k, t: [_AS_OF - timedelta(hours=2)],
+            materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+            materialize_map_level_status_fn=broken_level,
+            authorization=_NS_AUTH,
         )

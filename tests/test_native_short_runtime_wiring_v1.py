@@ -139,6 +139,8 @@ def _chain_outcome(
     skipped_not_supported: bool = False,
     failed: bool = False,
     bootstrap_pending: bool = False,
+    not_ready: bool = False,
+    not_ready_reason_code: str | None = None,
 ) -> ScopeChainOutcome:
     return ScopeChainOutcome(
         key=key,
@@ -147,6 +149,8 @@ def _chain_outcome(
         lifecycle_event_appended=False,
         failed=failed,
         bootstrap_pending=bootstrap_pending,
+        not_ready=not_ready,
+        not_ready_reason_code=not_ready_reason_code,
     )
 
 
@@ -1036,3 +1040,120 @@ def _finished_execute_result() -> "runner.RuntimeResult":
         candle_rows_read=1,
         elapsed_ms=1,
     )
+
+
+@pytest.mark.parametrize(
+    ("symbols", "stale_symbols"),
+    [
+        (["BTC", "ETH"], {"BTC"}),
+        (["BTC", "ETH", "XRP"], {"ETH"}),
+        (["BTC", "ETH"], {"ETH"}),
+        (["BTC", "ETH", "XRP", "SOL"], {"BTC", "XRP"}),
+    ],
+    ids=("stale_first", "stale_middle", "stale_last", "multiple_stale"),
+)
+def test_expected_source_stale_is_committed_and_does_not_stop_other_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+    symbols: list[str],
+    stale_symbols: set[str],
+) -> None:
+    """Issue #543: expected BLOCKED_SOURCE stays scope-local and preserves
+    the zero-row fail-closed result for that scope while the run finishes."""
+    conn = _FakeConn()
+    attempted: list[str] = []
+
+    def fake_scope(connection: Any, **kwargs: Any) -> ScopeChainOutcome:
+        key = kwargs["key"]
+        attempted.append(key.symbol)
+        connection.stage(
+            key.symbol,
+            {"observation": key.symbol, "map_level_rows": 0 if key.symbol in stale_symbols else 3},
+        )
+        return _chain_outcome(
+            key,
+            not_ready=key.symbol in stale_symbols,
+            not_ready_reason_code="SOURCE_STALE" if key.symbol in stale_symbols else None,
+        )
+
+    finalized = _install_chain_doubles(
+        monkeypatch, conn, [_scope(symbol) for symbol in symbols], fake_scope
+    )
+    result = _execute()
+
+    assert attempted == symbols
+    assert set(conn.committed_ledger) == set(symbols)
+    assert [item.status for item in result.scope_results] == [
+        runner.SCOPE_STATUS_SKIPPED_NOT_READY if symbol in stale_symbols else runner.SCOPE_STATUS_SUCCEEDED
+        for symbol in symbols
+    ]
+    assert [item.detail for item in result.scope_results if item.key.symbol in stale_symbols] == [
+        "BLOCKED_SOURCE reason_code=SOURCE_STALE"
+    ] * len(stale_symbols)
+    assert all(
+        conn.committed_ledger[symbol]["map_level_rows"] == 0
+        for symbol in stale_symbols
+    )
+    (_run_id, record) = finalized[0]
+    assert record.terminal_status == "FINISHED"
+    assert record.failed_scope_count == 0
+
+
+def test_expected_source_stale_keeps_snapshot_publication_step_reachable() -> None:
+    """The native status runner exits successfully for SKIPPED_NOT_READY, so
+    the unmodified outer chain reaches its immediately following publisher."""
+    chain = CHAIN_PATH.read_text(encoding="utf-8")
+    native = "bash scripts/run_native_short_scope_status_chain_once.sh"
+    snapshot = "python -m src.market_data.run_native_short_fib_context_snapshot_v1"
+    assert chain.index(native) < chain.index(snapshot)
+    assert "run_step" in chain
+
+
+def test_integrity_blocked_scope_still_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only typed expected-not-ready outcomes are non-fatal; an integrity
+    BLOCKED exception retains the original rollback and non-zero behavior."""
+    conn = _FakeConn()
+    attempted: list[str] = []
+
+    def fake_scope(connection: Any, **kwargs: Any) -> ScopeChainOutcome:
+        key = kwargs["key"]
+        attempted.append(key.symbol)
+        if key.symbol == "ETH":
+            raise runner.NativeShortMapLevelStatusBlockedError(
+                "MAP_LEVEL_STATUS_BLOCKED reason_code=NO_CURRENT_MAP"
+            )
+        connection.stage(key.symbol, {"observation": key.symbol})
+        return _chain_outcome(key)
+
+    _install_chain_doubles(
+        monkeypatch, conn, [_scope("BTC"), _scope("ETH"), _scope("XRP")], fake_scope
+    )
+    with pytest.raises(runner.RuntimeScopeEvaluationError):
+        _execute()
+
+    assert attempted == ["BTC", "ETH"]
+    assert set(conn.committed_ledger) == {"BTC"}
+
+
+
+def test_expected_source_stale_reports_machine_readable_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    events: list[dict[str, Any]] = []
+    _install_chain_doubles(
+        monkeypatch,
+        conn,
+        [_scope("BTC")],
+        lambda connection, **kwargs: _chain_outcome(
+            kwargs["key"], not_ready=True, not_ready_reason_code="SOURCE_STALE"
+        ),
+    )
+
+    result = _execute(progress=events.append)
+
+    assert result.run.terminal_status == "FINISHED"
+    scope_event = next(event for event in events if event["event"] == "SCOPE_RESULT")
+    assert scope_event["status"] == runner.SCOPE_STATUS_SKIPPED_NOT_READY
+    assert scope_event["reason_code"] == "SOURCE_STALE"

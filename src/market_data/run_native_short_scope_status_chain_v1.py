@@ -99,11 +99,14 @@ SCOPE_STATUS_SKIPPED_NOT_SUPPORTED = "SKIPPED_NOT_SUPPORTED"
 # transaction still commits normally, it is not a failure, and it never stops
 # evaluation of unrelated scopes ordered after it.
 SCOPE_STATUS_BOOTSTRAP_PENDING = "BOOTSTRAP_PENDING"
+# A supported scope with an expected source-readiness block. Its projection
+# and zero-row map-level result commit fail-closed; it is not a run failure.
+SCOPE_STATUS_SKIPPED_NOT_READY = "SKIPPED_NOT_READY"
 SCOPE_STATUS_BLOCKED = "BLOCKED"
 SCOPE_STATUS_UNEXPECTED_FAILED = "UNEXPECTED_FAILED"
 
 # Explicit reviewed orchestration policy after a per-scope terminal failure.
-FAILURE_POLICY = "continue_on_unexpected_stop_on_blocked"
+FAILURE_POLICY = "continue_on_unexpected_and_expected_not_ready_stop_on_integrity_blocked"
 TRANSACTION_BOUNDARY = "exact_scope"
 UNEXPECTED_FAILURE_REASON_CODE = "SCOPE_ISOLATION_UNEXPECTED_FAILURE"
 
@@ -681,14 +684,24 @@ def execute_runtime(
                     # deliberately not a failure -- the loop continues to the
                     # next scope.
                     scope_status = SCOPE_STATUS_BOOTSTRAP_PENDING
+                elif outcome.not_ready:
+                    scope_status = SCOPE_STATUS_SKIPPED_NOT_READY
                 else:
                     scope_status = SCOPE_STATUS_SUCCEEDED
-                scope_results.append(ScopeChainResult(key=key, status=scope_status))
+                detail = (
+                    f"BLOCKED_SOURCE reason_code={outcome.not_ready_reason_code}"
+                    if outcome.not_ready
+                    else None
+                )
+                scope_results.append(
+                    ScopeChainResult(key=key, status=scope_status, detail=detail)
+                )
                 _report(
                     "SCOPE_RESULT",
                     phase="ORCHESTRATOR_RUN",
                     scope=scope_label,
                     status=scope_status,
+                    reason_code=outcome.not_ready_reason_code if outcome.not_ready else None,
                     elapsed_ms=_elapsed_ms(scope_started),
                 )
         finally:

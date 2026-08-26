@@ -325,6 +325,49 @@ def build_source_unavailable_observation(
     )
 
 
+def build_source_not_ready_observation(
+    *,
+    key: NativeShortMapScopeKey,
+    run_id: int,
+    run_uuid: str,
+    observed_at_utc: datetime,
+    cadence_contract_version: str,
+    source_state: NativeShortScopeSourceState,
+    primary_source_freshness_limit_seconds: int,
+    supporting_source_freshness_limit_seconds: int,
+    current_map_id_before: int | None,
+    primary_latest_candle_ts_utc: datetime | None,
+    supporting_latest_candle_ts_utc: datetime | None,
+    context_status: str,
+    source_primary_candle_count: int | None,
+    source_support_candle_count: int | None,
+) -> NativeShortScopeObservationRecord:
+    """Record an available-but-not-current source without materializing a map."""
+    return NativeShortScopeObservationRecord(
+        key=key,
+        run_id=run_id,
+        run_uuid=run_uuid,
+        observed_at_utc=observed_at_utc,
+        observation_status=(
+            NativeShortScopeObservationStatus.SKIPPED_SOURCE_UNAVAILABLE
+            if source_state == NativeShortScopeSourceState.SOURCE_UNAVAILABLE
+            else NativeShortScopeObservationStatus.EVALUATED
+        ),
+        cadence_contract_version=cadence_contract_version,
+        source_state=source_state,
+        primary_source_freshness_limit_seconds=primary_source_freshness_limit_seconds,
+        supporting_source_freshness_limit_seconds=supporting_source_freshness_limit_seconds,
+        geometry_action=NativeShortScopeGeometryAction.NO_MAP_AVAILABLE,
+        current_map_id_before=current_map_id_before,
+        current_map_id_after=current_map_id_before,
+        primary_latest_candle_ts_utc=primary_latest_candle_ts_utc,
+        supporting_latest_candle_ts_utc=supporting_latest_candle_ts_utc,
+        context_status=context_status,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
+    )
+
+
 def build_normal_observation(
     *,
     key: NativeShortMapScopeKey,
@@ -1037,6 +1080,39 @@ def evaluate_scope(
             failed=False,
         )
 
+    source_state = classify_source_freshness(
+        primary_latest_ts=context_row.latest_primary_close_ts_utc,
+        supporting_latest_ts=context_row.latest_support_close_ts_utc,
+        as_of_utc=as_of_utc,
+        cadence_config=cadence_config,
+    )
+    if source_state != NativeShortScopeSourceState.SOURCE_CURRENT:
+        observation = build_source_not_ready_observation(
+            key=key,
+            run_id=run_id,
+            run_uuid=provenance.invocation_uuid,
+            observed_at_utc=as_of_utc,
+            cadence_contract_version=cadence_config.cadence_contract_version,
+            source_state=source_state,
+            primary_source_freshness_limit_seconds=cadence_config.primary_source_freshness_limit_seconds,
+            supporting_source_freshness_limit_seconds=cadence_config.supporting_source_freshness_limit_seconds,
+            current_map_id_before=map_before.map_id if map_before is not None else None,
+            primary_latest_candle_ts_utc=context_row.latest_primary_close_ts_utc,
+            supporting_latest_candle_ts_utc=context_row.latest_support_close_ts_utc,
+            context_status=context_row.context_status,
+            source_primary_candle_count=context_row.source_primary_candle_count,
+            source_support_candle_count=context_row.source_support_candle_count,
+        )
+        _insert_observation(conn, observation, provenance=provenance, authorization=authorization)
+        return ScopeEvaluationOutcome(
+            key=key,
+            skipped_not_supported=False,
+            observation=observation,
+            published_map=False,
+            lifecycle_event_appended=False,
+            failed=False,
+        )
+
     scope_support = NativeShortMapScopeSupport(key=key, support_state=NativeShortMapScopeSupportState.SUPPORTED)
     try:
         result = materialize_scope_symbol_fn(
@@ -1075,12 +1151,6 @@ def evaluate_scope(
         )
 
     geometry_action = map_geometry_action(result)
-    source_state = classify_source_freshness(
-        primary_latest_ts=context_row.latest_primary_close_ts_utc,
-        supporting_latest_ts=context_row.latest_support_close_ts_utc,
-        as_of_utc=as_of_utc,
-        cadence_config=cadence_config,
-    )
 
     existing_maps_after = fetch_existing_maps(conn, key)
     existing_lifecycle_events_after = fetch_existing_lifecycle_events(
@@ -1195,6 +1265,8 @@ class ScopeChainOutcome:
     lifecycle_event_appended: bool
     failed: bool
     bootstrap_pending: bool = False
+    not_ready: bool = False
+    not_ready_reason_code: str | None = None
     """True only when this scope's map-level status step reported the expected
     first-map bootstrap branch (the scope has never published any map).
     Independent of `failed`, which keeps reflecting only `evaluate_scope`'s own
@@ -1239,7 +1311,8 @@ def evaluate_and_project_scope(
     A scope that has never published any map returns normally with
     `bootstrap_pending=True` instead of raising: that state is expected and
     transient, not an integrity defect (Issue #298). A genuine map-level
-    BLOCKED state still raises NativeShortMapLevelStatusBlockedError.
+    BLOCKED state still raises NativeShortMapLevelStatusBlockedError. A proven
+    source-blocked state returns a committed, non-fatal ``not_ready`` outcome.
     """
     materialize_map_level_status_fn = (
         materialize_map_level_status_fn
@@ -1300,7 +1373,7 @@ def evaluate_and_project_scope(
         primary_candle_close_timestamps = fetch_primary_candle_close_timestamps(key, as_of_utc)
         supporting_candle_close_timestamps = fetch_supporting_candle_close_timestamps(key, as_of_utc)
 
-    rebuild_scope_projection(
+    projection = rebuild_scope_projection(
         conn,
         key=key,
         as_of_utc=as_of_utc,
@@ -1335,6 +1408,30 @@ def evaluate_and_project_scope(
     )
     bootstrap_pending = level_status_outcome.branch == MAP_LEVEL_STATUS_EXPECTED_BOOTSTRAP
     if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
+        # SOURCE_STALE/SOURCE_UNAVAILABLE are expected scope-local readiness
+        # states. Their projection and zero-row map-level result must commit
+        # so downstream consumers fail closed on the exact current evidence,
+        # while unrelated scopes continue in their own transactions. Do not
+        # widen this exception: every other BLOCKED branch remains a hard
+        # integrity failure.
+        if (
+            projection is not None
+            and str(projection.actionability_state) == "BLOCKED_SOURCE"
+            and str(projection.scope_status_code) in {"SOURCE_STALE", "SOURCE_UNAVAILABLE"}
+            and str(projection.source_freshness_state)
+            in {"SOURCE_STALE", "SOURCE_UNAVAILABLE"}
+            and level_status_outcome.reason_code == str(projection.scope_status_code)
+            and level_status_outcome.row_count == 0
+        ):
+            return ScopeChainOutcome(
+                key=key,
+                skipped_not_supported=False,
+                published_map=outcome.published_map,
+                lifecycle_event_appended=outcome.lifecycle_event_appended,
+                failed=outcome.failed,
+                not_ready=True,
+                not_ready_reason_code=str(projection.scope_status_code),
+            )
         raise NativeShortMapLevelStatusBlockedError(
             "MAP_LEVEL_STATUS_BLOCKED "
             f"venue={key.venue} symbol={key.symbol} "
