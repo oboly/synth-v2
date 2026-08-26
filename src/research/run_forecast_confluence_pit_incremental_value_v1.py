@@ -249,6 +249,260 @@ def verify_metric_record_identity(canonical_outcomes: list[dict[str, Any]], metr
         )
 
 
+def classify_neutralization_attribution(row: dict[str, Any]) -> str:
+    """Counterfactual single-feature ablation via the canonical ``assess`` function.
+
+    This is an approximation, not an exact linear decomposition: ``assess``
+    renormalizes weighted confidence by the sum of *present* feature weights,
+    so isolating one feature also changes that denominator for the other.
+    It is reported as such and is not claimed to be a persisted ground-truth
+    attribution field.
+    """
+    rp_present = row["rotation_pressure_score"] is not None
+    sector_present = row["sector_rotation_score"] is not None
+    if not rp_present and not sector_present:
+        return "cannot_attribute_no_enrichment_present"
+    if rp_present and not sector_present:
+        return "rotation_pressure_only"
+    if sector_present and not rp_present:
+        return "sector_rotation_only"
+    rp_only_direction = assess({**row, "sector_rotation_score": None}, enriched=True)["direction"]
+    sector_only_direction = assess({**row, "rotation_pressure_score": None}, enriched=True)["direction"]
+    rp_alone_neutral = rp_only_direction == "NEUTRAL"
+    sector_alone_neutral = sector_only_direction == "NEUTRAL"
+    if rp_alone_neutral and not sector_alone_neutral:
+        return "rotation_pressure_only"
+    if sector_alone_neutral and not rp_alone_neutral:
+        return "sector_rotation_only"
+    if rp_alone_neutral and sector_alone_neutral:
+        return "both_either_sufficient"
+    return "both_interaction_required"
+
+
+def build_neutralization_records(
+    rows: list[dict[str, Any]], candles_by_market: dict[str, list[dict[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Classify every baseline VALID (non-neutral, endpoint-present) outcome as
+    RETAINED, NEUTRALIZED, or OTHER depending on what happens to the exact same
+    forecast identity + horizon under the enriched assessment.
+
+    Reuses ``forecast_identity``/``assess``/``outcome_with_exclusion`` from the
+    canonical modules; no identity or metric algorithm is re-derived here.
+    """
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        identity = forecast_identity(row)
+        candles = candles_by_market[row["market"]]
+        baseline_assessment = assess(row, enriched=False)
+        enriched_assessment = assess(row, enriched=True)
+        for horizon in HORIZONS:
+            horizon_hours = int(horizon.total_seconds() / 3600)
+            baseline_result, _baseline_reason = outcome_with_exclusion(row, baseline_assessment, candles, horizon)
+            if baseline_result is None:
+                continue
+            enriched_result, enriched_reason = outcome_with_exclusion(row, enriched_assessment, candles, horizon)
+            if enriched_result is not None:
+                status = "RETAINED"
+            elif enriched_reason == "neutral_direction":
+                status = "NEUTRALIZED"
+            else:
+                status = "OTHER"
+            record = {
+                **identity,
+                "horizon_hours": horizon_hours,
+                "status": status,
+                "baseline_return_pct": baseline_result["return_pct"],
+                "baseline_direction_hit": baseline_result["direction_hit"],
+                "baseline_mfe_pct": baseline_result["mfe_pct"],
+                "baseline_mae_pct": baseline_result["mae_pct"],
+                "baseline_confidence_bucket": baseline_result["confidence_bucket"],
+                "baseline_signal_combination": baseline_result["signal_combination"],
+                "rotation_pressure_state": row["pressure_state"] or "UNAVAILABLE",
+                "sector_rotation_state": row["sector_rotation_state"] or "UNAVAILABLE",
+                "sector_code": row["sector_code"] or "UNAVAILABLE",
+            }
+            if status == "NEUTRALIZED":
+                record["attribution"] = classify_neutralization_attribution(row)
+            records.append(record)
+    return records
+
+
+def _as_metric_inputs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"return_pct": r["baseline_return_pct"], "direction_hit": r["baseline_direction_hit"], "mfe_pct": r["baseline_mfe_pct"], "mae_pct": r["baseline_mae_pct"]}
+        for r in records
+    ]
+
+
+def neutralization_effect(retained: list[dict[str, Any]], neutralized: list[dict[str, Any]]) -> dict[str, Any]:
+    retained_metrics = metrics(_as_metric_inputs(retained))
+    neutralized_metrics = metrics(_as_metric_inputs(neutralized))
+    effect: dict[str, Any] = {}
+    for field in ("direction_hit_rate", "mean_forward_return_pct", "median_forward_return_pct", "positive_return_rate", "mean_mfe_pct", "mean_mae_pct"):
+        if field in retained_metrics and field in neutralized_metrics:
+            effect[field] = round(neutralized_metrics[field] - retained_metrics[field], 4)
+    return {"retained_metrics": retained_metrics, "neutralized_metrics": neutralized_metrics, "neutralized_minus_retained": effect}
+
+
+def bootstrap_two_sample_mean_diff_ci(
+    a_returns: list[float], b_returns: list[float], *, seed: int = BOOTSTRAP_SEED, resamples: int = BOOTSTRAP_RESAMPLES
+) -> dict[str, Any]:
+    """Deterministic bootstrap CI for mean(b) - mean(a), e.g. neutralized minus retained."""
+    if not a_returns or not b_returns:
+        return {"a_n": len(a_returns), "b_n": len(b_returns), "ci_95": [0.0, 0.0], "seed": seed, "resamples": resamples}
+    a = np.array(a_returns, dtype=float)
+    b = np.array(b_returns, dtype=float)
+    rng = np.random.default_rng(seed)
+    diffs = np.empty(resamples, dtype=float)
+    for i in range(resamples):
+        a_sample = a[rng.integers(0, len(a), size=len(a))]
+        b_sample = b[rng.integers(0, len(b), size=len(b))]
+        diffs[i] = b_sample.mean() - a_sample.mean()
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return {"a_n": len(a_returns), "b_n": len(b_returns), "ci_95": [round(float(lo), 4), round(float(hi), 4)], "seed": seed, "resamples": resamples}
+
+
+def _forecast_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    return (record["venue"], record["market"], record["forecast_as_of_utc"], record["map_id"])
+
+
+def neutralization_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
+    retained = [r for r in records if r["status"] == "RETAINED"]
+    neutralized = [r for r in records if r["status"] == "NEUTRALIZED"]
+    other = [r for r in records if r["status"] == "OTHER"]
+    baseline_forecasts = {_forecast_key(r) for r in records}
+    retained_forecasts = {_forecast_key(r) for r in retained}
+    neutralized_forecasts = {_forecast_key(r) for r in neutralized}
+    return {
+        "baseline_non_neutral_outcome_count": len(records),
+        "retained_outcome_count": len(retained),
+        "neutralized_outcome_count": len(neutralized),
+        "other_outcome_count": len(other),
+        "neutralization_rate": round(len(neutralized) / len(records), 4) if records else 0.0,
+        "baseline_non_neutral_unique_forecast_count": len(baseline_forecasts),
+        "retained_unique_forecast_count": len(retained_forecasts),
+        "neutralized_unique_forecast_count": len(neutralized_forecasts),
+    }
+
+
+def neutralization_grouped_section(records: list[dict[str, Any]], field: str, *, minimum_n: int = RANKING_MINIMUM_N) -> dict[str, Any]:
+    values = sorted({r[field] for r in records})
+    section: dict[str, Any] = {}
+    for value in values:
+        group = [r for r in records if r[field] == value]
+        retained = [r for r in group if r["status"] == "RETAINED"]
+        neutralized = [r for r in group if r["status"] == "NEUTRALIZED"]
+        entry = neutralization_effect(retained, neutralized)
+        entry["retained_count"] = len(retained)
+        entry["neutralized_count"] = len(neutralized)
+        entry["meets_ranking_floor"] = min(len(retained), len(neutralized)) >= minimum_n
+        section[value] = entry
+    return section
+
+
+def neutralization_attribution_summary(records: list[dict[str, Any]]) -> dict[str, int]:
+    neutralized = [r for r in records if r["status"] == "NEUTRALIZED"]
+    counts: dict[str, int] = {}
+    for r in neutralized:
+        key = r.get("attribution", "cannot_attribute_no_enrichment_present")
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_neutralization_recommendation(
+    coverage: dict[str, Any], overall_effect: dict[str, Any], bootstrap_ci: dict[str, Any], time_half_stable: bool, horizon_stable: bool
+) -> tuple[str, str]:
+    neutralized_n = coverage["neutralized_outcome_count"]
+    retained_n = coverage["retained_outcome_count"]
+    mean_diff = overall_effect["neutralized_minus_retained"].get("mean_forward_return_pct", 0.0)
+    ci_lo, ci_hi = bootstrap_ci["ci_95"]
+    if neutralized_n < RANKING_MINIMUM_N or retained_n < RANKING_MINIMUM_N:
+        return "KEEP_RESEARCH_ONLY", (
+            f"neutralized_outcome_count={neutralized_n} and/or retained_outcome_count={retained_n} is below the "
+            f"sample floor of {RANKING_MINIMUM_N}; insufficient sample for a defensible abstention-value conclusion"
+        )
+    ci_confidently_negative = ci_hi < 0
+    if mean_diff >= 0 or ci_lo > 0:
+        return "REJECT_FEATURE_ADDITION", (
+            f"neutralized_minus_retained mean_forward_return_pct={mean_diff} (bootstrap CI={bootstrap_ci['ci_95']}) "
+            "shows neutralized calls are not worse than retained calls; enrichment provides no abstention value "
+            "on this cohort"
+        )
+    if not ci_confidently_negative:
+        return "KEEP_RESEARCH_ONLY", (
+            f"neutralized_minus_retained mean_forward_return_pct={mean_diff} is negative but the bootstrap 95% "
+            f"CI={bootstrap_ci['ci_95']} does not exclude zero; abstention effect is not statistically distinguishable "
+            "from noise on the fixed cohort"
+        )
+    if not (time_half_stable and horizon_stable):
+        return "KEEP_RESEARCH_ONLY", (
+            f"neutralized_minus_retained mean_forward_return_pct={mean_diff} (CI={bootstrap_ci['ci_95']}) is "
+            "confidently negative but is not stable across the time-half and/or horizon splits"
+        )
+    return "READY_FOR_RULE_EXPERIMENT", (
+        f"neutralized calls are materially and robustly worse than retained calls "
+        f"(mean_forward_return_pct diff={mean_diff}, CI={bootstrap_ci['ci_95']}), with defensible sample size "
+        f"(retained_n={retained_n}, neutralized_n={neutralized_n}) and stability across time-half and horizon splits"
+    )
+
+
+def build_neutralization_analysis(records: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
+    coverage = neutralization_coverage(records)
+    retained = [r for r in records if r["status"] == "RETAINED"]
+    neutralized = [r for r in records if r["status"] == "NEUTRALIZED"]
+    overall_effect = neutralization_effect(retained, neutralized)
+    bootstrap_ci = bootstrap_two_sample_mean_diff_ci(
+        [r["baseline_return_pct"] for r in retained], [r["baseline_return_pct"] for r in neutralized]
+    )
+
+    midpoint = start + (end - start) / 2
+    first_half = [r for r in records if r["forecast_as_of_utc"] < iso_z(midpoint)]
+    second_half = [r for r in records if r["forecast_as_of_utc"] >= iso_z(midpoint)]
+
+    def _half_effect(half_records: list[dict[str, Any]]) -> dict[str, Any]:
+        half_retained = [r for r in half_records if r["status"] == "RETAINED"]
+        half_neutralized = [r for r in half_records if r["status"] == "NEUTRALIZED"]
+        return neutralization_effect(half_retained, half_neutralized)
+
+    first_half_effect = _half_effect(first_half)
+    second_half_effect = _half_effect(second_half)
+    first_diff = first_half_effect["neutralized_minus_retained"].get("mean_forward_return_pct")
+    second_diff = second_half_effect["neutralized_minus_retained"].get("mean_forward_return_pct")
+    time_half_stable = first_diff is not None and second_diff is not None and (first_diff <= 0) == (second_diff <= 0)
+
+    by_horizon = neutralization_grouped_section(records, "horizon_hours")
+    horizon_diffs = [v["neutralized_minus_retained"].get("mean_forward_return_pct") for v in by_horizon.values() if v.get("meets_ranking_floor")]
+    horizon_stable = len(horizon_diffs) > 0 and all((d <= 0) == (horizon_diffs[0] <= 0) for d in horizon_diffs)
+
+    recommendation, rationale = build_neutralization_recommendation(coverage, overall_effect, bootstrap_ci, time_half_stable, horizon_stable)
+
+    return {
+        "coverage": coverage,
+        "overall_effect": overall_effect,
+        "bootstrap_neutralized_minus_retained_mean_return_ci": bootstrap_ci,
+        "by_horizon": by_horizon,
+        "by_time_half": {
+            "midpoint_utc": iso_z(midpoint),
+            "first_half": first_half_effect,
+            "second_half": second_half_effect,
+            "stable": time_half_stable,
+        },
+        "by_rotation_pressure_state": neutralization_grouped_section(records, "rotation_pressure_state"),
+        "by_sector_rotation_state": neutralization_grouped_section(records, "sector_rotation_state"),
+        "by_confidence_bucket": neutralization_grouped_section(records, "baseline_confidence_bucket"),
+        "by_signal_combination": neutralization_grouped_section(records, "baseline_signal_combination"),
+        "attribution": neutralization_attribution_summary(records),
+        "attribution_note": (
+            "attribution is a counterfactual single-feature ablation via the canonical assess() function "
+            "(approximate due to weight renormalization by present-feature weight sum), not a persisted "
+            "ground-truth field"
+        ),
+        "horizon_stable": horizon_stable,
+        "recommendation": recommendation,
+        "recommendation_rationale": rationale,
+    }
+
+
 _PAIR_KEY_FIELDS = ("venue", "market", "forecast_as_of_utc", "map_id", "horizon_hours", "endpoint_close_ts_utc")
 
 
@@ -519,6 +773,7 @@ def build_analysis(
     canonical: CanonicalLedgers,
     baseline_records: list[dict[str, Any]],
     enriched_records: list[dict[str, Any]],
+    neutralization_records: list[dict[str, Any]],
     start: datetime,
     end: datetime,
     venue: str,
@@ -530,7 +785,20 @@ def build_analysis(
     independent_value_sector_rotation = independent_value_section(pairs, "sector_rotation_state")
     time_split = time_split_section(pairs, start, end)
     bootstrap = bootstrap_paired_mean_delta_ci(pairs)
-    recommendation, rationale = build_recommendation(paired, independent_value_rotation_pressure, time_split, bootstrap)
+    retained_call_recommendation, retained_call_rationale = build_recommendation(paired, independent_value_rotation_pressure, time_split, bootstrap)
+
+    neutralization = build_neutralization_analysis(neutralization_records, start, end)
+
+    # The retained-call paired comparison and the abstention/neutralization
+    # comparison are the two disjoint effect channels for this enrichment.
+    # The final recommendation follows the neutralization (abstention) decision
+    # contract, since that is the only channel where enrichment can plausibly
+    # add value once the retained-call effect is established to be zero.
+    recommendation = neutralization["recommendation"]
+    rationale = (
+        f"retained-call effect: {retained_call_rationale} | "
+        f"abstention effect (decisive channel): {neutralization['recommendation_rationale']}"
+    )
 
     return {
         "analysis_version": VERSION,
@@ -574,6 +842,17 @@ def build_analysis(
         },
         "time_split_stability": time_split,
         "bootstrap": bootstrap,
+        "retained_call_effect": {
+            "description": "paired baseline-vs-enriched direction/return quality on calls both modes still make",
+            "recommendation": retained_call_recommendation,
+            "rationale": retained_call_rationale,
+        },
+        "neutralization": neutralization,
+        "abstention_effect": {
+            "description": "whether calls the enriched mode neutralizes are systematically worse than calls it retains",
+            "recommendation": neutralization["recommendation"],
+            "rationale": neutralization["recommendation_rationale"],
+        },
         "sample_floors": {"ranking_minimum_n": RANKING_MINIMUM_N},
         "future_leakage": {
             "asserted": True,
@@ -623,6 +902,40 @@ def render_markdown_report(analysis: dict[str, Any]) -> str:
         f"- unchanged_count: {p.get('unchanged_count')}",
         "",
         "Aggregate unpaired counts alone are not treated as evidence of incremental value; the paired comparison above is the primary evidence.",
+        "",
+        "**Retained-call directional effect: zero.** Whenever both modes make a non-neutral call on the same "
+        "forecast identity + horizon, they agree on direction 100% of the time in this cohort, so return/MFE/MAE "
+        "deltas among retained calls are exactly zero. This channel provides no evidence of incremental value.",
+        "",
+        "## Abstention / neutralization effect (measured separately)",
+        "",
+        "Rotation Pressure and sector context change some baseline calls to NEUTRAL rather than changing the "
+        "direction of calls that remain active. This section asks whether those neutralized calls were "
+        "systematically worse than the calls the enriched mode retains -- the only channel through which this "
+        "enrichment could plausibly add value, given the zero retained-call effect above.",
+        "",
+        f"- baseline_non_neutral_outcome_count: {analysis['neutralization']['coverage']['baseline_non_neutral_outcome_count']}",
+        f"- retained_outcome_count: {analysis['neutralization']['coverage']['retained_outcome_count']}",
+        f"- neutralized_outcome_count: {analysis['neutralization']['coverage']['neutralized_outcome_count']}",
+        f"- other_outcome_count: {analysis['neutralization']['coverage']['other_outcome_count']}",
+        f"- neutralization_rate: {analysis['neutralization']['coverage']['neutralization_rate']}",
+        f"- baseline_non_neutral_unique_forecast_count: {analysis['neutralization']['coverage']['baseline_non_neutral_unique_forecast_count']}",
+        f"- retained_unique_forecast_count: {analysis['neutralization']['coverage']['retained_unique_forecast_count']}",
+        f"- neutralized_unique_forecast_count: {analysis['neutralization']['coverage']['neutralized_unique_forecast_count']}",
+        "",
+        f"- retained_metrics: {analysis['neutralization']['overall_effect']['retained_metrics']}",
+        f"- neutralized_metrics: {analysis['neutralization']['overall_effect']['neutralized_metrics']}",
+        f"- neutralized_minus_retained: {analysis['neutralization']['overall_effect']['neutralized_minus_retained']}",
+        f"- bootstrap CI (neutralized - retained mean return): {analysis['neutralization']['bootstrap_neutralized_minus_retained_mean_return_ci']}",
+        "",
+        f"- by_time_half stable: {analysis['neutralization']['by_time_half']['stable']}",
+        f"- by_horizon stable: {analysis['neutralization']['horizon_stable']}",
+        "",
+        f"- attribution counts: {analysis['neutralization']['attribution']}",
+        f"- attribution note: {analysis['neutralization']['attribution_note']}",
+        "",
+        f"- abstention_effect recommendation: **{analysis['abstention_effect']['recommendation']}**",
+        f"- {analysis['abstention_effect']['rationale']}",
         "",
         "## Coverage",
         "",
@@ -710,11 +1023,15 @@ def main(argv: list[str] | None = None) -> int:
             baseline=len(metric_records["baseline"]),
             enriched=len(metric_records["enriched"]),
         )
+        lifecycle.phase_started("BUILD_NEUTRALIZATION_RECORDS")
+        neutralization_records = build_neutralization_records(rows, candles)
+        lifecycle.phase_finished("BUILD_NEUTRALIZATION_RECORDS", count=len(neutralization_records))
         lifecycle.phase_started("INCREMENTAL_VALUE_ANALYSIS")
         analysis = build_analysis(
             canonical=canonical,
             baseline_records=metric_records["baseline"],
             enriched_records=metric_records["enriched"],
+            neutralization_records=neutralization_records,
             start=start,
             end=end,
             venue=args.venue,
