@@ -49,7 +49,10 @@ class FakeCursor:
         compact = " ".join(sql.split())
         self.conn.executed.append((compact, params))
         self.index = 0
-        if compact == "START TRANSACTION READ ONLY":
+        if compact in {
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
+        }:
             self.rows = []
         elif "FROM asset" in compact:
             assert params is not None
@@ -145,10 +148,13 @@ def terminal_lines(output: str) -> list[str]:
     ]
 
 
-def test_begin_read_only_transaction_is_explicit() -> None:
+def test_begin_read_only_transaction_guarantees_consistent_snapshot() -> None:
     conn = FakeConnection()
     begin_read_only_transaction(conn)
-    assert conn.executed == [("START TRANSACTION READ ONLY", None)]
+    assert conn.executed == [
+        ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", None),
+        ("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY", None),
+    ]
 
 
 def test_required_safety_markers_are_explicit() -> None:
