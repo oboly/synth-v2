@@ -28,22 +28,35 @@ src/research/run_bullish_breathline_canonical_4h_v1.py
 
 The runner:
 
-1. opens `START TRANSACTION READ ONLY`;
-2. resolves exactly one canonical `asset` row for RENDER and TAO;
-3. streams complete matching candle history with a PyMySQL server-side
+1. prints an immediate flushed `STARTED` line with mode, frozen scope and `workers=1`;
+2. opens `START TRANSACTION READ ONLY`;
+3. resolves exactly one canonical `asset` row for RENDER and TAO;
+4. streams complete matching candle history with a PyMySQL server-side
    `SSDictCursor` and `fetchmany(1000)` in `open_ts_utc` order;
-4. validates identity, timestamps, 4h candle span, OHLC and optional volume;
-5. records every spacing deviation as a gap without interpolation;
-6. serializes `open_ts_utc` as tracker CSV column `ts` and `volume_base` as
+5. reports query row counts, elapsed times, phases and progress heartbeats;
+6. validates identity, timestamps, 4h candle span, OHLC and optional volume;
+7. records every spacing deviation as a gap without interpolation;
+8. serializes `open_ts_utc` as tracker CSV column `ts` and `volume_base` as
    tracker CSV column `volume`;
-7. hashes the deterministic source CSV;
-8. closes the DB read-only snapshot before tracker computation;
-9. invokes `run_bullish_breathline_tracker_v1.run()` unchanged;
-10. hashes generated tracker artifacts and writes `run_manifest.json`.
+9. hashes the deterministic source CSVs and, after both exports finish under the
+   same DB snapshot, writes `source_checkpoint.json`;
+10. closes the DB read-only snapshot before tracker computation;
+11. invokes `run_bullish_breathline_tracker_v1.run()` unchanged, with periodic
+    heartbeat output around tracker phases;
+12. hashes generated tracker artifacts and writes `run_manifest.json`;
+13. finishes with exactly one flushed `FINISHED`, `INTERRUPTED`, or `FAILED`
+    terminal summary.
 
-Each run uses a new run directory. Existing run directories are never
+Each run uses a new run directory. Existing completed run directories are never
 silently overwritten. The generated run root is ignored by Git so canonical
 candle evidence cannot be accidentally committed as source code.
+
+`SIGINT` and `SIGTERM` are converted into a clean interruption request. Candle
+streaming stops between bounded batches. If interruption happens after the
+complete source checkpoint exists, those exact gehashte source CSVs are retained
+for provenance-strict resume. Tracker phases may finish their current #417 call
+before the interruption is finalized so the existing tracker is not modified to
+add interruption hooks.
 
 ## Host acceptance
 
@@ -56,6 +69,21 @@ python -m src.research.run_bullish_breathline_canonical_4h_v1 \
   --run-id empirical-RENDER-TAO-4h-<UTC_TIMESTAMP>
 ```
 
+If that exact run is interrupted after `source_checkpoint.json` was written,
+resume only with the same checked-out code provenance:
+
+```text
+python -m src.research.run_bullish_breathline_canonical_4h_v1 \
+  --run-id empirical-RENDER-TAO-4h-<UTC_TIMESTAMP> \
+  --resume
+```
+
+Resume verifies runner version, frozen scope, analysis commit, tracker source
+commit, tracker source hashes and both source CSV hashes before reusing data. A
+completed run containing `run_manifest.json` cannot be resumed or overwritten.
+If interruption occurred before the source checkpoint completed, `--resume`
+restarts the incomplete source phase instead of mixing partial DB snapshots.
+
 Before the broad empirical run, inspect the fixed candle query with `EXPLAIN`
 on the configured MariaDB host and confirm it uses the expected indexed
 asset/venue/interval/timestamp access path. Do not change query scope based on
@@ -65,6 +93,7 @@ Expected root output:
 
 ```text
 data/research/bullish_breathline_canonical_4h_v1/<run-id>/
+  source_checkpoint.json
   run_manifest.json
   RENDER/
     source/canonical_candles.csv
