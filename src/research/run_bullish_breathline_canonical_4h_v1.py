@@ -27,6 +27,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from pymysql.cursors import SSDictCursor
+
 from src.common.db import get_connection
 from src.research.bullish_breathline_tracker_v1 import MODEL_VERSION as TRACKER_MODEL_VERSION
 from src.research.run_bullish_breathline_tracker_v1 import run as run_tracker
@@ -296,7 +298,9 @@ def export_source_candles(
     gaps: list[GapRecord] = []
 
     try:
-        with conn.cursor() as cur, csv_path.open("w", encoding="utf-8", newline="") as handle:
+        with conn.cursor(SSDictCursor) as cur, csv_path.open(
+            "w", encoding="utf-8", newline=""
+        ) as handle:
             cur.execute(sql, (identity.asset_id, VENUE, INTERVAL_CODE))
             writer = csv.writer(handle, lineterminator="\n")
             writer.writerow(("ts", "open", "high", "low", "close", "volume"))
