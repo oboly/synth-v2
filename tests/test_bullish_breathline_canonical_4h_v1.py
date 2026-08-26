@@ -22,6 +22,7 @@ from src.research.run_bullish_breathline_canonical_4h_v1 import (
     export_source_candles,
     load_source_checkpoint,
     periodic_heartbeat,
+    prepare_tracker_output_dir,
     resolve_asset_identity,
     sha256_file,
     validate_run_id,
@@ -333,6 +334,22 @@ def test_zero_cycle_tracker_result_does_not_require_fabricated_ledger(tmp_path: 
 
     with pytest.raises(RuntimeError, match="expected tracker artifact missing"):
         collect_tracker_artifacts(tracker_dir, cycle_count=1)
+
+
+def test_prepare_tracker_output_dir_removes_stale_append_only_outputs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tracker_dir = tmp_path / "tracker"
+    tracker_dir.mkdir()
+    (tracker_dir / "cycle_ledger.jsonl").write_text('{"cycle_id":"stale"}\n', encoding="utf-8")
+    (tracker_dir / "summary.json").write_text('{"cycle_count":1}\n', encoding="utf-8")
+
+    prepare_tracker_output_dir(tracker_dir)
+    output = capsys.readouterr().out
+
+    assert not tracker_dir.exists()
+    assert "INFO reset_tracker_output" in output
 
 
 def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
