@@ -1,29 +1,23 @@
-name: Claude Code
+name: Claude Issue Implementer
 
 on:
   issue_comment:
     types: [created]
-  pull_request_review_comment:
-    types: [created]
-  issues:
-    types: [opened, assigned]
-  pull_request_review:
-    types: [submitted]
 
 jobs:
   claude:
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      github.event.issue.pull_request == null &&
+      github.event.comment.user.type == 'User' &&
+      contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,16 +28,42 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # This is an optional setting that allows Claude to read CI results on PRs
+          anthropic_federation_rule_id: fdrl_01TYKgXAv71EoxCVKeSbxmGp
+          anthropic_organization_id: 7418e2e6-9e2e-4fe0-bf59-847e76f4fce6
+          anthropic_service_account_id: svac_01HU7ZCmaWhxpdh6cosJ6VP4
+          base_branch: main
           additional_permissions: |
             actions: read
+          prompt: |
+            HOST: GitHub-hosted ubuntu-latest
+            ROLE: issue implementer
+            THREAD: CLEAR
+            DEPLOYMENT PERMISSION: not granted
+            RUNTIME MUTATION PERMISSION: not granted
+            DB WRITE PERMISSION: not granted
+            BROKER / PRIVATE API PERMISSION: not granted
+            LIVE TRADING PERMISSION: not granted
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
+            Implement GitHub issue #${{ github.event.issue.number }} in ${{ github.repository }}.
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+            Issue title:
+            ${{ github.event.issue.title }}
+
+            Issue body:
+            ${{ github.event.issue.body }}
+
+            Trigger instructions:
+            ${{ github.event.comment.body }}
+
+            First read AGENTS.md and CLAUDE.md. Read additional canonical/scoped docs only when relevant.
+            Treat the issue body as the task contract and the trigger as narrowing guidance only.
+            Stay strictly inside scope and architecture boundaries.
+            Use focused validation proportional to the change.
+            Do not deploy, mutate runtime or database state, use private broker APIs, or enable live trading.
+            Do not use web/network research unless the issue explicitly requires it.
+          claude_args: |
+            --model sonnet
+            --effort medium
+            --max-turns 24
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *)"
+            --disallowedTools WebSearch
