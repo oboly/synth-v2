@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -9,17 +10,22 @@ from typing import Any
 import pytest
 from pymysql.cursors import SSDictCursor
 
+import src.research.run_bullish_breathline_canonical_4h_v1 as runner_module
 from src.research.run_bullish_breathline_canonical_4h_v1 import (
     FETCH_BATCH_ROWS,
     INTERVAL_CODE,
     VENUE,
     AssetIdentity,
+    RunnerInterrupted,
     begin_read_only_transaction,
     collect_tracker_artifacts,
     export_source_candles,
+    load_source_checkpoint,
+    periodic_heartbeat,
     resolve_asset_identity,
     sha256_file,
     validate_run_id,
+    write_source_checkpoint,
 )
 
 
@@ -128,15 +134,29 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def terminal_lines(output: str) -> list[str]:
+    return [
+        line
+        for line in output.splitlines()
+        if line.startswith("FINISHED ")
+        or line.startswith("FAILED ")
+        or line.startswith("INTERRUPTED ")
+    ]
+
+
 def test_begin_read_only_transaction_is_explicit() -> None:
     conn = FakeConnection()
     begin_read_only_transaction(conn)
     assert conn.executed == [("START TRANSACTION READ ONLY", None)]
 
 
-def test_resolve_asset_identity_requires_single_frozen_identity() -> None:
+def test_resolve_asset_identity_requires_single_frozen_identity(capsys: pytest.CaptureFixture[str]) -> None:
     conn = FakeConnection(assets={"RENDER": [{"asset_id": 7, "symbol": "RENDER"}]})
     assert resolve_asset_identity(conn, "render") == AssetIdentity(asset_id=7, symbol="RENDER")
+    output = capsys.readouterr().out
+    assert "QUERY_FINISHED resolve_asset_identity" in output
+    assert "row_count=1" in output
+    assert "symbol=RENDER" in output
 
     with pytest.raises(ValueError, match="outside frozen"):
         resolve_asset_identity(conn, "BTC")
@@ -146,7 +166,10 @@ def test_resolve_asset_identity_requires_single_frozen_identity() -> None:
         resolve_asset_identity(missing, "RENDER")
 
 
-def test_export_streams_and_maps_open_ts_to_tracker_ts(tmp_path: Path) -> None:
+def test_export_streams_and_maps_open_ts_to_tracker_ts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     identity = AssetIdentity(asset_id=7, symbol="RENDER")
     rows = [
         candle_row(asset_id=7, open_ts=BASE + timedelta(hours=offset))
@@ -157,6 +180,7 @@ def test_export_streams_and_maps_open_ts_to_tracker_ts(tmp_path: Path) -> None:
 
     result = export_source_candles(conn, identity=identity, csv_path=path)
     exported = read_csv(path)
+    output = capsys.readouterr().out
 
     assert result.source_row_count == 5
     assert result.source_gap_count == 0
@@ -175,6 +199,9 @@ def test_export_streams_and_maps_open_ts_to_tracker_ts(tmp_path: Path) -> None:
     assert conn.fetchmany_sizes
     assert all(size == FETCH_BATCH_ROWS for size in conn.fetchmany_sizes)
     assert any("ORDER BY open_ts_utc ASC" in sql for sql, _ in conn.executed)
+    assert "QUERY_FINISHED source_export" in output
+    assert "row_count=5" in output
+    assert "CHECKPOINT source_csv" in output
 
 
 def test_gap_is_reported_without_fabricating_rows(tmp_path: Path) -> None:
@@ -282,6 +309,138 @@ def test_zero_cycle_tracker_result_does_not_require_fabricated_ledger(tmp_path: 
 
     with pytest.raises(RuntimeError, match="expected tracker artifact missing"):
         collect_tracker_artifacts(tracker_dir, cycle_count=1)
+
+
+def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    source_by_symbol = {}
+    for asset_id, symbol in ((7, "RENDER"), (8, "TAO")):
+        path = run_dir / symbol / "source" / "canonical_candles.csv"
+        conn = FakeConnection(
+            candles={asset_id: [candle_row(asset_id=asset_id, open_ts=BASE)]}
+        )
+        source_by_symbol[symbol] = export_source_candles(
+            conn,
+            identity=AssetIdentity(asset_id=asset_id, symbol=symbol),
+            csv_path=path,
+        )
+
+    hashes = {"tracker.py": "abc123"}
+    checkpoint = write_source_checkpoint(
+        run_dir,
+        run_id="resume-test",
+        analysis_commit_sha="analysis-sha",
+        tracker_source_commit_sha="tracker-sha",
+        tracker_source_sha256=hashes,
+        source_by_symbol=source_by_symbol,
+    )
+    identities, loaded, loaded_path = load_source_checkpoint(
+        run_dir,
+        run_id="resume-test",
+        analysis_commit_sha="analysis-sha",
+        tracker_source_commit_sha="tracker-sha",
+        tracker_source_sha256=hashes,
+    )
+
+    assert loaded_path == checkpoint
+    assert [identity.symbol for identity in identities] == ["RENDER", "TAO"]
+    assert loaded["RENDER"].source_sha256 == source_by_symbol["RENDER"].source_sha256
+
+    render_path = Path(loaded["RENDER"].source_csv)
+    render_path.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        load_source_checkpoint(
+            run_dir,
+            run_id="resume-test",
+            analysis_commit_sha="analysis-sha",
+            tracker_source_commit_sha="tracker-sha",
+            tracker_source_sha256=hashes,
+        )
+
+
+def test_periodic_heartbeat_emits_progress(capsys: pytest.CaptureFixture[str]) -> None:
+    with periodic_heartbeat("tracker", interval_seconds=0.01, symbol="RENDER"):
+        time.sleep(0.04)
+    output = capsys.readouterr().out
+    assert "HEARTBEAT tracker" in output
+    assert "symbol=RENDER" in output
+    assert "elapsed_seconds=" in output
+
+
+def test_main_emits_exactly_one_finished_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "run",
+        lambda **_kwargs: {
+            "assets": [
+                {
+                    "symbol": "RENDER",
+                    "source_row_count": 10,
+                    "source_gap_count": 0,
+                    "tracker_summary": {"cycle_count": 2},
+                }
+            ]
+        },
+    )
+
+    rc = runner_module.main(
+        ["--out-root", str(tmp_path), "--run-id", "lifecycle-success"]
+    )
+    output = capsys.readouterr().out
+    lines = output.splitlines()
+
+    assert rc == 0
+    assert lines[0].startswith("STARTED bullish_breathline_canonical_4h_v1 ")
+    assert "mode=canonical_db_to_tracker" in lines[0]
+    assert "workers=1" in lines[0]
+    assert len(terminal_lines(output)) == 1
+    assert terminal_lines(output)[0].startswith("FINISHED ")
+    assert lines[-1].startswith("FINISHED ")
+
+
+def test_main_emits_exactly_one_failed_terminal_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def fail(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(runner_module, "run", fail)
+    rc = runner_module.main(
+        ["--out-root", str(tmp_path), "--run-id", "lifecycle-failure"]
+    )
+    output = capsys.readouterr().out
+
+    assert rc == 1
+    assert len(terminal_lines(output)) == 1
+    assert terminal_lines(output)[0].startswith("FAILED ")
+    assert "error_type=RuntimeError" in terminal_lines(output)[0]
+    assert "Traceback" not in output
+
+
+def test_main_emits_exactly_one_interrupted_terminal_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    def interrupt(**_kwargs: Any) -> dict[str, Any]:
+        raise RunnerInterrupted("synthetic interrupt")
+
+    monkeypatch.setattr(runner_module, "run", interrupt)
+    rc = runner_module.main(
+        ["--out-root", str(tmp_path), "--run-id", "lifecycle-interrupt"]
+    )
+    output = capsys.readouterr().out
+
+    assert rc == 130
+    assert len(terminal_lines(output)) == 1
+    assert terminal_lines(output)[0].startswith("INTERRUPTED ")
+    assert "Traceback" not in output
 
 
 def test_run_id_is_safe_for_versioned_artifact_directory() -> None:
