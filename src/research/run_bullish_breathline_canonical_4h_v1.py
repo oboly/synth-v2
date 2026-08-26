@@ -258,6 +258,10 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def runner_source_sha256() -> str:
+    return sha256_file(Path(__file__).resolve())
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
@@ -583,6 +587,7 @@ def write_source_checkpoint(
     *,
     run_id: str,
     analysis_commit_sha: str,
+    runner_source_sha256_value: str,
     tracker_source_commit_sha: str,
     tracker_source_sha256: dict[str, str],
     source_by_symbol: dict[str, SourceExportResult],
@@ -599,6 +604,7 @@ def write_source_checkpoint(
         "symbols": list(SYMBOLS),
         "interval_code": INTERVAL_CODE,
         "analysis_commit_sha": analysis_commit_sha,
+        "runner_source_sha256": runner_source_sha256_value,
         "tracker_source_commit_sha": tracker_source_commit_sha,
         "tracker_source_sha256": tracker_source_sha256,
         "assets": [source_result_payload(source_by_symbol[symbol]) for symbol in SYMBOLS],
@@ -619,6 +625,7 @@ def load_source_checkpoint(
     *,
     run_id: str,
     analysis_commit_sha: str,
+    runner_source_sha256_value: str,
     tracker_source_commit_sha: str,
     tracker_source_sha256: dict[str, str],
 ) -> tuple[list[AssetIdentity], dict[str, SourceExportResult], Path]:
@@ -636,6 +643,7 @@ def load_source_checkpoint(
         "symbols": list(SYMBOLS),
         "interval_code": INTERVAL_CODE,
         "analysis_commit_sha": analysis_commit_sha,
+        "runner_source_sha256": runner_source_sha256_value,
         "tracker_source_commit_sha": tracker_source_commit_sha,
         "tracker_source_sha256": tracker_source_sha256,
     }
@@ -732,6 +740,7 @@ def run(
 
     root = repo_root()
     analysis_commit_sha = resolve_analysis_commit(root)
+    runner_hash = runner_source_sha256()
     tracker_source_commit_sha = resolve_tracker_source_commit(root)
     source_hashes = tracker_source_hashes(root)
     run_ts = utc_now()
@@ -752,6 +761,7 @@ def run(
                 run_dir,
                 run_id=frozen_run_id,
                 analysis_commit_sha=analysis_commit_sha,
+                runner_source_sha256_value=runner_hash,
                 tracker_source_commit_sha=tracker_source_commit_sha,
                 tracker_source_sha256=source_hashes,
             )
@@ -793,6 +803,7 @@ def run(
             run_dir,
             run_id=frozen_run_id,
             analysis_commit_sha=analysis_commit_sha,
+            runner_source_sha256_value=runner_hash,
             tracker_source_commit_sha=tracker_source_commit_sha,
             tracker_source_sha256=source_hashes,
             source_by_symbol=source_by_symbol,
@@ -869,6 +880,7 @@ def run(
             "db_transaction_isolation": TRANSACTION_ISOLATION_SQL,
             "db_transaction": TRANSACTION_START_SQL,
             "analysis_commit_sha": analysis_commit_sha,
+            "runner_source_sha256": runner_hash,
             "tracker_source_commit_sha": tracker_source_commit_sha,
             "tracker_model_version": TRACKER_MODEL_VERSION,
             "tracker_source_sha256": source_hashes,
