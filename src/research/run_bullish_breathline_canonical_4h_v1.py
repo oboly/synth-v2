@@ -209,8 +209,11 @@ def resolve_asset_identity(conn: Any, symbol: str) -> AssetIdentity:
 
 
 def validate_scope_row(row: dict[str, Any], identity: AssetIdentity) -> None:
-    observed_asset_id = int(row.get("asset_id"))
-    observed_venue = str(row.get("venue") or "").strip().lower()
+    asset_id_raw = row.get("asset_id")
+    if asset_id_raw is None:
+        raise ValueError("missing required candle field: asset_id")
+    observed_asset_id = int(asset_id_raw)
+    observed_venue = str(row.get("venue") or "").strip()
     observed_interval = str(row.get("interval_code") or "").strip()
     if observed_asset_id != identity.asset_id:
         raise ValueError(
@@ -363,17 +366,38 @@ def export_source_candles(
     )
 
 
-def require_tracker_artifacts(tracker_dir: Path) -> dict[str, dict[str, str]]:
-    required = ("cycle_ledger.jsonl", "latest_cycles.json", "summary.json")
-    result: dict[str, dict[str, str]] = {}
-    for filename in required:
+def collect_tracker_artifacts(
+    tracker_dir: Path,
+    *,
+    cycle_count: int,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for filename in ("latest_cycles.json", "summary.json"):
         path = tracker_dir / filename
         if not path.is_file():
             raise RuntimeError(f"expected tracker artifact missing: {path}")
         result[filename] = {
             "path": str(path),
+            "present": True,
             "sha256": sha256_file(path),
         }
+
+    ledger_path = tracker_dir / "cycle_ledger.jsonl"
+    if ledger_path.is_file():
+        result["cycle_ledger.jsonl"] = {
+            "path": str(ledger_path),
+            "present": True,
+            "sha256": sha256_file(ledger_path),
+        }
+    elif cycle_count == 0:
+        result["cycle_ledger.jsonl"] = {
+            "path": str(ledger_path),
+            "present": False,
+            "sha256": None,
+            "reason": "existing #417 append_cycle_ledger emits no file when cycle_count=0",
+        }
+    else:
+        raise RuntimeError(f"expected tracker artifact missing: {ledger_path}")
     return result
 
 
@@ -398,28 +422,43 @@ def run(
     source_hashes = tracker_source_hashes(root)
     run_ts = utc_now()
 
-    conn = get_connection()
+    conn: Any | None = get_connection()
     created_run_dir = False
+    source_by_symbol: dict[str, SourceExportResult] = {}
+    identities: list[AssetIdentity] = []
     try:
         begin_read_only_transaction(conn)
         identities = [resolve_asset_identity(conn, symbol) for symbol in SYMBOLS]
 
         run_dir.mkdir(parents=True, exist_ok=False)
         created_run_dir = True
-        assets_manifest: list[dict[str, Any]] = []
-
         for identity in identities:
-            asset_dir = run_dir / identity.symbol
-            source_csv = asset_dir / "source" / "canonical_candles.csv"
-            tracker_dir = asset_dir / "tracker"
+            source_csv = run_dir / identity.symbol / "source" / "canonical_candles.csv"
+            source_by_symbol[identity.symbol] = export_source_candles(
+                conn,
+                identity=identity,
+                csv_path=source_csv,
+            )
 
-            source = export_source_candles(conn, identity=identity, csv_path=source_csv)
+        conn.rollback()
+        conn.close()
+        conn = None
+
+        assets_manifest: list[dict[str, Any]] = []
+        for identity in identities:
+            source = source_by_symbol[identity.symbol]
+            source_csv = Path(source.source_csv)
+            tracker_dir = run_dir / identity.symbol / "tracker"
             tracker_summary = run_tracker(
                 csv_path=source_csv,
                 symbol=identity.symbol,
                 out_dir=tracker_dir,
             )
-            tracker_artifacts = require_tracker_artifacts(tracker_dir)
+            cycle_count = int(tracker_summary.get("cycle_count") or 0)
+            tracker_artifacts = collect_tracker_artifacts(
+                tracker_dir,
+                cycle_count=cycle_count,
+            )
 
             source_payload = asdict(source)
             source_payload["gaps"] = [asdict(gap) for gap in source.gaps]
@@ -456,6 +495,7 @@ def run(
             "input_interval_is_cycle_duration": False,
             "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
             "fetch_batch_rows": FETCH_BATCH_ROWS,
+            "db_transaction": "START TRANSACTION READ ONLY",
             "analysis_commit_sha": analysis_commit_sha,
             "tracker_source_commit_sha": tracker_source_commit_sha,
             "tracker_model_version": TRACKER_MODEL_VERSION,
@@ -488,10 +528,11 @@ def run(
             shutil.rmtree(run_dir, ignore_errors=True)
         raise
     finally:
-        try:
-            conn.rollback()
-        finally:
-            conn.close()
+        if conn is not None:
+            try:
+                conn.rollback()
+            finally:
+                conn.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
