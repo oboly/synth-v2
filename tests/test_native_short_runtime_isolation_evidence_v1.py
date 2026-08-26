@@ -40,9 +40,10 @@ def _stub_runtime(**overrides: Any) -> SimpleNamespace:
     remove or corrupt precisely one attribute and prove it fails closed."""
     attrs: dict[str, Any] = {
         "TRANSACTION_BOUNDARY": "exact_scope",
-        "FAILURE_POLICY": "continue_on_unexpected_stop_on_blocked",
+        "FAILURE_POLICY": "continue_on_unexpected_and_expected_not_ready_stop_on_integrity_blocked",
         "SCOPE_STATUS_SUCCEEDED": "SUCCEEDED",
         "SCOPE_STATUS_SKIPPED_NOT_SUPPORTED": "SKIPPED_NOT_SUPPORTED",
+        "SCOPE_STATUS_SKIPPED_NOT_READY": "SKIPPED_NOT_READY",
         "SCOPE_STATUS_BLOCKED": "BLOCKED",
         "SCOPE_STATUS_UNEXPECTED_FAILED": "UNEXPECTED_FAILED",
         "ScopeChainResult": _FakeScopeChainResult,

@@ -102,11 +102,14 @@ exactly the kind of heuristic Issue #298 forbids for this classification.
   scope produces identical evidence and exactly one terminal record per
   invocation.
 
-Genuine `BLOCKED` states — case (b) above and every other blocked reason
-(`PROJECTION_MISSING`, `PROJECTION_INVALID`, `GEOMETRY_INVALID`,
-`CONFIGURATION_UNAVAILABLE`, `SOURCE_UNAVAILABLE`, `SOURCE_STALE`,
-`OBSERVATION_OVERDUE`, …) — retain their hard-stop, fail-closed behavior
-unchanged. `BLOCKED` semantics were not globally weakened.
+Issue #543 classifies the proven source-readiness tuple
+`SOURCE_UNAVAILABLE` or `SOURCE_STALE` + `BLOCKED_SOURCE` as
+`SCOPE_STATUS_SKIPPED_NOT_READY`: the scope projection and empty level
+collection commit fail-closed, the loop continues, and the run remains
+`FINISHED` when no other failure occurs. All other `BLOCKED` states — case (b)
+above and `PROJECTION_MISSING`, `PROJECTION_INVALID`, `GEOMETRY_INVALID`,
+`CONFIGURATION_UNAVAILABLE`, `OBSERVATION_OVERDUE`, and any inconsistent
+combination — retain their hard-stop, fail-closed behavior.
 
 ## What counts as evidence
 
