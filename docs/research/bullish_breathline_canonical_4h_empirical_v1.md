@@ -30,8 +30,8 @@ The runner:
 
 1. opens `START TRANSACTION READ ONLY`;
 2. resolves exactly one canonical `asset` row for RENDER and TAO;
-3. streams complete matching candle history with `fetchmany(1000)` in
-   `open_ts_utc` order;
+3. streams complete matching candle history with a PyMySQL server-side
+   `SSDictCursor` and `fetchmany(1000)` in `open_ts_utc` order;
 4. validates identity, timestamps, 4h candle span, OHLC and optional volume;
 5. records every spacing deviation as a gap without interpolation;
 6. serializes `open_ts_utc` as tracker CSV column `ts` and `volume_base` as
@@ -42,7 +42,8 @@ The runner:
 10. hashes generated tracker artifacts and writes `run_manifest.json`.
 
 Each run uses a new run directory. Existing run directories are never
-silently overwritten.
+silently overwritten. The generated run root is ignored by Git so canonical
+candle evidence cannot be accidentally committed as source code.
 
 ## Host acceptance
 
