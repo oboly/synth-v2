@@ -150,6 +150,30 @@ def test_begin_read_only_transaction_is_explicit() -> None:
     assert conn.executed == [("START TRANSACTION READ ONLY", None)]
 
 
+def test_required_safety_markers_are_explicit() -> None:
+    markers = runner_module.SAFETY_MARKERS
+    assert markers["research_only"] is True
+    assert markers["market_only"] is True
+    assert markers["account_awareness"] == 0
+    assert markers["selection_engine_changes"] == 0
+    assert markers["decision_gate_changes"] == 0
+    assert markers["execution_planner_changes"] == 0
+    assert markers["executor_changes"] == 0
+    assert markers["broker_calls"] == 0
+    assert markers["broker_private_calls"] == 0
+    assert markers["broker_writes"] == 0
+    assert markers["order_submission"] == 0
+    assert markers["live_orders"] == 0
+    assert markers["live_trading_permission"] == 0
+    assert markers["db_writes"] == 0
+    assert markers["production_db_writes"] == 0
+    assert markers["production_schema_changes"] == 0
+    assert markers["runtime_activation"] == 0
+    assert markers["decision_gate"] == "none"
+    assert markers["execution_planner"] == "none"
+    assert markers["executor"] == "none"
+
+
 def test_resolve_asset_identity_requires_single_frozen_identity(capsys: pytest.CaptureFixture[str]) -> None:
     conn = FakeConnection(assets={"RENDER": [{"asset_id": 7, "symbol": "RENDER"}]})
     assert resolve_asset_identity(conn, "render") == AssetIdentity(asset_id=7, symbol="RENDER")
@@ -392,13 +416,21 @@ def test_main_emits_exactly_one_finished_terminal(
     )
     output = capsys.readouterr().out
     lines = output.splitlines()
+    terminals = terminal_lines(output)
 
     assert rc == 0
     assert lines[0].startswith("STARTED bullish_breathline_canonical_4h_v1 ")
     assert "mode=canonical_db_to_tracker" in lines[0]
     assert "workers=1" in lines[0]
-    assert len(terminal_lines(output)) == 1
-    assert terminal_lines(output)[0].startswith("FINISHED ")
+    assert len(terminals) == 1
+    assert terminals[0].startswith("FINISHED ")
+    assert "broker_private_calls=0" in terminals[0]
+    assert "broker_writes=0" in terminals[0]
+    assert "order_submission=0" in terminals[0]
+    assert "live_orders=0" in terminals[0]
+    assert "decision_gate=none" in terminals[0]
+    assert "execution_planner=none" in terminals[0]
+    assert "executor=none" in terminals[0]
     assert lines[-1].startswith("FINISHED ")
 
 
