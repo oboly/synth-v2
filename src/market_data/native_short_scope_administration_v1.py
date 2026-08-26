@@ -37,6 +37,7 @@ class NativeShortScopeAdministrationValidationError(ValueError):
 class NativeShortScopeAdministrationOperationType(StrEnum):
     ADOPT_LEGACY_SCOPE = "ADOPT_LEGACY_SCOPE"
     PROMOTE_SCOPE = "PROMOTE_SCOPE"
+    AUTO_ONBOARD_SCOPE = "AUTO_ONBOARD_SCOPE"
     REMOVE_SCOPE = "REMOVE_SCOPE"
 
 

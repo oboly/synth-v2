@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-"""Native SHORT bulk PROMOTE_SCOPE readiness derivation (v2).
+"""HISTORICAL ROLLOUT TOOLING ONLY. It has no authority over ongoing automatic onboarding.
+
+Native SHORT bulk PROMOTE_SCOPE readiness derivation (v2).
 
 Boundary: native SHORT market-data, read-only, market-only, account-agnostic.
 This module performs no database I/O, no mutation, and no promotion. It is a
@@ -63,7 +65,7 @@ executor=none
 """
 
 from src.market_data.native_short_multi_asset_audit_v1 import (
-    READY_FOR_SEQUENTIAL_CANARY_REVIEW,
+    READY,
     AuditReport,
     CandidateResult,
 )
@@ -90,7 +92,7 @@ def ready_symbols(report: AuditReport) -> tuple[str, ...]:
     ``PROMOTE_SCOPE``: market-eligible, ledger-consistent, and
     market/ledger-ready per the unchanged
     ``native_short_multi_asset_audit_v1`` readiness gate
-    (``readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW``), with no
+    (``readiness_status == READY``), with no
     currently active global blocker applicable to ``PROMOTE_SCOPE``
     (``applicable_active_global_blockers``, unchanged). Not already
     supported.
@@ -101,7 +103,7 @@ def ready_symbols(report: AuditReport) -> tuple[str, ...]:
     """
     ready = []
     for result in report.results:
-        if result.readiness_status != READY_FOR_SEQUENTIAL_CANARY_REVIEW:
+        if result.readiness_status != READY:
             continue
         if applicable_active_global_blockers(
             OperationType.PROMOTE_SCOPE, result.global_blocker_codes
@@ -145,7 +147,7 @@ def is_symbol_promote_scope_ready(report: AuditReport, symbol: str) -> tuple[boo
         return False, "SYMBOL_NOT_IN_CANONICAL_MARKET_UNIVERSE"
     if result.scope_states == ("SUPPORTED",):
         return True, "ALREADY_SUPPORTED"
-    if result.readiness_status != READY_FOR_SEQUENTIAL_CANARY_REVIEW:
+    if result.readiness_status != READY:
         return False, result.readiness_status
     if applicable_active_global_blockers(
         OperationType.PROMOTE_SCOPE, result.global_blocker_codes

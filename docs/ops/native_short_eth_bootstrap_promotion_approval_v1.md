@@ -1,3 +1,5 @@
+> Historical rollout record only. It has no authority over ongoing Native SHORT automatic onboarding.
+
 # Native SHORT ETH bootstrap-promotion approval
 
 ## Status

@@ -164,6 +164,7 @@ def _install_chain_doubles(
     return the list of (run_id, record) terminalizations that were performed."""
     finalized: list[tuple[int, NativeShortMaterializerRunRecord]] = []
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(runner, "reconcile_ready_scopes", lambda *a, **k: ())
     monkeypatch.setattr(runner, "fetch_supported_scope_keys", lambda *a, **k: list(scopes))
     monkeypatch.setattr(runner, "_insert_run", lambda connection, record, **k: 4242)
     monkeypatch.setattr(
@@ -1157,3 +1158,52 @@ def test_expected_source_stale_reports_machine_readable_reason(
     scope_event = next(event for event in events if event["event"] == "SCOPE_RESULT")
     assert scope_event["status"] == runner.SCOPE_STATUS_SKIPPED_NOT_READY
     assert scope_event["reason_code"] == "SOURCE_STALE"
+
+
+@pytest.mark.parametrize("symbol", ("DGB", "NOT"))
+def test_supported_stale_scope_is_selected_and_skipped_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    symbol: str,
+) -> None:
+    """Structural support stays stable; freshness is a scope-local run result."""
+    conn = _FakeConn()
+    _install_chain_doubles(
+        monkeypatch,
+        conn,
+        [_scope(symbol)],
+        lambda connection, **kwargs: _chain_outcome(
+            kwargs["key"], not_ready=True, not_ready_reason_code="SOURCE_STALE"
+        ),
+    )
+    result = _execute()
+    assert [item.key.symbol for item in result.scope_results] == [symbol]
+    assert result.scope_results[0].status == runner.SCOPE_STATUS_SKIPPED_NOT_READY
+    assert result.scope_results[0].detail == "BLOCKED_SOURCE reason_code=SOURCE_STALE"
+
+
+def test_scheduled_chain_auto_onboards_before_dynamic_scope_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    attempted: list[str] = []
+    _install_chain_doubles(
+        monkeypatch,
+        conn,
+        [],
+        lambda connection, **kwargs: attempted.append(kwargs["key"].symbol)
+        or _chain_outcome(kwargs["key"]),
+    )
+    phases: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "reconcile_ready_scopes",
+        lambda *args, **kwargs: phases.append("onboard") or (),
+    )
+    monkeypatch.setattr(
+        runner,
+        "fetch_supported_scope_keys",
+        lambda *args, **kwargs: (phases.append("fetch") or [_scope("IOST")]),
+    )
+    _execute()
+    assert phases == ["onboard", "fetch"]
+    assert attempted == ["IOST"]

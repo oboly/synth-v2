@@ -5,7 +5,8 @@
 This document defines the repository contract and schema ownership for Native
 SHORT scope administration. The pure request contract, the forward-only schema,
 and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`,
-`PROMOTE_SCOPE`, and `REMOVE_SCOPE` are implemented in the repository. This
+`PROMOTE_SCOPE`, `REMOVE_SCOPE`, and automatic `AUTO_ONBOARD_SCOPE` are
+implemented in the repository. This
 document authorizes no production database mutation, deployment, migration
 application, host acceptance, or new production scope.
 
@@ -39,7 +40,8 @@ generation; this migration never does so.
 database-free values for:
 
 - exact canonical scope-key normalization;
-- `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` as distinct operations;
+- `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, `REMOVE_SCOPE`, and
+  `AUTO_ONBOARD_SCOPE` as distinct operations;
 - explicit actor and trigger provenance, including explicit test-only values;
 - closed result classes and result codes;
 - canonical JSON metadata and the SHA-256 digest of the complete immutable
@@ -214,8 +216,20 @@ The following remain explicitly deferred:
   config ID immediately before the bounded writer transaction commits);
 - `NO_CURRENT_MAP` bootstrap semantics for a newly supported scope;
 - per-symbol failure isolation across a multi-scope rollout;
-- the sequential SOL canary, then ETH, then XRP, then broader rollout;
+- historical sequential-canary rollout administration; it has no authority
+  over ongoing automatic onboarding;
 - any production database mutation, migration application, host acceptance, or
   operational acceptance.
 
 No persistent writer-fence table is part of this contract.
+
+## Ongoing automatic onboarding (Issue #539)
+
+`AUTO_ONBOARD_SCOPE` is the normal market-data lifecycle transition for an
+unsupported Bitvavo EUR market whose canonical evidence evaluates `READY`.
+It persists the same atomic scope, cadence, support-event, and operation-ledger
+invariants as an administrative promotion, but requires no sequential canary,
+per-symbol approval, bootstrap manifest, removal-contract evidence, or manual
+`PROMOTE_SCOPE`. Historical `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and
+`REMOVE_SCOPE` tooling remains for repair/history only and has no authority
+over automatic onboarding.

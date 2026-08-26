@@ -26,8 +26,8 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     PRIMARY_CONTEXT_UNAVAILABLE,
     PROMOTION_CONTRACT_MISSING,
     PROVENANCE_AUDIT_RUN_UUID,
-    READY_EXISTING_CANARY,
-    READY_FOR_SEQUENTIAL_CANARY_REVIEW,
+    SUPPORTED,
+    READY,
     REMOVAL_CONTRACT_MISSING,
     ROLLOUT_STATUS_ALREADY_SUPPORTED,
     ROLLOUT_STATUS_BLOCKED,
@@ -234,18 +234,47 @@ def test_decimal_places_from_tick_size_rejects_non_power_of_ten() -> None:
     assert _decimal_places_from_tick_size(Decimal("0")) is None
 
 
-def test_stale_primary_and_supporting_sources() -> None:
+def test_stale_primary_and_supporting_sources_are_per_run_not_structural() -> None:
     result = evaluate_candidate(
         candidate(
-            "BTC",
+            "DGB",
             primary_ts=AS_OF - timedelta(hours=4),
             supporting_ts=AS_OF - timedelta(hours=1),
-            ledger=existing_btc_ledger(),
+            execution_constraint_decimal_places=(7,),
         ),
         as_of_utc=AS_OF,
     )
+    assert result.readiness_status == READY
+    assert result.market_readiness_status == "MARKET_READY"
     assert PRIMARY_SOURCE_STALE in result.market_reason_codes
     assert SUPPORTING_SOURCE_STALE in result.market_reason_codes
+    assert result.primary_source_freshness == "STALE_OR_UNAVAILABLE"
+    assert result.supporting_source_freshness == "STALE_OR_UNAVAILABLE"
+
+
+def test_support_readiness_does_not_flap_when_freshness_recovers() -> None:
+    fresh = evaluate_candidate(
+        candidate("NOT", execution_constraint_decimal_places=(7,)), as_of_utc=AS_OF
+    )
+    stale = evaluate_candidate(
+        candidate(
+            "NOT",
+            primary_ts=AS_OF - timedelta(hours=4),
+            supporting_ts=AS_OF - timedelta(hours=1),
+            execution_constraint_decimal_places=(7,),
+        ),
+        as_of_utc=AS_OF,
+    )
+    recovered = evaluate_candidate(
+        candidate("NOT", execution_constraint_decimal_places=(7,)), as_of_utc=AS_OF
+    )
+    assert [item.readiness_status for item in (fresh, stale, recovered)] == [
+        READY,
+        READY,
+        READY,
+    ]
+    assert stale.supporting_source_freshness == "STALE_OR_UNAVAILABLE"
+    assert recovered.supporting_source_freshness == "CURRENT"
 
 
 def test_unavailable_primary_and_supporting_contexts() -> None:
@@ -266,7 +295,7 @@ def test_unresolved_or_ambiguous_scope_fails_closed() -> None:
     ledger = LedgerState(scope_states=("SUPPORTED", "SUPPORTED"))
     result = evaluate_candidate(candidate("SOL", ledger=ledger), as_of_utc=AS_OF)
     assert result.ledger_readiness_status == SCOPE_AMBIGUOUS
-    assert result.readiness_status != READY_FOR_SEQUENTIAL_CANARY_REVIEW
+    assert result.readiness_status != READY
 
 
 def test_invalid_generation_chain() -> None:
@@ -282,9 +311,9 @@ def test_invalid_generation_chain() -> None:
 
 def test_btc_existing_canary_classification() -> None:
     result = evaluate_candidate(candidate("BTC", ledger=existing_btc_ledger()), as_of_utc=AS_OF)
-    assert result.readiness_status == READY_EXISTING_CANARY
+    assert result.readiness_status == SUPPORTED
     assert result.market_readiness_status == "MARKET_READY"
-    assert result.production_promotable is False
+    assert result.production_promotable is True
     assert result.materializer_validate_only_possible is True
 
 
@@ -293,7 +322,7 @@ def test_any_symbol_with_a_single_supported_scope_is_an_existing_canary() -> Non
     a single hardcoded symbol constant -- proves the SOL-post-promotion
     misclassification defect (SCOPE_CONFLICT) stays fixed for every symbol."""
     result = evaluate_candidate(candidate("SOL", ledger=existing_btc_ledger()), as_of_utc=AS_OF)
-    assert result.readiness_status == READY_EXISTING_CANARY
+    assert result.readiness_status == SUPPORTED
     assert result.ledger_readiness_status == "LEDGER_READY"
     assert SCOPE_CONFLICT not in result.ledger_reason_codes
     assert result.materializer_validate_only_possible is True
@@ -315,16 +344,17 @@ def test_sequential_ranking_is_applied_only_after_qualification() -> None:
     ]
     ranked = rank_sequential_candidates(values)
     rank_by_symbol = {row.canonical_key.symbol: row.sequential_review_rank for row in ranked}
-    assert rank_by_symbol == {"ETH": 2, "NOTSTATIC": None, "SOL": 1, "XRP": 3}
+    assert rank_by_symbol == {"ETH": None, "NOTSTATIC": None, "SOL": None, "XRP": None}
     assert next(row for row in ranked if row.canonical_key.symbol == "NOTSTATIC").trailing_30d_quote_volume is None
 
 
 def test_global_blockers_prevent_production_promotion() -> None:
     result = evaluate_candidate(candidate("SOL"), as_of_utc=AS_OF, global_blockers=GLOBAL_BLOCKERS)
-    assert result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW
-    assert result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED"
-    assert WRITER_PROVENANCE_UNATTRIBUTED in result.global_blocker_codes
-    assert result.production_promotable is False
+    assert result.readiness_status == READY
+    assert result.global_rollout_status == "HISTORICAL_ROLLOUT_BLOCKED"
+    assert result.global_blocker_codes == GLOBAL_BLOCKERS
+    # Historical diagnostics never change normal-path readiness.
+    assert result.production_promotable is True
 
 
 def test_provenance_contract_and_operational_acceptance_are_independent() -> None:
@@ -527,7 +557,7 @@ def test_global_blocker_codes_exactly_matches_evaluated_active_blockers() -> Non
         active, _ = evaluate_global_blockers(provenance_attributed=provenance_attributed)
         result = evaluate_candidate(candidate("SOL"), as_of_utc=AS_OF, global_blockers=active)
         assert result.global_blocker_codes == active
-        assert (result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED") == bool(active)
+        assert result.global_rollout_status == "HISTORICAL_ROLLOUT_BLOCKED"
 
 
 def test_operational_acceptance_cannot_be_true_while_any_blocker_active() -> None:
@@ -544,8 +574,8 @@ def test_production_promotable_remains_false_while_blockers_remain() -> None:
     for provenance_attributed in (True, False):
         active, _ = evaluate_global_blockers(provenance_attributed=provenance_attributed)
         result = evaluate_candidate(candidate("ETH", volume="1"), as_of_utc=AS_OF, global_blockers=active)
-        assert result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW
-        assert result.production_promotable is False
+        assert result.readiness_status == READY
+        assert result.production_promotable is True
 
 
 def test_global_blocker_evidence_covers_every_canonical_blocker_deterministically() -> None:
@@ -717,7 +747,7 @@ def test_db_write_prohibition() -> None:
 
 def test_classify_rollout_status_ready_when_qualified_and_unblocked() -> None:
     result = evaluate_candidate(candidate("SOL"), as_of_utc=AS_OF, global_blockers=())
-    assert result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW
+    assert result.readiness_status == READY
     assert classify_rollout_status(result) == ROLLOUT_STATUS_READY
 
 
@@ -737,7 +767,7 @@ def test_classify_rollout_status_blocked_when_a_global_blocker_is_active() -> No
     result = evaluate_candidate(
         candidate("SOL"), as_of_utc=AS_OF, global_blockers=(BOOTSTRAP_ORCHESTRATION_BLOCKED,)
     )
-    assert result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED"
+    assert result.global_rollout_status == "HISTORICAL_ROLLOUT_BLOCKED"
     assert classify_rollout_status(result) == ROLLOUT_STATUS_BLOCKED
 
 

@@ -1,3 +1,5 @@
+> **Ongoing onboarding authority (Issue #539):** this contract does not require a canary, per-symbol approval, or manual `PROMOTE_SCOPE` for a READY Bitvavo EUR market. See `native_short_automatic_onboarding_v1.md`.
+
 # Native SHORT Scope Status Persistence Contract V1
 
 ## Status
