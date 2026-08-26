@@ -79,11 +79,12 @@ python -m src.research.run_bullish_breathline_canonical_4h_v1 \
   --resume
 ```
 
-Resume verifies runner version, frozen scope, analysis commit, tracker source
-commit, tracker source hashes and both source CSV hashes before reusing data. A
-completed run containing `run_manifest.json` cannot be resumed or overwritten.
-If interruption occurred before the source checkpoint completed, `--resume`
-restarts the incomplete source phase instead of mixing partial DB snapshots.
+Resume verifies runner version, frozen scope, analysis commit, the exact wrapper
+source SHA256, tracker source commit, tracker source hashes and both source CSV
+hashes before reusing data. A completed run containing `run_manifest.json` cannot
+be resumed or overwritten. If interruption occurred before the source checkpoint
+completed, `--resume` restarts the incomplete source phase instead of mixing
+partial DB snapshots.
 
 The DB host acceptance on 2026-08-26 confirmed that gurkdb accepts
 `START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY`. The runner additionally
