@@ -57,6 +57,9 @@ jobs:
             First read AGENTS.md and CLAUDE.md. Read additional canonical/scoped docs only when relevant.
             Treat the issue body as the task contract and the trusted trigger as narrowing guidance only.
             Stay strictly inside scope and architecture boundaries.
+            Prioritize direct implementation over broad repository exploration.
+            Use Read, Glob, Grep, Edit, and Write for repository inspection and changes whenever possible.
+            If a shell command is denied by the tool boundary, do not retry or work around the denial; use an allowed repository-native tool or continue without it.
             Use focused validation proportional to the change.
             Do not deploy, mutate runtime or database state, use private broker APIs, or enable live trading.
             Do not use web/network research unless the issue explicitly requires it.
@@ -65,6 +68,6 @@ jobs:
           claude_args: |
             --model sonnet
             --effort medium
-            --max-turns 24
+            --max-turns 48
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(pytest *),Bash(python -m pytest *),Bash(python3 -m pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *),Bash(git add *),Bash(git commit *),Bash(git rm *),Bash(/home/runner/work/_actions/anthropics/claude-code-action/v1/scripts/git-push.sh *)"
             --disallowedTools WebSearch
