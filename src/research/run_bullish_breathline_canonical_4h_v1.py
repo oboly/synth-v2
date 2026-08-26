@@ -707,6 +707,13 @@ def collect_tracker_artifacts(
     return result
 
 
+def prepare_tracker_output_dir(tracker_dir: Path) -> None:
+    """Discard derived tracker output before deterministic recomputation."""
+    if tracker_dir.exists():
+        shutil.rmtree(tracker_dir)
+        emit("INFO", "reset_tracker_output", path=str(tracker_dir))
+
+
 def run(
     *,
     out_root: Path,
@@ -796,6 +803,7 @@ def run(
             source = source_by_symbol[identity.symbol]
             source_csv = Path(source.source_csv)
             tracker_dir = run_dir / identity.symbol / "tracker"
+            prepare_tracker_output_dir(tracker_dir)
             with phase("tracker", symbol=identity.symbol):
                 with periodic_heartbeat(
                     "tracker",
