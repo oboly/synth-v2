@@ -29,7 +29,8 @@ src/research/run_bullish_breathline_canonical_4h_v1.py
 The runner:
 
 1. prints an immediate flushed `STARTED` line with mode, frozen scope and `workers=1`;
-2. opens `START TRANSACTION READ ONLY`;
+2. sets the next transaction to `REPEATABLE READ`, then starts
+   `START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY` before any source query;
 3. resolves exactly one canonical `asset` row for RENDER and TAO;
 4. streams complete matching candle history with a PyMySQL server-side
    `SSDictCursor` and `fetchmany(1000)` in `open_ts_utc` order;
@@ -39,7 +40,7 @@ The runner:
 8. serializes `open_ts_utc` as tracker CSV column `ts` and `volume_base` as
    tracker CSV column `volume`;
 9. hashes the deterministic source CSVs and, after both exports finish under the
-   same DB snapshot, writes `source_checkpoint.json`;
+   same consistent DB snapshot, writes `source_checkpoint.json`;
 10. closes the DB read-only snapshot before tracker computation;
 11. invokes `run_bullish_breathline_tracker_v1.run()` unchanged, with periodic
     heartbeat output around tracker phases;
@@ -83,6 +84,11 @@ commit, tracker source hashes and both source CSV hashes before reusing data. A
 completed run containing `run_manifest.json` cannot be resumed or overwritten.
 If interruption occurred before the source checkpoint completed, `--resume`
 restarts the incomplete source phase instead of mixing partial DB snapshots.
+
+The DB host acceptance on 2026-08-26 confirmed that gurkdb accepts
+`START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY`. The runner additionally
+sets the transaction-specific isolation level to `REPEATABLE READ` immediately
+before that statement so both asset exports are bound to one stable read view.
 
 Before the broad empirical run, inspect the fixed candle query with `EXPLAIN`
 on the configured MariaDB host and confirm it uses the expected indexed
