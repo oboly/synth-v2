@@ -65,5 +65,5 @@ jobs:
             --model sonnet
             --effort medium
             --max-turns 24
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *)"
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(python *),Bash(python3 *),Bash(pytest *),Bash(git diff *),Bash(git status *),Bash(git log *),Bash(git grep *),Bash(git add *),Bash(git commit *),Bash(git rm *),Bash(/home/runner/work/_actions/anthropics/claude-code-action/v1/scripts/git-push.sh *)"
             --disallowedTools WebSearch
