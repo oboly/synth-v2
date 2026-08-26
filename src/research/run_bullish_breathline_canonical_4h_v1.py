@@ -51,6 +51,8 @@ DEFAULT_OUT_ROOT = Path("data/research/bullish_breathline_canonical_4h_v1")
 SOURCE_CHECKPOINT_FILENAME = "source_checkpoint.json"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+TRANSACTION_ISOLATION_SQL = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+TRANSACTION_START_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
 
 TRACKER_SOURCE_FILES = (
     "src/research/bullish_breathline_tracker_v1.py",
@@ -298,7 +300,8 @@ def tracker_source_hashes(root: Path) -> dict[str, str]:
 
 def begin_read_only_transaction(conn: Any) -> None:
     with conn.cursor() as cur:
-        cur.execute("START TRANSACTION READ ONLY")
+        cur.execute(TRANSACTION_ISOLATION_SQL)
+        cur.execute(TRANSACTION_START_SQL)
 
 
 def resolve_asset_identity(conn: Any, symbol: str) -> AssetIdentity:
@@ -863,7 +866,8 @@ def run(
             "input_interval_is_cycle_duration": False,
             "expected_interval_seconds": EXPECTED_INTERVAL_SECONDS,
             "fetch_batch_rows": FETCH_BATCH_ROWS,
-            "db_transaction": "START TRANSACTION READ ONLY",
+            "db_transaction_isolation": TRANSACTION_ISOLATION_SQL,
+            "db_transaction": TRANSACTION_START_SQL,
             "analysis_commit_sha": analysis_commit_sha,
             "tracker_source_commit_sha": tracker_source_commit_sha,
             "tracker_model_version": TRACKER_MODEL_VERSION,
