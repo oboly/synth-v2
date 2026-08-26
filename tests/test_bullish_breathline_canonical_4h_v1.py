@@ -377,6 +377,7 @@ def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
         run_dir,
         run_id="resume-test",
         analysis_commit_sha="analysis-sha",
+        runner_source_sha256_value="runner-abc123",
         tracker_source_commit_sha="tracker-sha",
         tracker_source_sha256=hashes,
         source_by_symbol=source_by_symbol,
@@ -385,6 +386,7 @@ def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
         run_dir,
         run_id="resume-test",
         analysis_commit_sha="analysis-sha",
+        runner_source_sha256_value="runner-abc123",
         tracker_source_commit_sha="tracker-sha",
         tracker_source_sha256=hashes,
     )
@@ -393,6 +395,16 @@ def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
     assert [identity.symbol for identity in identities] == ["RENDER", "TAO"]
     assert loaded["RENDER"].source_sha256 == source_by_symbol["RENDER"].source_sha256
 
+    with pytest.raises(RuntimeError, match="provenance mismatch: runner_source_sha256"):
+        load_source_checkpoint(
+            run_dir,
+            run_id="resume-test",
+            analysis_commit_sha="analysis-sha",
+            runner_source_sha256_value="runner-dirty",
+            tracker_source_commit_sha="tracker-sha",
+            tracker_source_sha256=hashes,
+        )
+
     render_path = Path(loaded["RENDER"].source_csv)
     render_path.write_text("tampered\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="hash mismatch"):
@@ -400,6 +412,7 @@ def test_source_checkpoint_is_hash_bound_and_reloadable(tmp_path: Path) -> None:
             run_dir,
             run_id="resume-test",
             analysis_commit_sha="analysis-sha",
+            runner_source_sha256_value="runner-abc123",
             tracker_source_commit_sha="tracker-sha",
             tracker_source_sha256=hashes,
         )
