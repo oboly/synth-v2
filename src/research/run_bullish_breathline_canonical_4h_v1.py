@@ -57,6 +57,29 @@ TRACKER_SOURCE_FILES = (
     "src/research/run_bullish_breathline_tracker_v1.py",
 )
 
+SAFETY_MARKERS: dict[str, Any] = {
+    "research_only": True,
+    "market_only": True,
+    "account_awareness": 0,
+    "selection_engine_changes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "broker_calls": 0,
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_orders": 0,
+    "live_trading_permission": 0,
+    "db_writes": 0,
+    "production_db_writes": 0,
+    "production_schema_changes": 0,
+    "runtime_activation": 0,
+    "decision_gate": "none",
+    "execution_planner": "none",
+    "executor": "none",
+}
+
 
 @dataclass(frozen=True)
 class AssetIdentity:
@@ -847,19 +870,7 @@ def run(
                 *cli_args,
             ],
             "assets": assets_manifest,
-            "safety": {
-                "selection_engine_changes": 0,
-                "decision_gate_changes": 0,
-                "execution_planner_changes": 0,
-                "executor_changes": 0,
-                "broker_calls": 0,
-                "broker_writes": 0,
-                "order_submission": 0,
-                "live_trading_permission": 0,
-                "production_db_writes": 0,
-                "production_schema_changes": 0,
-                "runtime_activation": 0,
-            },
+            "safety": dict(SAFETY_MARKERS),
         }
         manifest_path = run_dir / RUN_MANIFEST_FILENAME
         write_json(manifest_path, manifest)
@@ -926,9 +937,13 @@ def main(argv: list[str] | None = None) -> int:
             RUNNER_NAME,
             elapsed_seconds=f"{time.monotonic() - started_at:.2f}",
             run_id=frozen_run_id,
-            broker_writes=0,
-            order_submission=0,
-            executor="none",
+            broker_private_calls=SAFETY_MARKERS["broker_private_calls"],
+            broker_writes=SAFETY_MARKERS["broker_writes"],
+            order_submission=SAFETY_MARKERS["order_submission"],
+            live_orders=SAFETY_MARKERS["live_orders"],
+            decision_gate=SAFETY_MARKERS["decision_gate"],
+            execution_planner=SAFETY_MARKERS["execution_planner"],
+            executor=SAFETY_MARKERS["executor"],
             **fields,
         )
 
