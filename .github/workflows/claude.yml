@@ -8,7 +8,7 @@ jobs:
   claude:
     if: |
       github.event.issue.pull_request == null &&
-      github.event.comment.user.type == 'User' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       contains(github.event.comment.body, '@claude')
     runs-on: ubuntu-latest
     permissions:
@@ -61,6 +61,8 @@ jobs:
             Use focused validation proportional to the change.
             Do not deploy, mutate runtime or database state, use private broker APIs, or enable live trading.
             Do not use web/network research unless the issue explicitly requires it.
+            Commit and push only to the worker branch created by the Claude action.
+            Do not open or merge pull requests; the control plane owns PR creation and review handoff.
           claude_args: |
             --model sonnet
             --effort medium
