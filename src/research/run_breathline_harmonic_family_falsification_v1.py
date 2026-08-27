@@ -10,6 +10,7 @@ that research API and owns only CLI lifecycle/immutable-output handling.
 import shutil
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from src.research.breathline_harmonic_family_falsification_core_v1 import *  # noqa: F401,F403
@@ -27,7 +28,7 @@ def _bind_cli_to_manifest(
     manifest: dict[str, Any],
     raw_args: list[str],
 ) -> dict[str, Any]:
-    """Write the definitive manifest with the exact user-facing invocation."""
+    """Write the definitive manifest with exact invocation and source provenance."""
     payload = dict(manifest)
     payload["cli"] = [
         sys.executable,
@@ -35,6 +36,16 @@ def _bind_cli_to_manifest(
         "src.research.run_breathline_harmonic_family_falsification_v1",
         *raw_args,
     ]
+    payload["analysis_core_source_sha256"] = _core.sha256_file(
+        Path(_core.__file__).resolve()
+    )
+    payload["cli_wrapper_source_sha256"] = _core.sha256_file(
+        Path(__file__).resolve()
+    )
+    payload["implementation_source_sha256"] = payload.get(
+        "analyzer_source_sha256"
+    )
+
     manifest_path = out_dir / "run_manifest.json"
     _core.write_json(manifest_path, payload)
     _core.emit(
