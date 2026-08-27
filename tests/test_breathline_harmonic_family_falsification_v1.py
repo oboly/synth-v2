@@ -177,7 +177,7 @@ def write_source_run(tmp_path: Path) -> Path:
 
 
 def test_registry_is_exactly_frozen() -> None:
-    assert REGISTRY_VERSION == "1.0.0"
+    assert REGISTRY_VERSION == "1.0.1"
     assert DURATION_FAMILY_DAYS == (3.0, 6.0, 9.0, 12.0, 21.0, 42.0, 63.0, 105.0, 126.0, 147.0)
     assert tuple(ratio for _, ratio in PHASE_MARKERS) == (0.236, 0.382, 0.5, 0.618, 0.786, 1.0, 1.272)
     assert HALF_PHASE_SPLIT_CANDIDATE_DAYS == 10.5
@@ -198,6 +198,28 @@ def test_holm_bonferroni_is_monotone_and_familywise() -> None:
 def test_tie_aware_auc() -> None:
     assert runner.tie_aware_auc([1.0, 1.0, 0.0], [True, False, False]) == pytest.approx(0.75)
     assert runner.tie_aware_auc([1.0, 2.0], [True, True]) is None
+
+
+def test_extension_phase_null_uses_one_circular_representation() -> None:
+    assert runner.circular_phase_distance(1.0, 1.272) == pytest.approx(0.272)
+    assert runner.circular_phase_distance(0.0, 0.272) == pytest.approx(0.272)
+    assert runner.circular_phase_distance(1.272, 1.272) == pytest.approx(0.0)
+
+    rows = [
+        {
+            "cycle_id": "render-extension",
+            "symbol": "RENDER",
+            "node": "extension",
+            "present": True,
+            "observed_phase_position": 1.0,
+            "phase_position_residual": -0.272,
+        }
+    ]
+    result = runner.phase_null_tests(rows, permutations=20)
+    extension = result["RENDER"]["extension"]
+    assert extension["phase_null_metric"] == "shortest_unit_circle_distance"
+    assert extension["mean_circular_phase_distance"] == pytest.approx(0.272)
+    assert 0.0 < extension["p_value_raw"] <= 1.0
 
 
 def test_split_is_chronological_per_asset() -> None:
@@ -286,6 +308,13 @@ def test_full_synthetic_mechanics_flow_writes_research_artifacts(tmp_path: Path)
     assert (out_dir / "lane_b_candidate_tests.jsonl").is_file()
     assert (out_dir / "lane_b_summary.json").is_file()
     assert (out_dir / "run_manifest.json").is_file()
+
+    lane_a = json.loads((out_dir / "lane_a_summary.json").read_text(encoding="utf-8"))
+    assert lane_a["registry_version"] == "1.0.1"
+    assert (
+        lane_a["populations"]["RENDER"]["phase_markers"]["extension"]["phase_null_metric"]
+        == "shortest_unit_circle_distance"
+    )
 
     lane_b = json.loads((out_dir / "lane_b_summary.json").read_text(encoding="utf-8"))
     assert set(lane_b["populations"]) == {"RENDER", "TAO", "POOLED"}
