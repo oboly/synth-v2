@@ -8,6 +8,7 @@ that research API and owns only CLI lifecycle/immutable-output handling.
 """
 
 import shutil
+import sys
 import time
 from typing import Any
 
@@ -20,8 +21,34 @@ from src.research import breathline_harmonic_family_falsification_core_v1 as _co
 InputProvenanceError = _core.InputProvenanceError
 
 
+def _bind_cli_to_manifest(
+    *,
+    out_dir: Any,
+    manifest: dict[str, Any],
+    raw_args: list[str],
+) -> dict[str, Any]:
+    """Write the definitive manifest with the exact user-facing invocation."""
+    payload = dict(manifest)
+    payload["cli"] = [
+        sys.executable,
+        "-m",
+        "src.research.run_breathline_harmonic_family_falsification_v1",
+        *raw_args,
+    ]
+    manifest_path = out_dir / "run_manifest.json"
+    _core.write_json(manifest_path, payload)
+    _core.emit(
+        "CHECKPOINT",
+        "run_manifest_final",
+        path=str(manifest_path),
+        sha256=_core.sha256_file(manifest_path),
+    )
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _core.build_parser().parse_args(argv)
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    args = _core.build_parser().parse_args(raw_args)
     run_id = _core.validate_run_id(
         args.run_id or _core.utc_now().strftime("%Y%m%dT%H%M%SZ")
     )
@@ -43,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
             source_run_dir=args.source_run_dir,
             out_dir=out_dir,
             permutations=_core.NULL_PERMUTATIONS,
+        )
+        manifest = _bind_cli_to_manifest(
+            out_dir=out_dir,
+            manifest=manifest,
+            raw_args=raw_args,
         )
     except Exception as exc:
         # Never remove an already-existing immutable evidence directory. Cleanup
