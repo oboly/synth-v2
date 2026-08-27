@@ -230,7 +230,7 @@ def test_prior_completed_history_is_strictly_point_in_time() -> None:
         cycle("RENDER", 1, start_day=10, duration_days=6),
         cycle("RENDER", 2, start_day=20, duration_days=100),
     ]
-    feature = parse = runner.parse_ts(iso(18))
+    feature = runner.parse_ts(iso(18))
     values = runner.prior_completed_durations(rows, feature_as_of_ts=feature, symbol="RENDER")
     assert values == [4.0, 6.0]
     assert 100.0 not in values
@@ -290,3 +290,32 @@ def test_full_synthetic_mechanics_flow_writes_research_artifacts(tmp_path: Path)
     lane_b = json.loads((out_dir / "lane_b_summary.json").read_text(encoding="utf-8"))
     assert set(lane_b["populations"]) == {"RENDER", "TAO", "POOLED"}
     assert lane_b["populations"]["RENDER"]["recognition"]["holdout_sample_count"] == 4
+
+
+def test_main_never_deletes_preexisting_immutable_run_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    out_root = tmp_path / "out-root"
+    out_dir = out_root / "already-complete"
+    out_dir.mkdir(parents=True)
+    sentinel = out_dir / "sentinel.txt"
+    sentinel.write_text("immutable-evidence\n", encoding="utf-8")
+
+    rc = runner.main(
+        [
+            "--source-run-dir",
+            str(tmp_path / "missing-source-is-not-reached"),
+            "--out-root",
+            str(out_root),
+            "--run-id",
+            "already-complete",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert rc == 1
+    assert out_dir.is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "immutable-evidence\n"
+    assert "FAILED breathline_harmonic_family_falsification_v1" in output
+    assert "immutable output directory already exists" in output
