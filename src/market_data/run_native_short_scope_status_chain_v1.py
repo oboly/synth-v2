@@ -72,6 +72,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterProvenanceError,
     validate_native_short_writer_provenance,
 )
+from src.market_data.native_short_auto_onboarding_v1 import reconcile_ready_scopes
 from src.market_data.native_short_writer_commit_fence_v1 import (
     capture_writer_commit_fences,
     revalidate_writer_commit_fences,
@@ -513,6 +514,24 @@ def execute_runtime(
     run_finalized = False
     failure: BaseException | None = None
     try:
+        # Explicit symbol arguments are bounded smoke/repair selections and
+        # must not widen scope. The scheduled production path omits symbols,
+        # so it is the sole automatic-onboarding owner.
+        if not symbols:
+            _report("PHASE_START", phase="AUTO_ONBOARD_SCOPES")
+            onboarding = reconcile_ready_scopes(
+                conn,
+                as_of_utc=as_of_utc,
+                repository_commit_sha=provenance.repository_commit_sha,
+                authorization=writer_authorization,
+            )
+            _report(
+                "PHASE_END",
+                phase="AUTO_ONBOARD_SCOPES",
+                supported_count=sum(item.state == "SUPPORTED" for item in onboarding),
+                not_ready_count=sum(item.state == "NOT_READY" for item in onboarding),
+                elapsed_ms=_elapsed_ms(started),
+            )
         _begin()
         fetch_scopes_started = time.monotonic()
         _report("PHASE_START", phase="FETCH_SUPPORTED_SCOPES")

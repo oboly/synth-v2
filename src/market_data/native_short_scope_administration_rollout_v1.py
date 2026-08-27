@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-"""Deterministic multi-symbol Native SHORT scope-administration rollout
+"""HISTORICAL ROLLOUT TOOLING ONLY. It has no authority over ongoing automatic onboarding.
+
+Deterministic multi-symbol Native SHORT scope-administration rollout
 orchestrator.
 
 Boundary: this module owns explicit-universe iteration and per-scope

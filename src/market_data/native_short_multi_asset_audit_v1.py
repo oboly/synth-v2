@@ -49,8 +49,10 @@ PRIMARY_LOOKBACK = timedelta(days=60)
 SUPPORTING_LOOKBACK = timedelta(days=21)
 VOLUME_LOOKBACK = timedelta(days=30)
 
-READY_EXISTING_CANARY = "READY_EXISTING_CANARY"
-READY_FOR_SEQUENTIAL_CANARY_REVIEW = "READY_FOR_SEQUENTIAL_CANARY_REVIEW"
+# Ongoing lifecycle authority vocabulary.
+SUPPORTED = "SUPPORTED"
+READY = "READY"
+NOT_READY = "NOT_READY"
 MARKET_INELIGIBLE = "MARKET_INELIGIBLE"
 ASSET_DISABLED = "ASSET_DISABLED"
 MARKET_DATA_DISABLED = "MARKET_DATA_DISABLED"
@@ -553,16 +555,21 @@ def evaluate_candidate(
     global_blockers: Sequence[str] = GLOBAL_BLOCKERS,
 ) -> CandidateResult:
     symbol = candidate.symbol.strip().upper()
-    market_reasons: list[str] = []
+    # Structural reasons decide whether a market may enter the supported
+    # universe. Freshness is deliberately separate: a supported market may be
+    # SOURCE_STALE for one chain run and must remain supported so that the
+    # next run can recover without a second administration transition.
+    structural_market_reasons: list[str] = []
+    transient_market_reasons: list[str] = []
     canonical_market = f"{symbol}-{QUOTE_CURRENCY}"
     if len(candidate.markets) != 1 or any(row.market.upper() != canonical_market for row in candidate.markets):
-        market_reasons.append(MARKET_INELIGIBLE)
+        structural_market_reasons.append(MARKET_INELIGIBLE)
     if not candidate.markets or any(row.asset_enabled is not True for row in candidate.markets):
-        market_reasons.append(ASSET_DISABLED)
+        structural_market_reasons.append(ASSET_DISABLED)
     if not candidate.markets or any(row.market_data_enabled is not True for row in candidate.markets):
-        market_reasons.append(MARKET_DATA_DISABLED)
+        structural_market_reasons.append(MARKET_DATA_DISABLED)
     if not candidate.markets or any(row.market_tradeable is not True for row in candidate.markets):
-        market_reasons.append(MARKET_NOT_TRADEABLE)
+        structural_market_reasons.append(MARKET_NOT_TRADEABLE)
 
     expected_primary = expected_closed_candle(as_of_utc, 4)
     expected_supporting = expected_closed_candle(as_of_utc, 1)
@@ -575,18 +582,18 @@ def evaluate_candidate(
         and _as_utc(candidate.supporting.latest_close_ts_utc) == expected_supporting
     )
     if candidate.primary.count < 24:
-        market_reasons.append(PRIMARY_CONTEXT_UNAVAILABLE)
+        structural_market_reasons.append(PRIMARY_CONTEXT_UNAVAILABLE)
     if candidate.supporting.count < 48:
-        market_reasons.append(SUPPORTING_CONTEXT_UNAVAILABLE)
+        structural_market_reasons.append(SUPPORTING_CONTEXT_UNAVAILABLE)
     if candidate.primary.count >= 24 and not primary_current:
-        market_reasons.append(PRIMARY_SOURCE_STALE)
+        transient_market_reasons.append(PRIMARY_SOURCE_STALE)
     if candidate.supporting.count >= 48 and not supporting_current:
-        market_reasons.append(SUPPORTING_SOURCE_STALE)
+        transient_market_reasons.append(SUPPORTING_SOURCE_STALE)
 
     context_available = candidate.context_status == STATUS_AVAILABLE
     if (
         candidate.context_status is None
-        and not market_reasons
+        and not structural_market_reasons
         and candidate.primary.candles
         and candidate.supporting.candles
     ):
@@ -599,13 +606,13 @@ def evaluate_candidate(
         )
         context_available = context.context_status == STATUS_AVAILABLE
         if not context_available:
-            market_reasons.append(PRIMARY_CONTEXT_UNAVAILABLE)
+            structural_market_reasons.append(PRIMARY_CONTEXT_UNAVAILABLE)
 
     tick_state, tick_places, tick_sources = _tick_state(
         candidate.markets, symbol, candidate.execution_constraint_decimal_places
     )
     if tick_state != "TICK_RULE_AVAILABLE":
-        market_reasons.append(tick_state)
+        structural_market_reasons.append(tick_state)
 
     ledger = candidate.ledger
     ledger_reasons: list[str] = []
@@ -642,23 +649,29 @@ def evaluate_candidate(
     elif ledger.map_ids or ledger.active_map_ids or ledger.current_status_map_ids or ledger.scope_status_codes:
         ledger_reasons.append(MAP_STATE_REQUIRES_REVIEW)
 
-    market_reasons = list(dict.fromkeys(market_reasons))
+    structural_market_reasons = list(dict.fromkeys(structural_market_reasons))
+    transient_market_reasons = list(dict.fromkeys(transient_market_reasons))
+    market_reasons = structural_market_reasons + transient_market_reasons
     ledger_reasons = list(dict.fromkeys(ledger_reasons))
-    if not market_reasons and context_available:
+    if not structural_market_reasons and context_available:
         market_status = "MARKET_READY"
     else:
-        market_status = market_reasons[0] if market_reasons else PRIMARY_CONTEXT_UNAVAILABLE
+        market_status = (
+            structural_market_reasons[0]
+            if structural_market_reasons
+            else PRIMARY_CONTEXT_UNAVAILABLE
+        )
     ledger_status = "LEDGER_READY" if not ledger_reasons else ledger_reasons[0]
     if market_status == "MARKET_READY" and ledger_status == "LEDGER_READY":
-        readiness_status = (
-            READY_EXISTING_CANARY
-            if has_existing_supported_scope
-            else READY_FOR_SEQUENTIAL_CANARY_REVIEW
-        )
+        readiness_status = SUPPORTED if has_existing_supported_scope else READY
     else:
         readiness_status = market_status if market_status != "MARKET_READY" else ledger_status
 
-    blocker_tuple = tuple(dict.fromkeys(global_blockers))
+    # Historical/manual-promotion diagnostics retain their evaluated integrity
+    # evidence for isolated tooling. They never alter canonical readiness or
+    # automatic onboarding, which enforces writer integrity in its own
+    # transaction boundary.
+    blocker_tuple = tuple(global_blockers)
     return CandidateResult(
         canonical_key=CanonicalScopeKey(symbol=symbol),
         readiness_status=readiness_status,
@@ -666,12 +679,15 @@ def evaluate_candidate(
         market_reason_codes=tuple(market_reasons),
         ledger_readiness_status=ledger_status,
         ledger_reason_codes=tuple(ledger_reasons),
-        global_rollout_status="GLOBAL_ROLLOUT_BLOCKED" if blocker_tuple else "GLOBAL_ROLLOUT_READY",
+        global_rollout_status=(
+            "HISTORICAL_ROLLOUT_BLOCKED"
+            if blocker_tuple
+            else "HISTORICAL_ROLLOUT_NOT_AUTHORITY"
+        ),
         global_blocker_codes=blocker_tuple,
         production_promotable=(
             readiness_status
-            in {READY_EXISTING_CANARY, READY_FOR_SEQUENTIAL_CANARY_REVIEW}
-            and not blocker_tuple
+            in {SUPPORTED, READY}
         ),
         sequential_review_rank=None,
         market_eligible=not any(
@@ -716,23 +732,15 @@ def evaluate_candidate(
         ),
         trailing_30d_quote_volume=(
             candidate.trailing_30d_quote_volume
-            if readiness_status in {READY_EXISTING_CANARY, READY_FOR_SEQUENTIAL_CANARY_REVIEW}
+            if readiness_status in {SUPPORTED, READY}
             else None
         ),
     )
 
 
 def rank_sequential_candidates(results: Iterable[CandidateResult]) -> tuple[CandidateResult, ...]:
-    ordered = sorted(results, key=lambda item: item.canonical_key.symbol)
-    qualified = sorted(
-        (item for item in ordered if item.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW),
-        key=lambda item: (
-            -(item.trailing_30d_quote_volume or Decimal("0")),
-            item.canonical_key.symbol,
-        ),
-    )
-    ranks = {item.canonical_key.symbol: index for index, item in enumerate(qualified, start=1)}
-    return tuple(replace(item, sequential_review_rank=ranks.get(item.canonical_key.symbol)) for item in ordered)
+    """Historical compatibility view; sequential rank has no lifecycle authority."""
+    return tuple(replace(item, sequential_review_rank=None) for item in sorted(results, key=lambda item: item.canonical_key.symbol))
 
 
 def classify_rollout_status(result: CandidateResult) -> str:
@@ -762,11 +770,11 @@ def classify_rollout_status(result: CandidateResult) -> str:
     4. ``SKIPPED_NOT_READY`` -- everything else: market or ledger
        ineligibility.
     """
-    if result.scope_states == ("SUPPORTED",) or result.readiness_status == READY_EXISTING_CANARY:
+    if result.scope_states == ("SUPPORTED",) or result.readiness_status == SUPPORTED:
         return ROLLOUT_STATUS_ALREADY_SUPPORTED
-    if result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED":
+    if result.global_rollout_status == "HISTORICAL_ROLLOUT_BLOCKED":
         return ROLLOUT_STATUS_BLOCKED
-    if result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW:
+    if result.readiness_status == READY:
         return ROLLOUT_STATUS_READY
     return ROLLOUT_STATUS_SKIPPED_NOT_READY
 
@@ -1179,29 +1187,21 @@ def run_audit(
             execution_constraint_decimal_places=tuple(constraint_decimal_places_by_symbol.get(symbol, ())),
         ), as_of_utc=as_of, global_blockers=active_blockers))
 
-    ranked = rank_sequential_candidates(evaluated)
-    sequential = sorted(
-        (row for row in ranked if row.sequential_review_rank is not None),
-        key=lambda row: row.sequential_review_rank or 0,
-    )
-    queue = tuple(item.canonical_key.symbol for item in sequential[:3])
+    ranked = tuple(sorted(evaluated, key=lambda item: item.canonical_key.symbol))
+    # Retained wire field for historical report consumers; automatic onboarding
+    # deliberately has no sequential queue.
+    queue: tuple[str, ...] = ()
     status_counts = Counter(item.readiness_status for item in ranked)
     counts = {
         "market_row_count": len(market_rows),
         "candidate_count": len(ranked),
         "market_eligible_count": sum(item.market_eligible for item in ranked),
         "readiness_qualified_count": sum(
-            item.readiness_status
-            in {READY_EXISTING_CANARY, READY_FOR_SEQUENTIAL_CANARY_REVIEW}
-            for item in ranked
+            item.readiness_status in {SUPPORTED, READY} for item in ranked
         ),
-        "existing_canary_count": status_counts[READY_EXISTING_CANARY],
-        "sequential_review_candidate_count": status_counts[READY_FOR_SEQUENTIAL_CANARY_REVIEW],
-        "excluded_count": (
-            len(ranked)
-            - status_counts[READY_EXISTING_CANARY]
-            - status_counts[READY_FOR_SEQUENTIAL_CANARY_REVIEW]
-        ),
+        "supported_count": status_counts[SUPPORTED],
+        "ready_count": status_counts[READY],
+        "not_ready_count": len(ranked) - status_counts[SUPPORTED] - status_counts[READY],
         "tick_rule_missing_count": sum(item.tick_rule_state == TICK_RULE_MISSING for item in ranked),
         "eligible_tick_rule_missing_count": sum(
             item.market_eligible and item.tick_rule_state == TICK_RULE_MISSING

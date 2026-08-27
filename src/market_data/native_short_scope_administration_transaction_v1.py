@@ -156,6 +156,10 @@ _ER_LOCK_WAIT_TIMEOUT = 1205
 _APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION: dict[OperationType, frozenset[str]] = {
     OperationType.ADOPT_LEGACY_SCOPE: frozenset({WRITER_PROVENANCE_UNATTRIBUTED}),
     OperationType.PROMOTE_SCOPE: frozenset(GLOBAL_BLOCKERS) - {REMOVAL_CONTRACT_MISSING},
+    # Normal market-data onboarding is not a rollout. It retains only the
+    # writer-provenance integrity guard; canary, approval, and removal
+    # evidence are historical rollout governance and never block READY here.
+    OperationType.AUTO_ONBOARD_SCOPE: frozenset({WRITER_PROVENANCE_UNATTRIBUTED}),
     OperationType.REMOVE_SCOPE: frozenset(
         {WRITER_PROVENANCE_UNATTRIBUTED, REMOVAL_CONTRACT_MISSING}
     ),
@@ -1552,7 +1556,10 @@ def decide_administration(
         )
     if operation_type == OperationType.ADOPT_LEGACY_SCOPE:
         return _decide_adopt(snapshot, classification, corrupt_code, detail)
-    if operation_type == OperationType.PROMOTE_SCOPE:
+    if operation_type in {
+        OperationType.PROMOTE_SCOPE,
+        OperationType.AUTO_ONBOARD_SCOPE,
+    }:
         decision = _decide_promote(snapshot, classification, corrupt_code, detail)
         if bootstrap_applied:
             decision = replace(decision, bootstrap_evidence_applied=True)
