@@ -17,9 +17,14 @@ def test_bind_cli_to_manifest_records_exact_user_facing_invocation(tmp_path: Pat
         "harmonic-v1-test",
     ]
 
+    implementation_hash = "a" * 64
     payload = runner._bind_cli_to_manifest(
         out_dir=out_dir,
-        manifest={"runner_name": runner.RUNNER_NAME, "registry_version": "1.0.0"},
+        manifest={
+            "runner_name": runner.RUNNER_NAME,
+            "registry_version": "1.0.1",
+            "analyzer_source_sha256": implementation_hash,
+        },
         raw_args=raw_args,
     )
 
@@ -30,7 +35,13 @@ def test_bind_cli_to_manifest_records_exact_user_facing_invocation(tmp_path: Pat
         *raw_args,
     ]
     assert payload["cli"] == expected
+    assert payload["implementation_source_sha256"] == implementation_hash
+    assert len(payload["analysis_core_source_sha256"]) == 64
+    assert len(payload["cli_wrapper_source_sha256"]) == 64
 
     stored = json.loads((out_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert stored["cli"] == expected
     assert stored["runner_name"] == runner.RUNNER_NAME
+    assert stored["implementation_source_sha256"] == implementation_hash
+    assert stored["analysis_core_source_sha256"] == payload["analysis_core_source_sha256"]
+    assert stored["cli_wrapper_source_sha256"] == payload["cli_wrapper_source_sha256"]
