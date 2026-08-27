@@ -13,7 +13,7 @@ from typing import Any
 
 
 REGISTRY_NAME = "breathline_harmonic_family_falsification_v1"
-REGISTRY_VERSION = "1.0.0"
+REGISTRY_VERSION = "1.0.1"
 
 DURATION_FAMILY_DAYS: tuple[float, ...] = (
     3.0,
@@ -174,7 +174,7 @@ NULL_CONTRACT = NullContract(
     permutations=NULL_PERMUTATIONS,
     random_seed=RANDOM_SEED,
     phase_null=(
-        "for each completed cycle, circularly shift all observed internal phase positions by one deterministic seeded U[0,1) offset modulo 1; preserve relative node spacing"
+        "for each completed cycle, circularly shift all observed internal phase positions by one deterministic seeded U[0,1) offset modulo 1; preserve relative node spacing; for both observed and null significance statistics map observed position and marker ratio modulo 1 and use shortest unit-circle distance min(abs(a-b), 1-abs(a-b)); unwrapped timing/phase residuals remain descriptive outputs"
     ),
     binary_null=(
         "within each asset/checkpoint evaluation set, permute future binary outcome labels after predictor rows are frozen"
@@ -237,7 +237,7 @@ def registry_payload() -> dict[str, Any]:
                 "retain residuals against every frozen duration candidate plus nearest-family and fixed-21d residuals"
             ),
             "phase_fit": (
-                "expected node time = cycle_start + observed_cycle_length_days * preregistered node ratio; retain continuous timing and normalized phase-position residuals"
+                "expected node time = cycle_start + observed_cycle_length_days * preregistered node ratio; retain continuous unwrapped timing and normalized phase-position residuals; phase-null significance uses the separately frozen shortest unit-circle distance for both observed and shifted-null statistics"
             ),
             "no_close_enough_threshold": True,
         },
