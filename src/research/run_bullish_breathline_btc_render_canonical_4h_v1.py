@@ -12,6 +12,7 @@ performed here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common.db import get_connection
-from src.research.breathline_btc_alt_relationship_registry_v1 import (
+from src.research.breathline_btc_alt_relationship_registry_v1_0_0_frozen import (
     ALT_SYMBOL,
     REFERENCE_SYMBOL,
     REGISTRY_VERSION,
@@ -63,13 +64,19 @@ from src.research.run_bullish_breathline_canonical_4h_v1 import (
 
 
 RUNNER_NAME = "bullish_breathline_btc_render_canonical_4h_v1"
-RUNNER_VERSION = "1.0.0"
+RUNNER_VERSION = "1.0.3"
+ORIGINAL_RELATIONSHIP_REGISTRY_COMMIT_SHA = "ec9254a9d2bbb4f30f0d61e160ea035e193adfb4"
+FROZEN_RELATIONSHIP_REGISTRY_SOURCE_FILE = (
+    "src/research/breathline_btc_alt_relationship_registry_v1_0_0_frozen.py"
+)
+EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256 = (
+    "baa1ff2093ed7d130944595babb67d1f696d1bd36296e442970d3c14dfc8656f"
+)
 SYMBOLS = (REFERENCE_SYMBOL, ALT_SYMBOL)
 EXPECTED_INTERVAL_SECONDS = 4 * 60 * 60
 DEFAULT_OUT_ROOT = Path("data/research/bullish_breathline_btc_render_canonical_4h_v1")
 SOURCE_CHECKPOINT_FILENAME = "source_checkpoint.json"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
-REGISTRY_SOURCE_FILE = "src/research/breathline_btc_alt_relationship_registry_v1.py"
 
 SAFETY_MARKERS: dict[str, Any] = {
     "research_only": True,
@@ -101,7 +108,17 @@ def runner_source_sha256() -> str:
 
 
 def registry_source_sha256() -> str:
-    return sha256_file(repo_root() / REGISTRY_SOURCE_FILE)
+    """Verify and hash the immutable vendored v1.0.0 preregistration snapshot."""
+    snapshot = repo_root() / FROZEN_RELATIONSHIP_REGISTRY_SOURCE_FILE
+    if not snapshot.is_file():
+        raise RuntimeError(f"frozen relationship registry snapshot missing: {snapshot}")
+    observed = sha256_file(snapshot)
+    if observed != EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256:
+        raise RuntimeError(
+            "frozen relationship registry snapshot hash mismatch: "
+            f"expected={EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256} observed={observed}"
+        )
+    return observed
 
 
 def resolve_asset_identity(conn: Any, symbol: str) -> AssetIdentity:
@@ -181,6 +198,9 @@ def write_source_checkpoint(
         "symbols": list(SYMBOLS),
         "interval_code": INTERVAL_CODE,
         "relationship_registry_version": REGISTRY_VERSION,
+        "relationship_registry_original_commit_sha": ORIGINAL_RELATIONSHIP_REGISTRY_COMMIT_SHA,
+        "relationship_registry_snapshot_source_file": FROZEN_RELATIONSHIP_REGISTRY_SOURCE_FILE,
+        "relationship_registry_expected_sha256": EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256,
         "analysis_commit_sha": analysis_commit_sha,
         "runner_source_sha256": runner_hash,
         "registry_source_sha256": registry_hash,
@@ -223,6 +243,9 @@ def load_source_checkpoint(
         "symbols": list(SYMBOLS),
         "interval_code": INTERVAL_CODE,
         "relationship_registry_version": REGISTRY_VERSION,
+        "relationship_registry_original_commit_sha": ORIGINAL_RELATIONSHIP_REGISTRY_COMMIT_SHA,
+        "relationship_registry_snapshot_source_file": FROZEN_RELATIONSHIP_REGISTRY_SOURCE_FILE,
+        "relationship_registry_expected_sha256": EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256,
         "analysis_commit_sha": analysis_commit_sha,
         "runner_source_sha256": runner_hash,
         "registry_source_sha256": registry_hash,
@@ -411,6 +434,9 @@ def run(
             "account_awareness": 0,
             "relationship_analysis_performed": False,
             "relationship_registry_version": REGISTRY_VERSION,
+            "relationship_registry_original_commit_sha": ORIGINAL_RELATIONSHIP_REGISTRY_COMMIT_SHA,
+            "relationship_registry_snapshot_source_file": FROZEN_RELATIONSHIP_REGISTRY_SOURCE_FILE,
+            "relationship_registry_expected_sha256": EXPECTED_FROZEN_RELATIONSHIP_REGISTRY_SHA256,
             "source_table": SOURCE_TABLE,
             "venue": VENUE,
             "symbols": list(SYMBOLS),

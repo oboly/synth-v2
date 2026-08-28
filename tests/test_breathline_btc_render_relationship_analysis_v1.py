@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import random
 
+import pytest
+
 from src.research.breathline_btc_alt_relationship_registry_v1 import (
     ALPHA,
     DISCOVERY_FRACTION,
@@ -13,6 +15,7 @@ from src.research.breathline_btc_alt_relationship_registry_v1 import (
     REGISTRY_VERSION,
 )
 from src.research.run_breathline_btc_render_relationship_analysis_v1 import (
+    AnalysisError,
     best_btc_pair,
     binary_support,
     build_lane_b_rows,
@@ -292,13 +295,63 @@ def test_lane_b_gates_each_outcome_by_its_own_confirmation_time() -> None:
     assert ignition["extension_confirmed_label_available_at_ts"] == iso(BASE + timedelta(days=11.5))
 
 
+def test_lane_b_positive_outcome_without_confirmation_timestamp_fails_closed() -> None:
+    render = cycle(
+        "RENDER",
+        3,
+        start_day=5,
+        end_day=15,
+        recognition_day=8,
+        recognition_confirm_day=8.5,
+        main_confirmed=True,
+        extension_confirmed=False,
+        outcome_as_of_day=15,
+    )
+    with pytest.raises(AnalysisError, match="positive main_pulse_confirmed lacks confirmation timestamp"):
+        build_lane_b_rows([], [render], {"RENDER-3": "holdout"})
+
+
 def test_no_btc_prior_uses_strictly_available_outcomes() -> None:
     prior = [
-        cycle("RENDER", idx, start_day=idx, end_day=idx + 0.5, recognition_day=idx + 0.2, main_confirmed=idx % 2 == 0, extension_confirmed=False)
+        cycle(
+            "RENDER",
+            idx,
+            start_day=idx,
+            end_day=idx + 0.5,
+            recognition_day=idx + 0.2,
+            main_day=idx + 0.3 if idx % 2 == 0 else None,
+            main_confirm_day=idx + 0.35 if idx % 2 == 0 else None,
+            main_confirmed=idx % 2 == 0,
+            extension_confirmed=False,
+        )
         for idx in range(8)
     ]
-    current = cycle("RENDER", 99, start_day=10, end_day=12, recognition_day=10.2, recognition_confirm_day=10.3, main_confirmed=True, extension_confirmed=False)
-    future_outcome = cycle("RENDER", 100, start_day=9, end_day=20, recognition_day=9.2, outcome_as_of_day=20, main_confirmed=True, extension_confirmed=True)
+    current = cycle(
+        "RENDER",
+        99,
+        start_day=10,
+        end_day=12,
+        recognition_day=10.2,
+        recognition_confirm_day=10.3,
+        main_day=11.0,
+        main_confirm_day=11.1,
+        main_confirmed=True,
+        extension_confirmed=False,
+    )
+    future_outcome = cycle(
+        "RENDER",
+        100,
+        start_day=9,
+        end_day=20,
+        recognition_day=9.2,
+        main_day=12,
+        main_confirm_day=12.5,
+        extension_day=15,
+        extension_confirm_day=15.5,
+        outcome_as_of_day=20,
+        main_confirmed=True,
+        extension_confirmed=True,
+    )
     rows_in = prior + [future_outcome, current]
     split = {str(row["cycle_id"]): "holdout" for row in rows_in}
     rows = build_lane_b_rows([], rows_in, split)
