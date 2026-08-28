@@ -74,15 +74,40 @@ This allows #552/#561 to stabilize the canonical user-facing PPP semantics indep
 
 ## Runner
 
+A normal shadow run always writes a CSV. The deterministic default destination is:
+
+```text
+data/research/entry_quality_shadow_v1/entry_quality_shadow_v1.csv
+```
+
+Run with the default destination:
+
+```text
+python -m src.research.run_entry_quality_shadow_v1
+```
+
+Override the destination when needed:
+
 ```text
 python -m src.research.run_entry_quality_shadow_v1 --out-csv /tmp/cq_shadow.csv
 ```
 
-Database persistence is explicit opt-in:
+Database persistence is explicit opt-in and still writes the CSV:
 
 ```text
 python -m src.research.run_entry_quality_shadow_v1 --write-db
 ```
+
+The runner follows the repository lifecycle-observability contract:
+
+```text
+STARTED
+SAFETY
+PHASE_START / PHASE_END
+FINISHED
+```
+
+A failed run emits one terminal `FAILED` instead of `FINISHED`. `STARTED` is emitted before the database connection attempt, so connection failures are observable too.
 
 No production ranking change occurs in either mode.
 
