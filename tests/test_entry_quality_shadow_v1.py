@@ -1,13 +1,17 @@
 from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
 
 from src.research.entry_quality_shadow_v1 import (
     EntryQualityInput,
     compute_entry_quality_shadow,
     compute_entry_strength,
 )
+from src.research.run_entry_quality_shadow_v1 import _load_ppp_csv, _source_asof
 
 
-def test_entry_quality_evolves_existing_trade_quality_score() -> None:
+def test_entry_quality_uses_trade_quality_as_independent_baseline() -> None:
     result = compute_entry_quality_shadow(
         EntryQualityInput(
             trade_quality_score=Decimal("0.68"),
@@ -19,11 +23,11 @@ def test_entry_quality_evolves_existing_trade_quality_score() -> None:
         )
     )
 
-    assert result.entry_quality_score == Decimal("0.660000")
+    assert result.entry_quality_score == Decimal("0.680000")
     assert result.entry_quality_state == "GOOD"
-    assert "EVOLVED_FROM_TRADE_QUALITY_SCORE" in result.reasons
-    assert "POSITIVE_1H_TIMING_REFINEMENT" in result.reasons
-    assert "DATA_QUALITY_PENALTY_APPLIED" in result.reasons
+    assert "BASELINE_FROM_TRADE_QUALITY_SCORE" in result.reasons
+    assert "TIMING_REFINEMENT_OBSERVED_NOT_APPLIED" in result.reasons
+    assert "QUALITY_PENALTY_OBSERVED_NOT_APPLIED" in result.reasons
     assert result.blockers == ()
 
 
@@ -44,7 +48,7 @@ def test_entry_quality_blocks_on_required_quality() -> None:
     assert result.blockers == ("BLOCKED_4H_QUALITY",)
 
 
-def test_blocked_1h_only_removes_refinement_not_cq() -> None:
+def test_blocked_1h_does_not_block_higher_timeframe_cq() -> None:
     result = compute_entry_quality_shadow(
         EntryQualityInput(
             trade_quality_score=Decimal("0.50"),
@@ -88,3 +92,39 @@ def test_entry_strength_rejects_invalid_ranges() -> None:
         ppp_pct=Decimal("20"),
         entry_quality_score=Decimal("1.01"),
     ) is None
+
+
+def test_source_asof_uses_evidence_timestamp_not_runner_time() -> None:
+    row = SimpleNamespace(symbol="AAVE", asof_ts_utc="2026-08-28 04:00:00")
+    assert _source_asof(row) == "2026-08-28 04:00:00"
+
+
+def test_source_asof_fails_closed_when_missing() -> None:
+    row = SimpleNamespace(symbol="AAVE", asof_ts_utc=None)
+    with pytest.raises(ValueError, match="Missing canonical source as-of"):
+        _source_asof(row)
+
+
+def test_ppp_csv_rejects_mixed_planning_and_actionable(tmp_path) -> None:
+    path = tmp_path / "ppp.csv"
+    path.write_text(
+        "symbol,ppp_pct,ppp_kind,ppp_source_ref\n"
+        "AAVE,20,ACTIONABLE_PPP,action:aave\n"
+        "ETH,10,PLANNING_PPP,planning:eth\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must contain exactly one PPP kind"):
+        _load_ppp_csv(str(path))
+
+
+def test_ppp_csv_rejects_unknown_kind(tmp_path) -> None:
+    path = tmp_path / "ppp.csv"
+    path.write_text(
+        "symbol,ppp_pct,ppp_kind,ppp_source_ref\n"
+        "AAVE,20,SURPRISE_PPP,source:aave\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unsupported ppp_kind"):
+        _load_ppp_csv(str(path))
