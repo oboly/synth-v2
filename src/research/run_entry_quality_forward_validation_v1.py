@@ -130,9 +130,15 @@ def write_checkpoint(
         "terminal_state": terminal_state,
         "updated_ts_utc": datetime.now(UTC),
     }
-    _checkpoint_path(output_dir).write_text(
+    checkpoint_path = _checkpoint_path(output_dir)
+    checkpoint_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, default=json_default) + "\n",
         encoding="utf-8",
+    )
+    print(
+        f"WRITE event=checkpoint path={checkpoint_path} terminal_state={terminal_state} "
+        f"observations_completed={observations_completed} rows_written={rows_written} flushed=1",
+        flush=True,
     )
 
 
@@ -161,19 +167,25 @@ def reconcile_output_to_checkpoint(rows_path: Path, checkpoint: dict[str, Any]) 
     if expected_rows < 0:
         raise ValueError("Checkpoint rows_written must be non-negative")
     rows = _read_existing_rows(rows_path)
-    if len(rows) < expected_rows:
+    original_rows = len(rows)
+    if original_rows < expected_rows:
         raise ValueError(
-            f"Checkpoint/output mismatch: checkpoint rows_written={expected_rows}, JSONL rows={len(rows)}"
+            f"Checkpoint/output mismatch: checkpoint rows_written={expected_rows}, JSONL rows={original_rows}"
         )
-    if len(rows) > expected_rows:
+    if original_rows > expected_rows:
         rows = rows[:expected_rows]
         rows_path.parent.mkdir(parents=True, exist_ok=True)
         with rows_path.open("w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
+            handle.flush()
         print(
-            f"RESUME_RECONCILE action=truncate_jsonl from_rows={len(_read_existing_rows(rows_path)) if False else 'extra'} "
-            f"to_rows={expected_rows}",
+            f"WRITE event=jsonl_reconcile path={rows_path} from_rows={original_rows} "
+            f"to_rows={expected_rows} flushed=1",
+            flush=True,
+        )
+        print(
+            f"RESUME_RECONCILE action=truncate_jsonl from_rows={original_rows} to_rows={expected_rows}",
             flush=True,
         )
     if expected_rows == 0:
@@ -327,6 +339,10 @@ def _append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
         handle.flush()
+    print(
+        f"WRITE event=jsonl_append path={path} rows={len(rows)} flushed=1",
+        flush=True,
+    )
 
 
 def write_summary(output_dir: Path, rows: list[dict[str, Any]], registry: dict[str, Any]) -> None:
@@ -345,9 +361,14 @@ def write_summary(output_dir: Path, rows: list[dict[str, Any]], registry: dict[s
         "target_outcomes": "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE",
         "production_ranking_changed": False,
     }
-    (output_dir / OUTPUT_SUMMARY).write_text(
+    summary_path = output_dir / OUTPUT_SUMMARY
+    summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+    print(
+        f"WRITE event=summary path={summary_path} rows={len(rows)} flushed=1",
+        flush=True,
     )
 
 
@@ -359,7 +380,12 @@ def run(args: argparse.Namespace) -> int:
     previous_handlers = _install_signal_handlers()
     output_dir = Path(args.output_dir)
     rows_path = output_dir / OUTPUT_ROWS
-    print(f"STARTED runner={RUNNER_NAME} mode=research-read-only", flush=True)
+    print(
+        f"STARTED runner={RUNNER_NAME} mode=research-read-only worker_count=1 "
+        f"venue={args.venue} asset_id={args.asset_id} limit={args.limit} "
+        f"output_dir={args.output_dir} resume={int(bool(args.resume))}",
+        flush=True,
+    )
     print(
         "SAFETY research_only=1 market_only=1 db_writes=0 production_ranking_changes=0 "
         "decision_gate=none execution_planner=none executor=none broker_private_calls=0 "
