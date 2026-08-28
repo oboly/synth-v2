@@ -64,6 +64,16 @@ def extraction(*, mrp=True, sector=True) -> FeatureExtraction:
     )
 
 
+def checkpoint(*, processed: int, last_shadow_id: int, mrp: int, sector: int, joint: int) -> dict:
+    return {
+        "processed": processed,
+        "last_shadow_id": last_shadow_id,
+        "mrp_available_count": mrp,
+        "sector_available_count": sector,
+        "joint_available_count": joint,
+    }
+
+
 def test_registry_forbids_scoring_and_writes() -> None:
     registry = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))
     assert registry["phase"] == "2C"
@@ -143,13 +153,40 @@ def test_runner_jsonl_serializes_db_decimal_values_deterministically(tmp_path: P
 
 def test_resume_truncates_extra_or_malformed_uncheckpointed_tail(tmp_path: Path) -> None:
     path = tmp_path / "features.jsonl"
-    path.write_text('{"shadow_id":1}\n{"shadow_id":2}\n{"shadow_id":', encoding="utf-8")
-    reconcile_jsonl(path, {"processed": 2, "last_shadow_id": 2})
-    assert path.read_text(encoding="utf-8") == '{"shadow_id":1}\n{"shadow_id":2}\n'
+    path.write_text(
+        '{"shadow_id":1,"mrp_available":true,"sector_available":false,"joint_available":false}\n'
+        '{"shadow_id":2,"mrp_available":true,"sector_available":true,"joint_available":true}\n'
+        '{"shadow_id":',
+        encoding="utf-8",
+    )
+    reconcile_jsonl(path, checkpoint(processed=2, last_shadow_id=2, mrp=2, sector=1, joint=1))
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_resume_fails_if_checkpointed_row_is_malformed(tmp_path: Path) -> None:
     path = tmp_path / "features.jsonl"
     path.write_text('{"shadow_id":1}\n{"shadow_id":', encoding="utf-8")
     with pytest.raises(ValueError, match="checkpointed JSONL line 2 is malformed"):
-        reconcile_jsonl(path, {"processed": 2, "last_shadow_id": 2})
+        reconcile_jsonl(path, checkpoint(processed=2, last_shadow_id=2, mrp=0, sector=0, joint=0))
+
+
+def test_resume_fails_on_reordered_or_duplicate_shadow_ids(tmp_path: Path) -> None:
+    path = tmp_path / "features.jsonl"
+    path.write_text(
+        '{"shadow_id":2,"mrp_available":false,"sector_available":false,"joint_available":false}\n'
+        '{"shadow_id":2,"mrp_available":false,"sector_available":false,"joint_available":false}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="shadow_id sequence is not strictly increasing"):
+        reconcile_jsonl(path, checkpoint(processed=2, last_shadow_id=2, mrp=0, sector=0, joint=0))
+
+
+def test_resume_fails_when_checkpoint_availability_counters_do_not_match_jsonl(tmp_path: Path) -> None:
+    path = tmp_path / "features.jsonl"
+    path.write_text(
+        '{"shadow_id":1,"mrp_available":true,"sector_available":false,"joint_available":false}\n'
+        '{"shadow_id":2,"mrp_available":false,"sector_available":true,"joint_available":false}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="mrp_available_count differs"):
+        reconcile_jsonl(path, checkpoint(processed=2, last_shadow_id=2, mrp=0, sector=1, joint=0))
