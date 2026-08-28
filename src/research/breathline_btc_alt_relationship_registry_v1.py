@@ -5,12 +5,16 @@ from __future__ import annotations
 This module contains hypotheses and deterministic analysis contracts only. It
 must not inspect market outcomes or alter the single-symbol #417 tracker.
 
-Registry v1.0.2 is a pre-analysis clarification created after independent BTC
-and RENDER ledgers were frozen but before any BTC↔RENDER relationship statistic
-was inspected. v1.0.1 made test statistics, minimum-support rules and verdict
-rules explicit. v1.0.2 additionally fixes the split-preserving implementation
-of the preregistered permutation nulls so null permutations cannot alter sample
-support or missingness.
+Registry v1.0.3 is a pre-analysis architecture clarification created after
+independent BTC and RENDER ledgers were frozen but before any BTC↔RENDER
+relationship statistic was inspected.
+
+Audit trail:
+- v1.0.1 fixed exact statistics, minimum support and verdict rules;
+- v1.0.2 fixed split-preserving permutation implementation;
+- v1.0.3 makes explicit that SHARED_EXTENSION is retrospective association
+  evidence because it uses completed maximum-overlap pairing. Only the PIT
+  ROTATION_CANDIDATE lane may produce predictive research evidence.
 
 The symbols, split, null families, seed, permutation count, hypotheses and
 architecture boundary remain unchanged from v1.0.0.
@@ -21,9 +25,8 @@ Research-only, market-only, account-agnostic.
 from dataclasses import asdict, dataclass
 from typing import Any
 
-
 REGISTRY_NAME = "breathline_btc_alt_relationship_v1"
-REGISTRY_VERSION = "1.0.2"
+REGISTRY_VERSION = "1.0.3"
 
 REFERENCE_SYMBOL = "BTC"
 ALT_SYMBOL = "RENDER"
@@ -36,7 +39,6 @@ RANDOM_SEED = 418001
 ALPHA = 0.05
 MULTIPLE_COMPARISON_METHOD = "holm_bonferroni"
 
-# Frozen before any cross-symbol statistic is inspected.
 MIN_PAIRED_CYCLES_PER_SPLIT = 8
 MIN_EVENT_COMPARISONS_PER_SPLIT = 5
 MIN_SEQUENCE_CYCLES_PER_SPLIT = 5
@@ -187,8 +189,7 @@ class VerdictContract:
 
 PAIRING_CONTRACT = PairingContract(
     primary_pairing=(
-        "for each completed RENDER cycle, pair to the completed BTC cycle with "
-        "maximum wall-clock overlap; overlap is max(0, min(end)-max(start))"
+        "for each completed RENDER cycle, pair to the completed BTC cycle with maximum wall-clock overlap; overlap is max(0, min(end)-max(start))"
     ),
     tie_break=(
         "largest overlap, then smallest absolute start-time lag, then earliest BTC start_ts, then lexical BTC cycle_id"
@@ -260,7 +261,7 @@ EXACT_TEST_CONTRACT = ExactTestContract(
         "RELOCK sequence exists when a DETACHED sequence is followed later in the same paired cycle by at least one negative change in absolute phase delta; no magnitude threshold"
     ),
     shared_extension_statistic=(
-        "difference in RENDER extension-confirmation rate between paired BTC extension_confirmed=true and false cycles; positive favors SHARED_EXTENSION"
+        "retrospective holdout association only: difference in RENDER extension-confirmation rate between completed maximum-overlap paired BTC extension_confirmed=true and false cycles; positive favors SHARED_EXTENSION but does not create PIT predictive authority"
     ),
     rotation_candidate_statistic=(
         "at each RENDER recognition/ignition feature_as_of_ts, define BTC recency scores as negative days since latest prior-confirmed BTC main-pulse or extension event respectively; higher means more recent; test tie-aware ROC AUC for later RENDER main_pulse_confirmed and extension_confirmed"
@@ -278,13 +279,13 @@ EXACT_TEST_CONTRACT = ExactTestContract(
 
 NULL_IMPLEMENTATION_CONTRACT = NullImplementationContract(
     pair_permutation=(
-        "within each split, permute retained BTC paired-cycle measurement vectors across RENDER pair rows; a measurement vector contains BTC realized-phase values keyed by retained RENDER phase checkpoint. Do not recompute wall-clock overlap after permutation. This preserves the observed row/checkpoint support while breaking BTC↔RENDER pairing association. The same vector permutation is used for PHASE_LOCK, CONVERGING/DIVERGING and DETACHED/RELOCK null statistics."
+        "within each split, permute retained BTC paired-cycle measurement vectors across RENDER pair rows with identical checkpoint-support patterns. Do not recompute wall-clock overlap after permutation. This preserves observed support while breaking BTC↔RENDER pairing association."
     ),
     event_timing_permutation=(
-        "for Lane A LEADING/LAGGING, within each split and event name permute retained BTC same-event timestamps across rows with that event comparison. For Lane B ROTATION_CANDIDATE, within each split/checkpoint/feature/outcome test permute the retained BTC recency-score values across the exact matched rows."
+        "for Lane A LEADING/LAGGING, within each split and event name permute retained BTC same-event timestamps across rows with that event comparison. For Lane B ROTATION_CANDIDATE, within each split/checkpoint/feature/outcome test permute retained BTC recency-score values across the exact matched rows."
     ),
     extension_label_permutation=(
-        "within each split, permute retained BTC extension_confirmed labels across the exact paired rows used by SHARED_EXTENSION"
+        "within each split, permute retained BTC extension_confirmed labels across the exact completed paired rows used by SHARED_EXTENSION"
     ),
     missingness_rule=(
         "all nulls operate on the exact observed eligible row set for that statistic; permutation changes only the preregistered BTC measurement, timing-score or label assignment. Row count, RENDER outcomes and missingness/support are invariant across permutations."
@@ -305,13 +306,13 @@ VERDICT_CONTRACT = VerdictContract(
         "DETACHED and RELOCK are tested separately as split-level sequence-rate excess over pair-permutation null; require discovery observed rate above null median and Holm-adjusted holdout p<0.05 with holdout rate above null median"
     ),
     shared_extension=(
-        "SHARED_EXTENSION only if discovery and holdout conditional-rate differences are positive and holdout permutation p<0.05"
+        "SUPPORTED_ASSOCIATION only if discovery and holdout conditional-rate differences are positive and holdout permutation p<0.05; because maximum-overlap pairing uses completed cycle ends this result belongs to Lane A and cannot satisfy the predictive promotion gate"
     ),
     rotation_candidate=(
         "ROTATION_CANDIDATE only if at least one preregistered checkpoint/feature/outcome test has discovery AUC>0.5, holdout AUC>0.5, holdout AUC greater than the matched no-BTC expanding-prior AUC, and Holm-adjusted holdout permutation p<0.05"
     ),
     overall=(
-        "overall evidence is POSITIVE_RESEARCH_EVIDENCE only when at least one predictive hypothesis (SHARED_EXTENSION or ROTATION_CANDIDATE) is supported; structural-only findings remain STRUCTURAL_EVIDENCE_ONLY; otherwise emit UNRELATED"
+        "overall evidence is POSITIVE_RESEARCH_EVIDENCE only when ROTATION_CANDIDATE is supported in PIT Lane B; any supported Lane A hypothesis, including SHARED_EXTENSION association, yields STRUCTURAL_EVIDENCE_ONLY; otherwise emit UNRELATED"
     ),
     insufficient=(
         "emit INSUFFICIENT_EVIDENCE for a hypothesis when either split fails its frozen minimum-support rule; never lower minimums after outcome inspection"
@@ -358,6 +359,8 @@ def registry_payload() -> dict[str, Any]:
             "positive_relationship_requires": (
                 "directionally consistent discovery and holdout evidence plus null-control superiority; no relationship is promoted from retrospective fit alone"
             ),
+            "predictive_authority_source": "ROTATION_CANDIDATE PIT Lane B only",
+            "shared_extension_authority": "retrospective association only",
             "unrelated_default": (
                 "if holdout/null evidence does not support a preregistered relationship, emit UNRELATED; if sample support is too small, emit INSUFFICIENT_EVIDENCE"
             ),
@@ -381,10 +384,8 @@ def validate_registry() -> None:
         raise RuntimeError("UNRELATED must remain an explicit outcome")
     if "INSUFFICIENT_EVIDENCE" not in RELATIONSHIP_HYPOTHESES:
         raise RuntimeError("INSUFFICIENT_EVIDENCE must remain an explicit outcome")
-    if MIN_PAIRED_CYCLES_PER_SPLIT < 1:
-        raise RuntimeError("paired-cycle minimum must be positive")
-    if MIN_EVENT_COMPARISONS_PER_SPLIT < 1:
-        raise RuntimeError("event-comparison minimum must be positive")
+    if MIN_PAIRED_CYCLES_PER_SPLIT < 1 or MIN_EVENT_COMPARISONS_PER_SPLIT < 1:
+        raise RuntimeError("retrospective minimum support must be positive")
     if MIN_BINARY_ROWS_PER_SPLIT < 2 * MIN_BINARY_CLASS_COUNT:
         raise RuntimeError("binary row minimum cannot be below two class minima")
     if MIN_SIGNIFICANT_LAG_EVENTS < 1 or MIN_SIGNIFICANT_LAG_EVENTS > len(PHASE_CHECKPOINTS):
