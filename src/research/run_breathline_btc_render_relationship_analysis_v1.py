@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """Offline falsification analysis for Issue #418 BTC↔RENDER Breathline relations.
 
-Consumes immutable independent #417 ledgers. Lane A is retrospective structural
-measurement; Lane B is point-in-time prediction. No tracker, DB, selection,
-decision or execution behavior is modified.
+Consumes immutable independent #417 ledgers. Lane A is retrospective structural/
+association evidence. Lane B is point-in-time predictive validation. Only Lane B
+ROTATION_CANDIDATE may create predictive research evidence.
 """
 
 import argparse
@@ -51,7 +51,7 @@ from src.research.breathline_btc_alt_relationship_registry_v1 import (
 )
 
 RUNNER_NAME = "breathline_btc_render_relationship_analysis_v1"
-RUNNER_VERSION = "1.0.1"
+RUNNER_VERSION = "1.0.2"
 SOURCE_RUNNER_NAME = "bullish_breathline_btc_render_canonical_4h_v1"
 DEFAULT_OUT_ROOT = Path("data/research/breathline_btc_render_relationship_analysis_v1")
 REGISTRY_PATH = Path("src/research/breathline_btc_alt_relationship_registry_v1.py")
@@ -77,14 +77,6 @@ class AnalysisError(RuntimeError):
     pass
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def fmt_ts(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def parse_ts(value: Any, *, field: str, required: bool = True) -> datetime | None:
     if value in (None, ""):
         if required:
@@ -100,6 +92,10 @@ def parse_ts(value: Any, *, field: str, required: bool = True) -> datetime | Non
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def fmt_ts(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def days_between(later: datetime, earlier: datetime) -> float:
@@ -312,11 +308,11 @@ def build_pair_rows(
         render_vector: dict[str, float] = {}
         btc_vector: dict[str, float] = {}
         for checkpoint in PHASE_CHECKPOINTS:
-            sample_ts = event_ts(render, checkpoint)
-            if sample_ts is None:
+            sample = event_ts(render, checkpoint)
+            if sample is None:
                 continue
-            render_phase = realized_phase(render, sample_ts)
-            btc_phase = realized_phase(btc, sample_ts)
+            render_phase = realized_phase(render, sample)
+            btc_phase = realized_phase(btc, sample)
             if render_phase is None or btc_phase is None:
                 continue
             render_vector[checkpoint] = render_phase
@@ -327,7 +323,7 @@ def build_pair_rows(
                     "render_cycle_id": render_id,
                     "btc_cycle_id": btc_id,
                     "checkpoint": checkpoint,
-                    "sample_ts": fmt_ts(sample_ts),
+                    "sample_ts": fmt_ts(sample),
                     "render_realized_phase": render_phase,
                     "btc_realized_phase": btc_phase,
                     "signed_phase_delta": render_phase - btc_phase,
@@ -357,8 +353,8 @@ def build_pair_rows(
 
         support = [key for key in PHASE_CHECKPOINTS if key in render_vector and key in btc_vector]
         if len(support) >= 2:
-            abs_deltas = [abs(render_vector[key] - btc_vector[key]) for key in support]
-            changes = [abs_deltas[idx] - abs_deltas[idx - 1] for idx in range(1, len(abs_deltas))]
+            deltas = [abs(render_vector[key] - btc_vector[key]) for key in support]
+            changes = [deltas[idx] - deltas[idx - 1] for idx in range(1, len(deltas))]
             detached_at: int | None = None
             for idx in range(1, len(changes)):
                 if changes[idx - 1] > 0 and changes[idx] > 0:
@@ -372,9 +368,9 @@ def build_pair_rows(
                     "render_cycle_id": render_id,
                     "btc_cycle_id": btc_id,
                     "checkpoints": support,
-                    "absolute_phase_deltas": abs_deltas,
+                    "absolute_phase_deltas": deltas,
                     "delta_abs_phase_errors": changes,
-                    "net_abs_phase_delta_change": abs_deltas[-1] - abs_deltas[0],
+                    "net_abs_phase_delta_change": deltas[-1] - deltas[0],
                     "detached_sequence": detached,
                     "relock_sequence": relock,
                 }
@@ -445,20 +441,24 @@ def seed_for(label: str) -> int:
 def permutation_p(observed: float, nulls: Sequence[float], *, favorable: str) -> float:
     if len(nulls) != NULL_PERMUTATIONS:
         raise AnalysisError("permutation count mismatch")
-    if favorable == "lower":
-        extreme = sum(value <= observed for value in nulls)
-    elif favorable == "higher":
-        extreme = sum(value >= observed for value in nulls)
-    else:
+    extreme = (
+        sum(value <= observed for value in nulls)
+        if favorable == "lower"
+        else sum(value >= observed for value in nulls)
+        if favorable == "higher"
+        else None
+    )
+    if extreme is None:
         raise ValueError("invalid favorable direction")
     return (1 + extreme) / (NULL_PERMUTATIONS + 1)
 
 
 def phase_stat_from_vectors(rows: Sequence[dict[str, Any]]) -> float | None:
-    values: list[float] = []
-    for row in rows:
-        for checkpoint in row["phase_support_pattern"]:
-            values.append(abs(float(row["render_phase_vector"][checkpoint]) - float(row["btc_phase_vector"][checkpoint])))
+    values = [
+        abs(float(row["render_phase_vector"][key]) - float(row["btc_phase_vector"][key]))
+        for row in rows
+        for key in row["phase_support_pattern"]
+    ]
     return mean_or_none(values)
 
 
@@ -466,8 +466,8 @@ def sequence_stats_from_vectors(
     rows: Sequence[dict[str, Any]],
 ) -> tuple[float | None, float | None, float | None, int]:
     nets: list[float] = []
-    detached_values: list[bool] = []
-    relock_values: list[bool] = []
+    detached_flags: list[bool] = []
+    relock_flags: list[bool] = []
     for row in rows:
         support = list(row["phase_support_pattern"])
         if len(support) < 2:
@@ -485,9 +485,9 @@ def sequence_stats_from_vectors(
         detached = detached_at is not None
         relock = False if detached_at is None else any(change < 0 for change in changes[detached_at + 1 :])
         nets.append(deltas[-1] - deltas[0])
-        detached_values.append(detached)
-        relock_values.append(relock)
-    return mean_or_none(nets), rate_or_none(detached_values), rate_or_none(relock_values), len(nets)
+        detached_flags.append(detached)
+        relock_flags.append(relock)
+    return mean_or_none(nets), rate_or_none(detached_flags), rate_or_none(relock_flags), len(nets)
 
 
 def permute_btc_vectors(rows: Sequence[dict[str, Any]], rng: random.Random) -> list[dict[str, Any]]:
@@ -508,13 +508,13 @@ def permute_btc_vectors(rows: Sequence[dict[str, Any]], rng: random.Random) -> l
 
 def phase_null_distribution(rows: Sequence[dict[str, Any]], *, split: str) -> list[float]:
     rng = random.Random(seed_for(f"phase-null:{split}"))
-    nulls: list[float] = []
+    result: list[float] = []
     for _ in range(NULL_PERMUTATIONS):
         value = phase_stat_from_vectors(permute_btc_vectors(rows, rng))
         if value is None:
             raise AnalysisError(f"phase null lacks support in {split}")
-        nulls.append(value)
-    return nulls
+        result.append(value)
+    return result
 
 
 def sequence_null_distributions(rows: Sequence[dict[str, Any]], *, split: str) -> dict[str, list[float]]:
@@ -538,12 +538,12 @@ def lag_null_distribution(rows: Sequence[dict[str, Any]], *, split: str, event: 
     render_values = [value for value in render_times if value is not None]
     btc_values = [value for value in btc_times if value is not None]
     rng = random.Random(seed_for(f"lag-null:{split}:{event}"))
-    nulls: list[float] = []
+    result: list[float] = []
     for _ in range(NULL_PERMUTATIONS):
         shuffled = list(btc_values)
         rng.shuffle(shuffled)
-        nulls.append(mean(days_between(render, btc) for render, btc in zip(render_values, shuffled, strict=True)))
-    return nulls
+        result.append(mean(days_between(render, btc) for render, btc in zip(render_values, shuffled, strict=True)))
+    return result
 
 
 def binary_support(labels: Sequence[bool]) -> bool:
@@ -564,7 +564,7 @@ def conditional_extension_difference(rows: Sequence[dict[str, Any]]) -> float | 
 def extension_null_distribution(rows: Sequence[dict[str, Any]], *, split: str) -> list[float]:
     labels = [bool(row["btc_extension_confirmed"]) for row in rows]
     rng = random.Random(seed_for(f"extension-null:{split}"))
-    nulls: list[float] = []
+    result: list[float] = []
     for _ in range(NULL_PERMUTATIONS):
         shuffled = list(labels)
         rng.shuffle(shuffled)
@@ -573,8 +573,8 @@ def extension_null_distribution(rows: Sequence[dict[str, Any]], *, split: str) -
         )
         if value is None:
             raise AnalysisError("extension permutation lost support")
-        nulls.append(value)
-    return nulls
+        result.append(value)
+    return result
 
 
 def build_lane_b_rows(
@@ -591,9 +591,9 @@ def build_lane_b_rows(
     for event in btc_events:
         btc_events[event] = sorted(set(btc_events[event]))
 
-    ordered_render = sorted(render_cycles, key=lambda row: (cycle_start(row), str(row["cycle_id"])))
+    render_ordered = sorted(render_cycles, key=lambda row: (cycle_start(row), str(row["cycle_id"])))
     rows: list[dict[str, Any]] = []
-    for render in ordered_render:
+    for render in render_ordered:
         cycle_id = str(render["cycle_id"])
         outcome_as_of = parse_ts(render.get("outcome_as_of_ts"), field="outcome_as_of_ts")
         assert outcome_as_of is not None
@@ -616,8 +616,8 @@ def build_lane_b_rows(
                 "btc_main_pulse_recency_score": None if latest_main is None else -days_between(feature_as_of, latest_main),
                 "btc_extension_recency_score": None if latest_extension is None else -days_between(feature_as_of, latest_extension),
             }
-            prior = []
-            for previous in ordered_render:
+            prior: list[dict[str, Any]] = []
+            for previous in render_ordered:
                 if str(previous["cycle_id"]) == cycle_id:
                     continue
                 previous_outcome = parse_ts(previous.get("outcome_as_of_ts"), field="outcome_as_of_ts")
@@ -634,15 +634,15 @@ def build_lane_b_rows(
 
 def rotation_null_auc(scores: Sequence[float], labels: Sequence[bool], *, label: str) -> list[float]:
     rng = random.Random(seed_for(f"rotation-null:{label}"))
-    nulls: list[float] = []
+    result: list[float] = []
     for _ in range(NULL_PERMUTATIONS):
         shuffled = list(scores)
         rng.shuffle(shuffled)
         auc = roc_auc(shuffled, labels)
         if auc is None:
             raise AnalysisError("rotation null lost support")
-        nulls.append(auc)
-    return nulls
+        result.append(auc)
+    return result
 
 
 def summarize_lane_a(
@@ -653,29 +653,26 @@ def summarize_lane_a(
     paired = [row for row in pair_rows if row.get("paired")]
     cache: dict[str, dict[str, Any]] = {}
     result: dict[str, Any] = {
-        "pairing": {
-            "render_cycle_count": len(pair_rows),
-            "paired_count": len(paired),
-            "unpaired_count": len(pair_rows) - len(paired),
-        },
+        "pairing": {"render_cycle_count": len(pair_rows), "paired_count": len(paired), "unpaired_count": len(pair_rows) - len(paired)},
         "splits": {},
         "hypotheses": {},
     }
-
     for split in ("discovery", "holdout"):
         pairs = [row for row in paired if row["split"] == split]
         phases = [row for row in phase_rows if row["split"] == split]
         phase_stat = phase_stat_from_vectors(pairs)
         net, detached, relock, sequence_count = sequence_stats_from_vectors(pairs)
-        phase_nulls = None
-        if len(pairs) >= MIN_PAIRED_CYCLES_PER_SPLIT and len(phases) >= MIN_EVENT_COMPARISONS_PER_SPLIT and phase_stat is not None:
-            phase_nulls = phase_null_distribution(pairs, split=split)
-        sequence_nulls = None
-        if sequence_count >= MIN_SEQUENCE_CYCLES_PER_SPLIT:
-            sequence_nulls = sequence_null_distributions(pairs, split=split)
+        phase_nulls = (
+            phase_null_distribution(pairs, split=split)
+            if len(pairs) >= MIN_PAIRED_CYCLES_PER_SPLIT
+            and len(phases) >= MIN_EVENT_COMPARISONS_PER_SPLIT
+            and phase_stat is not None
+            else None
+        )
+        sequence_nulls = sequence_null_distributions(pairs, split=split) if sequence_count >= MIN_SEQUENCE_CYCLES_PER_SPLIT else None
         cache[split] = {
             "pairs": pairs,
-            "phase_rows": phases,
+            "phases": phases,
             "phase_stat": phase_stat,
             "phase_nulls": phase_nulls,
             "net": net,
@@ -695,49 +692,45 @@ def summarize_lane_a(
         }
 
     if any(cache[split]["phase_nulls"] is None for split in ("discovery", "holdout")):
-        phase_test = {"status": "INSUFFICIENT_EVIDENCE"}
+        result["hypotheses"]["PHASE_LOCK"] = {"status": "INSUFFICIENT_EVIDENCE"}
     else:
         discovery = cache["discovery"]
         holdout = cache["holdout"]
-        holdout_p = permutation_p(holdout["phase_stat"], holdout["phase_nulls"], favorable="lower")
+        p_value = permutation_p(holdout["phase_stat"], holdout["phase_nulls"], favorable="lower")
         supported = (
             discovery["phase_stat"] < median(discovery["phase_nulls"])
             and holdout["phase_stat"] < median(holdout["phase_nulls"])
-            and holdout_p < ALPHA
+            and p_value < ALPHA
         )
-        phase_test = {
+        result["hypotheses"]["PHASE_LOCK"] = {
             "status": "SUPPORTED_STRUCTURAL" if supported else "NOT_SUPPORTED",
             "discovery_mean_absolute_phase_delta": discovery["phase_stat"],
             "discovery_null_median": median(discovery["phase_nulls"]),
             "holdout_mean_absolute_phase_delta": holdout["phase_stat"],
             "holdout_null_median": median(holdout["phase_nulls"]),
-            "holdout_p_value": holdout_p,
+            "holdout_p_value": p_value,
         }
-    result["hypotheses"]["PHASE_LOCK"] = phase_test
 
     lag_tests: dict[str, dict[str, Any]] = {}
-    raw_lag_p: dict[str, float | None] = {}
+    raw_lag: dict[str, float | None] = {}
     sufficient_events = 0
     for event in PHASE_CHECKPOINTS:
         discovery_rows = [row for row in lag_rows if row["split"] == "discovery" and row["event"] == event]
         holdout_rows = [row for row in lag_rows if row["split"] == "holdout" and row["event"] == event]
         if len(discovery_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT or len(holdout_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT:
             lag_tests[event] = {"status": "INSUFFICIENT_EVIDENCE", "discovery_n": len(discovery_rows), "holdout_n": len(holdout_rows)}
-            raw_lag_p[event] = None
+            raw_lag[event] = None
             continue
         sufficient_events += 1
         discovery_mean = mean(float(row["event_lag_days"]) for row in discovery_rows)
         holdout_mean = mean(float(row["event_lag_days"]) for row in holdout_rows)
         direction = "NONE" if discovery_mean == 0 else "LAGGING" if discovery_mean > 0 else "LEADING"
-        if direction == "NONE":
-            raw_p = 1.0
-        else:
-            raw_p = permutation_p(
-                holdout_mean,
-                lag_null_distribution(lag_rows, split="holdout", event=event),
-                favorable="higher" if direction == "LAGGING" else "lower",
-            )
-        raw_lag_p[event] = raw_p
+        raw_p = 1.0 if direction == "NONE" else permutation_p(
+            holdout_mean,
+            lag_null_distribution(lag_rows, split="holdout", event=event),
+            favorable="higher" if direction == "LAGGING" else "lower",
+        )
+        raw_lag[event] = raw_p
         lag_tests[event] = {
             "status": "TESTED",
             "direction_from_discovery": direction,
@@ -747,7 +740,7 @@ def summarize_lane_a(
             "holdout_mean_lag_days": holdout_mean,
             "holdout_p_value_raw": raw_p,
         }
-    adjusted_lag = holm_adjust(raw_lag_p)
+    adjusted_lag = holm_adjust(raw_lag)
     significant_directions: list[str] = []
     for event, test in lag_tests.items():
         test["holdout_p_value_adjusted"] = adjusted_lag[event]
@@ -760,18 +753,19 @@ def summarize_lane_a(
         test["reject_at_alpha"] = rejected
         if rejected:
             significant_directions.append(direction)
-    if sufficient_events < MIN_SIGNIFICANT_LAG_EVENTS:
-        lag_status = "INSUFFICIENT_EVIDENCE"
-    elif len(significant_directions) >= MIN_SIGNIFICANT_LAG_EVENTS and len(set(significant_directions)) == 1:
-        lag_status = significant_directions[0]
-    else:
-        lag_status = "NOT_SUPPORTED"
+    lag_status = (
+        "INSUFFICIENT_EVIDENCE"
+        if sufficient_events < MIN_SIGNIFICANT_LAG_EVENTS
+        else significant_directions[0]
+        if len(significant_directions) >= MIN_SIGNIFICANT_LAG_EVENTS and len(set(significant_directions)) == 1
+        else "NOT_SUPPORTED"
+    )
     result["hypotheses"]["LEADING_LAGGING"] = {"status": lag_status, "events": lag_tests}
 
     sequence_sufficient = all(cache[split]["sequence_nulls"] is not None for split in ("discovery", "holdout"))
     if not sequence_sufficient:
-        convergence = {"status": "INSUFFICIENT_EVIDENCE"}
-        detached_relock = {
+        result["hypotheses"]["CONVERGING_DIVERGING"] = {"status": "INSUFFICIENT_EVIDENCE"}
+        result["hypotheses"]["DETACHED_RELOCK"] = {
             "DETACHED": {"status": "INSUFFICIENT_EVIDENCE"},
             "RELOCK": {"status": "INSUFFICIENT_EVIDENCE"},
         }
@@ -780,10 +774,11 @@ def summarize_lane_a(
         holdout = cache["holdout"]
         discovery_net = discovery["net"]
         holdout_net = holdout["net"]
-        if discovery_net is None or holdout_net is None or discovery_net == 0:
-            convergence = {"status": "NOT_SUPPORTED", "discovery_mean": discovery_net, "holdout_mean": holdout_net}
+        assert discovery_net is not None and holdout_net is not None
+        direction = "NONE" if discovery_net == 0 else "CONVERGING" if discovery_net < 0 else "DIVERGING"
+        if direction == "NONE":
+            convergence = {"status": "NOT_SUPPORTED", "discovery_mean_net_change": discovery_net, "holdout_mean_net_change": holdout_net}
         else:
-            direction = "CONVERGING" if discovery_net < 0 else "DIVERGING"
             p_value = permutation_p(
                 holdout_net,
                 holdout["sequence_nulls"]["net_change"],
@@ -796,16 +791,14 @@ def summarize_lane_a(
                 "holdout_mean_net_change": holdout_net,
                 "holdout_p_value": p_value,
             }
+        result["hypotheses"]["CONVERGING_DIVERGING"] = convergence
 
         raw_seq: dict[str, float | None] = {}
-        detached_relock: dict[str, dict[str, Any]] = {}
-        for name, field, null_key in (
-            ("DETACHED", "detached", "detached_rate"),
-            ("RELOCK", "relock", "relock_rate"),
-        ):
+        seq_tests: dict[str, dict[str, Any]] = {}
+        for name, field, null_key in (("DETACHED", "detached", "detached_rate"), ("RELOCK", "relock", "relock_rate")):
             raw_p = permutation_p(holdout[field], holdout["sequence_nulls"][null_key], favorable="higher")
             raw_seq[name] = raw_p
-            detached_relock[name] = {
+            seq_tests[name] = {
                 "status": "TESTED",
                 "discovery_rate": discovery[field],
                 "discovery_null_median": median(discovery["sequence_nulls"][null_key]),
@@ -814,7 +807,7 @@ def summarize_lane_a(
                 "holdout_p_value_raw": raw_p,
             }
         adjusted_seq = holm_adjust(raw_seq)
-        for name, test in detached_relock.items():
+        for name, test in seq_tests.items():
             test["holdout_p_value_adjusted"] = adjusted_seq[name]
             supported = (
                 test["discovery_rate"] > test["discovery_null_median"]
@@ -823,8 +816,7 @@ def summarize_lane_a(
                 and adjusted_seq[name] < ALPHA
             )
             test["status"] = "SUPPORTED_STRUCTURAL" if supported else "NOT_SUPPORTED"
-    result["hypotheses"]["CONVERGING_DIVERGING"] = convergence
-    result["hypotheses"]["DETACHED_RELOCK"] = detached_relock
+        result["hypotheses"]["DETACHED_RELOCK"] = seq_tests
 
     extension_data: dict[str, dict[str, Any]] = {}
     extension_sufficient = True
@@ -842,12 +834,9 @@ def summarize_lane_a(
             "difference": conditional_extension_difference(rows),
             "sufficient": sufficient,
         }
-    public_extension = {
-        split: {key: value for key, value in data.items() if key != "rows"}
-        for split, data in extension_data.items()
-    }
+    public_extension = {split: {k: v for k, v in data.items() if k != "rows"} for split, data in extension_data.items()}
     if not extension_sufficient:
-        extension_test = {"status": "INSUFFICIENT_EVIDENCE", "splits": public_extension}
+        extension_test = {"status": "INSUFFICIENT_EVIDENCE", "splits": public_extension, "authority": "LANE_A_ASSOCIATION_ONLY"}
     else:
         discovery_diff = extension_data["discovery"]["difference"]
         holdout_diff = extension_data["holdout"]["difference"]
@@ -859,7 +848,8 @@ def summarize_lane_a(
         )
         supported = discovery_diff > 0 and holdout_diff > 0 and p_value < ALPHA
         extension_test = {
-            "status": "SUPPORTED_PREDICTIVE" if supported else "NOT_SUPPORTED",
+            "status": "SUPPORTED_ASSOCIATION" if supported else "NOT_SUPPORTED",
+            "authority": "LANE_A_ASSOCIATION_ONLY",
             "discovery_difference": discovery_diff,
             "holdout_difference": holdout_diff,
             "holdout_p_value": p_value,
@@ -912,11 +902,7 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 discovery_auc = roc_auc(discovery_scores, discovery_labels)
                 holdout_auc = roc_auc(holdout_scores, holdout_labels)
                 assert discovery_auc is not None and holdout_auc is not None
-                p_value = permutation_p(
-                    holdout_auc,
-                    rotation_null_auc(holdout_scores, holdout_labels, label=key),
-                    favorable="higher",
-                )
+                p_value = permutation_p(holdout_auc, rotation_null_auc(holdout_scores, holdout_labels, label=key), favorable="higher")
                 raw_p[key] = p_value
                 tests[key] = {
                     "checkpoint": checkpoint,
@@ -929,7 +915,6 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     "holdout_no_btc_prior_auc": metrics["holdout"]["no_btc_prior_auc"],
                     "holdout_p_value_raw": p_value,
                 }
-
     adjusted = holm_adjust(raw_p)
     supported: list[str] = []
     sufficient_count = 0
@@ -958,21 +943,24 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "tests": tests,
         "verdict": verdict,
         "supported_tests": supported,
+        "authority": "LANE_B_PIT_PREDICTIVE_TEST",
     }
 
 
 def derive_overall_verdict(lane_a: dict[str, Any], lane_b: dict[str, Any]) -> dict[str, Any]:
     hypotheses = lane_a["hypotheses"]
-    predictive = hypotheses["SHARED_EXTENSION"].get("status") == "SUPPORTED_PREDICTIVE" or lane_b.get("verdict") == "ROTATION_CANDIDATE"
+    predictive = lane_b.get("verdict") == "ROTATION_CANDIDATE"
     structural = (
         hypotheses["PHASE_LOCK"].get("status") == "SUPPORTED_STRUCTURAL"
         or hypotheses["LEADING_LAGGING"].get("status") in {"LEADING", "LAGGING"}
         or hypotheses["CONVERGING_DIVERGING"].get("status") in {"CONVERGING", "DIVERGING"}
         or any(test.get("status") == "SUPPORTED_STRUCTURAL" for test in hypotheses["DETACHED_RELOCK"].values())
+        or hypotheses["SHARED_EXTENSION"].get("status") == "SUPPORTED_ASSOCIATION"
     )
     overall = "POSITIVE_RESEARCH_EVIDENCE" if predictive else "STRUCTURAL_EVIDENCE_ONLY" if structural else "UNRELATED"
     return {
         "overall_verdict": overall,
+        "predictive_evidence_source": "ROTATION_CANDIDATE" if predictive else None,
         "runtime_promotion": False,
         "selection_engine_authority": False,
         "decision_gate_authority": False,
@@ -987,7 +975,6 @@ def run_analysis(source_run_dir: Path) -> dict[str, Any]:
     lane_a = summarize_lane_a(pair_rows, phase_rows, lag_rows)
     lane_b_rows = build_lane_b_rows(cycles[REFERENCE_SYMBOL], cycles[ALT_SYMBOL], split)
     lane_b = summarize_lane_b(lane_b_rows)
-    verdict = derive_overall_verdict(lane_a, lane_b)
     return {
         "source_manifest": source_manifest,
         "ledger_hashes": ledger_hashes,
@@ -998,7 +985,7 @@ def run_analysis(source_run_dir: Path) -> dict[str, Any]:
         "lane_a": lane_a,
         "lane_b_rows": lane_b_rows,
         "lane_b": lane_b,
-        "verdict": verdict,
+        "verdict": derive_overall_verdict(lane_a, lane_b),
     }
 
 
@@ -1010,8 +997,6 @@ def persist_analysis(
     if run_dir.exists():
         raise FileExistsError(f"immutable analysis run already exists: {run_dir}")
     root = repo_root()
-    registry_path = root / REGISTRY_PATH
-    analyzer_path = Path(__file__).resolve()
     source_manifest_path = source_run_dir / "run_manifest.json"
     run_dir.mkdir(parents=True, exist_ok=False)
     try:
@@ -1022,8 +1007,7 @@ def persist_analysis(
         write_jsonl(run_dir / "lane_a_sequence_rows.jsonl", analysis["sequence_rows"])
         write_json(run_dir / "lane_a_summary.json", analysis["lane_a"])
         write_jsonl(run_dir / "lane_b_checkpoint_rows.jsonl", analysis["lane_b_rows"])
-        test_rows = [dict(test_id=key, **value) for key, value in analysis["lane_b"]["tests"].items()]
-        write_jsonl(run_dir / "lane_b_tests.jsonl", test_rows)
+        write_jsonl(run_dir / "lane_b_tests.jsonl", [dict(test_id=key, **value) for key, value in analysis["lane_b"]["tests"].items()])
         write_json(run_dir / "lane_b_summary.json", analysis["lane_b"])
         write_json(run_dir / "summary.json", analysis["verdict"])
         artifact_hashes = {
@@ -1036,7 +1020,7 @@ def persist_analysis(
             "runner_name": RUNNER_NAME,
             "runner_version": RUNNER_VERSION,
             "run_id": frozen_run_id,
-            "run_ts_utc": fmt_ts(utc_now()),
+            "run_ts_utc": fmt_ts(datetime.now(UTC)),
             "research_only": True,
             "market_only": True,
             "account_awareness": 0,
@@ -1046,10 +1030,10 @@ def persist_analysis(
             "venue": VENUE,
             "interval_code": INTERVAL_CODE,
             "analysis_commit_sha": git_output(["rev-parse", "HEAD"]),
-            "analyzer_source_sha256": sha256_file(analyzer_path),
+            "analyzer_source_sha256": sha256_file(Path(__file__).resolve()),
             "registry_name": REGISTRY_NAME,
             "registry_version": REGISTRY_VERSION,
-            "registry_source_sha256": sha256_file(registry_path),
+            "registry_source_sha256": sha256_file(root / REGISTRY_PATH),
             "source_run_dir": str(source_run_dir),
             "source_run_id": source_manifest.get("run_id"),
             "source_run_analysis_commit_sha": source_manifest.get("analysis_commit_sha"),
