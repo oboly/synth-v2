@@ -124,11 +124,11 @@ class _FakeConnection:
         self.closed = True
 
 
-def _args(tmp_path, *, resume: bool = False) -> SimpleNamespace:
+def _args(tmp_path, *, resume: bool = False, venue: str = "bitvavo", asset_id: int | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         registry="unused.yaml",
-        venue="bitvavo",
-        asset_id=None,
+        venue=venue,
+        asset_id=asset_id,
         limit=100,
         output_dir=str(tmp_path),
         resume=resume,
@@ -155,8 +155,8 @@ def _observation(shadow_id: int) -> dict:
     }
 
 
-def _outcome_row(shadow_id: int) -> dict:
-    return {"shadow_id": shadow_id, "horizon": "1h", "status": "COMPLETE"}
+def _outcome_row(shadow_id: int, horizon: str = "1h") -> dict:
+    return {"shadow_id": shadow_id, "horizon": horizon, "status": "COMPLETE"}
 
 
 def _registry() -> dict:
@@ -166,21 +166,56 @@ def _registry() -> dict:
     }
 
 
-def test_checkpoint_roundtrip_and_resume_starts_after_last_shadow_id(tmp_path) -> None:
+def _write_checkpoint(tmp_path, *, last_shadow_id: int | None, observations: int, rows: int, venue: str = "bitvavo", asset_id: int | None = None) -> None:
     runner.write_checkpoint(
         tmp_path,
         registry=_registry(),
-        last_shadow_id=42,
-        observations_completed=7,
-        rows_written=21,
+        venue=venue,
+        asset_id=asset_id,
+        last_shadow_id=last_shadow_id,
+        observations_completed=observations,
+        rows_written=rows,
         terminal_state="INTERRUPTED",
     )
+
+
+def test_checkpoint_roundtrip_includes_scope(tmp_path) -> None:
+    _write_checkpoint(tmp_path, last_shadow_id=42, observations=7, rows=21, asset_id=12)
     loaded = runner.load_checkpoint(tmp_path)
     assert loaded is not None
+    assert loaded["venue"] == "bitvavo"
+    assert loaded["asset_id"] == 12
     assert loaded["last_shadow_id"] == 42
     assert loaded["observations_completed"] == 7
     assert loaded["rows_written"] == 21
     assert loaded["terminal_state"] == "INTERRUPTED"
+
+
+def test_reconcile_truncates_append_before_checkpoint_crash_window(tmp_path) -> None:
+    checkpoint = {
+        "last_shadow_id": 10,
+        "rows_written": 3,
+    }
+    rows_path = tmp_path / runner.OUTPUT_ROWS
+    rows_path.write_text(
+        "".join(
+            runner.json.dumps(_outcome_row(shadow_id), sort_keys=True) + "\n"
+            for shadow_id in (10, 10, 10, 11, 11, 11)
+        ),
+        encoding="utf-8",
+    )
+    rows = runner.reconcile_output_to_checkpoint(rows_path, checkpoint)
+    assert len(rows) == 3
+    persisted = runner._read_existing_rows(rows_path)
+    assert len(persisted) == 3
+    assert all(int(row["shadow_id"]) == 10 for row in persisted)
+
+
+def test_reconcile_fails_closed_when_jsonl_is_shorter_than_checkpoint(tmp_path) -> None:
+    rows_path = tmp_path / runner.OUTPUT_ROWS
+    rows_path.write_text(runner.json.dumps(_outcome_row(10)) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Checkpoint/output mismatch"):
+        runner.reconcile_output_to_checkpoint(rows_path, {"last_shadow_id": 10, "rows_written": 3})
 
 
 def test_resume_appends_only_new_observations_and_preserves_cumulative_totals(monkeypatch, tmp_path) -> None:
@@ -189,18 +224,11 @@ def test_resume_appends_only_new_observations_and_preserves_cumulative_totals(mo
     conn = _FakeConnection()
     seen_after: list[int | None] = []
 
-    runner.write_checkpoint(
-        tmp_path,
-        registry=registry,
-        last_shadow_id=10,
-        observations_completed=7,
-        rows_written=21,
-        terminal_state="INTERRUPTED",
-    )
+    _write_checkpoint(tmp_path, last_shadow_id=10, observations=7, rows=21)
     existing_rows = "".join(
-        f'{{"shadow_id": {shadow_id}, "horizon": "1h", "status": "COMPLETE"}}\n'
+        runner.json.dumps(_outcome_row(shadow_id, horizon), sort_keys=True) + "\n"
         for shadow_id in range(4, 11)
-        for _ in range(3)
+        for horizon in ("1h", "4h", "24h")
     )
     (tmp_path / runner.OUTPUT_ROWS).write_text(existing_rows, encoding="utf-8")
 
@@ -218,9 +246,9 @@ def test_resume_appends_only_new_observations_and_preserves_cumulative_totals(mo
         runner,
         "build_rows_for_observation",
         lambda *_args, observation, **_kwargs: [
-            _outcome_row(int(observation["shadow_id"])),
-            {**_outcome_row(int(observation["shadow_id"])), "horizon": "4h"},
-            {**_outcome_row(int(observation["shadow_id"])), "horizon": "24h"},
+            _outcome_row(int(observation["shadow_id"]), "1h"),
+            _outcome_row(int(observation["shadow_id"]), "4h"),
+            _outcome_row(int(observation["shadow_id"]), "24h"),
         ],
     )
 
@@ -232,14 +260,20 @@ def test_resume_appends_only_new_observations_and_preserves_cumulative_totals(mo
     assert checkpoint["observations_completed"] == 8
     assert checkpoint["rows_written"] == 24
     assert checkpoint["terminal_state"] == "FINISHED"
-    rows = [
-        line
-        for line in (tmp_path / runner.OUTPUT_ROWS).read_text(encoding="utf-8").splitlines()
-        if line
-    ]
-    assert len(rows) == 24
-    assert '"shadow_id": 11' in rows[-1]
+    assert len(runner._read_existing_rows(tmp_path / runner.OUTPUT_ROWS)) == 24
     assert conn.closed is True
+
+
+def test_resume_rejects_scope_mismatch_before_db_connect(monkeypatch, tmp_path, capsys) -> None:
+    _write_checkpoint(tmp_path, last_shadow_id=10, observations=1, rows=1, asset_id=1)
+    (tmp_path / runner.OUTPUT_ROWS).write_text(runner.json.dumps(_outcome_row(10)) + "\n", encoding="utf-8")
+    monkeypatch.setattr(runner, "_install_signal_handlers", lambda: {})
+    monkeypatch.setattr(runner, "_restore_signal_handlers", lambda _previous: None)
+    monkeypatch.setattr(runner, "load_registry", lambda _path: (_registry(), [HorizonSpec("1h", timedelta(hours=1))]))
+    monkeypatch.setattr(runner, "get_db_connection", lambda: (_ for _ in ()).throw(AssertionError("DB must not connect")))
+
+    assert runner.run(_args(tmp_path, resume=True, asset_id=2)) == 1
+    assert "Checkpoint asset_id mismatch" in capsys.readouterr().out
 
 
 def test_interruption_writes_terminal_checkpoint(monkeypatch, tmp_path, capsys) -> None:
@@ -276,3 +310,19 @@ def test_interruption_writes_terminal_checkpoint(monkeypatch, tmp_path, capsys) 
     assert checkpoint["observations_completed"] == 1
     assert checkpoint["rows_written"] == 1
     assert checkpoint["terminal_state"] == "INTERRUPTED"
+
+
+def test_safety_line_emits_required_markers(monkeypatch, tmp_path, capsys) -> None:
+    registry = _registry()
+    conn = _FakeConnection()
+    monkeypatch.setattr(runner, "_install_signal_handlers", lambda: {})
+    monkeypatch.setattr(runner, "_restore_signal_handlers", lambda _previous: None)
+    monkeypatch.setattr(runner, "load_registry", lambda _path: (registry, [HorizonSpec("1h", timedelta(hours=1))]))
+    monkeypatch.setattr(runner, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(runner, "fetch_shadow_observations", lambda *_args, **_kwargs: [])
+
+    assert runner.run(_args(tmp_path)) == 0
+    output = capsys.readouterr().out
+    assert "broker_private_calls=0" in output
+    assert "order_submission=0" in output
+    assert "live_orders=0" in output
