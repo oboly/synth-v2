@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS research_entry_quality_shadow (
     cq_model_version VARCHAR(32) NOT NULL,
 
     trade_quality_score DECIMAL(12,6) NULL,
+    selection_score DECIMAL(12,6) NULL,
     timing_refinement_score DECIMAL(12,6) NULL,
     quality_penalty DECIMAL(12,6) NULL,
     quality_status_1d VARCHAR(32) NOT NULL,
@@ -39,5 +40,6 @@ CREATE TABLE IF NOT EXISTS research_entry_quality_shadow (
 );
 
 -- Research/shadow-only contract.
+-- asof_ts_utc is the source market/evidence snapshot timestamp, not runner wall time.
 -- This table is not an input to decision_gate, execution_planner, executor,
 -- broker/order handling, or current production selection ranking.
