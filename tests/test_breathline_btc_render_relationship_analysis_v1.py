@@ -244,6 +244,24 @@ def test_lane_b_ignores_future_btc_confirmations() -> None:
     assert [row["btc_extension_recency_score"] for row in before] == [row["btc_extension_recency_score"] for row in after]
 
 
+def test_lane_b_excludes_outcomes_not_strictly_after_checkpoint() -> None:
+    render = cycle(
+        "RENDER",
+        1,
+        start_day=5,
+        end_day=15,
+        recognition_day=8,
+        recognition_confirm_day=8.5,
+        ignition_day=9,
+        ignition_confirm_day=9.5,
+        outcome_as_of_day=8.5,
+        main_confirmed=False,
+        extension_confirmed=False,
+    )
+    rows = build_lane_b_rows([], [render], {"RENDER-1": "holdout"})
+    assert rows == []
+
+
 def test_no_btc_prior_uses_strictly_available_outcomes() -> None:
     prior = [
         cycle("RENDER", idx, start_day=idx, end_day=idx + 0.5, recognition_day=idx + 0.2, main_confirmed=idx % 2 == 0, extension_confirmed=False)
