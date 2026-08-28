@@ -1,0 +1,123 @@
+registry_name: cq_v1_feature_audit_v1
+registry_version: "1.0.0"
+issue: 568
+phase: 2B
+research_only: true
+market_only: true
+account_agnostic: true
+production_ranking_changes: 0
+model_weights_frozen: false
+model_scoring_enabled: false
+
+point_in_time_rule:
+  feature_asof_must_be_lte_observation_asof: true
+  latest_eligible_row_at_or_before_observation_asof: true
+  future_rows_forbidden: true
+  current_truth_fallback_forbidden: true
+
+eligible_feature_families:
+  market_rotation_pressure:
+    status: ELIGIBLE
+    owner_capability: market_rotation_pressure
+    aggregate_table: market_rotation_pressure_snapshot_v1
+    per_asset_table: market_rotation_pressure_observation_v1
+    time_field: as_of_ts_utc
+    version_field: model_version
+    aggregate_fields:
+      - market_score
+      - positive_breadth_ratio
+      - negative_breadth_ratio
+      - acceleration_state
+      - concentration_state
+      - confirmation_state
+      - market_direction
+      - evidence_light_count
+      - eligible_asset_count
+    per_asset_fields:
+      - score_total
+      - pressure_state
+      - phase_state
+      - raw_market_relative_pct
+    notes:
+      - raw_market_relative_pct is market-relative, not BTC-relative
+      - source rows are append-only research market observations
+
+  sector_rotation:
+    status: ELIGIBLE_WITH_PIT_MEMBERSHIP
+    owner_capability: sector_rotation_snapshot
+    table: sector_rotation_snapshot
+    time_field: asof_ts_utc
+    version_field: model_version
+    evidence_identity_fields:
+      - input_hash
+      - taxonomy_versions_json
+    membership_contract:
+      table: asset_cluster_membership
+      valid_from_field: valid_from_ts_utc
+      valid_to_field: valid_to_ts_utc
+      rule: valid_from_ts_utc <= observation_asof and (valid_to_ts_utc is null or observation_asof < valid_to_ts_utc)
+    fields:
+      - rotation_score
+      - rotation_state
+      - confidence
+      - positive_participation_pct
+      - negative_participation_pct
+      - benchmark_outperformance_pct
+      - relative_strength_vs_btc
+      - relative_strength_vs_eth
+      - sector_volume_share
+      - sector_volume_share_change
+      - momentum_positive_pct
+      - persistence_score
+      - persistence_status
+      - coverage_ratio
+      - participation_ratio
+    notes:
+      - relative_strength_vs_btc and relative_strength_vs_eth are sector-level only
+      - symbol-to-sector association must be resolved point-in-time from canonical membership history
+
+excluded_candidate_families:
+  btc_structure_regime:
+    status: UNAVAILABLE_NO_CANONICAL_REPLAYABLE_OWNER
+    reason: no separately owned canonical timestamped BTC structure/regime observation contract was found
+  symbol_relative_vs_btc:
+    status: UNAVAILABLE_NO_CANONICAL_REPLAYABLE_OWNER
+    reason: sector-level BTC relative strength exists, but no canonical per-symbol BTC-relative owner was found
+  eth_btc_relative_context:
+    status: UNAVAILABLE_NO_CANONICAL_REPLAYABLE_OWNER
+    reason: no separately owned canonical ETH/BTC relative-context observation contract was found
+  breathline_context:
+    status: EXCLUDED_RESEARCH_HYPOTHESIS_NOT_PROMOTED
+    reason: research hypotheses are not CQ features without independent validation and canonical promotion
+  rotation_flip_research:
+    status: EXCLUDED_RESEARCH_FINDING_NOT_CANONICAL
+    reason: raw research findings from issue 449 are not canonical market-context inputs
+
+freeze_boundary:
+  this_registry_freezes_eligibility_and_field_contract_only: true
+  feature_transformations_frozen: false
+  feature_weights_frozen: false
+  cq_v1_formula_frozen: false
+  outcome_holdout_may_not_be_inspected_to_choose_additional_features: true
+  newly_discovered_features_require_new_registry_version: true
+
+required_next_slice:
+  name: cq_v1_model_candidate_v1
+  prerequisites:
+    - implement replay-safe point-in-time feature extraction using only eligible families
+    - report coverage and unavailable rates before assigning weights
+    - freeze deterministic transformations and candidate weights before final holdout comparison
+
+safety:
+  research_only: 1
+  market_only: 1
+  account_awareness: 0
+  production_ranking_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  runtime_activation: 0
