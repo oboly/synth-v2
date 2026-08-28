@@ -50,15 +50,41 @@ def reconcile_jsonl(path: Path, checkpoint: dict[str, Any]) -> None:
     raw_lines = path.read_text(encoding="utf-8").splitlines()
     if len(raw_lines) < expected:
         raise ValueError("checkpoint/output mismatch: JSONL shorter than checkpoint")
-    kept = []
+
+    kept: list[tuple[str, dict[str, Any]]] = []
+    prior_shadow_id: int | None = None
+    mrp_count = 0
+    sector_count = 0
+    joint_count = 0
     for index in range(expected):
         try:
             row = json.loads(raw_lines[index])
         except json.JSONDecodeError as exc:
             raise ValueError(f"checkpointed JSONL line {index + 1} is malformed") from exc
+        try:
+            shadow_id = int(row["shadow_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"checkpointed JSONL line {index + 1} has invalid shadow_id") from exc
+        if prior_shadow_id is not None and shadow_id <= prior_shadow_id:
+            raise ValueError(
+                f"checkpointed JSONL shadow_id sequence is not strictly increasing at line {index + 1}"
+            )
+        prior_shadow_id = shadow_id
+        mrp_count += int(bool(row.get("mrp_available", False)))
+        sector_count += int(bool(row.get("sector_available", False)))
+        joint_count += int(bool(row.get("joint_available", False)))
         kept.append((raw_lines[index], row))
+
     if int(kept[-1][1]["shadow_id"]) != int(expected_last):
         raise ValueError("checkpoint/output mismatch: last_shadow_id differs")
+    expected_counters = {
+        "mrp_available_count": mrp_count,
+        "sector_available_count": sector_count,
+        "joint_available_count": joint_count,
+    }
+    for key, recomputed in expected_counters.items():
+        if int(checkpoint.get(key, 0)) != recomputed:
+            raise ValueError(f"checkpoint/output mismatch: {key} differs")
     if len(raw_lines) != expected:
         path.write_text("\n".join(line for line, _ in kept) + "\n", encoding="utf-8")
         print(f"RESUME_RECONCILE action=truncate_jsonl to_rows={expected}", flush=True)
