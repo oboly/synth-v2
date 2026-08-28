@@ -130,6 +130,7 @@ data/research/aplus_breathline_alignment_v1/
 data/research/bullish_breathline_canonical_4h_v1/
 data/research/breathline_harmonic_family_falsification_v1/
 data/research/bullish_breathline_btc_render_canonical_4h_v1/
+data/research/breathline_btc_render_relationship_analysis_v1/
 
 # Generated ops readiness evidence (Issue #551) - runtime artifact only,
 # never a reviewed/committed record. See docs/ops/sell_live_activation_controller_v1.md.
