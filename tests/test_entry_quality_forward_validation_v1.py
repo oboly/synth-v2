@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+import src.research.run_entry_quality_forward_validation_v1 as runner
 from src.research.entry_quality_forward_validation_v1 import (
     Candle,
     HorizonSpec,
@@ -122,3 +124,142 @@ def test_validate_candles_rejects_duplicate_timestamps() -> None:
 
 def test_pct_change_is_deterministic_decimal_math() -> None:
     assert pct_change(Decimal("100"), Decimal("101.25")) == Decimal("1.250000")
+
+
+class _FakeConnection:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _args(tmp_path, *, resume: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        registry="unused.yaml",
+        venue="bitvavo",
+        asset_id=None,
+        limit=100,
+        output_dir=str(tmp_path),
+        resume=resume,
+    )
+
+
+def _observation(shadow_id: int) -> dict:
+    return {
+        "shadow_id": shadow_id,
+        "asset_id": 1,
+        "symbol": "AAVE",
+        "venue": "bitvavo",
+        "asof_ts_utc": "2026-08-28T10:00:00+00:00",
+        "evidence_key": f"evidence-{shadow_id}",
+        "cq_model_version": "cq_shadow_v1",
+        "trade_quality_score": Decimal("0.60"),
+        "selection_score": Decimal("0.62"),
+        "entry_quality_score": Decimal("0.60"),
+        "entry_quality_state": "GOOD",
+        "ppp_pct": Decimal("20"),
+        "ppp_kind": "ACTIONABLE_PPP",
+        "ppp_source_ref": "test",
+        "entry_strength": Decimal("12"),
+    }
+
+
+def _outcome_row(shadow_id: int) -> dict:
+    return {
+        "shadow_id": shadow_id,
+        "horizon": "1h",
+        "status": "COMPLETE",
+    }
+
+
+def test_checkpoint_roundtrip_and_resume_starts_after_last_shadow_id(tmp_path) -> None:
+    registry = {"registry_name": "entry_quality_forward_validation_v1", "registry_version": "1.0.0"}
+    runner.write_checkpoint(
+        tmp_path,
+        registry=registry,
+        last_shadow_id=42,
+        observations_completed=7,
+        rows_written=21,
+        terminal_state="INTERRUPTED",
+    )
+
+    loaded = runner.load_checkpoint(tmp_path)
+    assert loaded is not None
+    assert loaded["last_shadow_id"] == 42
+    assert loaded["terminal_state"] == "INTERRUPTED"
+
+
+def test_resume_appends_only_new_observations(monkeypatch, tmp_path) -> None:
+    registry = {"registry_name": "entry_quality_forward_validation_v1", "registry_version": "1.0.0"}
+    horizons = [HorizonSpec("1h", timedelta(hours=1))]
+    conn = _FakeConnection()
+    seen_after: list[int | None] = []
+
+    runner.write_checkpoint(
+        tmp_path,
+        registry=registry,
+        last_shadow_id=10,
+        observations_completed=1,
+        rows_written=1,
+        terminal_state="INTERRUPTED",
+    )
+    (tmp_path / runner.OUTPUT_ROWS).write_text(
+        '{"shadow_id": 10, "horizon": "1h", "status": "COMPLETE"}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(runner, "_install_signal_handlers", lambda: {})
+    monkeypatch.setattr(runner, "_restore_signal_handlers", lambda _previous: None)
+    monkeypatch.setattr(runner, "load_registry", lambda _path: (registry, horizons))
+    monkeypatch.setattr(runner, "get_db_connection", lambda: conn)
+
+    def _fetch(_conn, **kwargs):
+        seen_after.append(kwargs.get("after_shadow_id"))
+        return [_observation(11)]
+
+    monkeypatch.setattr(runner, "fetch_shadow_observations", _fetch)
+    monkeypatch.setattr(
+        runner,
+        "build_rows_for_observation",
+        lambda *_args, observation, **_kwargs: [_outcome_row(int(observation["shadow_id"]))],
+    )
+
+    assert runner.run(_args(tmp_path, resume=True)) == 0
+    assert seen_after == [10]
+    rows = [line for line in (tmp_path / runner.OUTPUT_ROWS).read_text(encoding="utf-8").splitlines() if line]
+    assert len(rows) == 2
+    assert '"shadow_id": 10' in rows[0]
+    assert '"shadow_id": 11' in rows[1]
+    assert conn.closed is True
+
+
+def test_interruption_writes_terminal_checkpoint(monkeypatch, tmp_path, capsys) -> None:
+    registry = {"registry_name": "entry_quality_forward_validation_v1", "registry_version": "1.0.0"}
+    horizons = [HorizonSpec("1h", timedelta(hours=1))]
+    conn = _FakeConnection()
+
+    monkeypatch.setattr(runner, "_install_signal_handlers", lambda: {})
+    monkeypatch.setattr(runner, "_restore_signal_handlers", lambda _previous: None)
+    monkeypatch.setattr(runner, "load_registry", lambda _path: (registry, horizons))
+    monkeypatch.setattr(runner, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(runner, "fetch_shadow_observations", lambda *_args, **_kwargs: [_observation(1), _observation(2)])
+
+    def _build(*_args, observation, **_kwargs):
+        rows = [_outcome_row(int(observation["shadow_id"]))]
+        if int(observation["shadow_id"]) == 1:
+            runner._STOP_REQUESTED = True
+            runner._STOP_SIGNAL = "SIGTERM"
+        return rows
+
+    monkeypatch.setattr(runner, "build_rows_for_observation", _build)
+
+    result = runner.run(_args(tmp_path))
+    output = capsys.readouterr().out
+    checkpoint = runner.load_checkpoint(tmp_path)
+
+    assert result == 130
+    assert "INTERRUPTED runner=entry_quality_forward_validation_v1 signal=SIGTERM" in output
+    assert checkpoint is not None
+    assert checkpoint["last_shadow_id"] == 1
+    assert checkpoint["terminal_state"] == "INTERRUPTED"
