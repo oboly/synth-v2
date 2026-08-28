@@ -49,6 +49,21 @@ jobs:
           git cat-file -e "${PR_BASE_SHA}^{commit}"
           git cat-file -e "${PR_HEAD_SHA}^{commit}"
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install trusted review dependencies
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_REQUIREMENTS="${RUNNER_TEMP}/codex-review-base-requirements.txt"
+          git show "${PR_BASE_SHA}:requirements.txt" > "$BASE_REQUIREMENTS"
+          python -m pip install --disable-pip-version-check -r "$BASE_REQUIREMENTS" pytest
+
       - name: Run Codex review
         id: run_codex
         uses: openai/codex-action@v1
