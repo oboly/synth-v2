@@ -23,8 +23,8 @@ from src.research.run_breathline_btc_render_relationship_analysis_v1 import (
     realized_phase,
     roc_auc,
     split_render_cycles,
+    summarize_lane_a,
 )
-
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -104,7 +104,6 @@ def test_pairing_uses_maximum_overlap_and_zero_overlap_is_not_forced() -> None:
 
 def test_pairing_tie_break_prefers_smallest_start_lag() -> None:
     render = cycle("RENDER", 1, start_day=10, end_day=20)
-    # Equal 8d overlap. BTC-2 has smaller absolute start lag.
     btc1 = cycle("BTC", 1, start_day=8, end_day=18)
     btc2 = cycle("BTC", 2, start_day=9, end_day=18)
     assert best_btc_pair(render, [btc1, btc2])["cycle_id"] == "BTC-2"
@@ -139,6 +138,43 @@ def test_pair_null_permutation_preserves_support_pattern() -> None:
     for row in permuted:
         assert tuple(row["btc_phase_vector"].keys()) == tuple(row["phase_support_pattern"])
     assert phase_stat_from_vectors(permuted) is not None
+
+
+def test_phase_lock_is_not_gated_by_sequence_support() -> None:
+    pair_rows = []
+    phase_rows = []
+    for split in ("discovery", "holdout"):
+        for idx in range(8):
+            render_phase = 0.60 + idx * 0.001
+            btc_phase = 0.59 + idx * 0.001
+            cycle_id = f"{split}-{idx}"
+            pair_rows.append(
+                {
+                    "render_cycle_id": cycle_id,
+                    "btc_cycle_id": f"btc-{split}-{idx}",
+                    "split": split,
+                    "paired": True,
+                    "render_extension_confirmed": idx % 2 == 0,
+                    "btc_extension_confirmed": idx % 2 == 1,
+                    "render_phase_vector": {"recognition": render_phase},
+                    "btc_phase_vector": {"recognition": btc_phase},
+                    "phase_support_pattern": ["recognition"],
+                    "event_lags_days": {},
+                }
+            )
+            phase_rows.append(
+                {
+                    "split": split,
+                    "render_cycle_id": cycle_id,
+                    "btc_cycle_id": f"btc-{split}-{idx}",
+                    "checkpoint": "recognition",
+                    "absolute_phase_delta": abs(render_phase - btc_phase),
+                }
+            )
+    summary = summarize_lane_a(pair_rows, phase_rows, [])
+    assert summary["hypotheses"]["PHASE_LOCK"]["status"] != "INSUFFICIENT_EVIDENCE"
+    assert summary["hypotheses"]["CONVERGING_DIVERGING"]["status"] == "INSUFFICIENT_EVIDENCE"
+    assert summary["hypotheses"]["DETACHED_RELOCK"]["DETACHED"]["status"] == "INSUFFICIENT_EVIDENCE"
 
 
 def test_tie_aware_auc_and_holm() -> None:
