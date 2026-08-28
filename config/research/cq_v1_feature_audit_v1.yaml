@@ -14,6 +14,7 @@ point_in_time_rule:
   latest_eligible_row_at_or_before_observation_asof: true
   future_rows_forbidden: true
   current_truth_fallback_forbidden: true
+  same_venue_as_cq_observation_required: true
 
 eligible_feature_families:
   market_rotation_pressure:
@@ -22,7 +23,19 @@ eligible_feature_families:
     aggregate_table: market_rotation_pressure_snapshot_v1
     per_asset_table: market_rotation_pressure_observation_v1
     time_field: as_of_ts_utc
+    venue_field: venue
     version_field: model_version
+    source_selection:
+      same_venue_as_cq_observation: true
+    aggregate_identity_fields:
+      - venue
+      - as_of_ts_utc
+      - model_version
+    per_asset_identity_fields:
+      - venue
+      - asset_id
+      - as_of_ts_utc
+      - model_version
     aggregate_fields:
       - market_score
       - positive_breadth_ratio
@@ -41,14 +54,23 @@ eligible_feature_families:
     notes:
       - raw_market_relative_pct is market-relative, not BTC-relative
       - source rows are append-only research market observations
+      - cross-venue fallback is forbidden
 
   sector_rotation:
     status: ELIGIBLE_WITH_PIT_MEMBERSHIP
     owner_capability: sector_rotation_snapshot
     table: sector_rotation_snapshot
     time_field: asof_ts_utc
+    venue_field: venue
+    window_field: window_code
     version_field: model_version
+    source_selection:
+      same_venue_as_cq_observation: true
+      window_code: 4h
+      rationale: CQ local setup quality is anchored on the canonical 4h setup context; arbitrary window selection is forbidden
     evidence_identity_fields:
+      - venue
+      - window_code
       - input_hash
       - taxonomy_versions_json
     membership_contract:
@@ -75,6 +97,7 @@ eligible_feature_families:
     notes:
       - relative_strength_vs_btc and relative_strength_vs_eth are sector-level only
       - symbol-to-sector association must be resolved point-in-time from canonical membership history
+      - cross-venue fallback and arbitrary sector-window selection are forbidden
 
 excluded_candidate_families:
   btc_structure_regime:
@@ -105,6 +128,7 @@ required_next_slice:
   name: cq_v1_model_candidate_v1
   prerequisites:
     - implement replay-safe point-in-time feature extraction using only eligible families
+    - enforce same-venue source matching and frozen sector window 4h
     - report coverage and unavailable rates before assigning weights
     - freeze deterministic transformations and candidate weights before final holdout comparison
 
