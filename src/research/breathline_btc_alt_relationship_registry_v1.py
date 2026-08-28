@@ -5,16 +5,18 @@ from __future__ import annotations
 This module contains hypotheses and deterministic analysis contracts only. It
 must not inspect market outcomes or alter the single-symbol #417 tracker.
 
-Registry v1.0.3 is a pre-analysis architecture clarification created after
+Registry v1.0.4 is a pre-analysis statistical correction created after
 independent BTC and RENDER ledgers were frozen but before any BTC↔RENDER
 relationship statistic was inspected.
 
 Audit trail:
 - v1.0.1 fixed exact statistics, minimum support and verdict rules;
 - v1.0.2 fixed split-preserving permutation implementation;
-- v1.0.3 makes explicit that SHARED_EXTENSION is retrospective association
-  evidence because it uses completed maximum-overlap pairing. Only the PIT
-  ROTATION_CANDIDATE lane may produce predictive research evidence.
+- v1.0.3 made SHARED_EXTENSION retrospective association only;
+- v1.0.4 replaces mean signed event lag with median signed event lag because
+  the mean difference is invariant under permutation of BTC timestamps. The
+  median remains directional and is pairing-sensitive under the frozen timing
+  permutation null.
 
 The symbols, split, null families, seed, permutation count, hypotheses and
 architecture boundary remain unchanged from v1.0.0.
@@ -26,7 +28,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 REGISTRY_NAME = "breathline_btc_alt_relationship_v1"
-REGISTRY_VERSION = "1.0.3"
+REGISTRY_VERSION = "1.0.4"
 
 REFERENCE_SYMBOL = "BTC"
 ALT_SYMBOL = "RENDER"
@@ -249,7 +251,7 @@ EXACT_TEST_CONTRACT = ExactTestContract(
         "mean absolute phase delta across all available RENDER recognition/ignition/main_pulse/extension timestamps that fall inside both paired completed cycles; lower is more phase-locked"
     ),
     lead_lag_statistic=(
-        "per event name, mean signed same-event lag in days; discovery sign fixes candidate direction; start and end are descriptive only, inferential family is recognition/ignition/main_pulse/extension"
+        "per event name, median signed same-event lag in days; discovery median sign fixes candidate direction; start and end are descriptive only, inferential family is recognition/ignition/main_pulse/extension. Median is used because mean signed lag is invariant under permutation of BTC timestamps and is therefore invalid for the preregistered timing null."
     ),
     convergence_statistic=(
         "per paired cycle, net_abs_phase_delta_change=last comparable absolute phase delta minus first comparable absolute phase delta across recognition/ignition/main_pulse/extension; mean across cycles; negative favors CONVERGING and positive favors DIVERGING"
@@ -282,7 +284,7 @@ NULL_IMPLEMENTATION_CONTRACT = NullImplementationContract(
         "within each split, permute retained BTC paired-cycle measurement vectors across RENDER pair rows with identical checkpoint-support patterns. Do not recompute wall-clock overlap after permutation. This preserves observed support while breaking BTC↔RENDER pairing association."
     ),
     event_timing_permutation=(
-        "for Lane A LEADING/LAGGING, within each split and event name permute retained BTC same-event timestamps across rows with that event comparison. For Lane B ROTATION_CANDIDATE, within each split/checkpoint/feature/outcome test permute retained BTC recency-score values across the exact matched rows."
+        "for Lane A LEADING/LAGGING, within each split and event name permute retained BTC same-event timestamps across rows with that event comparison and recompute median signed lag. For Lane B ROTATION_CANDIDATE, within each split/checkpoint/feature/outcome test permute retained BTC recency-score values across the exact matched rows."
     ),
     extension_label_permutation=(
         "within each split, permute retained BTC extension_confirmed labels across the exact completed paired rows used by SHARED_EXTENSION"
@@ -297,7 +299,7 @@ VERDICT_CONTRACT = VerdictContract(
         "SUPPORTED_STRUCTURAL only if discovery observed mean absolute phase delta is below its permutation-null median and holdout observed mean is also below null median with holdout p<0.05; never predictive authority by itself"
     ),
     lead_lag=(
-        "LEADING or LAGGING only if at least MIN_SIGNIFICANT_LAG_EVENTS inferential events have sufficient discovery+holdout support, discovery and holdout mean lags have the same sign, and their Holm-adjusted holdout p-values are <0.05; all significant events must agree on direction"
+        "LEADING or LAGGING only if at least MIN_SIGNIFICANT_LAG_EVENTS inferential events have sufficient discovery+holdout support, discovery and holdout median signed lags have the same sign, and their Holm-adjusted holdout p-values are <0.05; all significant events must agree on direction"
     ),
     convergence_divergence=(
         "CONVERGING or DIVERGING only if discovery and holdout mean net_abs_phase_delta_change have the same non-zero sign and holdout permutation p<0.05; negative=CONVERGING, positive=DIVERGING"
