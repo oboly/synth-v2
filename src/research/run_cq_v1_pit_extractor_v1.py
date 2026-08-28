@@ -10,11 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.common.db import get_connection
-from src.research.cq_v1_pit_extractor_v1 import (
-    ShadowObservation,
-    coverage_summary,
-    extract_features,
-)
+from src.research.cq_v1_pit_extractor_v1 import ShadowObservation, extract_features
 
 RUNNER_NAME = "cq_v1_pit_extractor_v1"
 DEFAULT_BATCH_SIZE = 100
@@ -37,6 +33,32 @@ def _load_checkpoint(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def reconcile_jsonl(path: Path, checkpoint: dict[str, Any]) -> None:
+    expected = int(checkpoint.get("processed", 0))
+    expected_last = checkpoint.get("last_shadow_id")
+    if expected == 0:
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            path.write_text("", encoding="utf-8")
+        return
+    if not path.exists():
+        raise ValueError("checkpoint/output mismatch: JSONL missing")
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    if len(raw_lines) < expected:
+        raise ValueError("checkpoint/output mismatch: JSONL shorter than checkpoint")
+    kept = []
+    for index in range(expected):
+        try:
+            row = json.loads(raw_lines[index])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"checkpointed JSONL line {index + 1} is malformed") from exc
+        kept.append((raw_lines[index], row))
+    if int(kept[-1][1]["shadow_id"]) != int(expected_last):
+        raise ValueError("checkpoint/output mismatch: last_shadow_id differs")
+    if len(raw_lines) != expected:
+        path.write_text("\n".join(line for line, _ in kept) + "\n", encoding="utf-8")
+        print(f"RESUME_RECONCILE action=truncate_jsonl to_rows={expected}", flush=True)
 
 
 def _write_json(path: Path, payload: dict[str, Any], event: str) -> None:
@@ -75,11 +97,26 @@ def _fetch_shadow_batch(conn: Any, after_shadow_id: int, batch_size: int, venue:
     return [ShadowObservation(**row) for row in rows]
 
 
+def _checkpoint_payload(*, last_shadow_id: int, processed: int, mrp_count: int, sector_count: int, joint_count: int, venue: str | None, batch_size: int, terminal_state: str) -> dict[str, Any]:
+    return {
+        "runner": RUNNER_NAME,
+        "last_shadow_id": last_shadow_id or None,
+        "processed": processed,
+        "mrp_available_count": mrp_count,
+        "sector_available_count": sector_count,
+        "joint_available_count": joint_count,
+        "venue": venue,
+        "batch_size": batch_size,
+        "terminal_state": terminal_state,
+        "updated_ts_utc": datetime.now(UTC),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Research-only CQ v1 point-in-time feature coverage extractor")
     parser.add_argument("--output-dir", default="data/research/cq_v1_pit_extractor_v1")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
-    parser.add_argument("--limit", type=int, default=0, help="Maximum observations; 0 means continue until source exhaustion")
+    parser.add_argument("--limit", type=int, default=0, help="Cumulative maximum observations; 0 means source exhaustion")
     parser.add_argument("--venue", default=None)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -97,28 +134,33 @@ def main() -> int:
     summary_path = output_dir / "coverage_summary.json"
 
     checkpoint = _load_checkpoint(checkpoint_path) if args.resume else None
-    after_shadow_id = int(checkpoint.get("last_shadow_id", 0)) if checkpoint else 0
+    after_shadow_id = int(checkpoint.get("last_shadow_id") or 0) if checkpoint else 0
     processed = int(checkpoint.get("processed", 0)) if checkpoint else 0
+    mrp_count = int(checkpoint.get("mrp_available_count", 0)) if checkpoint else 0
+    sector_count = int(checkpoint.get("sector_available_count", 0)) if checkpoint else 0
+    joint_count = int(checkpoint.get("joint_available_count", 0)) if checkpoint else 0
     if checkpoint:
         if checkpoint.get("venue") != args.venue:
             raise SystemExit("checkpoint venue mismatch")
-        if checkpoint.get("batch_size") != args.batch_size:
+        if int(checkpoint.get("batch_size")) != args.batch_size:
             raise SystemExit("checkpoint batch_size mismatch")
+        reconcile_jsonl(rows_path, checkpoint)
+    elif rows_path.exists() and rows_path.read_text(encoding="utf-8").strip():
+        raise SystemExit("output exists; use --resume or a new --output-dir")
 
     print(
-        f"STARTED runner={RUNNER_NAME} worker_count=1 venue={args.venue or 'ALL'} "
-        f"batch_size={args.batch_size} limit={args.limit} resume={int(args.resume)} output_dir={output_dir}",
+        f"STARTED runner={RUNNER_NAME} worker_count=1 venue={args.venue or 'ALL'} batch_size={args.batch_size} "
+        f"limit={args.limit} resume={int(args.resume)} output_dir={output_dir}",
         flush=True,
     )
     print(
-        "SAFETY research_only=1 market_only=1 db_writes=0 production_ranking_changes=0 "
-        "decision_gate=none execution_planner=none executor=none broker_private_calls=0 "
-        "broker_writes=0 order_submission=0 live_orders=0",
+        "SAFETY research_only=1 market_only=1 db_writes=0 production_ranking_changes=0 decision_gate=none "
+        "execution_planner=none executor=none broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0",
         flush=True,
     )
 
     conn = get_connection()
-    current_rows = []
+    invocation_count = 0
     terminal_state = "FINISHED"
     try:
         while not _STOP_REQUESTED:
@@ -133,33 +175,16 @@ def main() -> int:
                 with conn.cursor() as cur:
                     extracted = extract_features(cur, observation)
                 payload = asdict(extracted)
-                payload.update(
-                    mrp_available=extracted.mrp_available,
-                    sector_available=extracted.sector_available,
-                    joint_available=extracted.joint_available,
-                )
+                payload.update(mrp_available=extracted.mrp_available, sector_available=extracted.sector_available, joint_available=extracted.joint_available)
                 _append_jsonl(rows_path, payload)
-                current_rows.append(extracted)
                 after_shadow_id = observation.shadow_id
                 processed += 1
-                print(
-                    f"PROGRESS shadow_id={after_shadow_id} processed={processed} "
-                    f"elapsed_sec={time.monotonic()-started:.3f}",
-                    flush=True,
-                )
-                _write_json(
-                    checkpoint_path,
-                    {
-                        "runner": RUNNER_NAME,
-                        "last_shadow_id": after_shadow_id,
-                        "processed": processed,
-                        "venue": args.venue,
-                        "batch_size": args.batch_size,
-                        "terminal_state": "RUNNING",
-                        "updated_ts_utc": datetime.now(UTC),
-                    },
-                    "checkpoint",
-                )
+                invocation_count += 1
+                mrp_count += int(extracted.mrp_available)
+                sector_count += int(extracted.sector_available)
+                joint_count += int(extracted.joint_available)
+                print(f"PROGRESS shadow_id={after_shadow_id} processed={processed} elapsed_sec={time.monotonic()-started:.3f}", flush=True)
+                _write_json(checkpoint_path, _checkpoint_payload(last_shadow_id=after_shadow_id, processed=processed, mrp_count=mrp_count, sector_count=sector_count, joint_count=joint_count, venue=args.venue, batch_size=args.batch_size, terminal_state="RUNNING"), "checkpoint")
                 if _STOP_REQUESTED or (args.limit and processed >= args.limit):
                     break
         if _STOP_REQUESTED:
@@ -169,30 +194,24 @@ def main() -> int:
         raise
     finally:
         conn.close()
-        summary = coverage_summary(current_rows)
-        summary.update(
-            runner=RUNNER_NAME,
-            observations_in_this_invocation=len(current_rows),
-            cumulative_processed=processed,
-            last_shadow_id=after_shadow_id or None,
-            terminal_state=terminal_state,
-            weights_assigned=0,
-            cq_v1_scores_emitted=0,
-        )
+        denominator = processed or 1
+        summary = {
+            "runner": RUNNER_NAME,
+            "sample_count": processed,
+            "observations_in_this_invocation": invocation_count,
+            "mrp_available_count": mrp_count,
+            "sector_available_count": sector_count,
+            "joint_available_count": joint_count,
+            "mrp_coverage": round(mrp_count / denominator, 6) if processed else 0.0,
+            "sector_coverage": round(sector_count / denominator, 6) if processed else 0.0,
+            "joint_coverage": round(joint_count / denominator, 6) if processed else 0.0,
+            "last_shadow_id": after_shadow_id or None,
+            "terminal_state": terminal_state,
+            "weights_assigned": 0,
+            "cq_v1_scores_emitted": 0,
+        }
         _write_json(summary_path, summary, "summary")
-        _write_json(
-            checkpoint_path,
-            {
-                "runner": RUNNER_NAME,
-                "last_shadow_id": after_shadow_id or None,
-                "processed": processed,
-                "venue": args.venue,
-                "batch_size": args.batch_size,
-                "terminal_state": terminal_state,
-                "updated_ts_utc": datetime.now(UTC),
-            },
-            "checkpoint",
-        )
+        _write_json(checkpoint_path, _checkpoint_payload(last_shadow_id=after_shadow_id, processed=processed, mrp_count=mrp_count, sector_count=sector_count, joint_count=joint_count, venue=args.venue, batch_size=args.batch_size, terminal_state=terminal_state), "checkpoint")
         print(f"{terminal_state} processed={processed} last_shadow_id={after_shadow_id or 'none'}", flush=True)
     return 0 if terminal_state == "FINISHED" else 130 if terminal_state == "INTERRUPTED" else 1
 
