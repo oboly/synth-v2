@@ -118,11 +118,19 @@ evaluating under PAPER semantics after the account itself has moved to LIVE.
 
 ## What this does not change
 
-- `automatic_buy_gate_v1` is untouched. `account_mode="live"` with
-  `live_trading_enabled=False` (production account 3's actual shape) is
-  bound faithfully by the evidence projection and rejected by the gate's own
+- `account_mode="live"` with `live_trading_enabled=False` (production
+  accounts 2/3's actual shape at the time this doc was written) is bound
+  faithfully by the evidence projection and rejected by the gate's own
   `REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT` exactly as before -- see
   `tests/test_automatic_buy_runtime_repository_v1.py::test_build_runtime_item_v1_live_account_flag_false_still_rejected_by_gate_end_to_end`.
+  Issue #551 later introduced a canonical third `account_mode` value,
+  `live_readonly` (see `docs/architecture/account_mode_contract_v1.md`), for
+  exactly this real-broker/read-only shape; once accounts 2/3 are migrated
+  to `live_readonly` (data migration prepared, not yet applied -- see that
+  doc), they bind as canonically consistent evidence and are instead
+  rejected by `REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE`, not
+  `REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT`. `automatic_buy_gate_v1`'s
+  evidence-binding contract itself is otherwise unchanged by #551.
 - No executor, broker, or order import exists anywhere in the new modules.
 - No production DB mutation, credential provisioning, `live_trading_enabled`
   mutation, kill-switch change, or LIVE authority grant is part of this

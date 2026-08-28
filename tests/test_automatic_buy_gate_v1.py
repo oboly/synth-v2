@@ -17,6 +17,7 @@ from src.decision_gate.automatic_buy_gate_v1 import (
     REASON_ACCOUNT_DISABLED,
     REASON_ACCOUNT_EVIDENCE_STALE,
     REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT,
+    REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE,
     REASON_BLOCKING_CONFLICT,
     REASON_CANDIDATE_EVIDENCE_STALE,
     REASON_EXECUTION_PERMISSION_DISABLED,
@@ -235,6 +236,39 @@ def test_live_without_live_flag_is_non_actionable_and_other_unknown_modes_remain
     for mode in ("LIVE", "Paper", "demo", "", "sandbox"):
         result = _evaluate(account_mode=mode)
         assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE)
+
+
+def test_live_readonly_with_consistent_flag_is_rejected_as_not_execution_eligible() -> None:
+    """Issue #551: live_readonly (real broker, read-only) with the canonically
+    consistent live_trading_enabled=False must be rejected distinctly from
+    ACCOUNT_MODE_EVIDENCE_INCONSISTENT."""
+    result = _evaluate(account_mode="live_readonly", live_trading_enabled=False)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE)
+
+
+def test_live_readonly_with_inconsistent_flag_is_still_evidence_inconsistent() -> None:
+    result = _evaluate(account_mode="live_readonly", live_trading_enabled=True)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT)
+
+
+def test_live_readonly_never_reaches_free_quote_balance_or_live_permission_checks() -> None:
+    """Regression: live_readonly must fail closed before the free-quote-
+    balance staleness check or LIVE permission-evaluation branch, even with
+    stale balance evidence and a granted permission supplied."""
+    result = _evaluate(
+        account_mode="live_readonly",
+        live_trading_enabled=False,
+        free_quote_balance_observed_ts_utc=NOW - timedelta(hours=999),
+        automatic_buy_live_permission_evaluation=_granted_live_permission(),
+    )
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE)
+
+
+def test_paper_mode_approval_is_unaffected_by_the_account_mode_split() -> None:
+    """Regression: paper approval is byte-for-byte unchanged after the #551
+    account_mode split."""
+    result = _evaluate(account_mode="paper", live_trading_enabled=False)
+    assert result.state == STATE_APPROVED
 
 
 def test_negative_free_quote_balance_or_non_positive_proposed_amount_is_non_actionable() -> None:

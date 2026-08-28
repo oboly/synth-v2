@@ -13,6 +13,11 @@ from __future__ import annotations
 
 from typing import Final
 
+from src.account.account_mode_contract_v1 import (
+    ACCOUNT_MODE_LIVE,
+    ACCOUNT_MODE_LIVE_READONLY,
+    ACCOUNT_MODE_PAPER,
+)
 from src.entry_policy.automatic_buy_acceptance_dry_run_v1 import AutomaticBuyHandoffPreviewV1
 from src.execution_planner.automatic_buy_execution_handoff_adapter_v1 import (
     adapt_automatic_buy_plan_to_approved_execution_plan_v1,
@@ -26,8 +31,11 @@ from src.executor.execution_handoff_v1 import (
     ExecutionHandoffV1,
 )
 
-ACCOUNT_MODE_PAPER: Final[str] = "paper"
-ACCOUNT_MODE_LIVE: Final[str] = "live"
+# Issue #551 account-mode split: `live_readonly` (real broker, read-only)
+# is deliberately absent from this map. It must never resolve to any
+# executor runtime mode -- resolve_automatic_buy_executor_mode_v1 rejects it
+# explicitly, before the lookup, rather than relying on an accidental
+# KeyError to fail closed.
 _ACCOUNT_MODE_TO_EXECUTOR_MODE: Final[dict[str, str]] = {
     ACCOUNT_MODE_PAPER: RUNTIME_MODE_PAPER,
     ACCOUNT_MODE_LIVE: RUNTIME_MODE_LIVE,
@@ -48,7 +56,14 @@ def resolve_automatic_buy_executor_mode_v1(
     account_mode: str,
     executor_mode_override: str | None = None,
 ) -> str:
-    """Derive normal executor mode from account_mode; only DRY_RUN may override."""
+    """Derive normal executor mode from account_mode; only DRY_RUN may override.
+
+    ``live_readonly`` (real broker, read-only, never execution-eligible) is
+    rejected explicitly and can never resolve to ``RUNTIME_MODE_LIVE`` or any
+    other executor runtime mode, regardless of ``executor_mode_override``.
+    """
+    if account_mode == ACCOUNT_MODE_LIVE_READONLY:
+        raise AutomaticBuyExecutorHandoffError("ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE")
     try:
         derived = _ACCOUNT_MODE_TO_EXECUTOR_MODE[account_mode]
     except KeyError:

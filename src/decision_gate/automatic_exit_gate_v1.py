@@ -13,6 +13,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
+from src.account.account_mode_contract_v1 import (
+    ACCOUNT_MODE_LIVE,
+    ACCOUNT_MODE_LIVE_READONLY,
+    ACCOUNT_MODE_PAPER,
+    SUPPORTED_ACCOUNT_MODES,
+    is_account_mode_live_trading_enabled_consistent,
+    is_execution_eligible_account_mode,
+)
 from src.decision_gate.account_protection_contract_v1 import (
     AccountProtectionContractError,
     AccountProtectionEvaluationV1,
@@ -33,12 +41,12 @@ STATE_APPROVED: Final[str] = "APPROVED"
 STATE_DENIED: Final[str] = "DENIED"
 STATE_NON_ACTIONABLE: Final[str] = "NON_ACTIONABLE"
 
-# Issue #392 Phase 6 blocker B: the only two supported account modes. This
-# gate never guesses, lowercases, or canonicalizes an unsupported mode -- an
-# unrecognized value fails closed to NON_ACTIONABLE.
-ACCOUNT_MODE_PAPER: Final[str] = "paper"
-ACCOUNT_MODE_LIVE: Final[str] = "live"
-SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({ACCOUNT_MODE_PAPER, ACCOUNT_MODE_LIVE})
+# Issue #392 Phase 6 blocker B / #551 account-mode split: the canonical
+# account_mode vocabulary and its live_trading_enabled agreement/execution-
+# eligibility semantics are shared from src.account.account_mode_contract_v1
+# rather than redefined here. This gate never guesses, lowercases, or
+# canonicalizes an unrecognized mode -- an unrecognized value fails closed
+# to NON_ACTIONABLE.
 
 REASON_OK: Final[str] = "OK"
 REASON_INVALID_CANDIDATE: Final[str] = "INVALID_AUTOMATIC_EXIT_CANDIDATE"
@@ -55,6 +63,7 @@ REASON_ACCOUNT_DISABLED: Final[str] = "ACCOUNT_DISABLED"
 REASON_EXECUTION_PERMISSION_DISABLED: Final[str] = "AUTOMATIC_EXIT_EXECUTION_PERMISSION_DISABLED"
 REASON_UNSUPPORTED_ACCOUNT_MODE: Final[str] = "UNSUPPORTED_ACCOUNT_MODE"
 REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT: Final[str] = "ACCOUNT_MODE_LIVE_FLAG_EVIDENCE_INCONSISTENT"
+REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE: Final[str] = "ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"
 REASON_LIVE_EXECUTION_NOT_GRANTED: Final[str] = "LIVE_EXECUTION_NOT_GRANTED"
 REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH: Final[str] = "AUTOMATIC_EXIT_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH"
 REASON_BLOCKING_CONFLICT: Final[str] = "BLOCKING_SELL_RESERVATION_OR_ORDER_CONFLICT"
@@ -69,20 +78,25 @@ class AutomaticExitGateContextV1:
     ``automatic_exit_execution_enabled`` is an explicit permission for this
     lane, independent of account mode.
 
-    ``account_mode`` must be exactly ``"paper"`` or ``"live"``
-    (``SUPPORTED_ACCOUNT_MODES``); any other value is NON_ACTIONABLE. This
-    gate never guesses or canonicalizes an unrecognized mode.
+    ``account_mode`` must be exactly ``"paper"``, ``"live_readonly"``, or
+    ``"live"`` (``src.account.account_mode_contract_v1.SUPPORTED_ACCOUNT_MODES``);
+    any other value is NON_ACTIONABLE. This gate never guesses or
+    canonicalizes an unrecognized mode. ``live_readonly`` is a real broker
+    account used only as a read-only wallet/position snapshot source (e.g.
+    ``READ_ONLY_PRIVATE`` credential bindings) -- real broker data, but
+    permanently execution-ineligible, same as ``paper``.
 
     ``live_trading_enabled`` is the account-level "this account is
     provisioned as a live-trading account" fact mirrored from
     ``trading_account.live_trading_enabled`` -- the same column other
     account-scoped modules (e.g. broker snapshot writers) already trust as
     the authoritative live/non-live account flag. It must always agree with
-    ``account_mode`` (``paper`` implies ``False``, ``live`` implies
-    ``True``); disagreement is treated as inconsistent evidence and fails
-    closed to NON_ACTIONABLE rather than being trusted either way. On its
-    own it is never sufficient LIVE permission and is never executor
-    authority, a kill switch, or a credential/broker permission of any kind.
+    ``account_mode`` (``paper`` and ``live_readonly`` both imply ``False``,
+    ``live`` implies ``True``); disagreement is treated as inconsistent
+    evidence and fails closed to NON_ACTIONABLE rather than being trusted
+    either way. On its own it is never sufficient LIVE permission and is
+    never executor authority, a kill switch, or a credential/broker
+    permission of any kind.
 
     ``automatic_exit_live_permission_evaluation`` is the typed decision-gate
     LIVE permission evaluation (Issue #392 Phase 6 blocker B), composed by
@@ -261,12 +275,17 @@ def _evaluate_automatic_exit_candidate_permission_base_v1(
     # broker/credential access (see AutomaticExitGateContextV1 docstring).
     if context.account_mode not in SUPPORTED_ACCOUNT_MODES:
         return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate)
-    if context.account_mode == ACCOUNT_MODE_PAPER:
-        if context.live_trading_enabled:
-            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+    if not is_account_mode_live_trading_enabled_consistent(context.account_mode, context.live_trading_enabled):
+        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+    if not is_execution_eligible_account_mode(context.account_mode):
+        # paper falls through to APPROVED via the existing PAPER runtime
+        # lane below; live_readonly (real broker, read-only) must never
+        # reach the LIVE permission-evaluation branch or executor LIVE
+        # routing, so it is rejected here explicitly and distinctly from
+        # ACCOUNT_MODE_EVIDENCE_INCONSISTENT.
+        if context.account_mode == ACCOUNT_MODE_LIVE_READONLY:
+            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE, candidate)
     else:  # ACCOUNT_MODE_LIVE
-        if not context.live_trading_enabled:
-            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
         live_permission = context.automatic_exit_live_permission_evaluation
         if live_permission is None:
             return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)

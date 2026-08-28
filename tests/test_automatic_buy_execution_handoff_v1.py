@@ -193,6 +193,34 @@ def test_normal_mode_is_derived_from_account_mode_and_only_dry_run_can_override(
         resolve_automatic_buy_executor_mode_v1(account_mode="demo")
 
 
+def test_live_readonly_account_mode_never_resolves_to_any_executor_mode() -> None:
+    """Issue #551: `live_readonly` (real broker, read-only) must fail closed
+    before any executor routing, and must never resolve to RUNTIME_MODE_LIVE
+    even with a DRY_RUN override attempt."""
+    with pytest.raises(AutomaticBuyExecutorHandoffError, match="ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"):
+        resolve_automatic_buy_executor_mode_v1(account_mode="live_readonly")
+    with pytest.raises(AutomaticBuyExecutorHandoffError, match="ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"):
+        resolve_automatic_buy_executor_mode_v1(
+            account_mode="live_readonly", executor_mode_override="DRY_RUN",
+        )
+
+
+def test_live_readonly_plan_submission_never_reaches_handoff_repository() -> None:
+    """Regression: a live_readonly plan submission must raise before either
+    `intake` or `intake_live_authorized` is ever called on the repository."""
+    repo = FakeHandoffRepository()
+    with pytest.raises(AutomaticBuyExecutorHandoffError, match="ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"):
+        submit_automatic_buy_plan_to_shared_handoff_v1(
+            plan=_plan(),
+            account_mode="live_readonly",
+            executor_identity="shared-executor-v1",
+            runtime_owner="gurkdb",
+            handoff_repository=repo,  # type: ignore[arg-type]
+        )
+    assert repo.live_calls == []
+    assert repo.intake_calls == []
+
+
 def test_direct_live_plan_routes_only_through_shared_authorized_intake() -> None:
     plan = _plan()
     repo = FakeHandoffRepository()

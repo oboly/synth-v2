@@ -63,11 +63,27 @@ def test_valid_live_evidence_passes() -> None:
 
 def test_live_mode_without_live_flag_binds_faithfully_not_a_contract_error() -> None:
     """account_mode=live + live_trading_enabled=False is a real, expected
-    persisted trading_account state (e.g. production account 3): the
-    projection binds it as-is. Rejecting it is automatic_buy_gate_v1's job
+    persisted trading_account state: the projection binds it as-is.
+    Rejecting it is automatic_buy_gate_v1's job
     (REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT), not this contract's."""
     validate_automatic_buy_account_allocation_evidence_v1(
         _evidence(account_mode="live", live_trading_enabled=False)
+    )
+
+
+def test_valid_live_readonly_evidence_passes() -> None:
+    """Issue #551: live_readonly (real broker, read-only) with
+    live_trading_enabled=False -- its canonical, expected pairing -- binds
+    without any contract error, exactly like paper. Whether it is
+    execution-eligible is automatic_buy_gate_v1's decision, not this
+    contract's."""
+    validate_automatic_buy_account_allocation_evidence_v1(
+        _evidence(
+            account_mode="live_readonly",
+            live_trading_enabled=False,
+            free_quote_balance_eur=Decimal("0"),
+            trading_account_balance_snapshot_id=None,
+        )
     )
 
 

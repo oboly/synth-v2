@@ -82,6 +82,12 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Final
 
+from src.account.account_mode_contract_v1 import (
+    ACCOUNT_MODE_LIVE_READONLY,
+    SUPPORTED_ACCOUNT_MODES as CANONICAL_SUPPORTED_ACCOUNT_MODES,
+    is_account_mode_live_trading_enabled_consistent,
+)
+
 # --- Contract constants -----------------------------------------------
 
 SCHEMA_VERSION: Final[str] = "sell_live_readiness_v1"
@@ -161,7 +167,12 @@ REQUIRED_RUNTIME_CAPABILITY_IDS: Final[tuple[str, ...]] = (
 )
 _RUNTIME_ACTIVE_STATUSES: Final[frozenset[str]] = frozenset({"ACTIVE", "ENABLED", "RUNNING"})
 
-SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({"paper", "live"})
+# Issue #551 account-mode split: canonical account_mode vocabulary
+# (paper / live_readonly / live) and its live_trading_enabled agreement
+# semantics are shared from src.account.account_mode_contract_v1 rather than
+# redefined here, so this controller never special-cases account_mode
+# handling independently of the shared canonical contract.
+SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = CANONICAL_SUPPORTED_ACCOUNT_MODES
 
 # Purely synthetic, obviously-non-production identity used only for the
 # in-memory DRY_RUN_ACCEPTANCE / PAPER_ACCEPTANCE code-path proof. Never
@@ -418,8 +429,14 @@ def _phase_precheck(config: ControllerConfigV1, repository_sha: str) -> PhaseRes
         return _blocked(PHASE_PRECHECK, "UNSUPPORTED_ACCOUNT_MODE", detail)
     if not enabled:
         return _blocked(PHASE_PRECHECK, "TRADING_ACCOUNT_DISABLED", detail)
-    if (account_mode == "live") != live_trading_enabled:
+    if not is_account_mode_live_trading_enabled_consistent(account_mode, live_trading_enabled):
         return _blocked(PHASE_PRECHECK, "ACCOUNT_MODE_EVIDENCE_INCONSISTENT", detail)
+    if account_mode == ACCOUNT_MODE_LIVE_READONLY:
+        # Real broker, read-only account: live_trading_enabled=False is the
+        # canonical, expected pairing for this mode (not inconsistent
+        # evidence), but it is permanently execution-ineligible and can
+        # never proceed through the SELL LIVE readiness path.
+        return _blocked(PHASE_PRECHECK, "ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE", detail)
     if venue != config.venue:
         return _blocked(PHASE_PRECHECK, "ACCOUNT_VENUE_MISMATCH", detail)
     return _passed(PHASE_PRECHECK, "OK", detail)
