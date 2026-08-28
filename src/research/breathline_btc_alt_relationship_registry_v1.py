@@ -5,11 +5,15 @@ from __future__ import annotations
 This module contains hypotheses and deterministic analysis contracts only. It
 must not inspect market outcomes or alter the single-symbol #417 tracker.
 
-Registry v1.0.1 is a pre-analysis amendment created after independent BTC and
-RENDER ledgers were frozen but before any BTC↔RENDER relationship statistic was
-inspected. It makes test statistics, minimum-support rules and verdict rules
-fully explicit. The symbols, split, null controls, seed, permutations and
-architecture boundary are unchanged from v1.0.0.
+Registry v1.0.2 is a pre-analysis clarification created after independent BTC
+and RENDER ledgers were frozen but before any BTC↔RENDER relationship statistic
+was inspected. v1.0.1 made test statistics, minimum-support rules and verdict
+rules explicit. v1.0.2 additionally fixes the split-preserving implementation
+of the preregistered permutation nulls so null permutations cannot alter sample
+support or missingness.
+
+The symbols, split, null families, seed, permutation count, hypotheses and
+architecture boundary remain unchanged from v1.0.0.
 
 Research-only, market-only, account-agnostic.
 """
@@ -19,7 +23,7 @@ from typing import Any
 
 
 REGISTRY_NAME = "breathline_btc_alt_relationship_v1"
-REGISTRY_VERSION = "1.0.1"
+REGISTRY_VERSION = "1.0.2"
 
 REFERENCE_SYMBOL = "BTC"
 ALT_SYMBOL = "RENDER"
@@ -162,6 +166,14 @@ class ExactTestContract:
 
 
 @dataclass(frozen=True)
+class NullImplementationContract:
+    pair_permutation: str
+    event_timing_permutation: str
+    extension_label_permutation: str
+    missingness_rule: str
+
+
+@dataclass(frozen=True)
 class VerdictContract:
     phase_lock: str
     lead_lag: str
@@ -233,10 +245,10 @@ PREDICTIVE_CONTRACT = PredictiveContract(
 
 EXACT_TEST_CONTRACT = ExactTestContract(
     phase_lock_statistic=(
-        "mean absolute phase delta across all available RENDER recognition/ignition/main_pulse/extension timestamps that fall inside both paired completed cycles; lower is more phase-locked; null permutes BTC cycle assignments within split"
+        "mean absolute phase delta across all available RENDER recognition/ignition/main_pulse/extension timestamps that fall inside both paired completed cycles; lower is more phase-locked"
     ),
     lead_lag_statistic=(
-        "per event name, mean signed same-event lag in days; discovery sign fixes candidate direction; holdout one-sided null permutes BTC same-event timestamps within split; start and end are descriptive only, inferential family is recognition/ignition/main_pulse/extension"
+        "per event name, mean signed same-event lag in days; discovery sign fixes candidate direction; start and end are descriptive only, inferential family is recognition/ignition/main_pulse/extension"
     ),
     convergence_statistic=(
         "per paired cycle, net_abs_phase_delta_change=last comparable absolute phase delta minus first comparable absolute phase delta across recognition/ignition/main_pulse/extension; mean across cycles; negative favors CONVERGING and positive favors DIVERGING"
@@ -248,7 +260,7 @@ EXACT_TEST_CONTRACT = ExactTestContract(
         "RELOCK sequence exists when a DETACHED sequence is followed later in the same paired cycle by at least one negative change in absolute phase delta; no magnitude threshold"
     ),
     shared_extension_statistic=(
-        "difference in RENDER extension-confirmation rate between paired BTC extension_confirmed=true and false cycles; positive favors SHARED_EXTENSION; null permutes BTC extension labels within split"
+        "difference in RENDER extension-confirmation rate between paired BTC extension_confirmed=true and false cycles; positive favors SHARED_EXTENSION"
     ),
     rotation_candidate_statistic=(
         "at each RENDER recognition/ignition feature_as_of_ts, define BTC recency scores as negative days since latest prior-confirmed BTC main-pulse or extension event respectively; higher means more recent; test tie-aware ROC AUC for later RENDER main_pulse_confirmed and extension_confirmed"
@@ -261,6 +273,21 @@ EXACT_TEST_CONTRACT = ExactTestContract(
     ),
     multiple_comparison_scope=(
         "Holm-Bonferroni alpha 0.05 is applied to holdout p-values within each hypothesis family: lead_lag over four inferential event names; detached_relock over DETACHED and RELOCK; rotation_candidate over 2 checkpoints x 2 BTC recency features x 2 outcomes. Other hypothesis families have one holdout test each."
+    ),
+)
+
+NULL_IMPLEMENTATION_CONTRACT = NullImplementationContract(
+    pair_permutation=(
+        "within each split, permute retained BTC paired-cycle measurement vectors across RENDER pair rows; a measurement vector contains BTC realized-phase values keyed by retained RENDER phase checkpoint. Do not recompute wall-clock overlap after permutation. This preserves the observed row/checkpoint support while breaking BTC↔RENDER pairing association. The same vector permutation is used for PHASE_LOCK, CONVERGING/DIVERGING and DETACHED/RELOCK null statistics."
+    ),
+    event_timing_permutation=(
+        "for Lane A LEADING/LAGGING, within each split and event name permute retained BTC same-event timestamps across rows with that event comparison. For Lane B ROTATION_CANDIDATE, within each split/checkpoint/feature/outcome test permute the retained BTC recency-score values across the exact matched rows."
+    ),
+    extension_label_permutation=(
+        "within each split, permute retained BTC extension_confirmed labels across the exact paired rows used by SHARED_EXTENSION"
+    ),
+    missingness_rule=(
+        "all nulls operate on the exact observed eligible row set for that statistic; permutation changes only the preregistered BTC measurement, timing-score or label assignment. Row count, RENDER outcomes and missingness/support are invariant across permutations."
     ),
 )
 
@@ -311,6 +338,7 @@ def registry_payload() -> dict[str, Any]:
         "retrospective": asdict(RETROSPECTIVE_CONTRACT),
         "predictive": asdict(PREDICTIVE_CONTRACT),
         "exact_tests": asdict(EXACT_TEST_CONTRACT),
+        "null_implementation": asdict(NULL_IMPLEMENTATION_CONTRACT),
         "verdicts": asdict(VERDICT_CONTRACT),
         "minimum_support": {
             "paired_cycles_per_split": MIN_PAIRED_CYCLES_PER_SPLIT,
