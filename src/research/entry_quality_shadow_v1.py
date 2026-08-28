@@ -32,10 +32,12 @@ def _clamp01(value: Decimal) -> Decimal:
 
 
 def compute_entry_quality_shadow(inp: EntryQualityInput) -> EntryQualityShadow:
-    """Derive CQ v0 from existing Selection Engine v2 outputs.
+    """Derive the CQ v0 shadow baseline from existing trade_quality_score.
 
-    This deliberately reconciles with the existing trade_quality_score rather
-    than introducing a second independent symbol-local quality model.
+    CQ v0 intentionally preserves ``trade_quality_score`` as the independent
+    local-quality baseline. Timing refinement and quality penalties remain
+    observable source fields, but they are not folded into CQ v0 because that
+    would reproduce the existing selection_score algebraically.
     """
 
     blockers: list[str] = []
@@ -54,17 +56,13 @@ def compute_entry_quality_shadow(inp: EntryQualityInput) -> EntryQualityShadow:
             blockers=tuple(blockers),
         )
 
-    score = inp.trade_quality_score + inp.timing_refinement_score - inp.quality_penalty
-    score = _clamp01(score).quantize(Decimal("0.000001"))
+    score = _clamp01(inp.trade_quality_score).quantize(Decimal("0.000001"))
 
-    reasons.append("EVOLVED_FROM_TRADE_QUALITY_SCORE")
-    if inp.timing_refinement_score > ZERO:
-        reasons.append("POSITIVE_1H_TIMING_REFINEMENT")
-    elif inp.timing_refinement_score < ZERO:
-        reasons.append("NEGATIVE_1H_TIMING_REFINEMENT")
-
+    reasons.append("BASELINE_FROM_TRADE_QUALITY_SCORE")
+    if inp.timing_refinement_score != ZERO:
+        reasons.append("TIMING_REFINEMENT_OBSERVED_NOT_APPLIED")
     if inp.quality_penalty > ZERO:
-        reasons.append("DATA_QUALITY_PENALTY_APPLIED")
+        reasons.append("QUALITY_PENALTY_OBSERVED_NOT_APPLIED")
     if inp.quality_status_1h == "BLOCKED":
         reasons.append("1H_REFINEMENT_UNAVAILABLE")
 
