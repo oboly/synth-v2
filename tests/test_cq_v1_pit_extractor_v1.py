@@ -1,4 +1,6 @@
 from datetime import UTC, datetime
+from decimal import Decimal
+import json
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,7 @@ from src.research.cq_v1_pit_extractor_v1 import (
     fetch_primary_sector_code,
     fetch_sector_rotation,
 )
-from src.research.run_cq_v1_pit_extractor_v1 import reconcile_jsonl
+from src.research.run_cq_v1_pit_extractor_v1 import _append_jsonl, reconcile_jsonl
 
 REGISTRY = Path("config/research/cq_v1_pit_extractor_v1.yaml")
 
@@ -120,6 +122,23 @@ def test_coverage_summary_reports_same_population_denominator() -> None:
         "sector_coverage": 0.666667,
         "joint_coverage": 0.333333,
     }
+
+
+def test_runner_jsonl_serializes_db_decimal_values_deterministically(tmp_path: Path) -> None:
+    path = tmp_path / "features.jsonl"
+    _append_jsonl(
+        path,
+        {
+            "shadow_id": 7,
+            "asof_ts_utc": datetime(2026, 8, 28, 12, 7, tzinfo=UTC),
+            "mrp_aggregate": {"market_score": Decimal("12.3400")},
+            "sector_rotation": {"confidence": Decimal("0.875000")},
+        },
+    )
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["mrp_aggregate"]["market_score"] == "12.3400"
+    assert row["sector_rotation"]["confidence"] == "0.875000"
+    assert row["asof_ts_utc"] == "2026-08-28T12:07:00+00:00"
 
 
 def test_resume_truncates_extra_or_malformed_uncheckpointed_tail(tmp_path: Path) -> None:
