@@ -7,98 +7,76 @@ Status: research-only, shadow-only
 
 Measure a market-only Entry Quality / Conviction Quality score without changing current production selection or trading authority.
 
-Core quantities:
-
 ```text
 CQ = Entry Quality, normalized 0..1
 Entry Strength = PPP * CQ
 ```
 
-PPP remains owned by its existing canonical producer/contract. This research lane never reconstructs PPP from levels and never treats CQ as a probability of target realization.
+PPP remains owned by its canonical producer/contract. This lane never reconstructs PPP from levels and never treats CQ as a probability of target realization.
 
-## Phase-0 reconciliation result
+## CQ v0 reconciliation
 
-Selection Engine v2 already computes `trade_quality_score` from symbol-local market evidence. CQ v0 therefore uses that existing score directly as the independent local-quality baseline:
+Selection Engine v2 already computes `trade_quality_score` from symbol-local market evidence. CQ v0 therefore uses that score directly:
 
 ```text
 entry_quality_score = clamp01(trade_quality_score)
 ```
 
-This is deliberate. The existing `selection_score` already equals the local trade-quality score plus timing refinement minus quality penalties. Repeating that algebra for CQ would make CQ identical to `selection_score` and invalidate the planned baseline comparison.
+This is deliberate. Existing `selection_score` already equals `trade_quality_score + timing_refinement_score - quality_penalty`; repeating that algebra would make CQ identical to the production score and invalidate baseline comparison.
 
-The shadow table therefore persists both `trade_quality_score` and `selection_score`. Timing refinement and quality penalties are also retained as observable source fields, but are not applied again to CQ v0.
+The shadow dataset persists `trade_quality_score`, `selection_score`, timing refinement, quality penalties, quality states, CQ, PPP provenance, and optional Entry Strength.
 
-Required 1d or 4h quality `BLOCKED` makes CQ unavailable (`BLOCKED`). A blocked 1h quality state does not by itself block the higher-timeframe CQ.
+Required 1d or 4h quality `BLOCKED` makes CQ unavailable. A blocked 1h quality state does not itself block the higher-timeframe CQ.
 
-CQ v0 is intentionally a conservative baseline, not the final CQ v1 cross-market model.
+## Replay-safe evidence identity
 
-## Persistence and time identity
+Research observations are stored only in `research_entry_quality_shadow`.
 
-Research observations are stored only in:
+Observation identity is **not** runner time and is not a single maximum source timestamp. The runner reads and persists all six source timestamps that can influence Selection Engine scoring:
 
 ```text
-research_entry_quality_shadow
+quality_ts_1d_utc
+quality_ts_4h_utc
+quality_ts_1h_utc
+signal_ts_1d_utc
+signal_ts_4h_utc
+signal_ts_1h_utc
 ```
 
-`asof_ts_utc` is the canonical source/evidence snapshot timestamp carried by the Selection Engine row. It is never runner wall-clock time. `created_ts_utc` remains the separate persistence/process timestamp.
+A deterministic SHA-256 `evidence_key` fingerprints that complete timestamp tuple. The unique persistence identity is:
 
-This distinction is required for deterministic replay and forward-outcome joins: rerunning the same market snapshot must not fabricate a new observation identity merely because the runner was invoked later.
+```text
+asset_id + venue + evidence_key + cq_model_version
+```
 
-The table preserves the source Selection Engine quantities, CQ model version, quality states, reasons/blockers, optional PPP provenance, and optional Entry Strength.
+`asof_ts_utc` is retained as the maximum timestamp in the evidence tuple for convenient chronological joins, but it is **not** sufficient by itself to identify an observation. `created_ts_utc` remains process/persistence time.
 
-It is not an input to current production selection ranking, `decision_gate`, `execution_planner`, executor, broker, or order handling.
+This prevents a newer quality or signal row from overwriting an earlier shadow observation even when another source timestamp is later than both. Missing any required evidence timestamp fails closed.
 
 ## PPP input contract
 
-The research runner does not query or recreate PPP itself.
-
-Optional PPP can be provided through a CSV with explicit provenance:
+Optional PPP is supplied through explicit-provenance CSV:
 
 ```text
 symbol,ppp_pct,ppp_kind,ppp_source_ref
 AAVE,20.0,ACTIONABLE_PPP,<canonical reference>
 ```
 
-Supported kinds are exactly:
+Supported kinds are exactly `ACTIONABLE_PPP` and `PLANNING_PPP`. One run may contain only one kind. Missing values/provenance, unknown kinds, or mixed kinds fail closed.
 
-```text
-ACTIONABLE_PPP
-PLANNING_PPP
-```
-
-A single run may contain only one PPP kind. Mixed Planning/Actionable datasets fail closed so Entry Strength comparisons cannot silently mix two different PPP semantics.
-
-All four CSV fields are required. Missing value/provenance, unknown kind, or mixed kinds reject the input rather than producing Entry Strength.
-
-This allows #552/#561 to stabilize the canonical user-facing PPP semantics independently before any future direct integration.
+This lets #552/#561 stabilize user-facing PPP semantics independently before direct integration.
 
 ## Runner
 
-A normal shadow run always writes a CSV. The deterministic default destination is:
+A normal shadow run always writes CSV to:
 
 ```text
 data/research/entry_quality_shadow_v1/entry_quality_shadow_v1.csv
 ```
 
-Run with the default destination:
+`--out-csv` overrides the destination. `--write-db` explicitly enables research-table persistence and still writes CSV.
 
-```text
-python -m src.research.run_entry_quality_shadow_v1
-```
-
-Override the destination when needed:
-
-```text
-python -m src.research.run_entry_quality_shadow_v1 --out-csv /tmp/cq_shadow.csv
-```
-
-Database persistence is explicit opt-in and still writes the CSV:
-
-```text
-python -m src.research.run_entry_quality_shadow_v1 --write-db
-```
-
-The runner follows the repository lifecycle-observability contract:
+Lifecycle output follows:
 
 ```text
 STARTED
@@ -107,13 +85,13 @@ PHASE_START / PHASE_END
 FINISHED
 ```
 
-A failed run emits one terminal `FAILED` instead of `FINISHED`. `STARTED` is emitted before the database connection attempt, so connection failures are observable too.
+A failed run emits exactly one terminal `FAILED`. `STARTED` is emitted before the database connection attempt.
 
 No production ranking change occurs in either mode.
 
 ## Forward evaluation
 
-The emitted CSV/table is the Phase-1 dataset anchor. Future outcome labeling should join by asset/venue/source-as-of time and compare at minimum:
+The emitted CSV/table is the Phase-1 dataset anchor. Future outcome labeling should compare at minimum:
 
 ```text
 PPP-only
@@ -123,19 +101,11 @@ CQ v0
 Entry Strength = PPP * CQ
 ```
 
-For CQ v0, `trade_quality_score` and `CQ v0` intentionally have equal numeric values. CQ v0 adds the explicit CQ state/blocking/provenance contract while preserving the existing local-quality score as baseline. The distinct comparison becomes meaningful when CQ v1 adds validated cross-market context; until then, `selection_score` remains a genuinely separate baseline because it includes timing refinement and quality penalties.
-
-Outcome labeling belongs in research/backtest code and must not feed future-aware labels into live inference.
+For CQ v0, `trade_quality_score` and CQ intentionally have equal numeric values. CQ v1 becomes distinct only when validated cross-market context is added. Outcome labels remain research/backtest-only and must never leak into live inference.
 
 ## Promotion gate
 
-Do not promote Entry Strength into production ranking until:
-
-1. PPP semantics/provenance are canonical and stable;
-2. CQ shadow outcomes are measured against current baselines;
-3. cross-market CQ v1 inputs are added only from validated upstream market observations;
-4. evidence supports a ranking promotion;
-5. the production contract is explicitly versioned and reviewed.
+Do not promote Entry Strength into production ranking until PPP semantics are stable, shadow outcomes beat or improve current baselines, cross-market CQ inputs are validated upstream observations, evidence supports promotion, and the production contract is explicitly versioned/reviewed.
 
 ## Safety invariants
 
