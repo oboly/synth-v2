@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.research.cq_v1_pit_extractor_v1 import (
@@ -14,6 +15,7 @@ from src.research.cq_v1_pit_extractor_v1 import (
     fetch_primary_sector_code,
     fetch_sector_rotation,
 )
+from src.research.run_cq_v1_pit_extractor_v1 import reconcile_jsonl
 
 REGISTRY = Path("config/research/cq_v1_pit_extractor_v1.yaml")
 
@@ -118,3 +120,17 @@ def test_coverage_summary_reports_same_population_denominator() -> None:
         "sector_coverage": 0.666667,
         "joint_coverage": 0.333333,
     }
+
+
+def test_resume_truncates_extra_or_malformed_uncheckpointed_tail(tmp_path: Path) -> None:
+    path = tmp_path / "features.jsonl"
+    path.write_text('{"shadow_id":1}\n{"shadow_id":2}\n{"shadow_id":', encoding="utf-8")
+    reconcile_jsonl(path, {"processed": 2, "last_shadow_id": 2})
+    assert path.read_text(encoding="utf-8") == '{"shadow_id":1}\n{"shadow_id":2}\n'
+
+
+def test_resume_fails_if_checkpointed_row_is_malformed(tmp_path: Path) -> None:
+    path = tmp_path / "features.jsonl"
+    path.write_text('{"shadow_id":1}\n{"shadow_id":', encoding="utf-8")
+    with pytest.raises(ValueError, match="checkpointed JSONL line 2 is malformed"):
+        reconcile_jsonl(path, {"processed": 2, "last_shadow_id": 2})
