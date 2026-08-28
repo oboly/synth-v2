@@ -96,6 +96,27 @@ def evaluate_horizon(
         for candle in ordered
         if observation_asof < ensure_utc(candle.close_ts_utc) <= horizon_end
     ]
+
+    # The runner supplies canonical candles through the maximum configured horizon.
+    # A shorter horizon is complete only after the available candle stream has
+    # demonstrably advanced to or beyond that horizon end. Candles after this
+    # horizon may prove coverage, but their prices are never used in its labels.
+    observed_through = (
+        ensure_utc(ordered[-1].close_ts_utc) if ordered else None
+    )
+    if observed_through is None or observed_through < horizon_end:
+        return HorizonOutcome(
+            horizon=horizon.label,
+            horizon_end_ts_utc=horizon_end,
+            base_price=base,
+            future_close_price=None,
+            future_candle_count=len(future),
+            forward_return_pct=None,
+            mfe_pct=None,
+            mae_pct=None,
+            status="INSUFFICIENT_HORIZON_COVERAGE",
+        )
+
     if not future:
         return HorizonOutcome(
             horizon=horizon.label,
