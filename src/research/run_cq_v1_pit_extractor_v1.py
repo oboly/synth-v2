@@ -6,6 +6,7 @@ import signal
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ _STOP_REQUESTED = False
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")
     raise TypeError(type(value).__name__)
 
 
