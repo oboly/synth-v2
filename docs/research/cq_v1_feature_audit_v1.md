@@ -25,15 +25,13 @@ market-only
 account-agnostic
 canonical persisted owner exists
 observation timestamp exists
-model/version provenance exists
+exact source model version is frozen
+same-venue identity is enforceable
 point-in-time row can be resolved at or before CQ observation as-of
-source venue equals CQ observation venue
 future/current-truth fallback is unnecessary
 ```
 
 If any item is missing, the candidate remains unavailable rather than being recomputed ad hoc inside CQ.
-
-Cross-venue fallback is forbidden. Source identity must remain pinned to the same venue as the CQ shadow observation.
 
 ## Eligible family 1: Market Rotation Pressure
 
@@ -44,18 +42,27 @@ market_rotation_pressure_snapshot_v1
 market_rotation_pressure_observation_v1
 ```
 
-Both use `as_of_ts_utc`, `venue`, and `model_version`. The aggregate snapshot exposes breadth and market-direction context, while the per-asset observation exposes asset-level rotation pressure.
-
-Frozen source identities are:
+Frozen source model version:
 
 ```text
-aggregate: venue + as_of_ts_utc + model_version
-per asset: venue + asset_id + as_of_ts_utc + model_version
+model_version = 1.0
 ```
 
-The extractor must match `venue` to the CQ observation before selecting the latest eligible row at or before the observation timestamp.
+Both sources use `as_of_ts_utc` and `model_version`. The aggregate snapshot exposes breadth and market-direction context, while the per-asset observation exposes asset-level rotation pressure.
 
-Eligible aggregate fields are frozen in the registry and include market score, positive/negative breadth ratios, acceleration/concentration/confirmation states, market direction, evidence-light count and eligible-asset count.
+### Venue identity
+
+The aggregate row has its own `venue`. The per-asset table does **not** have a venue column, so its venue is resolved only through its parent snapshot:
+
+```text
+market_rotation_pressure_observation_v1.pressure_snapshot_id
+  -> market_rotation_pressure_snapshot_v1.pressure_snapshot_id
+  -> market_rotation_pressure_snapshot_v1.venue
+```
+
+That resolved venue must equal the CQ observation venue. Cross-venue fallback is forbidden.
+
+Eligible aggregate fields include market score, positive/negative breadth ratios, acceleration/concentration/confirmation states, market direction, evidence-light count and eligible-asset count.
 
 Eligible per-asset fields are `score_total`, `pressure_state`, `phase_state`, and `raw_market_relative_pct`.
 
@@ -75,9 +82,18 @@ Canonical persisted table:
 sector_rotation_snapshot
 ```
 
+Frozen source identity:
+
+```text
+model_version = sector-rotation-v1.0.0
+window_code = 4h
+venue = CQ observation venue
+```
+
 Replay identity/provenance includes:
 
 ```text
+sector_code
 venue
 window_code
 asof_ts_utc
@@ -86,23 +102,11 @@ input_hash
 taxonomy_versions_json
 ```
 
-### Frozen sector window
-
-Registry v1.0.0 fixes sector context to:
-
-```text
-window_code = 4h
-```
-
-This matches the canonical 4h setup context used by local CQ/selection quality and prevents Phase 2C from selecting whichever sector window happens to look best. Arbitrary window selection or cross-window fallback is forbidden.
-
-The source `venue` must equal the CQ observation venue. Cross-venue fallback is forbidden.
-
-The table exposes deterministic sector-level rotation, participation, confidence, persistence, volume-share and BTC/ETH benchmark-relative fields.
+Arbitrary window selection and cross-venue fallback are forbidden in registry v1.0.0.
 
 ### Symbol-to-sector point-in-time requirement
 
-Sector context may be attached to a CQ observation only through canonical membership history:
+Sector context may be attached to a CQ observation only through canonical membership history satisfying:
 
 ```text
 asset_cluster_membership.valid_from_ts_utc <= observation_asof
@@ -111,6 +115,15 @@ AND
   valid_to_ts_utc IS NULL
   OR observation_asof < valid_to_ts_utc
 )
+AND
+membership_type = PRIMARY
+```
+
+If multiple valid PRIMARY rows exist, selection is deterministic:
+
+```text
+ORDER BY membership_weight DESC, sector_code ASC
+LIMIT 1
 ```
 
 No current sector label may be backfilled into historical observations.
@@ -139,18 +152,19 @@ For every CQ shadow observation:
 
 ```text
 feature_row.asof <= cq_observation.asof
-feature_row.venue = cq_observation.venue
-sector_rotation.window_code = 4h
+feature_source.venue = cq_observation.venue
+feature_source.model_version = frozen registry version
 ```
 
-The extractor must select the latest eligible canonical row at or before the observation timestamp after applying the frozen identity constraints. It must never use:
+The extractor must select the latest eligible canonical row at or before the observation timestamp. It must never use:
 
 ```text
 future rows
-cross-venue fallback
-arbitrary sector-window selection
 latest-now rows as historical fallback
 later taxonomy membership
+a different venue
+a later/backfilled model version
+an arbitrary sector window
 future outcome labels
 later market regime/breadth state
 ```
@@ -165,8 +179,10 @@ Version 1.0.0 freezes only:
 eligible feature families
 canonical source tables
 allowed source fields
-same-venue matching
+same-venue source identity
+source model versions
 sector window = 4h
+PRIMARY membership selection and tie-break
 point-in-time source rules
 explicit exclusions
 ```
@@ -185,7 +201,7 @@ Those belong in the next preregistered slice and must be frozen before final hol
 
 ## Next slice
 
-Phase 2C should build a replay-safe extractor over the frozen eligible inputs, enforce same-venue matching and the fixed 4h sector window, measure feature availability/missingness on the CQ-shadow population, and only then preregister a small deterministic CQ v1 candidate formula.
+Phase 2C should build a replay-safe extractor over the frozen eligible inputs, measure feature availability/missingness on the CQ-shadow population, and only then preregister a small deterministic CQ v1 candidate formula.
 
 The same eligible observation set must ultimately be used when comparing CQ v0 vs CQ v1 so missingness cannot manufacture an apparent improvement.
 
