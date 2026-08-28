@@ -27,10 +27,13 @@ canonical persisted owner exists
 observation timestamp exists
 model/version provenance exists
 point-in-time row can be resolved at or before CQ observation as-of
+source venue equals CQ observation venue
 future/current-truth fallback is unnecessary
 ```
 
 If any item is missing, the candidate remains unavailable rather than being recomputed ad hoc inside CQ.
+
+Cross-venue fallback is forbidden. Source identity must remain pinned to the same venue as the CQ shadow observation.
 
 ## Eligible family 1: Market Rotation Pressure
 
@@ -41,7 +44,16 @@ market_rotation_pressure_snapshot_v1
 market_rotation_pressure_observation_v1
 ```
 
-Both use `as_of_ts_utc` and `model_version`. The aggregate snapshot exposes breadth and market-direction context, while the per-asset observation exposes asset-level rotation pressure.
+Both use `as_of_ts_utc`, `venue`, and `model_version`. The aggregate snapshot exposes breadth and market-direction context, while the per-asset observation exposes asset-level rotation pressure.
+
+Frozen source identities are:
+
+```text
+aggregate: venue + as_of_ts_utc + model_version
+per asset: venue + asset_id + as_of_ts_utc + model_version
+```
+
+The extractor must match `venue` to the CQ observation before selecting the latest eligible row at or before the observation timestamp.
 
 Eligible aggregate fields are frozen in the registry and include market score, positive/negative breadth ratios, acceleration/concentration/confirmation states, market direction, evidence-light count and eligible-asset count.
 
@@ -66,11 +78,25 @@ sector_rotation_snapshot
 Replay identity/provenance includes:
 
 ```text
+venue
+window_code
 asof_ts_utc
 model_version
 input_hash
 taxonomy_versions_json
 ```
+
+### Frozen sector window
+
+Registry v1.0.0 fixes sector context to:
+
+```text
+window_code = 4h
+```
+
+This matches the canonical 4h setup context used by local CQ/selection quality and prevents Phase 2C from selecting whichever sector window happens to look best. Arbitrary window selection or cross-window fallback is forbidden.
+
+The source `venue` must equal the CQ observation venue. Cross-venue fallback is forbidden.
 
 The table exposes deterministic sector-level rotation, participation, confidence, persistence, volume-share and BTC/ETH benchmark-relative fields.
 
@@ -113,12 +139,16 @@ For every CQ shadow observation:
 
 ```text
 feature_row.asof <= cq_observation.asof
+feature_row.venue = cq_observation.venue
+sector_rotation.window_code = 4h
 ```
 
-The extractor must select the latest eligible canonical row at or before the observation timestamp. It must never use:
+The extractor must select the latest eligible canonical row at or before the observation timestamp after applying the frozen identity constraints. It must never use:
 
 ```text
 future rows
+cross-venue fallback
+arbitrary sector-window selection
 latest-now rows as historical fallback
 later taxonomy membership
 future outcome labels
@@ -135,6 +165,8 @@ Version 1.0.0 freezes only:
 eligible feature families
 canonical source tables
 allowed source fields
+same-venue matching
+sector window = 4h
 point-in-time source rules
 explicit exclusions
 ```
@@ -153,7 +185,7 @@ Those belong in the next preregistered slice and must be frozen before final hol
 
 ## Next slice
 
-Phase 2C should build a replay-safe extractor over the frozen eligible inputs, measure feature availability/missingness on the CQ-shadow population, and only then preregister a small deterministic CQ v1 candidate formula.
+Phase 2C should build a replay-safe extractor over the frozen eligible inputs, enforce same-venue matching and the fixed 4h sector window, measure feature availability/missingness on the CQ-shadow population, and only then preregister a small deterministic CQ v1 candidate formula.
 
 The same eligible observation set must ultimately be used when comparing CQ v0 vs CQ v1 so missingness cannot manufacture an apparent improvement.
 
