@@ -7,6 +7,7 @@ from src.decision_gate.automatic_exit_gate_v1 import (
     REASON_ACCOUNT_EVIDENCE_STALE,
     REASON_ACCOUNT_DISABLED,
     REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT,
+    REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE,
     REASON_BLOCKING_CONFLICT,
     REASON_CANDIDATE_EVIDENCE_STALE,
     REASON_EXECUTION_PERMISSION_DISABLED,
@@ -333,6 +334,44 @@ def test_unsupported_account_mode_is_non_actionable() -> None:
     for mode in ("LIVE", "Paper", "demo", "", "sandbox"):
         result = _evaluate(account_mode=mode)
         assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE)
+
+
+def test_live_readonly_with_consistent_flag_is_rejected_as_not_execution_eligible() -> None:
+    """Issue #551: live_readonly (real broker, read-only) with the canonically
+    consistent live_trading_enabled=False must be rejected distinctly from
+    ACCOUNT_MODE_EVIDENCE_INCONSISTENT -- the pairing itself is valid, the
+    account_mode is just permanently execution-ineligible."""
+    result = _evaluate(account_mode="live_readonly", live_trading_enabled=False)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE)
+
+
+def test_live_readonly_with_inconsistent_flag_is_still_evidence_inconsistent() -> None:
+    """live_readonly with live_trading_enabled=True is invalid evidence, not
+    merely execution-ineligible -- ACCOUNT_MODE_EVIDENCE_INCONSISTENT must
+    still take priority."""
+    result = _evaluate(account_mode="live_readonly", live_trading_enabled=True)
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT)
+
+
+def test_live_readonly_never_reaches_live_permission_evaluation() -> None:
+    """Regression: live_readonly must fail closed before the LIVE
+    permission-evaluation branch is ever consulted, even if a GRANTED
+    evaluation is supplied by a misbehaving caller."""
+    result = _evaluate(
+        account_mode="live_readonly",
+        live_trading_enabled=False,
+        automatic_exit_live_permission_evaluation=_live_permission(),
+    )
+    assert (result.state, result.reason_code) == (STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE)
+
+
+def test_paper_and_live_modes_are_unaffected_by_the_account_mode_split() -> None:
+    """Regression: paper approval and live rejection-without-permission
+    behavior are byte-for-byte unchanged after the #551 account_mode split."""
+    paper_result = _evaluate(account_mode="paper", live_trading_enabled=False)
+    assert paper_result.state == STATE_APPROVED
+    live_result = _evaluate(account_mode="live", live_trading_enabled=True)
+    assert (live_result.state, live_result.reason_code) == (STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED)
 
 
 def test_live_mode_still_enforces_manual_lock_and_risk_protection_reduce_exit() -> None:

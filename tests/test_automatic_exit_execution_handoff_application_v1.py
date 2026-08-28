@@ -351,3 +351,12 @@ def test_live_account_mode_maps_to_live_executor_mode() -> None:
 def test_unsupported_account_mode_fails_closed() -> None:
     with pytest.raises(AutomaticExitExecutorModeError, match="UNSUPPORTED_ACCOUNT_MODE_FOR_EXECUTOR_HANDOFF"):
         resolve_automatic_exit_executor_mode_v1("sandbox")
+
+
+def test_live_readonly_account_mode_never_resolves_to_any_executor_mode() -> None:
+    """Issue #551: live_readonly (real broker, read-only) must fail closed
+    before any executor mode is derived -- it is deliberately absent from
+    the account_mode -> executor_mode map, and this asserts the explicit
+    rejection reason rather than relying on an accidental KeyError."""
+    with pytest.raises(AutomaticExitExecutorModeError, match="ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"):
+        resolve_automatic_exit_executor_mode_v1("live_readonly")

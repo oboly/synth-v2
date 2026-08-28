@@ -328,10 +328,17 @@ Blocker A (the #392 -> #206 executor handoff adapter) remains the only path
 by which a Gate-1 `APPROVED` LIVE decision could ever reach Gate 2 at all,
 and blocker A is not implemented by this section.
 
-**Supported account modes**: exactly `"paper"` or `"live"`
-(`SUPPORTED_ACCOUNT_MODES`). Any other value is `NON_ACTIONABLE`
-(`REASON_UNSUPPORTED_ACCOUNT_MODE`); this gate never lowercases, guesses, or
-canonicalizes a malformed mode.
+**Supported account modes**: exactly `"paper"`, `"live_readonly"`, or
+`"live"` (`src.account.account_mode_contract_v1.SUPPORTED_ACCOUNT_MODES`,
+see `docs/architecture/account_mode_contract_v1.md`). Any other value is
+`NON_ACTIONABLE` (`REASON_UNSUPPORTED_ACCOUNT_MODE`); this gate never
+lowercases, guesses, or canonicalizes a malformed mode. `live_readonly` is a
+real broker account used only as a read-only wallet/position snapshot
+source; it requires `live_trading_enabled=False` (same as `paper`) and is
+rejected before the LIVE evidence checks below with
+`REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE` -- distinct from
+`REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT`, since the pairing itself is
+canonically consistent, just permanently execution-ineligible.
 
 **LIVE evidence, all required together, none alone sufficient**:
 

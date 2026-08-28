@@ -60,12 +60,19 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
+from src.account.account_mode_contract_v1 import (
+    ACCOUNT_MODE_LIVE,
+    ACCOUNT_MODE_LIVE_READONLY,
+    ACCOUNT_MODE_PAPER,
+    SUPPORTED_ACCOUNT_MODES,
+)
+
 EVIDENCE_CONTRACT_VERSION: Final[str] = "1"
 SUPPORTED_EVIDENCE_CONTRACT_VERSIONS: Final[frozenset[str]] = frozenset({EVIDENCE_CONTRACT_VERSION})
 
-ACCOUNT_MODE_PAPER: Final[str] = "paper"
-ACCOUNT_MODE_LIVE: Final[str] = "live"
-SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({ACCOUNT_MODE_PAPER, ACCOUNT_MODE_LIVE})
+# Issue #551 account-mode split: canonical account_mode vocabulary
+# (paper / live_readonly / live) is shared from
+# src.account.account_mode_contract_v1 rather than redefined here.
 
 DEFAULT_MAX_EVIDENCE_AGE_SECONDS: Final[int] = 15 * 60
 
@@ -169,12 +176,15 @@ def validate_automatic_buy_account_allocation_evidence_v1(
     elif value.trading_account_balance_snapshot_id is not None and value.trading_account_balance_snapshot_id <= 0:
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_IDENTITY")
 
-    # Deliberately NOT rejected here: `account_mode == "live"` with
-    # `live_trading_enabled == False` is a normal, expected, faithfully-bound
-    # persisted `trading_account` state (e.g. production account 3), not
-    # corrupt evidence. This projection's job is to bind that fact exactly as
-    # persisted; automatic_buy_gate_v1 owns the decision to reject it
-    # (REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT), with an audited outcome
+    # Deliberately NOT rejected here: `account_mode` / `live_trading_enabled`
+    # agreement (e.g. `account_mode == "live"` with `live_trading_enabled ==
+    # False`, or the canonical `live_readonly` real-broker-but-read-only
+    # pairing) is a normal, expected, faithfully-bound persisted
+    # `trading_account` state, not corrupt evidence. This projection's job is
+    # to bind that fact exactly as persisted; automatic_buy_gate_v1 owns the
+    # decision to reject an inconsistent or execution-ineligible pairing
+    # (REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT /
+    # REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE), with an audited outcome
     # rather than a hard evidence-loading failure.
 
     if (

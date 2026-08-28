@@ -48,6 +48,18 @@ CANARY_READY
 LIVE_AUTHORIZATION_REQUIRED
 ```
 
+`PRECHECK`'s account_mode / `live_trading_enabled` consistency check and
+execution-eligibility check are not special-cased in this controller; both
+are shared from the canonical `src.account.account_mode_contract_v1` model
+(`docs/architecture/account_mode_contract_v1.md`) also used by
+`automatic_exit_gate_v1`, `automatic_buy_gate_v1`, and both execution-handoff
+mode resolvers. A `trading_account` row with `account_mode="live_readonly"`
+(real broker, read-only, never execution-eligible) blocks `PRECHECK` with
+`ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE`, distinct from
+`ACCOUNT_MODE_EVIDENCE_INCONSISTENT` (which means the account_mode /
+live_trading_enabled pairing itself is invalid, not merely
+execution-ineligible).
+
 Phase 1 **never advances past `LIVE_AUTHORIZATION_REQUIRED`**. There is no
 flag, mode, or code path in this module that submits an order, mutates the
 kill switch, provisions a credential, grants LIVE authority, applies a

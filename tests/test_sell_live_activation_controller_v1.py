@@ -475,6 +475,42 @@ def test_precheck_blocks_on_inconsistent_account_mode(monkeypatch: pytest.Monkey
     assert result["reason_code"] == "ACCOUNT_MODE_EVIDENCE_INCONSISTENT"
 
 
+def test_precheck_blocks_live_readonly_as_not_execution_eligible(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #551: account_mode=live_readonly with the canonically consistent
+    live_trading_enabled=0 must block PRECHECK with
+    ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE, distinct from
+    ACCOUNT_MODE_EVIDENCE_INCONSISTENT -- the pairing itself is valid, the
+    account is just permanently execution-ineligible. This is the exact
+    reason code accounts 2/3 will report once the (not-yet-applied) data
+    migration in docs/ops/trading_account_live_readonly_mode_migration_v1.md
+    is applied."""
+    account_row = {
+        "trading_account_id": 3, "account_mode": "live_readonly", "enabled": 1,
+        "live_trading_enabled": 0, "venue": "bitvavo",
+    }
+    config = _base_config(connection_factory=_connection_factory(account_row=account_row))
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "PRECHECK")
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"
+
+
+def test_precheck_blocks_live_readonly_with_inconsistent_flag_as_evidence_inconsistent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """live_readonly with live_trading_enabled=1 is invalid evidence, not
+    merely execution-ineligible."""
+    account_row = {
+        "trading_account_id": 3, "account_mode": "live_readonly", "enabled": 1,
+        "live_trading_enabled": 1, "venue": "bitvavo",
+    }
+    config = _base_config(connection_factory=_connection_factory(account_row=account_row))
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "PRECHECK")
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "ACCOUNT_MODE_EVIDENCE_INCONSISTENT"
+
+
 def test_precheck_blocks_on_deployed_sha_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
     config = _base_config(expected_deployed_sha="0000000000000000000000000000000000000")
     artifact = _run(config, monkeypatch)

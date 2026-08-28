@@ -13,6 +13,14 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
+from src.account.account_mode_contract_v1 import (
+    ACCOUNT_MODE_LIVE,
+    ACCOUNT_MODE_LIVE_READONLY,
+    ACCOUNT_MODE_PAPER,
+    SUPPORTED_ACCOUNT_MODES,
+    is_account_mode_live_trading_enabled_consistent,
+    is_execution_eligible_account_mode,
+)
 from src.decision_gate.account_protection_contract_v1 import (
     ACTION_BUY,
     AccountProtectionContractError,
@@ -40,9 +48,9 @@ STATE_APPROVED: Final[str] = "APPROVED"
 STATE_DENIED: Final[str] = "DENIED"
 STATE_NON_ACTIONABLE: Final[str] = "NON_ACTIONABLE"
 SUPPORTED_CANDIDATE_ACTIONS: Final[frozenset[str]] = frozenset({"ENTER", "RE_ENTER"})
-ACCOUNT_MODE_PAPER: Final[str] = "paper"
-ACCOUNT_MODE_LIVE: Final[str] = "live"
-SUPPORTED_ACCOUNT_MODES: Final[frozenset[str]] = frozenset({ACCOUNT_MODE_PAPER, ACCOUNT_MODE_LIVE})
+# Issue #551 account-mode split: canonical account_mode vocabulary and its
+# live_trading_enabled agreement/execution-eligibility semantics are shared
+# from src.account.account_mode_contract_v1 rather than redefined here.
 
 REASON_OK: Final[str] = "OK"
 REASON_INVALID_CANDIDATE: Final[str] = "INVALID_AUTOMATIC_BUY_CANDIDATE"
@@ -59,6 +67,7 @@ REASON_ACCOUNT_DISABLED: Final[str] = "ACCOUNT_DISABLED"
 REASON_EXECUTION_PERMISSION_DISABLED: Final[str] = "AUTOMATIC_BUY_EXECUTION_PERMISSION_DISABLED"
 REASON_UNSUPPORTED_ACCOUNT_MODE: Final[str] = "UNSUPPORTED_ACCOUNT_MODE"
 REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT: Final[str] = "ACCOUNT_MODE_LIVE_FLAG_EVIDENCE_INCONSISTENT"
+REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE: Final[str] = "ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE"
 REASON_LIVE_EXECUTION_NOT_GRANTED: Final[str] = "LIVE_EXECUTION_NOT_GRANTED"
 REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH: Final[str] = "AUTOMATIC_BUY_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH"
 REASON_BLOCKING_CONFLICT: Final[str] = "BLOCKING_BUY_ORDER_OR_RESERVATION_CONFLICT"
@@ -73,8 +82,10 @@ class AutomaticBuyGateContextV1:
     """Fresh account-owned facts for one exact automatic-BUY candidate.
 
     ``account_mode`` and ``live_trading_enabled`` are evidence, not mutations.
-    PAPER requires ``live_trading_enabled=False``. LIVE requires
-    ``live_trading_enabled=True`` plus an exact typed GRANTED
+    See ``src.account.account_mode_contract_v1`` for the canonical three-mode
+    vocabulary. PAPER and LIVE_READONLY both require
+    ``live_trading_enabled=False`` and are never execution-eligible. LIVE
+    requires ``live_trading_enabled=True`` plus an exact typed GRANTED
     ``automatic_buy_live_permission_evaluation``. This establishes the
     software contract while production may remain non-live until a separately
     authorized activation change sets those facts.
@@ -216,9 +227,16 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
 
     if context.account_mode not in SUPPORTED_ACCOUNT_MODES:
         return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate)
-    if context.account_mode == ACCOUNT_MODE_PAPER:
-        if context.live_trading_enabled:
-            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+    if not is_account_mode_live_trading_enabled_consistent(context.account_mode, context.live_trading_enabled):
+        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+    if not is_execution_eligible_account_mode(context.account_mode):
+        # paper falls through to APPROVED via the existing PAPER runtime
+        # lane below; live_readonly (real broker, read-only) must never
+        # reach the free-quote-balance/LIVE-permission branch or executor
+        # LIVE routing, so it is rejected here explicitly and distinctly
+        # from ACCOUNT_MODE_EVIDENCE_INCONSISTENT.
+        if context.account_mode == ACCOUNT_MODE_LIVE_READONLY:
+            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE, candidate)
     else:
         if _stale(
             context.free_quote_balance_observed_ts_utc,
@@ -226,8 +244,6 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             context.max_free_quote_balance_age_seconds,
         ):
             return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate)
-        if not context.live_trading_enabled:
-            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
         live_permission = context.automatic_buy_live_permission_evaluation
         if live_permission is None:
             return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
