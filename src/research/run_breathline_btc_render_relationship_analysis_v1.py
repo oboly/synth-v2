@@ -51,7 +51,7 @@ from src.research.breathline_btc_alt_relationship_registry_v1 import (
 )
 
 RUNNER_NAME = "breathline_btc_render_relationship_analysis_v1"
-RUNNER_VERSION = "1.0.3"
+RUNNER_VERSION = "1.0.4"
 SOURCE_RUNNER_NAME = "bullish_breathline_btc_render_canonical_4h_v1"
 DEFAULT_OUT_ROOT = Path("data/research/breathline_btc_render_relationship_analysis_v1")
 REGISTRY_PATH = Path("src/research/breathline_btc_alt_relationship_registry_v1.py")
@@ -666,6 +666,12 @@ def build_lane_b_rows(
             feature_as_of = confirmed_at_ts(render, checkpoint)
             if feature_as_of is None:
                 continue
+            # Hard PIT boundary: the evaluated lifecycle outcome must still be
+            # future information at this checkpoint. Contemporaneous/earlier
+            # outcomes are not prediction labels and are excluded.
+            if outcome_as_of <= feature_as_of:
+                continue
+
             latest_main = max(
                 (ts for ts in btc_events["main_pulse"] if ts <= feature_as_of),
                 default=None,
