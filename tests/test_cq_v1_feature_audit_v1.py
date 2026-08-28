@@ -31,6 +31,7 @@ def test_point_in_time_rules_fail_closed() -> None:
         "latest_eligible_row_at_or_before_observation_asof": True,
         "future_rows_forbidden": True,
         "current_truth_fallback_forbidden": True,
+        "same_venue_as_cq_observation_required": True,
     }
 
 
@@ -41,22 +42,42 @@ def test_market_rotation_pressure_sources_and_semantics_are_frozen() -> None:
     assert family["aggregate_table"] == "market_rotation_pressure_snapshot_v1"
     assert family["per_asset_table"] == "market_rotation_pressure_observation_v1"
     assert family["time_field"] == "as_of_ts_utc"
+    assert family["venue_field"] == "venue"
     assert family["version_field"] == "model_version"
+    assert family["source_selection"] == {"same_venue_as_cq_observation": True}
+    assert family["aggregate_identity_fields"] == ["venue", "as_of_ts_utc", "model_version"]
+    assert family["per_asset_identity_fields"] == [
+        "venue",
+        "asset_id",
+        "as_of_ts_utc",
+        "model_version",
+    ]
     assert "positive_breadth_ratio" in family["aggregate_fields"]
     assert "negative_breadth_ratio" in family["aggregate_fields"]
     assert "score_total" in family["per_asset_fields"]
     assert "raw_market_relative_pct" in family["per_asset_fields"]
     assert any("not BTC-relative" in note for note in family["notes"])
+    assert any("cross-venue fallback is forbidden" in note for note in family["notes"])
 
 
-def test_sector_rotation_requires_point_in_time_membership() -> None:
+def test_sector_rotation_requires_point_in_time_membership_and_fixed_source_identity() -> None:
     family = load_registry()["eligible_feature_families"]["sector_rotation"]
     assert family["status"] == "ELIGIBLE_WITH_PIT_MEMBERSHIP"
     assert family["owner_capability"] == "sector_rotation_snapshot"
     assert family["table"] == "sector_rotation_snapshot"
     assert family["time_field"] == "asof_ts_utc"
+    assert family["venue_field"] == "venue"
+    assert family["window_field"] == "window_code"
     assert family["version_field"] == "model_version"
-    assert family["evidence_identity_fields"] == ["input_hash", "taxonomy_versions_json"]
+    assert family["source_selection"]["same_venue_as_cq_observation"] is True
+    assert family["source_selection"]["window_code"] == "4h"
+    assert "arbitrary window selection is forbidden" in family["source_selection"]["rationale"]
+    assert family["evidence_identity_fields"] == [
+        "venue",
+        "window_code",
+        "input_hash",
+        "taxonomy_versions_json",
+    ]
     membership = family["membership_contract"]
     assert membership["table"] == "asset_cluster_membership"
     assert membership["valid_from_field"] == "valid_from_ts_utc"
@@ -64,6 +85,7 @@ def test_sector_rotation_requires_point_in_time_membership() -> None:
     assert "relative_strength_vs_btc" in family["fields"]
     assert "relative_strength_vs_eth" in family["fields"]
     assert any("sector-level only" in note for note in family["notes"])
+    assert any("cross-venue fallback" in note for note in family["notes"])
 
 
 def test_unowned_or_unpromoted_candidates_remain_excluded() -> None:
