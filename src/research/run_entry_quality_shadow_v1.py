@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import time
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,11 +24,13 @@ from src.selection.run_selection_engine_v2 import (
 from src.selection.selection_engine_v2 import load_selection_config, rank_candidates
 
 
+RUNNER_NAME = "entry_quality_shadow_v1"
 CQ_MODEL_VERSION = "cq_shadow_v1"
+DEFAULT_OUTPUT_CSV = "data/research/entry_quality_shadow_v1/entry_quality_shadow_v1.csv"
 ALLOWED_PPP_KINDS = {"PLANNING_PPP", "ACTIONABLE_PPP"}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute CQ / Entry Strength shadow observations without changing live ranking"
     )
@@ -36,9 +39,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=250)
     parser.add_argument("--asset-id", type=int, default=None)
     parser.add_argument("--ppp-csv", default=None)
-    parser.add_argument("--out-csv", default=None)
+    parser.add_argument("--out-csv", default=DEFAULT_OUTPUT_CSV)
     parser.add_argument("--write-db", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _load_ppp_csv(path: str | None) -> dict[str, dict[str, str]]:
@@ -68,7 +71,6 @@ def _load_ppp_csv(path: str | None) -> dict[str, dict[str, str]]:
             if not normalized["ppp_pct"] or not normalized["ppp_source_ref"]:
                 raise ValueError(f"PPP CSV row for {symbol} is missing value or provenance")
 
-            # Fail closed on accidental Planning/Actionable mixing in one dataset.
             kinds_seen.add(ppp_kind)
             if len(kinds_seen) > 1:
                 raise ValueError(
@@ -250,9 +252,29 @@ def write_csv(path: str, rows: list[dict[str, Any]]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    conn = get_db_connection()
+    mode = "shadow-db" if args.write_db else "shadow-csv"
+    started = time.perf_counter()
+    print(
+        f"STARTED runner={RUNNER_NAME} mode={mode} scope=selection-candidates workers=1",
+        flush=True,
+    )
+    print(
+        "SAFETY research_only=1 shadow_only=1 broker_private_calls=0 broker_writes=0 "
+        "order_submission=0 live_orders=0 selection_ranking_changes=0 "
+        "decision_gate=none execution_planner=none executor=none",
+        flush=True,
+    )
+
+    conn = None
     try:
+        conn = get_db_connection()
         config = load_selection_config(args.config)
+
+        phase_started = time.perf_counter()
+        print(
+            f"PHASE_START name=fetch_selection_candidates venue={args.venue} limit={args.limit}",
+            flush=True,
+        )
         candidates = fetch_selection_candidates(
             conn,
             venue=args.venue,
@@ -260,34 +282,75 @@ def run(args: argparse.Namespace) -> int:
             limit=args.limit,
         )
         selection_rows = rank_candidates(candidates, config)
+        print(
+            f"PHASE_END name=fetch_selection_candidates candidates={len(candidates)} "
+            f"rows={len(selection_rows)} elapsed_s={time.perf_counter() - phase_started:.3f}",
+            flush=True,
+        )
+
+        phase_started = time.perf_counter()
+        print("PHASE_START name=build_shadow", flush=True)
         ppp_by_symbol = _load_ppp_csv(args.ppp_csv)
         rows = build_shadow_rows(
             selection_rows=selection_rows,
             ppp_by_symbol=ppp_by_symbol,
         )
+        populated = sum(row["entry_strength"] is not None for row in rows)
+        print(
+            f"PHASE_END name=build_shadow rows={len(rows)} entry_strength_populated={populated} "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+            flush=True,
+        )
 
-        if args.out_csv:
-            write_csv(args.out_csv, rows)
+        phase_started = time.perf_counter()
+        print(f"PHASE_START name=write_csv path={args.out_csv}", flush=True)
+        write_csv(args.out_csv, rows)
+        print(
+            f"PHASE_END name=write_csv rows={len(rows)} "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+            flush=True,
+        )
 
+        written = 0
         if args.write_db:
+            phase_started = time.perf_counter()
+            print("PHASE_START name=write_db table=research_entry_quality_shadow", flush=True)
             written = write_shadow_rows(conn, rows)
-            print(f"SHADOW_DB_ROWS_WRITTEN={written}")
-        else:
-            print("SHADOW_DB_ROWS_WRITTEN=0")
+            print(
+                f"PHASE_END name=write_db rows={written} "
+                f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+                flush=True,
+            )
 
-        print(f"SHADOW_ROWS={len(rows)}")
-        print(f"CQ_MODEL_VERSION={CQ_MODEL_VERSION}")
-        print(f"ENTRY_STRENGTH_POPULATED={sum(row['entry_strength'] is not None for row in rows)}")
-        print("PRODUCTION_RANKING_CHANGED=0")
-        return len(rows)
+        print(
+            f"FINISHED runner={RUNNER_NAME} mode={mode} rows={len(rows)} "
+            f"db_rows_written={written} csv={args.out_csv} "
+            f"entry_strength_populated={populated} production_ranking_changed=0 "
+            f"elapsed_s={time.perf_counter() - started:.3f}",
+            flush=True,
+        )
+        return 0
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(
+            f"FAILED runner={RUNNER_NAME} mode={mode} "
+            f"reason={type(exc).__name__}:{exc} db_writes=0 "
+            f"elapsed_s={time.perf_counter() - started:.3f}",
+            flush=True,
+        )
+        return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
-def main() -> None:
-    args = parse_args()
-    run(args)
+def main(argv: list[str] | None = None) -> int:
+    return run(parse_args(argv))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
