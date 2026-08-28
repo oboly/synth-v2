@@ -31,6 +31,7 @@ horizons = 1h, 4h, 24h
 base price = latest canonical candle close at or before observation as-of
 future labels = canonical candles strictly after observation as-of
 horizon end = inclusive
+complete horizon = available canonical candle stream has advanced to or beyond horizon end
 ```
 
 ## Observation identity
@@ -61,14 +62,17 @@ observation_asof < candle.close_ts_utc <= horizon_end
 
 A candle exactly at observation as-of may supply the base price, but may never be a future label.
 
-Missing base or future candle coverage remains explicit:
+A horizon may be marked `COMPLETE` only when the available canonical candle stream has demonstrably reached or passed that horizon end. A later candle timestamp may prove coverage for a shorter horizon, but the later candle's prices/highs/lows are never used in that shorter horizon's return, MFE or MAE.
+
+Missing base, incomplete horizon coverage, or missing in-horizon future candles remains explicit:
 
 ```text
 INSUFFICIENT_BASE_PRICE
+INSUFFICIENT_HORIZON_COVERAGE
 INSUFFICIENT_FUTURE_CANDLES
 ```
 
-No interpolation or fabricated candles are allowed.
+This prevents recent observations from receiving truncated labels that would change merely because more of the originally requested horizon elapsed later. No interpolation or fabricated candles are allowed.
 
 ## Target outcomes
 
@@ -133,6 +137,7 @@ Hard rules:
 - all CQ features/evidence exist at or before observation as-of;
 - every outcome candle is strictly later than observation as-of;
 - no later regime, breadth, BTC state, lifecycle or target result may be used as CQ input;
+- a later candle timestamp may prove horizon coverage but its values cannot enter an earlier horizon's outcome;
 - the evaluator computes labels only, never market features;
 - target touch is unavailable until canonical target-price provenance exists.
 
@@ -150,6 +155,8 @@ production_ranking_changes=0
 decision_gate_changes=0
 execution_planner_changes=0
 executor_changes=0
+broker_private_calls=0
 broker_writes=0
 order_submission=0
+live_orders=0
 ```
