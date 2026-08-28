@@ -110,6 +110,8 @@ def write_checkpoint(
     output_dir: Path,
     *,
     registry: dict[str, Any],
+    venue: str,
+    asset_id: int | None,
     last_shadow_id: int | None,
     observations_completed: int,
     rows_written: int,
@@ -120,6 +122,8 @@ def write_checkpoint(
         "runner": RUNNER_NAME,
         "registry_name": registry["registry_name"],
         "registry_version": registry["registry_version"],
+        "venue": venue,
+        "asset_id": asset_id,
         "last_shadow_id": last_shadow_id,
         "observations_completed": observations_completed,
         "rows_written": rows_written,
@@ -130,6 +134,61 @@ def write_checkpoint(
         json.dumps(payload, indent=2, sort_keys=True, default=json_default) + "\n",
         encoding="utf-8",
     )
+
+
+def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL at line {line_number}") from exc
+            if not isinstance(row, dict):
+                raise ValueError(f"JSONL row {line_number} must be an object")
+            out.append(row)
+    return out
+
+
+def reconcile_output_to_checkpoint(rows_path: Path, checkpoint: dict[str, Any]) -> list[dict[str, Any]]:
+    expected_rows = int(checkpoint.get("rows_written") or 0)
+    expected_last_shadow_id = checkpoint.get("last_shadow_id")
+    if expected_rows < 0:
+        raise ValueError("Checkpoint rows_written must be non-negative")
+    rows = _read_existing_rows(rows_path)
+    if len(rows) < expected_rows:
+        raise ValueError(
+            f"Checkpoint/output mismatch: checkpoint rows_written={expected_rows}, JSONL rows={len(rows)}"
+        )
+    if len(rows) > expected_rows:
+        rows = rows[:expected_rows]
+        rows_path.parent.mkdir(parents=True, exist_ok=True)
+        with rows_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
+        print(
+            f"RESUME_RECONCILE action=truncate_jsonl from_rows={len(_read_existing_rows(rows_path)) if False else 'extra'} "
+            f"to_rows={expected_rows}",
+            flush=True,
+        )
+    if expected_rows == 0:
+        if expected_last_shadow_id is not None:
+            raise ValueError("Checkpoint last_shadow_id must be null when rows_written=0")
+        return rows
+    if expected_last_shadow_id is None:
+        raise ValueError("Checkpoint last_shadow_id is required when rows_written>0")
+    last_row_shadow_id = int(rows[-1]["shadow_id"])
+    if last_row_shadow_id != int(expected_last_shadow_id):
+        raise ValueError(
+            f"Checkpoint/output mismatch: checkpoint last_shadow_id={expected_last_shadow_id}, "
+            f"JSONL last_shadow_id={last_row_shadow_id}"
+        )
+    return rows
 
 
 def fetch_shadow_observations(
@@ -267,18 +326,7 @@ def _append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("a", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
-
-
-def _read_existing_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    out: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+        handle.flush()
 
 
 def write_summary(output_dir: Path, rows: list[dict[str, Any]], registry: dict[str, Any]) -> None:
@@ -314,7 +362,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"STARTED runner={RUNNER_NAME} mode=research-read-only", flush=True)
     print(
         "SAFETY research_only=1 market_only=1 db_writes=0 production_ranking_changes=0 "
-        "decision_gate=none execution_planner=none executor=none broker_writes=0 orders=0",
+        "decision_gate=none execution_planner=none executor=none broker_private_calls=0 "
+        "broker_writes=0 order_submission=0 live_orders=0",
         flush=True,
     )
     conn = None
@@ -328,6 +377,13 @@ def run(args: argparse.Namespace) -> int:
         if checkpoint is not None:
             if checkpoint.get("registry_version") != registry["registry_version"]:
                 raise ValueError("Checkpoint registry version mismatch")
+            if checkpoint.get("registry_name") != registry["registry_name"]:
+                raise ValueError("Checkpoint registry name mismatch")
+            if checkpoint.get("venue") != args.venue:
+                raise ValueError("Checkpoint venue mismatch")
+            if checkpoint.get("asset_id") != args.asset_id:
+                raise ValueError("Checkpoint asset_id mismatch")
+            reconcile_output_to_checkpoint(rows_path, checkpoint)
             after_shadow_id = checkpoint.get("last_shadow_id")
             last_shadow_id = None if after_shadow_id is None else int(after_shadow_id)
             observations_completed = int(checkpoint.get("observations_completed") or 0)
@@ -372,6 +428,8 @@ def run(args: argparse.Namespace) -> int:
             write_checkpoint(
                 output_dir,
                 registry=registry,
+                venue=args.venue,
+                asset_id=args.asset_id,
                 last_shadow_id=last_shadow_id,
                 observations_completed=observations_completed,
                 rows_written=rows_written,
@@ -390,6 +448,10 @@ def run(args: argparse.Namespace) -> int:
         )
 
         all_rows = _read_existing_rows(rows_path)
+        if len(all_rows) != rows_written:
+            raise ValueError(
+                f"Output row count mismatch: expected rows_written={rows_written}, JSONL rows={len(all_rows)}"
+            )
         print(f"PHASE_START name=write_summary output_dir={args.output_dir}", flush=True)
         phase_started = time.perf_counter()
         write_summary(output_dir, all_rows, registry)
@@ -402,6 +464,8 @@ def run(args: argparse.Namespace) -> int:
         write_checkpoint(
             output_dir,
             registry=registry,
+            venue=args.venue,
+            asset_id=args.asset_id,
             last_shadow_id=last_shadow_id,
             observations_completed=observations_completed,
             rows_written=rows_written,
