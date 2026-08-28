@@ -262,6 +262,36 @@ def test_lane_b_excludes_outcomes_not_strictly_after_checkpoint() -> None:
     assert rows == []
 
 
+def test_lane_b_gates_each_outcome_by_its_own_confirmation_time() -> None:
+    render = cycle(
+        "RENDER",
+        2,
+        start_day=5,
+        end_day=15,
+        recognition_day=8,
+        recognition_confirm_day=8.5,
+        ignition_day=9,
+        ignition_confirm_day=9.5,
+        main_day=8.75,
+        main_confirm_day=9.0,
+        extension_day=11,
+        extension_confirm_day=11.5,
+        outcome_as_of_day=15,
+        main_confirmed=True,
+        extension_confirmed=True,
+    )
+    rows = build_lane_b_rows([], [render], {"RENDER-2": "holdout"})
+    recognition = next(row for row in rows if row["checkpoint"] == "recognition")
+    ignition = next(row for row in rows if row["checkpoint"] == "ignition")
+
+    assert recognition["main_pulse_confirmed_label_eligible"] is True
+    assert ignition["main_pulse_confirmed_label_eligible"] is False
+    assert recognition["extension_confirmed_label_eligible"] is True
+    assert ignition["extension_confirmed_label_eligible"] is True
+    assert recognition["main_pulse_confirmed_label_available_at_ts"] == iso(BASE + timedelta(days=9.0))
+    assert ignition["extension_confirmed_label_available_at_ts"] == iso(BASE + timedelta(days=11.5))
+
+
 def test_no_btc_prior_uses_strictly_available_outcomes() -> None:
     prior = [
         cycle("RENDER", idx, start_day=idx, end_day=idx + 0.5, recognition_day=idx + 0.2, main_confirmed=idx % 2 == 0, extension_confirmed=False)
