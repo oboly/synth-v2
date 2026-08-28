@@ -14,7 +14,7 @@ point_in_time_rule:
   latest_eligible_row_at_or_before_observation_asof: true
   future_rows_forbidden: true
   current_truth_fallback_forbidden: true
-  same_venue_as_cq_observation_required: true
+  same_venue_required: true
 
 eligible_feature_families:
   market_rotation_pressure:
@@ -23,16 +23,19 @@ eligible_feature_families:
     aggregate_table: market_rotation_pressure_snapshot_v1
     per_asset_table: market_rotation_pressure_observation_v1
     time_field: as_of_ts_utc
-    venue_field: venue
     version_field: model_version
-    source_selection:
-      same_venue_as_cq_observation: true
+    frozen_model_version: "1.0"
+    venue_contract:
+      observation_venue_must_equal_cq_observation_venue: true
+      aggregate_venue_field: venue
+      per_asset_venue_resolution: pressure_snapshot_id -> market_rotation_pressure_snapshot_v1.pressure_snapshot_id -> venue
+      cross_venue_fallback_forbidden: true
     aggregate_identity_fields:
-      - venue
       - as_of_ts_utc
+      - venue
       - model_version
     per_asset_identity_fields:
-      - venue
+      - pressure_snapshot_id
       - asset_id
       - as_of_ts_utc
       - model_version
@@ -53,30 +56,38 @@ eligible_feature_families:
       - raw_market_relative_pct
     notes:
       - raw_market_relative_pct is market-relative, not BTC-relative
+      - per-asset venue is inherited only through its pressure_snapshot_id parent snapshot
       - source rows are append-only research market observations
-      - cross-venue fallback is forbidden
 
   sector_rotation:
     status: ELIGIBLE_WITH_PIT_MEMBERSHIP
     owner_capability: sector_rotation_snapshot
     table: sector_rotation_snapshot
     time_field: asof_ts_utc
-    venue_field: venue
-    window_field: window_code
     version_field: model_version
-    source_selection:
-      same_venue_as_cq_observation: true
-      window_code: 4h
-      rationale: CQ local setup quality is anchored on the canonical 4h setup context; arbitrary window selection is forbidden
-    evidence_identity_fields:
+    frozen_model_version: sector-rotation-v1.0.0
+    frozen_window_code: 4h
+    venue_contract:
+      source_venue_must_equal_cq_observation_venue: true
+      venue_field: venue
+      cross_venue_fallback_forbidden: true
+    source_identity_fields:
+      - sector_code
       - venue
       - window_code
+      - asof_ts_utc
+      - model_version
       - input_hash
       - taxonomy_versions_json
     membership_contract:
       table: asset_cluster_membership
       valid_from_field: valid_from_ts_utc
       valid_to_field: valid_to_ts_utc
+      membership_type_field: membership_type
+      required_membership_type: PRIMARY
+      tie_break:
+        - membership_weight DESC
+        - sector_code ASC
       rule: valid_from_ts_utc <= observation_asof and (valid_to_ts_utc is null or observation_asof < valid_to_ts_utc)
     fields:
       - rotation_score
@@ -96,8 +107,8 @@ eligible_feature_families:
       - participation_ratio
     notes:
       - relative_strength_vs_btc and relative_strength_vs_eth are sector-level only
-      - symbol-to-sector association must be resolved point-in-time from canonical membership history
-      - cross-venue fallback and arbitrary sector-window selection are forbidden
+      - symbol-to-sector association must use PRIMARY point-in-time membership with the frozen tie-break
+      - arbitrary sector windows are forbidden; only 4h is eligible in registry v1.0.0
 
 excluded_candidate_families:
   btc_structure_regime:
@@ -123,12 +134,13 @@ freeze_boundary:
   cq_v1_formula_frozen: false
   outcome_holdout_may_not_be_inspected_to_choose_additional_features: true
   newly_discovered_features_require_new_registry_version: true
+  source_model_versions_frozen: true
+  source_identity_dimensions_frozen: true
 
 required_next_slice:
   name: cq_v1_model_candidate_v1
   prerequisites:
     - implement replay-safe point-in-time feature extraction using only eligible families
-    - enforce same-venue source matching and frozen sector window 4h
     - report coverage and unavailable rates before assigning weights
     - freeze deterministic transformations and candidate weights before final holdout comparison
 
