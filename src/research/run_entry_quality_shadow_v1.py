@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from src.selection.selection_engine_v2 import load_selection_config, rank_candid
 
 
 CQ_MODEL_VERSION = "cq_shadow_v1"
+ALLOWED_PPP_KINDS = {"PLANNING_PPP", "ACTIONABLE_PPP"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +46,7 @@ def _load_ppp_csv(path: str | None) -> dict[str, dict[str, str]]:
         return {}
 
     out: dict[str, dict[str, str]] = {}
+    kinds_seen: set[str] = set()
     with Path(path).open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         required = {"symbol", "ppp_pct", "ppp_kind", "ppp_source_ref"}
@@ -56,7 +58,24 @@ def _load_ppp_csv(path: str | None) -> dict[str, dict[str, str]]:
             symbol = str(row.get("symbol") or "").strip()
             if not symbol:
                 continue
-            out[symbol] = {key: str(row.get(key) or "").strip() for key in required}
+
+            normalized = {key: str(row.get(key) or "").strip() for key in required}
+            ppp_kind = normalized["ppp_kind"]
+            if ppp_kind not in ALLOWED_PPP_KINDS:
+                raise ValueError(
+                    f"Unsupported ppp_kind={ppp_kind!r}; expected one of {sorted(ALLOWED_PPP_KINDS)}"
+                )
+            if not normalized["ppp_pct"] or not normalized["ppp_source_ref"]:
+                raise ValueError(f"PPP CSV row for {symbol} is missing value or provenance")
+
+            # Fail closed on accidental Planning/Actionable mixing in one dataset.
+            kinds_seen.add(ppp_kind)
+            if len(kinds_seen) > 1:
+                raise ValueError(
+                    "PPP CSV must contain exactly one PPP kind per run; do not mix Planning and Actionable PPP"
+                )
+
+            out[symbol] = normalized
     return out
 
 
@@ -67,23 +86,21 @@ def _ppp_for_symbol(
     if raw is None:
         return None, None, None
 
-    ppp_kind = raw.get("ppp_kind") or None
-    source_ref = raw.get("ppp_source_ref") or None
-    if not ppp_kind or not source_ref:
-        return None, ppp_kind, source_ref
+    ppp_kind = raw["ppp_kind"]
+    source_ref = raw["ppp_source_ref"]
+    return Decimal(raw["ppp_pct"]), ppp_kind, source_ref
 
-    ppp_text = raw.get("ppp_pct") or ""
-    if not ppp_text:
-        return None, ppp_kind, source_ref
 
-    return Decimal(ppp_text), ppp_kind, source_ref
+def _source_asof(row) -> str | datetime:
+    if row.asof_ts_utc is None:
+        raise ValueError(f"Missing canonical source as-of timestamp for {row.symbol}")
+    return row.asof_ts_utc
 
 
 def build_shadow_rows(
     *,
     selection_rows,
     ppp_by_symbol: dict[str, dict[str, str]],
-    run_asof_ts_utc: datetime,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
@@ -110,11 +127,12 @@ def build_shadow_rows(
                 "asset_id": row.asset_id,
                 "symbol": row.symbol,
                 "venue": row.venue,
-                "asof_ts_utc": run_asof_ts_utc,
+                "asof_ts_utc": _source_asof(row),
                 "selection_engine_name": DEFAULT_ENGINE_NAME,
                 "selection_engine_version": DEFAULT_ENGINE_VERSION,
                 "cq_model_version": shadow.model_version,
                 "trade_quality_score": row.trade_quality_score,
+                "selection_score": row.selection_score,
                 "timing_refinement_score": row.timing_refinement_score,
                 "quality_penalty": row.quality_penalty,
                 "quality_status_1d": row.quality_status_1d,
@@ -147,6 +165,7 @@ def write_shadow_rows(conn, rows: list[dict[str, Any]]) -> int:
         selection_engine_version,
         cq_model_version,
         trade_quality_score,
+        selection_score,
         timing_refinement_score,
         quality_penalty,
         quality_status_1d,
@@ -168,6 +187,7 @@ def write_shadow_rows(conn, rows: list[dict[str, Any]]) -> int:
         %(selection_engine_version)s,
         %(cq_model_version)s,
         %(trade_quality_score)s,
+        %(selection_score)s,
         %(timing_refinement_score)s,
         %(quality_penalty)s,
         %(quality_status_1d)s,
@@ -184,6 +204,7 @@ def write_shadow_rows(conn, rows: list[dict[str, Any]]) -> int:
     )
     ON DUPLICATE KEY UPDATE
         trade_quality_score = VALUES(trade_quality_score),
+        selection_score = VALUES(selection_score),
         timing_refinement_score = VALUES(timing_refinement_score),
         quality_penalty = VALUES(quality_penalty),
         quality_status_1d = VALUES(quality_status_1d),
@@ -240,11 +261,9 @@ def run(args: argparse.Namespace) -> int:
         )
         selection_rows = rank_candidates(candidates, config)
         ppp_by_symbol = _load_ppp_csv(args.ppp_csv)
-        run_asof = datetime.now(UTC)
         rows = build_shadow_rows(
             selection_rows=selection_rows,
             ppp_by_symbol=ppp_by_symbol,
-            run_asof_ts_utc=run_asof,
         )
 
         if args.out_csv:
