@@ -7,6 +7,32 @@ been modified. `automatic_exit_execution_handoff_application_v1` and
 order submission, LIVE activation, or credential mutation, and neither does
 this document.
 
+## Schema dependency (hard precondition)
+
+This data correction depends on a prior, separate schema migration:
+
+```text
+db/migrations/20260828_trading_account_account_mode_live_readonly_v1.sql
+```
+
+Production's `trading_account.chk_trading_account_mode` CHECK constraint
+currently only permits `account_mode IN ('paper','live')`. Applying the
+`UPDATE` in this document against that constraint fails closed with a
+MariaDB `4025` constraint-violation error (`CONSTRAINT
+'chk_trading_account_mode' failed for 'synth'.'trading_account'`) -- no row
+is changed. The schema migration above extends the same constraint to
+`account_mode IN ('paper','live_readonly','live')` and touches no other
+column, table, or constraint (in particular it does not touch
+`chk_trading_account_live_requires_enabled` or `live_trading_enabled`).
+
+Order of operations is strict:
+
+1. schema migration `20260828_trading_account_account_mode_live_readonly_v1.sql`
+   is merged, deployed, and confirmed applied to the target database
+   (`information_schema.CHECK_CONSTRAINTS` shows `live_readonly` in
+   `chk_trading_account_mode`'s `CHECK_CLAUSE`)
+2. only then may the `UPDATE` in this document be applied
+
 ```text
 production_db_mutation=0
 credential_mutation=0
@@ -38,6 +64,13 @@ permission, or kill-switch row is read or written by this statement.
 ## Preconditions (verify immediately before apply, not only at plan time)
 
 ```sql
+-- 0. Confirm the schema dependency above is already applied (expected:
+--    CHECK_CLAUSE contains 'live_readonly').
+SELECT CHECK_CLAUSE
+FROM information_schema.CHECK_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = DATABASE()
+  AND CONSTRAINT_NAME = 'chk_trading_account_mode';
+
 -- 1. Confirm target database identity.
 SELECT DATABASE();
 
@@ -57,6 +90,11 @@ WHERE account_mode = 'live' AND live_trading_enabled = 0;
 
 Stop and do not apply if:
 
+- query 0 does not contain `live_readonly` -- the schema dependency above is
+  not yet applied to this database; applying the `UPDATE` will fail closed
+  with MariaDB error `4025` (`CONSTRAINT 'chk_trading_account_mode' failed`)
+  and change nothing, but stop and fix the dependency instead of treating
+  that failure as expected
 - query 2 shows either row's `account_mode`, `live_trading_enabled`, or
   `enabled` has changed from the expected values above (re-run this
   document's audit, don't blindly proceed)
