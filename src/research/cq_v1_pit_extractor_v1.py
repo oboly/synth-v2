@@ -90,6 +90,7 @@ def fetch_mrp_asset(cursor: Any, observation: ShadowObservation) -> Mapping[str,
           AND o.model_version=%s
           AND s.model_version=%s
           AND o.as_of_ts_utc <= %s
+          AND s.as_of_ts_utc <= %s
         ORDER BY o.as_of_ts_utc DESC, o.pressure_obs_id DESC
         LIMIT 1
         """,
@@ -98,6 +99,7 @@ def fetch_mrp_asset(cursor: Any, observation: ShadowObservation) -> Mapping[str,
             observation.venue,
             MRP_MODEL_VERSION,
             MRP_MODEL_VERSION,
+            observation.asof_ts_utc,
             observation.asof_ts_utc,
         ),
     )
