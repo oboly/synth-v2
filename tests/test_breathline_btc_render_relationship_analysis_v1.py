@@ -17,6 +17,7 @@ from src.research.run_breathline_btc_render_relationship_analysis_v1 import (
     binary_support,
     build_lane_b_rows,
     build_pair_rows,
+    derive_overall_verdict,
     holm_adjust,
     phase_stat_from_vectors,
     permute_btc_vectors,
@@ -78,8 +79,8 @@ def cycle(
     }
 
 
-def test_registry_v102_is_frozen() -> None:
-    assert REGISTRY_VERSION == "1.0.2"
+def test_registry_v103_is_frozen() -> None:
+    assert REGISTRY_VERSION == "1.0.3"
     assert DISCOVERY_FRACTION == 0.70
     assert NULL_PERMUTATIONS == 2000
     assert RANDOM_SEED == 418001
@@ -175,6 +176,28 @@ def test_phase_lock_is_not_gated_by_sequence_support() -> None:
     assert summary["hypotheses"]["PHASE_LOCK"]["status"] != "INSUFFICIENT_EVIDENCE"
     assert summary["hypotheses"]["CONVERGING_DIVERGING"]["status"] == "INSUFFICIENT_EVIDENCE"
     assert summary["hypotheses"]["DETACHED_RELOCK"]["DETACHED"]["status"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_shared_extension_cannot_create_predictive_overall_verdict() -> None:
+    lane_a = {
+        "hypotheses": {
+            "PHASE_LOCK": {"status": "NOT_SUPPORTED"},
+            "LEADING_LAGGING": {"status": "NOT_SUPPORTED"},
+            "CONVERGING_DIVERGING": {"status": "NOT_SUPPORTED"},
+            "DETACHED_RELOCK": {
+                "DETACHED": {"status": "NOT_SUPPORTED"},
+                "RELOCK": {"status": "NOT_SUPPORTED"},
+            },
+            "SHARED_EXTENSION": {"status": "SUPPORTED_ASSOCIATION"},
+        }
+    }
+    structural = derive_overall_verdict(lane_a, {"verdict": "NOT_SUPPORTED"})
+    assert structural["overall_verdict"] == "STRUCTURAL_EVIDENCE_ONLY"
+    assert structural["predictive_evidence_source"] is None
+
+    predictive = derive_overall_verdict(lane_a, {"verdict": "ROTATION_CANDIDATE"})
+    assert predictive["overall_verdict"] == "POSITIVE_RESEARCH_EVIDENCE"
+    assert predictive["predictive_evidence_source"] == "ROTATION_CANDIDATE"
 
 
 def test_tie_aware_auc_and_holm() -> None:
