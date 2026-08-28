@@ -267,6 +267,14 @@ def fetch_candles_for_observation(
       AND close_ts_utc > %s AND close_ts_utc <= %s
     ORDER BY close_ts_utc
     """
+    coverage_sql = """
+    SELECT close_ts_utc, close_price, high_price, low_price
+    FROM obs_market_candle
+    WHERE asset_id = %s AND venue = %s AND interval_code = '15m'
+      AND close_ts_utc > %s
+    ORDER BY close_ts_utc
+    LIMIT 1
+    """
     horizon_end = observation_asof + max_horizon
     started = time.perf_counter()
     with conn.cursor() as cur:
@@ -274,11 +282,16 @@ def fetch_candles_for_observation(
         base = cur.fetchone()
         cur.execute(future_sql, (asset_id, venue, observation_asof, horizon_end))
         future = cur.fetchall()
+        cur.execute(coverage_sql, (asset_id, venue, horizon_end))
+        coverage = cur.fetchone()
     print(
-        f"QUERY_END name=fetch_candles asset_id={asset_id} future_rows={len(future)} elapsed_s={time.perf_counter() - started:.3f}",
+        f"QUERY_END name=fetch_candles asset_id={asset_id} future_rows={len(future)} "
+        f"coverage_row={int(coverage is not None)} elapsed_s={time.perf_counter() - started:.3f}",
         flush=True,
     )
     raw_rows = ([] if base is None else [base]) + list(future)
+    if coverage is not None:
+        raw_rows.append(coverage)
     return [
         Candle(
             close_ts_utc=parse_ts(raw["close_ts_utc"]),
