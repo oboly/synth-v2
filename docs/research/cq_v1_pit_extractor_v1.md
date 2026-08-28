@@ -1,7 +1,7 @@
 # CQ v1 point-in-time extractor v1
 
-Issue: #568  
-Phase: 2C  
+Issue: #568
+Phase: 2C
 Status: research-only, market-only, read-only
 
 ## Purpose
