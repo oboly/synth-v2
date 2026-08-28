@@ -13,12 +13,7 @@ from typing import Any
 import yaml
 
 from src.common.db import get_db_connection
-from src.research.entry_quality_forward_validation_v1 import (
-    Candle,
-    HorizonSpec,
-    evaluate_all_horizons,
-)
-
+from src.research.entry_quality_forward_validation_v1 import Candle, HorizonSpec, evaluate_all_horizons
 
 RUNNER_NAME = "entry_quality_forward_validation_v1"
 DEFAULT_REGISTRY = "config/research/entry_quality_forward_validation_v1.yaml"
@@ -33,9 +28,7 @@ _STOP_SIGNAL: str | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Replay-safe forward outcome labels for CQ shadow observations"
-    )
+    parser = argparse.ArgumentParser(description="Replay-safe forward outcome labels for CQ shadow observations")
     parser.add_argument("--registry", default=DEFAULT_REGISTRY)
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--asset-id", type=int, default=None)
@@ -70,11 +63,9 @@ def load_registry(path: str) -> tuple[dict[str, Any], list[HorizonSpec]]:
         HorizonSpec(label=str(item["label"]), delta=timedelta(minutes=int(item["minutes"])))
         for item in raw.get("horizons", [])
     ]
-    if [(item.label, int(item.delta.total_seconds() // 60)) for item in horizons] != [
-        ("1h", 60),
-        ("4h", 240),
-        ("24h", 1440),
-    ]:
+    expected = [("1h", 60), ("4h", 240), ("24h", 1440)]
+    actual = [(item.label, int(item.delta.total_seconds() // 60)) for item in horizons]
+    if actual != expected:
         raise ValueError("Frozen v1 horizons must be exactly 1h,4h,24h")
     return raw, horizons
 
@@ -159,22 +150,10 @@ def fetch_shadow_observations(
         params.append(after_shadow_id)
     params.append(limit)
     sql = f"""
-    SELECT
-        s.shadow_id,
-        s.asset_id,
-        a.symbol,
-        s.venue,
-        s.asof_ts_utc,
-        s.evidence_key,
-        s.cq_model_version,
-        s.trade_quality_score,
-        s.selection_score,
-        s.entry_quality_score,
-        s.entry_quality_state,
-        s.ppp_pct,
-        s.ppp_kind,
-        s.ppp_source_ref,
-        s.entry_strength
+    SELECT s.shadow_id, s.asset_id, a.symbol, s.venue, s.asof_ts_utc,
+           s.evidence_key, s.cq_model_version, s.trade_quality_score,
+           s.selection_score, s.entry_quality_score, s.entry_quality_state,
+           s.ppp_pct, s.ppp_kind, s.ppp_source_ref, s.entry_strength
     FROM research_entry_quality_shadow s
     JOIN asset a ON a.asset_id = s.asset_id
     WHERE {' AND '.join(filters)}
@@ -205,9 +184,7 @@ def fetch_candles_for_observation(
     base_sql = """
     SELECT close_ts_utc, close_price, high_price, low_price
     FROM obs_market_candle
-    WHERE asset_id = %s
-      AND venue = %s
-      AND interval_code = '15m'
+    WHERE asset_id = %s AND venue = %s AND interval_code = '15m'
       AND close_ts_utc <= %s
     ORDER BY close_ts_utc DESC
     LIMIT 1
@@ -215,11 +192,8 @@ def fetch_candles_for_observation(
     future_sql = """
     SELECT close_ts_utc, close_price, high_price, low_price
     FROM obs_market_candle
-    WHERE asset_id = %s
-      AND venue = %s
-      AND interval_code = '15m'
-      AND close_ts_utc > %s
-      AND close_ts_utc <= %s
+    WHERE asset_id = %s AND venue = %s AND interval_code = '15m'
+      AND close_ts_utc > %s AND close_ts_utc <= %s
     ORDER BY close_ts_utc
     """
     horizon_end = observation_asof + max_horizon
@@ -230,23 +204,19 @@ def fetch_candles_for_observation(
         cur.execute(future_sql, (asset_id, venue, observation_asof, horizon_end))
         future = cur.fetchall()
     print(
-        f"QUERY_END name=fetch_candles asset_id={asset_id} future_rows={len(future)} "
-        f"elapsed_s={time.perf_counter() - started:.3f}",
+        f"QUERY_END name=fetch_candles asset_id={asset_id} future_rows={len(future)} elapsed_s={time.perf_counter() - started:.3f}",
         flush=True,
     )
-
     raw_rows = ([] if base is None else [base]) + list(future)
-    candles: list[Candle] = []
-    for raw in raw_rows:
-        candles.append(
-            Candle(
-                close_ts_utc=parse_ts(raw["close_ts_utc"]),
-                close_price=Decimal(str(raw["close_price"])),
-                high_price=Decimal(str(raw["high_price"])),
-                low_price=Decimal(str(raw["low_price"])),
-            )
+    return [
+        Candle(
+            close_ts_utc=parse_ts(raw["close_ts_utc"]),
+            close_price=Decimal(str(raw["close_price"])),
+            high_price=Decimal(str(raw["high_price"])),
+            low_price=Decimal(str(raw["low_price"])),
         )
-    return candles
+        for raw in raw_rows
+    ]
 
 
 def build_rows_for_observation(
@@ -265,37 +235,31 @@ def build_rows_for_observation(
         observation_asof=asof,
         max_horizon=max_horizon,
     )
-    outcomes = evaluate_all_horizons(
-        observation_asof=asof,
-        candles=candles,
-        horizons=horizons,
-    )
-    out: list[dict[str, Any]] = []
-    for outcome in outcomes:
-        out.append(
-            {
-                "shadow_id": int(observation["shadow_id"]),
-                "asset_id": int(observation["asset_id"]),
-                "symbol": str(observation["symbol"]),
-                "venue": str(observation["venue"]),
-                "observation_asof_ts_utc": asof,
-                "evidence_key": str(observation["evidence_key"]),
-                "cq_model_version": str(observation["cq_model_version"]),
-                "ppp_pct": observation.get("ppp_pct"),
-                "ppp_kind": observation.get("ppp_kind"),
-                "ppp_source_ref": observation.get("ppp_source_ref"),
-                "trade_quality_score": observation.get("trade_quality_score"),
-                "selection_score": observation.get("selection_score"),
-                "cq_v0": observation.get("entry_quality_score"),
-                "cq_v0_state": observation.get("entry_quality_state"),
-                "entry_strength_v0": observation.get("entry_strength"),
-                "cq_v1": None,
-                "entry_strength_v1": None,
-                "target_outcome_status": "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE",
-                **asdict(outcome),
-            }
-        )
-    return out
+    outcomes = evaluate_all_horizons(observation_asof=asof, candles=candles, horizons=horizons)
+    return [
+        {
+            "shadow_id": int(observation["shadow_id"]),
+            "asset_id": int(observation["asset_id"]),
+            "symbol": str(observation["symbol"]),
+            "venue": str(observation["venue"]),
+            "observation_asof_ts_utc": asof,
+            "evidence_key": str(observation["evidence_key"]),
+            "cq_model_version": str(observation["cq_model_version"]),
+            "ppp_pct": observation.get("ppp_pct"),
+            "ppp_kind": observation.get("ppp_kind"),
+            "ppp_source_ref": observation.get("ppp_source_ref"),
+            "trade_quality_score": observation.get("trade_quality_score"),
+            "selection_score": observation.get("selection_score"),
+            "cq_v0": observation.get("entry_quality_score"),
+            "cq_v0_state": observation.get("entry_quality_state"),
+            "entry_strength_v0": observation.get("entry_strength"),
+            "cq_v1": None,
+            "entry_strength_v1": None,
+            "target_outcome_status": "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE",
+            **asdict(outcome),
+        }
+        for outcome in outcomes
+    ]
 
 
 def _append_rows(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -365,8 +329,12 @@ def run(args: argparse.Namespace) -> int:
             if checkpoint.get("registry_version") != registry["registry_version"]:
                 raise ValueError("Checkpoint registry version mismatch")
             after_shadow_id = checkpoint.get("last_shadow_id")
+            last_shadow_id = None if after_shadow_id is None else int(after_shadow_id)
+            observations_completed = int(checkpoint.get("observations_completed") or 0)
+            rows_written = int(checkpoint.get("rows_written") or 0)
             print(
-                f"RESUME checkpoint={_checkpoint_path(output_dir)} after_shadow_id={after_shadow_id}",
+                f"RESUME checkpoint={_checkpoint_path(output_dir)} after_shadow_id={after_shadow_id} "
+                f"observations_completed={observations_completed} rows_written={rows_written}",
                 flush=True,
             )
         elif rows_path.exists():
@@ -383,24 +351,22 @@ def run(args: argparse.Namespace) -> int:
             after_shadow_id=(None if after_shadow_id is None else int(after_shadow_id)),
         )
         print(
-            f"PHASE_END name=fetch_shadow_observations rows={len(observations)} "
-            f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+            f"PHASE_END name=fetch_shadow_observations rows={len(observations)} elapsed_s={time.perf_counter() - phase_started:.3f}",
             flush=True,
         )
 
         print("PHASE_START name=label_forward_outcomes", flush=True)
         phase_started = time.perf_counter()
+        batch_observations_completed = 0
         for observation in observations:
             if _STOP_REQUESTED:
                 break
             per_observation = build_rows_for_observation(
-                conn,
-                observation=observation,
-                venue=args.venue,
-                horizons=horizons,
+                conn, observation=observation, venue=args.venue, horizons=horizons
             )
             _append_rows(rows_path, per_observation)
             observations_completed += 1
+            batch_observations_completed += 1
             rows_written += len(per_observation)
             last_shadow_id = int(observation["shadow_id"])
             write_checkpoint(
@@ -411,11 +377,10 @@ def run(args: argparse.Namespace) -> int:
                 rows_written=rows_written,
                 terminal_state="RUNNING",
             )
-            if observations_completed % HEARTBEAT_EVERY_OBSERVATIONS == 0:
+            if batch_observations_completed % HEARTBEAT_EVERY_OBSERVATIONS == 0:
                 print(
                     f"HEARTBEAT phase=label_forward_outcomes observations_completed={observations_completed} "
-                    f"rows_written={rows_written} last_shadow_id={last_shadow_id} "
-                    f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+                    f"rows_written={rows_written} last_shadow_id={last_shadow_id} elapsed_s={time.perf_counter() - phase_started:.3f}",
                     flush=True,
                 )
         print(
@@ -429,36 +394,27 @@ def run(args: argparse.Namespace) -> int:
         phase_started = time.perf_counter()
         write_summary(output_dir, all_rows, registry)
         print(
-            f"PHASE_END name=write_summary rows={len(all_rows)} "
-            f"elapsed_s={time.perf_counter() - phase_started:.3f}",
+            f"PHASE_END name=write_summary rows={len(all_rows)} elapsed_s={time.perf_counter() - phase_started:.3f}",
             flush=True,
         )
 
-        if _STOP_REQUESTED:
-            write_checkpoint(
-                output_dir,
-                registry=registry,
-                last_shadow_id=last_shadow_id,
-                observations_completed=observations_completed,
-                rows_written=rows_written,
-                terminal_state="INTERRUPTED",
-            )
-            print(
-                f"INTERRUPTED runner={RUNNER_NAME} signal={_STOP_SIGNAL} "
-                f"observations_completed={observations_completed} rows_written={rows_written} "
-                f"checkpoint={_checkpoint_path(output_dir)} elapsed_s={time.perf_counter() - started:.3f}",
-                flush=True,
-            )
-            return 130
-
+        terminal_state = "INTERRUPTED" if _STOP_REQUESTED else "FINISHED"
         write_checkpoint(
             output_dir,
             registry=registry,
             last_shadow_id=last_shadow_id,
             observations_completed=observations_completed,
             rows_written=rows_written,
-            terminal_state="FINISHED",
+            terminal_state=terminal_state,
         )
+        if _STOP_REQUESTED:
+            print(
+                f"INTERRUPTED runner={RUNNER_NAME} signal={_STOP_SIGNAL} observations_completed={observations_completed} "
+                f"rows_written={rows_written} checkpoint={_checkpoint_path(output_dir)} elapsed_s={time.perf_counter() - started:.3f}",
+                flush=True,
+            )
+            return 130
+
         print(
             f"FINISHED runner={RUNNER_NAME} observations={observations_completed} rows={len(all_rows)} "
             f"production_ranking_changed=0 elapsed_s={time.perf_counter() - started:.3f}",
