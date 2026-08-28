@@ -55,9 +55,11 @@ def test_candle_exactly_at_observation_asof_is_base_not_future_label() -> None:
             candle(10, 0, "100", "101", "99"),
             candle(10, 15, "101", "102", "100"),
             candle(10, 30, "103", "104", "101"),
+            candle(11, 30, "999", "1000", "998"),
         ],
         horizon=HorizonSpec("1h", timedelta(hours=1)),
     )
+    assert result.status == "COMPLETE"
     assert result.base_price == Decimal("101")
     assert result.future_candle_count == 1
     assert result.future_close_price == Decimal("103")
@@ -74,10 +76,48 @@ def test_horizon_end_is_inclusive_but_candles_after_horizon_are_excluded() -> No
         ],
         horizon=HorizonSpec("1h", timedelta(hours=1)),
     )
+    assert result.status == "COMPLETE"
     assert result.future_candle_count == 2
     assert result.future_close_price == Decimal("103")
     assert result.mfe_pct == Decimal("5.000000")
     assert result.mae_pct == Decimal("-3.000000")
+
+
+def test_truncated_horizon_fails_closed_even_with_some_future_candles() -> None:
+    result = evaluate_horizon(
+        observation_asof=ts(10, 0),
+        candles=[
+            candle(10, 0, "100", "101", "99"),
+            candle(10, 15, "101", "102", "100"),
+            candle(10, 30, "103", "104", "101"),
+        ],
+        horizon=HorizonSpec("1h", timedelta(hours=1)),
+    )
+    assert result.status == "INSUFFICIENT_HORIZON_COVERAGE"
+    assert result.base_price == Decimal("100")
+    assert result.future_candle_count == 2
+    assert result.future_close_price is None
+    assert result.forward_return_pct is None
+    assert result.mfe_pct is None
+    assert result.mae_pct is None
+
+
+def test_post_horizon_candle_proves_coverage_without_leaking_its_values() -> None:
+    result = evaluate_horizon(
+        observation_asof=ts(10, 0),
+        candles=[
+            candle(10, 0, "100", "101", "99"),
+            candle(10, 30, "102", "103", "98"),
+            candle(11, 15, "999", "1000", "998"),
+        ],
+        horizon=HorizonSpec("1h", timedelta(hours=1)),
+    )
+    assert result.status == "COMPLETE"
+    assert result.future_candle_count == 1
+    assert result.future_close_price == Decimal("102")
+    assert result.forward_return_pct == Decimal("2.000000")
+    assert result.mfe_pct == Decimal("3.000000")
+    assert result.mae_pct == Decimal("-2.000000")
 
 
 def test_missing_base_price_fails_closed() -> None:
@@ -92,10 +132,13 @@ def test_missing_base_price_fails_closed() -> None:
     assert result.mae_pct is None
 
 
-def test_missing_future_candles_fails_closed() -> None:
+def test_missing_future_candles_fails_closed_after_horizon_is_covered() -> None:
     result = evaluate_horizon(
         observation_asof=ts(10, 0),
-        candles=[candle(10, 0, "100", "101", "99")],
+        candles=[
+            candle(10, 0, "100", "101", "99"),
+            candle(11, 15, "150", "151", "149"),
+        ],
         horizon=HorizonSpec("1h", timedelta(hours=1)),
     )
     assert result.status == "INSUFFICIENT_FUTURE_CANDLES"
