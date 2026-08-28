@@ -19,6 +19,7 @@ from src.research.run_breathline_btc_render_relationship_analysis_v1 import (
     build_pair_rows,
     derive_overall_verdict,
     holm_adjust,
+    lag_null_distribution,
     phase_stat_from_vectors,
     permute_btc_vectors,
     realized_phase,
@@ -79,8 +80,8 @@ def cycle(
     }
 
 
-def test_registry_v103_is_frozen() -> None:
-    assert REGISTRY_VERSION == "1.0.3"
+def test_registry_v104_is_frozen() -> None:
+    assert REGISTRY_VERSION == "1.0.4"
     assert DISCOVERY_FRACTION == 0.70
     assert NULL_PERMUTATIONS == 2000
     assert RANDOM_SEED == 418001
@@ -176,6 +177,24 @@ def test_phase_lock_is_not_gated_by_sequence_support() -> None:
     assert summary["hypotheses"]["PHASE_LOCK"]["status"] != "INSUFFICIENT_EVIDENCE"
     assert summary["hypotheses"]["CONVERGING_DIVERGING"]["status"] == "INSUFFICIENT_EVIDENCE"
     assert summary["hypotheses"]["DETACHED_RELOCK"]["DETACHED"]["status"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_lead_lag_median_null_is_non_degenerate() -> None:
+    rows = []
+    render_days = (10, 20, 30, 40, 50)
+    btc_days = (9, 18, 27, 36, 45)
+    for idx, (render_day, btc_day) in enumerate(zip(render_days, btc_days, strict=True)):
+        rows.append(
+            {
+                "split": "holdout",
+                "event": "recognition",
+                "render_event_ts": iso(BASE + timedelta(days=render_day)),
+                "btc_event_ts": iso(BASE + timedelta(days=btc_day)),
+            }
+        )
+    nulls = lag_null_distribution(rows, split="holdout", event="recognition")
+    assert len(nulls) == NULL_PERMUTATIONS
+    assert len({round(value, 9) for value in nulls}) > 1
 
 
 def test_shared_extension_cannot_create_predictive_overall_verdict() -> None:
