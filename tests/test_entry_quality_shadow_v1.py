@@ -3,12 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
+import src.research.run_entry_quality_shadow_v1 as runner
 from src.research.entry_quality_shadow_v1 import (
     EntryQualityInput,
     compute_entry_quality_shadow,
     compute_entry_strength,
 )
-from src.research.run_entry_quality_shadow_v1 import _load_ppp_csv, _source_asof
 
 
 def test_entry_quality_uses_trade_quality_as_independent_baseline() -> None:
@@ -96,13 +96,13 @@ def test_entry_strength_rejects_invalid_ranges() -> None:
 
 def test_source_asof_uses_evidence_timestamp_not_runner_time() -> None:
     row = SimpleNamespace(symbol="AAVE", asof_ts_utc="2026-08-28 04:00:00")
-    assert _source_asof(row) == "2026-08-28 04:00:00"
+    assert runner._source_asof(row) == "2026-08-28 04:00:00"
 
 
 def test_source_asof_fails_closed_when_missing() -> None:
     row = SimpleNamespace(symbol="AAVE", asof_ts_utc=None)
     with pytest.raises(ValueError, match="Missing canonical source as-of"):
-        _source_asof(row)
+        runner._source_asof(row)
 
 
 def test_ppp_csv_rejects_mixed_planning_and_actionable(tmp_path) -> None:
@@ -115,7 +115,7 @@ def test_ppp_csv_rejects_mixed_planning_and_actionable(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="must contain exactly one PPP kind"):
-        _load_ppp_csv(str(path))
+        runner._load_ppp_csv(str(path))
 
 
 def test_ppp_csv_rejects_unknown_kind(tmp_path) -> None:
@@ -127,4 +127,76 @@ def test_ppp_csv_rejects_unknown_kind(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="Unsupported ppp_kind"):
-        _load_ppp_csv(str(path))
+        runner._load_ppp_csv(str(path))
+
+
+def test_parse_args_has_deterministic_default_csv() -> None:
+    args = runner.parse_args([])
+    assert args.out_csv == runner.DEFAULT_OUTPUT_CSV
+
+
+class _FakeConnection:
+    def __init__(self) -> None:
+        self.closed = False
+        self.rolled_back = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+def _runner_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        config="unused.yaml",
+        venue="bitvavo",
+        limit=1,
+        asset_id=None,
+        ppp_csv=None,
+        out_csv=runner.DEFAULT_OUTPUT_CSV,
+        write_db=False,
+    )
+
+
+def test_runner_success_emits_lifecycle_and_default_csv(monkeypatch, capsys) -> None:
+    conn = _FakeConnection()
+    csv_calls: list[tuple[str, list[dict]]] = []
+    monkeypatch.setattr(runner, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(runner, "load_selection_config", lambda _path: {})
+    monkeypatch.setattr(runner, "fetch_selection_candidates", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "rank_candidates", lambda _rows, _config: [])
+    monkeypatch.setattr(runner, "_load_ppp_csv", lambda _path: {})
+    monkeypatch.setattr(runner, "write_csv", lambda path, rows: csv_calls.append((path, rows)))
+
+    result = runner.run(_runner_args())
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert output.count("STARTED runner=entry_quality_shadow_v1") == 1
+    assert "PHASE_START name=fetch_selection_candidates" in output
+    assert "PHASE_END name=fetch_selection_candidates" in output
+    assert "PHASE_START name=build_shadow" in output
+    assert "PHASE_END name=build_shadow" in output
+    assert "PHASE_START name=write_csv" in output
+    assert "PHASE_END name=write_csv" in output
+    assert output.count("FINISHED runner=entry_quality_shadow_v1") == 1
+    assert "FAILED runner=entry_quality_shadow_v1" not in output
+    assert csv_calls == [(runner.DEFAULT_OUTPUT_CSV, [])]
+    assert conn.closed is True
+
+
+def test_runner_failure_emits_single_failed_terminal(monkeypatch, capsys) -> None:
+    def _fail_connection():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner, "get_db_connection", _fail_connection)
+
+    result = runner.run(_runner_args())
+    output = capsys.readouterr().out
+
+    assert result == 1
+    assert output.count("STARTED runner=entry_quality_shadow_v1") == 1
+    assert output.count("FAILED runner=entry_quality_shadow_v1") == 1
+    assert "reason=RuntimeError:boom" in output
+    assert "FINISHED runner=entry_quality_shadow_v1" not in output
