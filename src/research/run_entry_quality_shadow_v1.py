@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import time
 from datetime import datetime
@@ -28,6 +29,14 @@ RUNNER_NAME = "entry_quality_shadow_v1"
 CQ_MODEL_VERSION = "cq_shadow_v1"
 DEFAULT_OUTPUT_CSV = "data/research/entry_quality_shadow_v1/entry_quality_shadow_v1.csv"
 ALLOWED_PPP_KINDS = {"PLANNING_PPP", "ACTIONABLE_PPP"}
+EVIDENCE_FIELDS = (
+    "quality_ts_1d_utc",
+    "quality_ts_4h_utc",
+    "quality_ts_1h_utc",
+    "signal_ts_1d_utc",
+    "signal_ts_4h_utc",
+    "signal_ts_1h_utc",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -88,25 +97,90 @@ def _ppp_for_symbol(
     if raw is None:
         return None, None, None
 
-    ppp_kind = raw["ppp_kind"]
-    source_ref = raw["ppp_source_ref"]
-    return Decimal(raw["ppp_pct"]), ppp_kind, source_ref
+    return Decimal(raw["ppp_pct"]), raw["ppp_kind"], raw["ppp_source_ref"]
 
 
-def _source_asof(row) -> str | datetime:
-    if row.asof_ts_utc is None:
-        raise ValueError(f"Missing canonical source as-of timestamp for {row.symbol}")
-    return row.asof_ts_utc
+def _normalize_ts(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    text = str(value).strip()
+    return text or None
+
+
+def fetch_evidence_timestamps(
+    conn,
+    *,
+    venue: str,
+    asset_ids: list[int],
+) -> dict[int, dict[str, str | None]]:
+    if not asset_ids:
+        return {}
+
+    placeholders = ",".join(["%s"] * len(asset_ids))
+    sql = f"""
+    SELECT
+        a.asset_id,
+        MAX(CASE WHEN q.interval_code = '1d' THEN q.asof_ts_utc END) AS quality_ts_1d_utc,
+        MAX(CASE WHEN q.interval_code = '4h' THEN q.asof_ts_utc END) AS quality_ts_4h_utc,
+        MAX(CASE WHEN q.interval_code = '1h' THEN q.asof_ts_utc END) AS quality_ts_1h_utc,
+        MAX(CASE WHEN s.interval_code = '1d' THEN s.signal_ts_utc END) AS signal_ts_1d_utc,
+        MAX(CASE WHEN s.interval_code = '4h' THEN s.signal_ts_utc END) AS signal_ts_4h_utc,
+        MAX(CASE WHEN s.interval_code = '1h' THEN s.signal_ts_utc END) AS signal_ts_1h_utc
+    FROM asset a
+    LEFT JOIN asset_interval_quality q
+      ON q.asset_id = a.asset_id
+     AND q.venue = %s
+     AND q.interval_code IN ('1d', '4h', '1h')
+    LEFT JOIN signal_engine_state s
+      ON s.asset_id = a.asset_id
+     AND s.venue = %s
+     AND s.interval_code IN ('1d', '4h', '1h')
+    WHERE a.asset_id IN ({placeholders})
+    GROUP BY a.asset_id
+    """
+    params: list[Any] = [venue, venue, *asset_ids]
+
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    out: dict[int, dict[str, str | None]] = {}
+    for raw in rows:
+        if not isinstance(raw, dict):
+            raise TypeError("Expected dict cursor rows for evidence timestamps")
+        asset_id = int(raw["asset_id"])
+        out[asset_id] = {field: _normalize_ts(raw.get(field)) for field in EVIDENCE_FIELDS}
+    return out
+
+
+def _evidence_identity(evidence: dict[str, str | None]) -> tuple[str, str]:
+    normalized = {field: _normalize_ts(evidence.get(field)) for field in EVIDENCE_FIELDS}
+    if any(normalized[field] is None for field in EVIDENCE_FIELDS):
+        missing = [field for field in EVIDENCE_FIELDS if normalized[field] is None]
+        raise ValueError(f"Missing canonical evidence timestamps: {','.join(missing)}")
+
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    evidence_key = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    asof_ts_utc = max(str(normalized[field]) for field in EVIDENCE_FIELDS)
+    return evidence_key, asof_ts_utc
 
 
 def build_shadow_rows(
     *,
     selection_rows,
     ppp_by_symbol: dict[str, dict[str, str]],
+    evidence_by_asset: dict[int, dict[str, str | None]],
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
     for row in selection_rows:
+        evidence = evidence_by_asset.get(row.asset_id)
+        if evidence is None:
+            raise ValueError(f"Missing canonical evidence timestamp set for {row.symbol}")
+        evidence_key, asof_ts_utc = _evidence_identity(evidence)
+
         shadow = compute_entry_quality_shadow(
             EntryQualityInput(
                 trade_quality_score=row.trade_quality_score,
@@ -129,7 +203,9 @@ def build_shadow_rows(
                 "asset_id": row.asset_id,
                 "symbol": row.symbol,
                 "venue": row.venue,
-                "asof_ts_utc": _source_asof(row),
+                "asof_ts_utc": asof_ts_utc,
+                "evidence_key": evidence_key,
+                **evidence,
                 "selection_engine_name": DEFAULT_ENGINE_NAME,
                 "selection_engine_version": DEFAULT_ENGINE_VERSION,
                 "cq_model_version": shadow.model_version,
@@ -160,51 +236,26 @@ def write_shadow_rows(conn, rows: list[dict[str, Any]]) -> int:
 
     sql = """
     INSERT INTO research_entry_quality_shadow (
-        asset_id,
-        venue,
-        asof_ts_utc,
-        selection_engine_name,
-        selection_engine_version,
-        cq_model_version,
-        trade_quality_score,
-        selection_score,
-        timing_refinement_score,
-        quality_penalty,
-        quality_status_1d,
-        quality_status_4h,
-        quality_status_1h,
-        entry_quality_score,
-        entry_quality_state,
-        reasons_json,
-        blockers_json,
-        ppp_pct,
-        ppp_kind,
-        ppp_source_ref,
-        entry_strength
+        asset_id, venue, asof_ts_utc, evidence_key,
+        quality_ts_1d_utc, quality_ts_4h_utc, quality_ts_1h_utc,
+        signal_ts_1d_utc, signal_ts_4h_utc, signal_ts_1h_utc,
+        selection_engine_name, selection_engine_version, cq_model_version,
+        trade_quality_score, selection_score, timing_refinement_score, quality_penalty,
+        quality_status_1d, quality_status_4h, quality_status_1h,
+        entry_quality_score, entry_quality_state, reasons_json, blockers_json,
+        ppp_pct, ppp_kind, ppp_source_ref, entry_strength
     ) VALUES (
-        %(asset_id)s,
-        %(venue)s,
-        %(asof_ts_utc)s,
-        %(selection_engine_name)s,
-        %(selection_engine_version)s,
-        %(cq_model_version)s,
-        %(trade_quality_score)s,
-        %(selection_score)s,
-        %(timing_refinement_score)s,
-        %(quality_penalty)s,
-        %(quality_status_1d)s,
-        %(quality_status_4h)s,
-        %(quality_status_1h)s,
-        %(entry_quality_score)s,
-        %(entry_quality_state)s,
-        %(reasons_json)s,
-        %(blockers_json)s,
-        %(ppp_pct)s,
-        %(ppp_kind)s,
-        %(ppp_source_ref)s,
-        %(entry_strength)s
+        %(asset_id)s, %(venue)s, %(asof_ts_utc)s, %(evidence_key)s,
+        %(quality_ts_1d_utc)s, %(quality_ts_4h_utc)s, %(quality_ts_1h_utc)s,
+        %(signal_ts_1d_utc)s, %(signal_ts_4h_utc)s, %(signal_ts_1h_utc)s,
+        %(selection_engine_name)s, %(selection_engine_version)s, %(cq_model_version)s,
+        %(trade_quality_score)s, %(selection_score)s, %(timing_refinement_score)s, %(quality_penalty)s,
+        %(quality_status_1d)s, %(quality_status_4h)s, %(quality_status_1h)s,
+        %(entry_quality_score)s, %(entry_quality_state)s, %(reasons_json)s, %(blockers_json)s,
+        %(ppp_pct)s, %(ppp_kind)s, %(ppp_source_ref)s, %(entry_strength)s
     )
     ON DUPLICATE KEY UPDATE
+        asof_ts_utc = VALUES(asof_ts_utc),
         trade_quality_score = VALUES(trade_quality_score),
         selection_score = VALUES(selection_score),
         timing_refinement_score = VALUES(timing_refinement_score),
@@ -236,15 +287,13 @@ def write_csv(path: str, rows: list[dict[str, Any]]) -> None:
         output.write_text("", encoding="utf-8")
         return
 
-    serialized: list[dict[str, Any]] = []
-    for row in rows:
-        serialized.append(
-            {
-                key: value.isoformat() if isinstance(value, datetime) else value
-                for key, value in row.items()
-            }
-        )
-
+    serialized = [
+        {
+            key: value.isoformat() if isinstance(value, datetime) else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
     with output.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(serialized[0].keys()))
         writer.writeheader()
@@ -282,9 +331,15 @@ def run(args: argparse.Namespace) -> int:
             limit=args.limit,
         )
         selection_rows = rank_candidates(candidates, config)
+        evidence_by_asset = fetch_evidence_timestamps(
+            conn,
+            venue=args.venue,
+            asset_ids=[row.asset_id for row in selection_rows],
+        )
         print(
             f"PHASE_END name=fetch_selection_candidates candidates={len(candidates)} "
-            f"rows={len(selection_rows)} elapsed_s={time.perf_counter() - phase_started:.3f}",
+            f"rows={len(selection_rows)} evidence_sets={len(evidence_by_asset)} "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}",
             flush=True,
         )
 
@@ -294,6 +349,7 @@ def run(args: argparse.Namespace) -> int:
         rows = build_shadow_rows(
             selection_rows=selection_rows,
             ppp_by_symbol=ppp_by_symbol,
+            evidence_by_asset=evidence_by_asset,
         )
         populated = sum(row["entry_strength"] is not None for row in rows)
         print(
