@@ -3,6 +3,15 @@ CREATE TABLE IF NOT EXISTS research_entry_quality_shadow (
     asset_id BIGINT UNSIGNED NOT NULL,
     venue VARCHAR(32) NOT NULL,
     asof_ts_utc DATETIME(6) NOT NULL,
+    evidence_key CHAR(64) NOT NULL,
+
+    quality_ts_1d_utc DATETIME(6) NOT NULL,
+    quality_ts_4h_utc DATETIME(6) NOT NULL,
+    quality_ts_1h_utc DATETIME(6) NOT NULL,
+    signal_ts_1d_utc DATETIME(6) NOT NULL,
+    signal_ts_4h_utc DATETIME(6) NOT NULL,
+    signal_ts_1h_utc DATETIME(6) NOT NULL,
+
     selection_engine_name VARCHAR(64) NOT NULL,
     selection_engine_version VARCHAR(32) NOT NULL,
     cq_model_version VARCHAR(32) NOT NULL,
@@ -31,7 +40,7 @@ CREATE TABLE IF NOT EXISTS research_entry_quality_shadow (
     UNIQUE KEY uq_research_entry_quality_shadow (
         asset_id,
         venue,
-        asof_ts_utc,
+        evidence_key,
         cq_model_version
     ),
     KEY ix_research_entry_quality_shadow_asof (asof_ts_utc),
@@ -40,6 +49,8 @@ CREATE TABLE IF NOT EXISTS research_entry_quality_shadow (
 );
 
 -- Research/shadow-only contract.
--- asof_ts_utc is the source market/evidence snapshot timestamp, not runner wall time.
+-- evidence_key fingerprints all 1d/4h/1h quality and signal source timestamps.
+-- asof_ts_utc is the maximum timestamp in that evidence set, never runner wall time.
+-- A changed source timestamp necessarily creates a distinct research observation identity.
 -- This table is not an input to decision_gate, execution_planner, executor,
 -- broker/order handling, or current production selection ranking.
