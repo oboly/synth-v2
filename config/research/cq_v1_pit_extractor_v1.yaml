@@ -1,0 +1,71 @@
+registry_name: cq_v1_pit_extractor_v1
+registry_version: "1.0.0"
+issue: 568
+phase: 2C
+feature_audit_registry: config/research/cq_v1_feature_audit_v1.yaml
+feature_audit_version: "1.0.0"
+research_only: true
+market_only: true
+account_agnostic: true
+read_only: true
+
+population:
+  table: research_entry_quality_shadow
+  identity_fields: [shadow_id, asset_id, venue, asof_ts_utc, evidence_key, cq_model_version]
+  batch_size_default: 100
+  ordered_by: shadow_id ASC
+
+market_rotation_pressure:
+  aggregate_table: market_rotation_pressure_snapshot_v1
+  per_asset_table: market_rotation_pressure_observation_v1
+  frozen_model_version: "1.0"
+  same_venue_required: true
+  latest_row_lte_asof: true
+  per_asset_venue_via_parent_snapshot: true
+
+sector_rotation:
+  table: sector_rotation_snapshot
+  membership_table: asset_cluster_membership
+  frozen_model_version: sector-rotation-v1.0.0
+  frozen_window_code: 4h
+  same_venue_required: true
+  latest_row_lte_asof: true
+  required_membership_type: PRIMARY
+  membership_tie_break: [membership_weight DESC, sector_code ASC]
+
+availability_states:
+  - AVAILABLE
+  - UNAVAILABLE_MRP_AGGREGATE
+  - UNAVAILABLE_MRP_ASSET
+  - UNAVAILABLE_PRIMARY_SECTOR
+  - UNAVAILABLE_SECTOR_ROTATION
+
+coverage:
+  report_family_availability: true
+  report_joint_availability: true
+  no_imputation: true
+  no_current_truth_fallback: true
+  no_future_fallback: true
+
+forbidden:
+  feature_transforms: true
+  model_weights: true
+  cq_v1_score: true
+  forward_outcome_reads: true
+  production_ranking_changes: true
+  database_writes: true
+
+safety:
+  research_only: 1
+  market_only: 1
+  account_awareness: 0
+  db_writes: 0
+  production_ranking_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  runtime_activation: 0
