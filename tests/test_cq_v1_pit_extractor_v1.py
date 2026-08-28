@@ -17,7 +17,12 @@ from src.research.cq_v1_pit_extractor_v1 import (
     fetch_primary_sector_code,
     fetch_sector_rotation,
 )
-from src.research.run_cq_v1_pit_extractor_v1 import _append_jsonl, reconcile_jsonl
+from src.research.run_cq_v1_pit_extractor_v1 import (
+    RUNNER_NAME,
+    _append_jsonl,
+    reconcile_jsonl,
+    validate_checkpoint_scope,
+)
 
 REGISTRY = Path("config/research/cq_v1_pit_extractor_v1.yaml")
 
@@ -66,6 +71,9 @@ def extraction(*, mrp=True, sector=True) -> FeatureExtraction:
 
 def checkpoint(*, processed: int, last_shadow_id: int, mrp: int, sector: int, joint: int) -> dict:
     return {
+        "runner": RUNNER_NAME,
+        "venue": None,
+        "batch_size": 100,
         "processed": processed,
         "last_shadow_id": last_shadow_id,
         "mrp_available_count": mrp,
@@ -85,7 +93,7 @@ def test_registry_forbids_scoring_and_writes() -> None:
     assert registry["safety"]["live_orders"] == 0
 
 
-def test_mrp_asset_inherits_same_venue_through_parent_snapshot() -> None:
+def test_mrp_asset_inherits_same_venue_and_bounds_parent_snapshot_asof() -> None:
     cursor = FakeCursor([None])
     fetch_mrp_asset(cursor, obs())
     query, params = cursor.executed[0]
@@ -93,9 +101,15 @@ def test_mrp_asset_inherits_same_venue_through_parent_snapshot() -> None:
     assert "s.pressure_snapshot_id=o.pressure_snapshot_id" in query
     assert "s.venue=%s" in query
     assert "o.as_of_ts_utc <= %s" in query
-    assert params[1] == "bitvavo"
-    assert params[2] == MRP_MODEL_VERSION
-    assert params[3] == MRP_MODEL_VERSION
+    assert "s.as_of_ts_utc <= %s" in query
+    assert params == (
+        42,
+        "bitvavo",
+        MRP_MODEL_VERSION,
+        MRP_MODEL_VERSION,
+        obs().asof_ts_utc,
+        obs().asof_ts_utc,
+    )
 
 
 def test_primary_sector_is_point_in_time_primary_with_frozen_tie_break() -> None:
@@ -149,6 +163,13 @@ def test_runner_jsonl_serializes_db_decimal_values_deterministically(tmp_path: P
     assert row["mrp_aggregate"]["market_score"] == "12.3400"
     assert row["sector_rotation"]["confidence"] == "0.875000"
     assert row["asof_ts_utc"] == "2026-08-28T12:07:00+00:00"
+
+
+def test_checkpoint_scope_rejects_foreign_runner() -> None:
+    data = checkpoint(processed=0, last_shadow_id=0, mrp=0, sector=0, joint=0)
+    data["runner"] = "other_runner"
+    with pytest.raises(SystemExit, match="checkpoint runner mismatch"):
+        validate_checkpoint_scope(data, None, 100)
 
 
 def test_resume_truncates_extra_or_malformed_uncheckpointed_tail(tmp_path: Path) -> None:
