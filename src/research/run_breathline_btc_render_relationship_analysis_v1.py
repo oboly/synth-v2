@@ -51,7 +51,7 @@ from src.research.breathline_btc_alt_relationship_registry_v1 import (
 )
 
 RUNNER_NAME = "breathline_btc_render_relationship_analysis_v1"
-RUNNER_VERSION = "1.0.4"
+RUNNER_VERSION = "1.0.5"
 SOURCE_RUNNER_NAME = "bullish_breathline_btc_render_canonical_4h_v1"
 DEFAULT_OUT_ROOT = Path("data/research/breathline_btc_render_relationship_analysis_v1")
 REGISTRY_PATH = Path("src/research/breathline_btc_alt_relationship_registry_v1.py")
@@ -666,10 +666,33 @@ def build_lane_b_rows(
             feature_as_of = confirmed_at_ts(render, checkpoint)
             if feature_as_of is None:
                 continue
-            # Hard PIT boundary: the evaluated lifecycle outcome must still be
-            # future information at this checkpoint. Contemporaneous/earlier
-            # outcomes are not prediction labels and are excluded.
             if outcome_as_of <= feature_as_of:
+                continue
+
+            main_pulse_value = bool(render.get("main_pulse_confirmed"))
+            extension_value = bool(render.get("extension_confirmed"))
+            main_pulse_confirmed_at = confirmed_at_ts(render, "main_pulse")
+            extension_confirmed_at = confirmed_at_ts(render, "extension")
+            if main_pulse_value and main_pulse_confirmed_at is None:
+                raise AnalysisError(
+                    f"positive main_pulse_confirmed lacks confirmation timestamp: {cycle_id}"
+                )
+            if extension_value and extension_confirmed_at is None:
+                raise AnalysisError(
+                    f"positive extension_confirmed lacks confirmation timestamp: {cycle_id}"
+                )
+
+            main_pulse_label_available_at = (
+                main_pulse_confirmed_at if main_pulse_value else outcome_as_of
+            )
+            extension_label_available_at = (
+                extension_confirmed_at if extension_value else outcome_as_of
+            )
+            assert main_pulse_label_available_at is not None
+            assert extension_label_available_at is not None
+            main_pulse_label_eligible = main_pulse_label_available_at > feature_as_of
+            extension_label_eligible = extension_label_available_at > feature_as_of
+            if not main_pulse_label_eligible and not extension_label_eligible:
                 continue
 
             latest_main = max(
@@ -686,8 +709,12 @@ def build_lane_b_rows(
                 "checkpoint": checkpoint,
                 "feature_as_of_ts": fmt_ts(feature_as_of),
                 "outcome_as_of_ts": fmt_ts(outcome_as_of),
-                "main_pulse_confirmed": bool(render.get("main_pulse_confirmed")),
-                "extension_confirmed": bool(render.get("extension_confirmed")),
+                "main_pulse_confirmed": main_pulse_value,
+                "extension_confirmed": extension_value,
+                "main_pulse_confirmed_label_eligible": main_pulse_label_eligible,
+                "extension_confirmed_label_eligible": extension_label_eligible,
+                "main_pulse_confirmed_label_available_at_ts": fmt_ts(main_pulse_label_available_at),
+                "extension_confirmed_label_available_at_ts": fmt_ts(extension_label_available_at),
                 "latest_btc_main_pulse_confirmed_at_ts": None if latest_main is None else fmt_ts(latest_main),
                 "latest_btc_extension_confirmed_at_ts": None if latest_extension is None else fmt_ts(latest_extension),
                 "btc_main_pulse_recency_score": None if latest_main is None else -days_between(feature_as_of, latest_main),
@@ -1045,6 +1072,7 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                         for row in rows
                         if row["split"] == split
                         and row["checkpoint"] == checkpoint
+                        and row.get(f"{outcome}_label_eligible") is True
                         and row.get(feature) is not None
                         and row.get(f"no_btc_prior_{outcome}") is not None
                     ]
