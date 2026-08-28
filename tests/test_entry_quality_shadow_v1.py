@@ -94,15 +94,40 @@ def test_entry_strength_rejects_invalid_ranges() -> None:
     ) is None
 
 
-def test_source_asof_uses_evidence_timestamp_not_runner_time() -> None:
-    row = SimpleNamespace(symbol="AAVE", asof_ts_utc="2026-08-28 04:00:00")
-    assert runner._source_asof(row) == "2026-08-28 04:00:00"
+def _evidence() -> dict[str, str]:
+    return {
+        "quality_ts_1d_utc": "2026-08-28 00:00:00",
+        "quality_ts_4h_utc": "2026-08-28 04:00:00",
+        "quality_ts_1h_utc": "2026-08-28 05:00:00",
+        "signal_ts_1d_utc": "2026-08-28 00:05:00",
+        "signal_ts_4h_utc": "2026-08-28 04:05:00",
+        "signal_ts_1h_utc": "2026-08-28 05:05:00",
+    }
 
 
-def test_source_asof_fails_closed_when_missing() -> None:
-    row = SimpleNamespace(symbol="AAVE", asof_ts_utc=None)
-    with pytest.raises(ValueError, match="Missing canonical source as-of"):
-        runner._source_asof(row)
+def test_evidence_identity_covers_all_source_timestamps() -> None:
+    evidence = _evidence()
+    key, asof = runner._evidence_identity(evidence)
+    assert len(key) == 64
+    assert asof == "2026-08-28 05:05:00"
+
+
+def test_newer_signal_cannot_overwrite_earlier_observation_identity() -> None:
+    before = _evidence()
+    after = dict(before)
+    after["signal_ts_4h_utc"] = "2026-08-28 04:10:00"
+
+    before_key, _ = runner._evidence_identity(before)
+    after_key, _ = runner._evidence_identity(after)
+
+    assert before_key != after_key
+
+
+def test_evidence_identity_fails_closed_when_any_source_timestamp_missing() -> None:
+    evidence = _evidence()
+    evidence["signal_ts_1d_utc"] = None
+    with pytest.raises(ValueError, match="Missing canonical evidence timestamps"):
+        runner._evidence_identity(evidence)
 
 
 def test_ppp_csv_rejects_mixed_planning_and_actionable(tmp_path) -> None:
@@ -166,6 +191,7 @@ def test_runner_success_emits_lifecycle_and_default_csv(monkeypatch, capsys) -> 
     monkeypatch.setattr(runner, "load_selection_config", lambda _path: {})
     monkeypatch.setattr(runner, "fetch_selection_candidates", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "rank_candidates", lambda _rows, _config: [])
+    monkeypatch.setattr(runner, "fetch_evidence_timestamps", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(runner, "_load_ppp_csv", lambda _path: {})
     monkeypatch.setattr(runner, "write_csv", lambda path, rows: csv_calls.append((path, rows)))
 
