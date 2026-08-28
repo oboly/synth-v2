@@ -51,7 +51,7 @@ from src.research.breathline_btc_alt_relationship_registry_v1 import (
 )
 
 RUNNER_NAME = "breathline_btc_render_relationship_analysis_v1"
-RUNNER_VERSION = "1.0.2"
+RUNNER_VERSION = "1.0.3"
 SOURCE_RUNNER_NAME = "bullish_breathline_btc_render_canonical_4h_v1"
 DEFAULT_OUT_ROOT = Path("data/research/breathline_btc_render_relationship_analysis_v1")
 REGISTRY_PATH = Path("src/research/breathline_btc_alt_relationship_registry_v1.py")
@@ -116,7 +116,11 @@ def repo_root() -> Path:
 
 def git_output(args: list[str]) -> str:
     completed = subprocess.run(
-        ["git", *args], cwd=repo_root(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
+        ["git", *args],
+        cwd=repo_root(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
     )
     output = completed.stdout.decode("utf-8", errors="replace").strip()
     if completed.returncode != 0 or not output:
@@ -147,7 +151,7 @@ def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, 1):
+        for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
             try:
@@ -211,7 +215,11 @@ def validate_source_run(
     assets = manifest.get("assets")
     if not isinstance(assets, list) or len(assets) != 2:
         raise AnalysisError("source manifest asset set invalid")
-    by_symbol = {str(row.get("symbol") or "").upper(): row for row in assets if isinstance(row, dict)}
+    by_symbol = {
+        str(row.get("symbol") or "").upper(): row
+        for row in assets
+        if isinstance(row, dict)
+    }
     if set(by_symbol) != {REFERENCE_SYMBOL, ALT_SYMBOL}:
         raise AnalysisError("source manifest symbols invalid")
 
@@ -222,7 +230,12 @@ def validate_source_run(
         if not ledger.is_file():
             raise AnalysisError(f"source ledger missing: {ledger}")
         observed_hash = sha256_file(ledger)
-        expected_hash = by_symbol[symbol].get("tracker_artifacts", {}).get("cycle_ledger.jsonl", {}).get("sha256")
+        expected_hash = (
+            by_symbol[symbol]
+            .get("tracker_artifacts", {})
+            .get("cycle_ledger.jsonl", {})
+            .get("sha256")
+        )
         if observed_hash != expected_hash:
             raise AnalysisError(f"source ledger hash mismatch: {symbol}")
         rows = load_jsonl(ledger)
@@ -235,7 +248,10 @@ def validate_source_run(
 
 
 def split_render_cycles(render_cycles: Sequence[dict[str, Any]]) -> dict[str, str]:
-    ordered = sorted(render_cycles, key=lambda row: (cycle_start(row), str(row["cycle_id"])))
+    ordered = sorted(
+        render_cycles,
+        key=lambda row: (cycle_start(row), str(row["cycle_id"])),
+    )
     discovery_count = int(math.floor(len(ordered) * DISCOVERY_FRACTION))
     return {
         str(row["cycle_id"]): ("discovery" if idx < discovery_count else "holdout")
@@ -244,7 +260,10 @@ def split_render_cycles(render_cycles: Sequence[dict[str, Any]]) -> dict[str, st
 
 
 def overlap_seconds(a: dict[str, Any], b: dict[str, Any]) -> float:
-    return max(0.0, (min(cycle_end(a), cycle_end(b)) - max(cycle_start(a), cycle_start(b))).total_seconds())
+    return max(
+        0.0,
+        (min(cycle_end(a), cycle_end(b)) - max(cycle_start(a), cycle_start(b))).total_seconds(),
+    )
 
 
 def realized_phase(cycle: dict[str, Any], at_ts: datetime) -> float | None:
@@ -256,7 +275,10 @@ def realized_phase(cycle: dict[str, Any], at_ts: datetime) -> float | None:
     return (at_ts - start).total_seconds() / duration
 
 
-def best_btc_pair(render: dict[str, Any], btc_cycles: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+def best_btc_pair(
+    render: dict[str, Any],
+    btc_cycles: Sequence[dict[str, Any]],
+) -> dict[str, Any] | None:
     candidates: list[tuple[float, float, datetime, str, dict[str, Any]]] = []
     for btc in btc_cycles:
         overlap = overlap_seconds(render, btc)
@@ -287,7 +309,10 @@ def build_pair_rows(
     lags: list[dict[str, Any]] = []
     sequences: list[dict[str, Any]] = []
 
-    for render in sorted(render_cycles, key=lambda row: (cycle_start(row), str(row["cycle_id"]))):
+    for render in sorted(
+        render_cycles,
+        key=lambda row: (cycle_start(row), str(row["cycle_id"])),
+    ):
         render_id = str(render["cycle_id"])
         split = split_by_cycle_id[render_id]
         btc = best_btc_pair(render, btc_cycles)
@@ -351,17 +376,28 @@ def build_pair_rows(
                 }
             )
 
-        support = [key for key in PHASE_CHECKPOINTS if key in render_vector and key in btc_vector]
+        support = [
+            key
+            for key in PHASE_CHECKPOINTS
+            if key in render_vector and key in btc_vector
+        ]
         if len(support) >= 2:
             deltas = [abs(render_vector[key] - btc_vector[key]) for key in support]
-            changes = [deltas[idx] - deltas[idx - 1] for idx in range(1, len(deltas))]
+            changes = [
+                deltas[idx] - deltas[idx - 1]
+                for idx in range(1, len(deltas))
+            ]
             detached_at: int | None = None
             for idx in range(1, len(changes)):
                 if changes[idx - 1] > 0 and changes[idx] > 0:
                     detached_at = idx
                     break
             detached = detached_at is not None
-            relock = False if detached_at is None else any(change < 0 for change in changes[detached_at + 1 :])
+            relock = (
+                False
+                if detached_at is None
+                else any(change < 0 for change in changes[detached_at + 1 :])
+            )
             sequences.append(
                 {
                     "split": split,
@@ -441,14 +477,11 @@ def seed_for(label: str) -> int:
 def permutation_p(observed: float, nulls: Sequence[float], *, favorable: str) -> float:
     if len(nulls) != NULL_PERMUTATIONS:
         raise AnalysisError("permutation count mismatch")
-    extreme = (
-        sum(value <= observed for value in nulls)
-        if favorable == "lower"
-        else sum(value >= observed for value in nulls)
-        if favorable == "higher"
-        else None
-    )
-    if extreme is None:
+    if favorable == "lower":
+        extreme = sum(value <= observed for value in nulls)
+    elif favorable == "higher":
+        extreme = sum(value >= observed for value in nulls)
+    else:
         raise ValueError("invalid favorable direction")
     return (1 + extreme) / (NULL_PERMUTATIONS + 1)
 
@@ -483,7 +516,11 @@ def sequence_stats_from_vectors(
                 detached_at = idx
                 break
         detached = detached_at is not None
-        relock = False if detached_at is None else any(change < 0 for change in changes[detached_at + 1 :])
+        relock = (
+            False
+            if detached_at is None
+            else any(change < 0 for change in changes[detached_at + 1 :])
+        )
         nets.append(deltas[-1] - deltas[0])
         detached_flags.append(detached)
         relock_flags.append(relock)
@@ -521,7 +558,9 @@ def sequence_null_distributions(rows: Sequence[dict[str, Any]], *, split: str) -
     rng = random.Random(seed_for(f"sequence-null:{split}"))
     result = {"net_change": [], "detached_rate": [], "relock_rate": []}
     for _ in range(NULL_PERMUTATIONS):
-        net, detached, relock, _ = sequence_stats_from_vectors(permute_btc_vectors(rows, rng))
+        net, detached, relock, _ = sequence_stats_from_vectors(
+            permute_btc_vectors(rows, rng)
+        )
         if net is None or detached is None or relock is None:
             raise AnalysisError(f"sequence null lacks support in {split}")
         result["net_change"].append(net)
@@ -531,9 +570,17 @@ def sequence_null_distributions(rows: Sequence[dict[str, Any]], *, split: str) -
 
 
 def lag_null_distribution(rows: Sequence[dict[str, Any]], *, split: str, event: str) -> list[float]:
-    eligible = [row for row in rows if row["split"] == split and row["event"] == event]
-    render_times = [parse_ts(row["render_event_ts"], field="render_event_ts") for row in eligible]
-    btc_times = [parse_ts(row["btc_event_ts"], field="btc_event_ts") for row in eligible]
+    eligible = [
+        row for row in rows if row["split"] == split and row["event"] == event
+    ]
+    render_times = [
+        parse_ts(row["render_event_ts"], field="render_event_ts")
+        for row in eligible
+    ]
+    btc_times = [
+        parse_ts(row["btc_event_ts"], field="btc_event_ts")
+        for row in eligible
+    ]
     assert all(value is not None for value in render_times + btc_times)
     render_values = [value for value in render_times if value is not None]
     btc_values = [value for value in btc_times if value is not None]
@@ -542,7 +589,11 @@ def lag_null_distribution(rows: Sequence[dict[str, Any]], *, split: str, event: 
     for _ in range(NULL_PERMUTATIONS):
         shuffled = list(btc_values)
         rng.shuffle(shuffled)
-        result.append(mean(days_between(render, btc) for render, btc in zip(render_values, shuffled, strict=True)))
+        lags = [
+            days_between(render, btc)
+            for render, btc in zip(render_values, shuffled, strict=True)
+        ]
+        result.append(float(median(lags)))
     return result
 
 
@@ -554,8 +605,16 @@ def binary_support(labels: Sequence[bool]) -> bool:
 
 
 def conditional_extension_difference(rows: Sequence[dict[str, Any]]) -> float | None:
-    yes = [bool(row["render_extension_confirmed"]) for row in rows if bool(row["btc_extension_confirmed"])]
-    no = [bool(row["render_extension_confirmed"]) for row in rows if not bool(row["btc_extension_confirmed"])]
+    yes = [
+        bool(row["render_extension_confirmed"])
+        for row in rows
+        if bool(row["btc_extension_confirmed"])
+    ]
+    no = [
+        bool(row["render_extension_confirmed"])
+        for row in rows
+        if not bool(row["btc_extension_confirmed"])
+    ]
     if not yes or not no:
         return None
     return sum(yes) / len(yes) - sum(no) / len(no)
@@ -569,7 +628,10 @@ def extension_null_distribution(rows: Sequence[dict[str, Any]], *, split: str) -
         shuffled = list(labels)
         rng.shuffle(shuffled)
         value = conditional_extension_difference(
-            [dict(row, btc_extension_confirmed=label) for row, label in zip(rows, shuffled, strict=True)]
+            [
+                dict(row, btc_extension_confirmed=label)
+                for row, label in zip(rows, shuffled, strict=True)
+            ]
         )
         if value is None:
             raise AnalysisError("extension permutation lost support")
@@ -591,7 +653,10 @@ def build_lane_b_rows(
     for event in btc_events:
         btc_events[event] = sorted(set(btc_events[event]))
 
-    render_ordered = sorted(render_cycles, key=lambda row: (cycle_start(row), str(row["cycle_id"])))
+    render_ordered = sorted(
+        render_cycles,
+        key=lambda row: (cycle_start(row), str(row["cycle_id"])),
+    )
     rows: list[dict[str, Any]] = []
     for render in render_ordered:
         cycle_id = str(render["cycle_id"])
@@ -601,8 +666,14 @@ def build_lane_b_rows(
             feature_as_of = confirmed_at_ts(render, checkpoint)
             if feature_as_of is None:
                 continue
-            latest_main = max((ts for ts in btc_events["main_pulse"] if ts <= feature_as_of), default=None)
-            latest_extension = max((ts for ts in btc_events["extension"] if ts <= feature_as_of), default=None)
+            latest_main = max(
+                (ts for ts in btc_events["main_pulse"] if ts <= feature_as_of),
+                default=None,
+            )
+            latest_extension = max(
+                (ts for ts in btc_events["extension"] if ts <= feature_as_of),
+                default=None,
+            )
             row: dict[str, Any] = {
                 "render_cycle_id": cycle_id,
                 "split": split_by_cycle_id[cycle_id],
@@ -620,13 +691,20 @@ def build_lane_b_rows(
             for previous in render_ordered:
                 if str(previous["cycle_id"]) == cycle_id:
                     continue
-                previous_outcome = parse_ts(previous.get("outcome_as_of_ts"), field="outcome_as_of_ts")
+                previous_outcome = parse_ts(
+                    previous.get("outcome_as_of_ts"),
+                    field="outcome_as_of_ts",
+                )
                 assert previous_outcome is not None
                 if previous_outcome < feature_as_of:
                     prior.append(previous)
             for outcome in PREDICTIVE_OUTCOMES:
                 values = [bool(previous.get(outcome)) for previous in prior]
-                row[f"no_btc_prior_{outcome}"] = None if len(values) < MIN_PRIOR_RENDER_OUTCOMES else sum(values) / len(values)
+                row[f"no_btc_prior_{outcome}"] = (
+                    None
+                    if len(values) < MIN_PRIOR_RENDER_OUTCOMES
+                    else sum(values) / len(values)
+                )
                 row[f"no_btc_prior_{outcome}_count"] = len(values)
             rows.append(row)
     return rows
@@ -653,10 +731,15 @@ def summarize_lane_a(
     paired = [row for row in pair_rows if row.get("paired")]
     cache: dict[str, dict[str, Any]] = {}
     result: dict[str, Any] = {
-        "pairing": {"render_cycle_count": len(pair_rows), "paired_count": len(paired), "unpaired_count": len(pair_rows) - len(paired)},
+        "pairing": {
+            "render_cycle_count": len(pair_rows),
+            "paired_count": len(paired),
+            "unpaired_count": len(pair_rows) - len(paired),
+        },
         "splits": {},
         "hypotheses": {},
     }
+
     for split in ("discovery", "holdout"):
         pairs = [row for row in paired if row["split"] == split]
         phases = [row for row in phase_rows if row["split"] == split]
@@ -669,7 +752,11 @@ def summarize_lane_a(
             and phase_stat is not None
             else None
         )
-        sequence_nulls = sequence_null_distributions(pairs, split=split) if sequence_count >= MIN_SEQUENCE_CYCLES_PER_SPLIT else None
+        sequence_nulls = (
+            sequence_null_distributions(pairs, split=split)
+            if sequence_count >= MIN_SEQUENCE_CYCLES_PER_SPLIT
+            else None
+        )
         cache[split] = {
             "pairs": pairs,
             "phases": phases,
@@ -696,7 +783,11 @@ def summarize_lane_a(
     else:
         discovery = cache["discovery"]
         holdout = cache["holdout"]
-        p_value = permutation_p(holdout["phase_stat"], holdout["phase_nulls"], favorable="lower")
+        p_value = permutation_p(
+            holdout["phase_stat"],
+            holdout["phase_nulls"],
+            favorable="lower",
+        )
         supported = (
             discovery["phase_stat"] < median(discovery["phase_nulls"])
             and holdout["phase_stat"] < median(holdout["phase_nulls"])
@@ -715,20 +806,46 @@ def summarize_lane_a(
     raw_lag: dict[str, float | None] = {}
     sufficient_events = 0
     for event in PHASE_CHECKPOINTS:
-        discovery_rows = [row for row in lag_rows if row["split"] == "discovery" and row["event"] == event]
-        holdout_rows = [row for row in lag_rows if row["split"] == "holdout" and row["event"] == event]
-        if len(discovery_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT or len(holdout_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT:
-            lag_tests[event] = {"status": "INSUFFICIENT_EVIDENCE", "discovery_n": len(discovery_rows), "holdout_n": len(holdout_rows)}
+        discovery_rows = [
+            row
+            for row in lag_rows
+            if row["split"] == "discovery" and row["event"] == event
+        ]
+        holdout_rows = [
+            row
+            for row in lag_rows
+            if row["split"] == "holdout" and row["event"] == event
+        ]
+        if (
+            len(discovery_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT
+            or len(holdout_rows) < MIN_EVENT_COMPARISONS_PER_SPLIT
+        ):
+            lag_tests[event] = {
+                "status": "INSUFFICIENT_EVIDENCE",
+                "discovery_n": len(discovery_rows),
+                "holdout_n": len(holdout_rows),
+            }
             raw_lag[event] = None
             continue
+
         sufficient_events += 1
-        discovery_mean = mean(float(row["event_lag_days"]) for row in discovery_rows)
-        holdout_mean = mean(float(row["event_lag_days"]) for row in holdout_rows)
-        direction = "NONE" if discovery_mean == 0 else "LAGGING" if discovery_mean > 0 else "LEADING"
-        raw_p = 1.0 if direction == "NONE" else permutation_p(
-            holdout_mean,
-            lag_null_distribution(lag_rows, split="holdout", event=event),
-            favorable="higher" if direction == "LAGGING" else "lower",
+        discovery_median = float(median(float(row["event_lag_days"]) for row in discovery_rows))
+        holdout_median = float(median(float(row["event_lag_days"]) for row in holdout_rows))
+        direction = (
+            "NONE"
+            if discovery_median == 0
+            else "LAGGING"
+            if discovery_median > 0
+            else "LEADING"
+        )
+        raw_p = (
+            1.0
+            if direction == "NONE"
+            else permutation_p(
+                holdout_median,
+                lag_null_distribution(lag_rows, split="holdout", event=event),
+                favorable="higher" if direction == "LAGGING" else "lower",
+            )
         )
         raw_lag[event] = raw_p
         lag_tests[event] = {
@@ -736,10 +853,11 @@ def summarize_lane_a(
             "direction_from_discovery": direction,
             "discovery_n": len(discovery_rows),
             "holdout_n": len(holdout_rows),
-            "discovery_mean_lag_days": discovery_mean,
-            "holdout_mean_lag_days": holdout_mean,
+            "discovery_median_lag_days": discovery_median,
+            "holdout_median_lag_days": holdout_median,
             "holdout_p_value_raw": raw_p,
         }
+
     adjusted_lag = holm_adjust(raw_lag)
     significant_directions: list[str] = []
     for event, test in lag_tests.items():
@@ -747,24 +865,43 @@ def summarize_lane_a(
         if test["status"] != "TESTED":
             continue
         direction = test["direction_from_discovery"]
-        same = (direction == "LAGGING" and test["holdout_mean_lag_days"] > 0) or (direction == "LEADING" and test["holdout_mean_lag_days"] < 0)
-        rejected = bool(same and adjusted_lag[event] is not None and adjusted_lag[event] < ALPHA)
-        test["same_direction_holdout"] = same
+        holdout_median = test["holdout_median_lag_days"]
+        same_direction = (
+            (direction == "LAGGING" and holdout_median > 0)
+            or (direction == "LEADING" and holdout_median < 0)
+        )
+        rejected = bool(
+            same_direction
+            and adjusted_lag[event] is not None
+            and adjusted_lag[event] < ALPHA
+        )
+        test["same_direction_holdout"] = same_direction
         test["reject_at_alpha"] = rejected
         if rejected:
             significant_directions.append(direction)
+
     lag_status = (
         "INSUFFICIENT_EVIDENCE"
         if sufficient_events < MIN_SIGNIFICANT_LAG_EVENTS
         else significant_directions[0]
-        if len(significant_directions) >= MIN_SIGNIFICANT_LAG_EVENTS and len(set(significant_directions)) == 1
+        if len(significant_directions) >= MIN_SIGNIFICANT_LAG_EVENTS
+        and len(set(significant_directions)) == 1
         else "NOT_SUPPORTED"
     )
-    result["hypotheses"]["LEADING_LAGGING"] = {"status": lag_status, "events": lag_tests}
+    result["hypotheses"]["LEADING_LAGGING"] = {
+        "status": lag_status,
+        "statistic": "median_signed_same_event_lag_days",
+        "events": lag_tests,
+    }
 
-    sequence_sufficient = all(cache[split]["sequence_nulls"] is not None for split in ("discovery", "holdout"))
+    sequence_sufficient = all(
+        cache[split]["sequence_nulls"] is not None
+        for split in ("discovery", "holdout")
+    )
     if not sequence_sufficient:
-        result["hypotheses"]["CONVERGING_DIVERGING"] = {"status": "INSUFFICIENT_EVIDENCE"}
+        result["hypotheses"]["CONVERGING_DIVERGING"] = {
+            "status": "INSUFFICIENT_EVIDENCE"
+        }
         result["hypotheses"]["DETACHED_RELOCK"] = {
             "DETACHED": {"status": "INSUFFICIENT_EVIDENCE"},
             "RELOCK": {"status": "INSUFFICIENT_EVIDENCE"},
@@ -775,16 +912,29 @@ def summarize_lane_a(
         discovery_net = discovery["net"]
         holdout_net = holdout["net"]
         assert discovery_net is not None and holdout_net is not None
-        direction = "NONE" if discovery_net == 0 else "CONVERGING" if discovery_net < 0 else "DIVERGING"
+        direction = (
+            "NONE"
+            if discovery_net == 0
+            else "CONVERGING"
+            if discovery_net < 0
+            else "DIVERGING"
+        )
         if direction == "NONE":
-            convergence = {"status": "NOT_SUPPORTED", "discovery_mean_net_change": discovery_net, "holdout_mean_net_change": holdout_net}
+            convergence = {
+                "status": "NOT_SUPPORTED",
+                "discovery_mean_net_change": discovery_net,
+                "holdout_mean_net_change": holdout_net,
+            }
         else:
             p_value = permutation_p(
                 holdout_net,
                 holdout["sequence_nulls"]["net_change"],
                 favorable="lower" if direction == "CONVERGING" else "higher",
             )
-            same = (direction == "CONVERGING" and holdout_net < 0) or (direction == "DIVERGING" and holdout_net > 0)
+            same = (
+                (direction == "CONVERGING" and holdout_net < 0)
+                or (direction == "DIVERGING" and holdout_net > 0)
+            )
             convergence = {
                 "status": direction if same and p_value < ALPHA else "NOT_SUPPORTED",
                 "discovery_mean_net_change": discovery_net,
@@ -795,8 +945,15 @@ def summarize_lane_a(
 
         raw_seq: dict[str, float | None] = {}
         seq_tests: dict[str, dict[str, Any]] = {}
-        for name, field, null_key in (("DETACHED", "detached", "detached_rate"), ("RELOCK", "relock", "relock_rate")):
-            raw_p = permutation_p(holdout[field], holdout["sequence_nulls"][null_key], favorable="higher")
+        for name, field, null_key in (
+            ("DETACHED", "detached", "detached_rate"),
+            ("RELOCK", "relock", "relock_rate"),
+        ):
+            raw_p = permutation_p(
+                holdout[field],
+                holdout["sequence_nulls"][null_key],
+                favorable="higher",
+            )
             raw_seq[name] = raw_p
             seq_tests[name] = {
                 "status": "TESTED",
@@ -834,9 +991,16 @@ def summarize_lane_a(
             "difference": conditional_extension_difference(rows),
             "sufficient": sufficient,
         }
-    public_extension = {split: {k: v for k, v in data.items() if k != "rows"} for split, data in extension_data.items()}
+    public_extension = {
+        split: {key: value for key, value in data.items() if key != "rows"}
+        for split, data in extension_data.items()
+    }
     if not extension_sufficient:
-        extension_test = {"status": "INSUFFICIENT_EVIDENCE", "splits": public_extension, "authority": "LANE_A_ASSOCIATION_ONLY"}
+        extension_test = {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "splits": public_extension,
+            "authority": "LANE_A_ASSOCIATION_ONLY",
+        }
     else:
         discovery_diff = extension_data["discovery"]["difference"]
         holdout_diff = extension_data["holdout"]["difference"]
@@ -871,7 +1035,8 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 sufficient = True
                 for split in ("discovery", "holdout"):
                     eligible = [
-                        row for row in rows
+                        row
+                        for row in rows
                         if row["split"] == split
                         and row["checkpoint"] == checkpoint
                         and row.get(feature) is not None
@@ -882,7 +1047,10 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     support = binary_support(labels)
                     sufficient = sufficient and support
                     scores = [float(row[feature]) for row in eligible]
-                    baselines = [float(row[f"no_btc_prior_{outcome}"]) for row in eligible]
+                    baselines = [
+                        float(row[f"no_btc_prior_{outcome}"])
+                        for row in eligible
+                    ]
                     metrics[split] = {
                         "n": len(eligible),
                         "positive_count": sum(labels),
@@ -892,9 +1060,16 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                         "sufficient": support,
                     }
                 if not sufficient:
-                    tests[key] = {"checkpoint": checkpoint, "feature": feature, "outcome": outcome, "status": "INSUFFICIENT_EVIDENCE", "splits": metrics}
+                    tests[key] = {
+                        "checkpoint": checkpoint,
+                        "feature": feature,
+                        "outcome": outcome,
+                        "status": "INSUFFICIENT_EVIDENCE",
+                        "splits": metrics,
+                    }
                     raw_p[key] = None
                     continue
+
                 discovery_scores = [float(row[feature]) for row in by_split["discovery"]]
                 discovery_labels = [bool(row[outcome]) for row in by_split["discovery"]]
                 holdout_scores = [float(row[feature]) for row in by_split["holdout"]]
@@ -902,7 +1077,11 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                 discovery_auc = roc_auc(discovery_scores, discovery_labels)
                 holdout_auc = roc_auc(holdout_scores, holdout_labels)
                 assert discovery_auc is not None and holdout_auc is not None
-                p_value = permutation_p(holdout_auc, rotation_null_auc(holdout_scores, holdout_labels, label=key), favorable="higher")
+                p_value = permutation_p(
+                    holdout_auc,
+                    rotation_null_auc(holdout_scores, holdout_labels, label=key),
+                    favorable="higher",
+                )
                 raw_p[key] = p_value
                 tests[key] = {
                     "checkpoint": checkpoint,
@@ -915,6 +1094,7 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
                     "holdout_no_btc_prior_auc": metrics["holdout"]["no_btc_prior_auc"],
                     "holdout_p_value_raw": p_value,
                 }
+
     adjusted = holm_adjust(raw_p)
     supported: list[str] = []
     sufficient_count = 0
@@ -936,7 +1116,14 @@ def summarize_lane_b(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         test["status"] = "SUPPORTED" if passes else "NOT_SUPPORTED"
         if passes:
             supported.append(key)
-    verdict = "ROTATION_CANDIDATE" if supported else "INSUFFICIENT_EVIDENCE" if sufficient_count == 0 else "NOT_SUPPORTED"
+
+    verdict = (
+        "ROTATION_CANDIDATE"
+        if supported
+        else "INSUFFICIENT_EVIDENCE"
+        if sufficient_count == 0
+        else "NOT_SUPPORTED"
+    )
     return {
         "walk_forward_definition": "expanding prior RENDER outcomes and prior-confirmed BTC events at each checkpoint",
         "row_count": len(rows),
@@ -954,10 +1141,19 @@ def derive_overall_verdict(lane_a: dict[str, Any], lane_b: dict[str, Any]) -> di
         hypotheses["PHASE_LOCK"].get("status") == "SUPPORTED_STRUCTURAL"
         or hypotheses["LEADING_LAGGING"].get("status") in {"LEADING", "LAGGING"}
         or hypotheses["CONVERGING_DIVERGING"].get("status") in {"CONVERGING", "DIVERGING"}
-        or any(test.get("status") == "SUPPORTED_STRUCTURAL" for test in hypotheses["DETACHED_RELOCK"].values())
+        or any(
+            test.get("status") == "SUPPORTED_STRUCTURAL"
+            for test in hypotheses["DETACHED_RELOCK"].values()
+        )
         or hypotheses["SHARED_EXTENSION"].get("status") == "SUPPORTED_ASSOCIATION"
     )
-    overall = "POSITIVE_RESEARCH_EVIDENCE" if predictive else "STRUCTURAL_EVIDENCE_ONLY" if structural else "UNRELATED"
+    overall = (
+        "POSITIVE_RESEARCH_EVIDENCE"
+        if predictive
+        else "STRUCTURAL_EVIDENCE_ONLY"
+        if structural
+        else "UNRELATED"
+    )
     return {
         "overall_verdict": overall,
         "predictive_evidence_source": "ROTATION_CANDIDATE" if predictive else None,
@@ -971,7 +1167,11 @@ def derive_overall_verdict(lane_a: dict[str, Any], lane_b: dict[str, Any]) -> di
 def run_analysis(source_run_dir: Path) -> dict[str, Any]:
     source_manifest, cycles, ledger_hashes = validate_source_run(source_run_dir)
     split = split_render_cycles(cycles[ALT_SYMBOL])
-    pair_rows, phase_rows, lag_rows, sequence_rows = build_pair_rows(cycles[REFERENCE_SYMBOL], cycles[ALT_SYMBOL], split)
+    pair_rows, phase_rows, lag_rows, sequence_rows = build_pair_rows(
+        cycles[REFERENCE_SYMBOL],
+        cycles[ALT_SYMBOL],
+        split,
+    )
     lane_a = summarize_lane_a(pair_rows, phase_rows, lag_rows)
     lane_b_rows = build_lane_b_rows(cycles[REFERENCE_SYMBOL], cycles[ALT_SYMBOL], split)
     lane_b = summarize_lane_b(lane_b_rows)
@@ -990,7 +1190,12 @@ def run_analysis(source_run_dir: Path) -> dict[str, Any]:
 
 
 def persist_analysis(
-    *, analysis: dict[str, Any], source_run_dir: Path, out_root: Path, run_id: str, cli_args: list[str]
+    *,
+    analysis: dict[str, Any],
+    source_run_dir: Path,
+    out_root: Path,
+    run_id: str,
+    cli_args: list[str],
 ) -> Path:
     frozen_run_id = validate_run_id(run_id)
     run_dir = out_root / frozen_run_id
@@ -1007,7 +1212,13 @@ def persist_analysis(
         write_jsonl(run_dir / "lane_a_sequence_rows.jsonl", analysis["sequence_rows"])
         write_json(run_dir / "lane_a_summary.json", analysis["lane_a"])
         write_jsonl(run_dir / "lane_b_checkpoint_rows.jsonl", analysis["lane_b_rows"])
-        write_jsonl(run_dir / "lane_b_tests.jsonl", [dict(test_id=key, **value) for key, value in analysis["lane_b"]["tests"].items()])
+        write_jsonl(
+            run_dir / "lane_b_tests.jsonl",
+            [
+                dict(test_id=key, **value)
+                for key, value in analysis["lane_b"]["tests"].items()
+            ],
+        )
         write_json(run_dir / "lane_b_summary.json", analysis["lane_b"])
         write_json(run_dir / "summary.json", analysis["verdict"])
         artifact_hashes = {
@@ -1047,7 +1258,12 @@ def persist_analysis(
             "random_seed": RANDOM_SEED,
             "multiple_comparison_method": MULTIPLE_COMPARISON_METHOD,
             "alpha": ALPHA,
-            "cli": [sys.executable, "-m", "src.research.run_breathline_btc_render_relationship_analysis_v1", *cli_args],
+            "cli": [
+                sys.executable,
+                "-m",
+                "src.research.run_breathline_btc_render_relationship_analysis_v1",
+                *cli_args,
+            ],
             "output_artifact_sha256": artifact_hashes,
             "safety": dict(SAFETY_MARKERS),
             "verdict": analysis["verdict"],
@@ -1073,26 +1289,45 @@ def main(argv: list[str] | None = None) -> int:
     run_id = validate_run_id(args.run_id)
     started = time.monotonic()
     print(
-        "STARTED", RUNNER_NAME, f"run_id={run_id}", f"registry_version={REGISTRY_VERSION}",
-        f"permutations={NULL_PERMUTATIONS}", "research_only=True", flush=True,
+        "STARTED",
+        RUNNER_NAME,
+        f"run_id={run_id}",
+        f"registry_version={REGISTRY_VERSION}",
+        f"permutations={NULL_PERMUTATIONS}",
+        "research_only=True",
+        flush=True,
     )
     try:
         analysis = run_analysis(args.source_run_dir)
         run_dir = persist_analysis(
-            analysis=analysis, source_run_dir=args.source_run_dir, out_root=args.out_root,
-            run_id=run_id, cli_args=raw_args,
+            analysis=analysis,
+            source_run_dir=args.source_run_dir,
+            out_root=args.out_root,
+            run_id=run_id,
+            cli_args=raw_args,
         )
         print(
-            "FINISHED", RUNNER_NAME, f"elapsed_seconds={time.monotonic() - started:.2f}",
-            f"output_dir={run_dir}", f"overall_verdict={analysis['verdict']['overall_verdict']}",
-            "broker_writes=0", "order_submission=0", "decision_gate=none",
-            "execution_planner=none", "executor=none", flush=True,
+            "FINISHED",
+            RUNNER_NAME,
+            f"elapsed_seconds={time.monotonic() - started:.2f}",
+            f"output_dir={run_dir}",
+            f"overall_verdict={analysis['verdict']['overall_verdict']}",
+            "broker_writes=0",
+            "order_submission=0",
+            "decision_gate=none",
+            "execution_planner=none",
+            "executor=none",
+            flush=True,
         )
         return 0
     except Exception as exc:
         print(
-            "FAILED", RUNNER_NAME, f"elapsed_seconds={time.monotonic() - started:.2f}",
-            f"error_type={type(exc).__name__}", f"error={exc}", flush=True,
+            "FAILED",
+            RUNNER_NAME,
+            f"elapsed_seconds={time.monotonic() - started:.2f}",
+            f"error_type={type(exc).__name__}",
+            f"error={exc}",
+            flush=True,
         )
         return 1
 
