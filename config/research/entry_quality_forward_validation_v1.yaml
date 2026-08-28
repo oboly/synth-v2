@@ -1,0 +1,62 @@
+registry_name: entry_quality_forward_validation_v1
+registry_version: "1.0.0"
+issue: 568
+parent_issue: 542
+research_only: true
+market_only: true
+
+source:
+  shadow_table: research_entry_quality_shadow
+  candle_table: obs_market_candle
+  candle_interval: 15m
+
+observation:
+  identity_field: evidence_key
+  asof_field: asof_ts_utc
+  base_price_rule: latest_candle_close_at_or_before_observation_asof
+
+horizons:
+  - label: 1h
+    minutes: 60
+  - label: 4h
+    minutes: 240
+  - label: 24h
+    minutes: 1440
+
+outcomes:
+  forward_return_pct: "((last_close_at_or_before_horizon / base_close) - 1) * 100"
+  mfe_pct: "((max_future_high / base_close) - 1) * 100"
+  mae_pct: "((min_future_low / base_close) - 1) * 100"
+  future_candles_rule: strictly_after_observation_asof_and_at_or_before_horizon_end
+  horizon_coverage_rule: latest_available_candle_timestamp_must_be_at_or_after_horizon_end
+  incomplete_horizon_status: INSUFFICIENT_HORIZON_COVERAGE
+  post_horizon_prices_may_be_used_for_outcomes: false
+  minimum_future_candles: 1
+  target_reached: unavailable_without_canonical_target_price
+  time_to_target: unavailable_without_canonical_target_price
+
+baselines:
+  - ppp_pct
+  - trade_quality_score
+  - selection_score
+  - entry_quality_score
+  - entry_strength
+
+comparison:
+  identical_eligible_sample_required: true
+  missingness_must_be_reported: true
+  probability_interpretation: false
+
+anti_leakage:
+  feature_timestamp_must_be_lte_observation_asof: true
+  outcome_candles_must_be_strictly_gt_observation_asof: true
+  future_market_context_as_feature: forbidden
+  reconstruct_target_from_ppp_and_market_price: forbidden
+
+safety:
+  production_ranking_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_writes: 0
+  order_submission: 0
