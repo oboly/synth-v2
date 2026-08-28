@@ -38,6 +38,15 @@ def _load_checkpoint(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def validate_checkpoint_scope(checkpoint: dict[str, Any], venue: str | None, batch_size: int) -> None:
+    if checkpoint.get("runner") != RUNNER_NAME:
+        raise SystemExit("checkpoint runner mismatch")
+    if checkpoint.get("venue") != venue:
+        raise SystemExit("checkpoint venue mismatch")
+    if int(checkpoint.get("batch_size")) != batch_size:
+        raise SystemExit("checkpoint batch_size mismatch")
+
+
 def reconcile_jsonl(path: Path, checkpoint: dict[str, Any]) -> None:
     expected = int(checkpoint.get("processed", 0))
     expected_last = checkpoint.get("last_shadow_id")
@@ -169,10 +178,7 @@ def main() -> int:
     sector_count = int(checkpoint.get("sector_available_count", 0)) if checkpoint else 0
     joint_count = int(checkpoint.get("joint_available_count", 0)) if checkpoint else 0
     if checkpoint:
-        if checkpoint.get("venue") != args.venue:
-            raise SystemExit("checkpoint venue mismatch")
-        if int(checkpoint.get("batch_size")) != args.batch_size:
-            raise SystemExit("checkpoint batch_size mismatch")
+        validate_checkpoint_scope(checkpoint, args.venue, args.batch_size)
         reconcile_jsonl(rows_path, checkpoint)
     elif rows_path.exists() and rows_path.read_text(encoding="utf-8").strip():
         raise SystemExit("output exists; use --resume or a new --output-dir")
