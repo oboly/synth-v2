@@ -28,6 +28,9 @@ outcomes:
   mfe_pct: "((max_future_high / base_close) - 1) * 100"
   mae_pct: "((min_future_low / base_close) - 1) * 100"
   future_candles_rule: strictly_after_observation_asof_and_at_or_before_horizon_end
+  horizon_coverage_rule: latest_available_candle_timestamp_must_be_at_or_after_horizon_end
+  incomplete_horizon_status: INSUFFICIENT_HORIZON_COVERAGE
+  post_horizon_prices_may_be_used_for_outcomes: false
   minimum_future_candles: 1
   target_reached: unavailable_without_canonical_target_price
   time_to_target: unavailable_without_canonical_target_price
