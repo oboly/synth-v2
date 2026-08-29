@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -31,6 +32,16 @@ def _required_json_int(payload: Mapping[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(key)
     return value
+
+
+def _required_finite_json_number(payload: Mapping[str, Any], key: str) -> float:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(key)
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(key)
+    return numeric
 
 
 def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
@@ -85,7 +96,7 @@ def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
         }
         for key, value in expected.items():
             try:
-                observed = float(payload[key])
+                observed = _required_finite_json_number(payload, key)
             except (KeyError, TypeError, ValueError):
                 reasons.append(f"{key.upper()}_INVALID_OR_MISSING")
                 continue
