@@ -20,6 +20,7 @@ from src.account_provisioning.trade_execution_credential_rotation_v1 import (
     RESULT_BLOCKED,
     RESULT_ROTATED,
     TradeExecutionCredentialRotationError,
+    TradeExecutionCredentialRotationRepositoryV1,
     check_trade_execution_credential_rotation_v1,
     rotate_trade_execution_credential_v1,
 )
@@ -76,6 +77,7 @@ def _row(master_key_bytes: bytes) -> dict:
         "trading_account_id": 5,
         "venue": "bitvavo",
         "credential_kind": "API_KEY_SECRET",
+        "encrypted_envelope": "old-encrypted-envelope",
         "encryption_algorithm": ENCRYPTION_ALGORITHM,
         "key_version": "v1",
         "credential_fingerprint": compute_fingerprint("bitvavo", "old-key", master_key_bytes),
@@ -256,6 +258,51 @@ def test_stale_update_rolls_back() -> None:
     assert result.safe_error_code == "EXACT_ACTIVE_TRADE_EXECUTION_CREDENTIAL_UPDATE_REQUIRED"
     assert conn.commits == 0
     assert conn.rollbacks == 1
+
+
+def test_repository_update_guards_prior_envelope_and_algorithm() -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.rowcount = 0
+            self.sql = ""
+            self.params: tuple = ()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def execute(self, sql: str, params: tuple) -> None:
+            self.sql = sql
+            self.params = params
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cur = Cursor()
+
+        def cursor(self):
+            return self.cur
+
+    _, key = parse_master_key(generate_test_master_key())
+    row = _row(key)
+    conn = Connection()
+    repo = TradeExecutionCredentialRotationRepositoryV1(conn)
+
+    with pytest.raises(TradeExecutionCredentialRotationError) as exc_info:
+        repo.rotate_exact(
+            row=row,
+            encrypted_envelope="new-envelope",
+            encryption_algorithm=ENCRYPTION_ALGORITHM,
+            key_version="v2",
+            credential_fingerprint="new-fingerprint",
+        )
+
+    assert exc_info.value.code == "EXACT_ACTIVE_TRADE_EXECUTION_CREDENTIAL_UPDATE_REQUIRED"
+    assert "AND encrypted_envelope = %s" in conn.cur.sql
+    assert "AND encryption_algorithm = %s" in conn.cur.sql
+    assert row["encrypted_envelope"] in conn.cur.params
+    assert row["encryption_algorithm"] in conn.cur.params
 
 
 def test_blank_secret_input_is_rejected_before_database_access() -> None:
