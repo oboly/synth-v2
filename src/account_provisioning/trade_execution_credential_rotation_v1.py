@@ -275,6 +275,14 @@ def check_trade_execution_credential_rotation_v1(
                 venue=venue,
                 code=exc.code,
             )
+        except Exception:
+            conn.rollback()
+            return _blocked_check(
+                trading_account_id=trading_account_id,
+                trading_account_credential_id=trading_account_credential_id,
+                venue=venue,
+                code="CHECK_FAILED",
+            )
         conn.rollback()
         return TradeExecutionCredentialRotationCheckV1(
             check_state=CHECK_READY,
