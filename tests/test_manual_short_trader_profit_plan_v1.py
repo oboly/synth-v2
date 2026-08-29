@@ -396,6 +396,72 @@ def test_load_zone_contexts_marks_canonical_verified_snapshot_rows_native_availa
             assert evidence.previous_map_lifecycle_state == "DATA_UNAVAILABLE"
 
 
+def test_load_zone_contexts_retired_tier_metadata_reaches_importer_as_unavailable() -> None:
+    """Issue #550 producer -> snapshot -> import regression (AAVE/FET/TAO/ICP
+    production evidence).
+
+    The published native SHORT snapshot contract permanently retires
+    ``current_map_status`` to the literal placeholder "UNAVAILABLE", even on
+    a fully AVAILABLE/canonical row (Issue #496) -- every real production row
+    reaching this importer therefore carries an empty/placeholder tier, never
+    "CURRENT_ACTIVE_MAP". This proves that real end-to-end evidence for each
+    named production asset resolves ``selected_map_tier`` to the exact
+    DATA_UNAVAILABLE token (see
+    test_actionable_ppp_available_when_selected_map_tier_unavailable in
+    test_profit_plan_provenance_v1.py for the corresponding Profit-Plan-side
+    contract proof that this retired value must not gate Actionable PPP)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        symbols = ("AAVE", "FET", "TAO", "ICP")
+        rows = [
+            dataclasses.replace(
+                _native_short_row(symbol=symbol),
+                # Matches native_short_fib_context_snapshot_v1.build_snapshot()'s
+                # permanent retirement placeholder for this legacy bridge field.
+                current_map_status="UNAVAILABLE",
+            )
+            for symbol in symbols
+        ]
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=rows, output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=[f"{symbol}-EUR" for symbol in symbols],
+            prices={f"{symbol}-EUR": Decimal("0.4560") for symbol in symbols},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        for symbol in symbols:
+            evidence = result.evidence_by_symbol[symbol]
+            assert evidence.native_map_status == "AVAILABLE", symbol
+            assert evidence.selected_map_tier == "DATA_UNAVAILABLE", symbol
+
+            card = build_profit_plan_card(
+                symbol=symbol,
+                market=f"{symbol}-EUR",
+                current_price=Decimal("0.4560"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status=result.input_status_by_symbol[symbol],
+                short_context_coverage_status=result.coverage_status_by_symbol[symbol],
+                short_context_display_state=result.display_state_by_symbol[symbol],
+                fib_ext=result.fib_ext_by_symbol.get(symbol),
+                reentry=result.reentry_by_symbol.get(symbol),
+                presentation_mode=CARD_MODE_POSITION_HELD,
+                evidence=evidence,
+                planning_provenance=result.planning_provenance_by_symbol.get(symbol),
+            )
+            # The retired tier alone must never surface as a blocking permission
+            # reason on any real production card, active or not.
+            assert "MAP_TIER_NOT_CONFIRMED_CURRENT" not in _pp_module._action_gate_blocking_reason_codes(card), symbol
+
+
 def test_load_zone_contexts_canonical_row_surfaces_rollover_and_previous_cycle() -> None:
     """Issue #494: a canonical row that actually rolled over must surface its
     real rollover_state/previous_map_cycle_id/previous_map_lifecycle_state,

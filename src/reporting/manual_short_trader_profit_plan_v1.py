@@ -1284,10 +1284,18 @@ def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
     """Fail-closed Actionable PPP eligibility (Issue #457).
 
     Numeric Actionable PPP requires proven current-map/current-cycle native
-    authority: canonical native map truth, a confirmed CURRENT_ACTIVE_MAP
-    selection tier, and available (non-blocking) lifecycle authority -- not
-    merely a present map_cycle_id, which a transient/non-canonical or
-    non-current row can also carry.
+    authority: canonical native map truth and available (non-blocking)
+    lifecycle authority -- not merely a present map_cycle_id, which a
+    transient/non-canonical or non-current row can also carry.
+
+    Does not gate on ``selected_map_tier`` (native_row.current_map_status):
+    the current native SHORT snapshot contract permanently retires that field
+    to an unavailable placeholder even on a fully AVAILABLE/canonical row
+    (Issue #496), so a ``== "CURRENT_ACTIVE_MAP"`` check here can never pass
+    and would fail every card closed regardless of genuine canonical map
+    authority (Issue #550). Map currency is instead proven by
+    _canonical_native_map_truth_available, map_cycle_id, lifecycle, and
+    _map_switch_review_required below.
     """
     if not _price_is_fresh_enough(card):
         return False
@@ -1296,8 +1304,6 @@ def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
     if not _canonical_native_map_truth_available(card.evidence):
         return False
     if _is_unavailable(card.evidence.map_cycle_id):
-        return False
-    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
         return False
     if _map_lifecycle_blocks_action(card):
         return False
@@ -1936,8 +1942,12 @@ def _fix_ladder_allowed(card: ProfitPlanCard) -> bool:
         return False
     if _is_unavailable(card.evidence.map_cycle_id):
         return False
-    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
-        return False
+    # Does not gate on selected_map_tier (native_row.current_map_status): that
+    # field is permanently retired to an unavailable placeholder even on a
+    # canonical row (Issue #496), so a == "CURRENT_ACTIVE_MAP" check can never
+    # pass and would fail every card closed regardless of genuine canonical
+    # map currency (Issue #550). Map currency is proven above by
+    # _native_map_status/map_cycle_id and below by _map_switch_review_required.
     if _map_lifecycle_blocks_action(card):
         return False
     if _map_switch_review_required(card):
@@ -2053,8 +2063,6 @@ def _action_gate_blocking_reason_codes(card: ProfitPlanCard) -> tuple[str, ...]:
         codes.append("NATIVE_MAP_DATA_UNAVAILABLE")
     if _is_unavailable(card.evidence.map_cycle_id):
         codes.append("MAP_CYCLE_UNAVAILABLE")
-    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
-        codes.append("MAP_TIER_NOT_CONFIRMED_CURRENT")
     if _map_lifecycle_blocks_action(card):
         codes.append("MAP_LIFECYCLE_BLOCKS_ACTION")
     if not _card_has_loaded_entry(card) and card.target_exit_zone:
@@ -3585,7 +3593,6 @@ _EVIDENCE_ROW_DOMAIN_GROUPS: dict[str, tuple[str, int]] = {
 # <details> block so nothing is deleted, only made secondary.
 _REASON_CODE_OPERATOR_LABELS: dict[str, str] = {
     "NATIVE_MAP_DATA_UNAVAILABLE": "Native Fibonacci map data unavailable",
-    "MAP_TIER_NOT_CONFIRMED_CURRENT": "Selected native SHORT map — NOT CONFIRMED",
     "MAP_SELECTION_UNAVAILABLE": "Native SHORT map selection unavailable",
     "MAP_SELECTION_TIER_METADATA_UNAVAILABLE": (
         "Native SHORT map is available; selected-map tier metadata not published"
