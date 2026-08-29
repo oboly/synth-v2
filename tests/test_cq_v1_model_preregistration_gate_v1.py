@@ -56,6 +56,37 @@ def test_gate_rejects_empty_or_inconsistent_counts() -> None:
     assert "JOINT_COUNT_OUT_OF_RANGE" in result.reasons
 
 
+def test_gate_rejects_fractional_or_boolean_count_values() -> None:
+    for key, bad_value in (
+        ("sample_count", 100.0),
+        ("mrp_available_count", 79.9),
+        ("sector_available_count", True),
+        ("joint_available_count", False),
+    ):
+        payload = valid_payload()
+        payload[key] = bad_value
+        result = validate_coverage_summary(payload)
+        assert result.state == BLOCKED_STATE
+        assert "INVALID_OR_MISSING_COUNTS" in result.reasons
+        assert result.artifact_sha256 is None
+
+
+def test_gate_rejects_zero_fractional_boolean_or_missing_last_shadow_id() -> None:
+    for bad_value in (0, -1, 1.5, True, None):
+        payload = valid_payload()
+        payload["last_shadow_id"] = bad_value
+        result = validate_coverage_summary(payload)
+        assert result.state == BLOCKED_STATE
+        assert "LAST_SHADOW_ID_INVALID_OR_MISSING" in result.reasons
+        assert result.artifact_sha256 is None
+
+    payload = valid_payload()
+    del payload["last_shadow_id"]
+    result = validate_coverage_summary(payload)
+    assert result.state == BLOCKED_STATE
+    assert "LAST_SHADOW_ID_INVALID_OR_MISSING" in result.reasons
+
+
 def test_gate_rejects_coverage_not_recomputed_from_same_population() -> None:
     payload = valid_payload()
     payload["joint_coverage"] = 0.61
