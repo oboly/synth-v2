@@ -33,11 +33,16 @@ def _age_minutes(
     return age_seconds / Decimal("60")
 
 
+def _canonical_market(snapshot: MarketPriceSnapshot) -> str:
+    return f"{snapshot.symbol.strip().upper()}-{snapshot.quote_currency.strip().upper()}"
+
+
 def classify_current_price_snapshot(
     snapshot: MarketPriceSnapshot | None,
     *,
     now_utc: datetime,
     fresh_after: timedelta = DEFAULT_CURRENT_PRICE_FRESH_AFTER,
+    expected_market: str | None = None,
 ) -> CurrentPriceDisplay:
     if snapshot is None:
         return CurrentPriceDisplay(
@@ -65,6 +70,37 @@ def classify_current_price_snapshot(
             observed_ts_utc=observed_ts_utc,
             age_min=age_min,
         )
+
+    snapshot_market = snapshot.market.strip().upper()
+    if snapshot_market != _canonical_market(snapshot):
+        return CurrentPriceDisplay(
+            status="STALE_CURRENT_PRICE",
+            safe_price=None,
+            observed_ts_utc=observed_ts_utc,
+            age_min=age_min,
+        )
+    if expected_market is not None and snapshot_market != expected_market.strip().upper():
+        return CurrentPriceDisplay(
+            status="STALE_CURRENT_PRICE",
+            safe_price=None,
+            observed_ts_utc=observed_ts_utc,
+            age_min=age_min,
+        )
+
+    # `observed_ts_utc` says when Synth saw the row; when a provider supplied an
+    # event timestamp, that timestamp must also be fresh. Otherwise repeatedly
+    # observing an old provider value would incorrectly make it look current.
+    # Reuse the established STALE state for incoherent provenance so every existing
+    # fail-closed consumer follows the same unavailable-price path.
+    if snapshot.source_ts_utc is not None:
+        source_age_min = _age_minutes(snapshot.source_ts_utc, now_utc=now_utc)
+        if source_age_min is None or source_age_min < 0 or source_age_min > fresh_after_min:
+            return CurrentPriceDisplay(
+                status="STALE_CURRENT_PRICE",
+                safe_price=None,
+                observed_ts_utc=observed_ts_utc,
+                age_min=age_min,
+            )
 
     return CurrentPriceDisplay(
         status="FRESH_CURRENT_PRICE",
