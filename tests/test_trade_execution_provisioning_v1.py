@@ -10,6 +10,9 @@ from src.account_provisioning.run_provision_trade_execution_credential_v1 import
 from src.account_provisioning.trade_execution_provisioning_v1 import (
     MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY,
     MANUAL_EXECUTION_RUNTIME_OWNER,
+    SHARED_EXECUTOR_IDENTITY,
+    SHARED_EXECUTOR_RUNTIME_OWNER,
+    SUPPORTED_EXECUTOR_BINDING_TUPLES,
     provision_trade_execution_credential,
     readiness_report,
 )
@@ -23,9 +26,19 @@ class _Conn:
 
 
 class _Repo:
-    def __init__(self, _conn, *, account=True, credential=None, binding=None):
-        self.account, self.credential, self.binding = account, credential, binding
+    """In-memory fake modeling the real table's tuple-scoped uniqueness.
+
+    `bindings` maps (executor_identity, runtime_owner) -> binding row, so
+    multiple ACTIVE bindings for one credential can coexist, matching the
+    real `uq_ecb_active_identity_scope` constraint. `find_active_binding`
+    only ever returns the row for the exact requested tuple, mirroring the
+    real repository's tuple-scoped WHERE clause.
+    """
+    def __init__(self, _conn, *, account=True, credential=None, bindings=None):
+        self.account, self.credential = account, credential
+        self.bindings = dict(bindings or {})
         self.envelopes = []
+        self.next_binding_id = 9
     def require_account(self, **_):
         if not self.account: raise ValueError("TRADING_ACCOUNT_VENUE_NOT_FOUND")
     def find_active_credential(self, **_): return self.credential
@@ -33,16 +46,28 @@ class _Repo:
         self.envelopes.append(kwargs["encrypted_envelope"])
         self.credential = {"trading_account_credential_id": 7, "credential_status":"ACTIVE", "permission_scope":"TRADE_EXECUTION", "allowed_order_write":1, "allowed_withdrawal":0, "credential_fingerprint": kwargs["credential_fingerprint"]}
         return 7
-    def find_active_binding(self, **_): return self.binding
-    def insert_binding(self, **kwargs):
-        assert kwargs["credential_id"] == 7
-        self.binding = {"executor_credential_binding_id": 9, "trading_account_credential_id":7, "executor_identity":MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, "runtime_owner":MANUAL_EXECUTION_RUNTIME_OWNER}
-        return 9
+    def find_active_binding(self, *, executor_identity, runtime_owner, **_):
+        return self.bindings.get((executor_identity, runtime_owner))
+    def insert_binding(self, *, credential_id, executor_identity, runtime_owner, **kwargs):
+        assert credential_id == 7
+        binding_id = self.next_binding_id
+        self.next_binding_id += 1
+        self.bindings[(executor_identity, runtime_owner)] = {
+            "executor_credential_binding_id": binding_id, "trading_account_credential_id": 7,
+            "executor_identity": executor_identity, "runtime_owner": runtime_owner,
+        }
+        return binding_id
 
 
-def _run(repo: _Repo):
-    conn = _Conn(); version, key = parse_master_key(generate_test_master_key())
-    result = provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key, conn_factory=lambda:conn, repository_factory=lambda _:repo)
+_DEFAULT_MASTER_KEY = parse_master_key(generate_test_master_key())
+
+
+def _run(repo: _Repo, *, executor_identity=MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY,
+         runtime_owner=MANUAL_EXECUTION_RUNTIME_OWNER, trading_account_id=1, master_key=None):
+    conn = _Conn(); version, key = master_key or _DEFAULT_MASTER_KEY
+    result = provision_trade_execution_credential(trading_account_id=trading_account_id, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key,
+        executor_identity=executor_identity, runtime_owner=runtime_owner,
+        conn_factory=lambda:conn, repository_factory=lambda _:repo)
     return result, conn
 
 
@@ -83,11 +108,14 @@ def test_exact_retry_is_idempotent_and_conflict_fails_closed() -> None:
     version, key = parse_master_key(generate_test_master_key())
     credential = {"trading_account_credential_id":7, "credential_status":"ACTIVE", "permission_scope":"TRADE_EXECUTION", "allowed_order_write":1, "allowed_withdrawal":0, "credential_fingerprint":compute_fingerprint("bitvavo", "KEY_SENTINEL", key)}
     binding = {"executor_credential_binding_id":9, "trading_account_credential_id":7, "executor_identity":MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, "runtime_owner":MANUAL_EXECUTION_RUNTIME_OWNER}
+    manual_key = (MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, MANUAL_EXECUTION_RUNTIME_OWNER)
     # Use an exact duplicate fingerprint: retries may reuse this exact identity only.
-    result = provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key, conn_factory=_Conn, repository_factory=lambda _: _Repo(None, credential=credential, binding=binding))
+    result = provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key, conn_factory=_Conn, repository_factory=lambda _: _Repo(None, credential=credential, bindings={manual_key: binding}))
     assert not result.created_credential and not result.created_binding
+    # Row-integrity guard: even though the query is tuple-scoped, the returned
+    # row's own identity fields must still match the requested tuple.
     with pytest.raises(ValueError, match="BINDING_CONFLICT"):
-        provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key, conn_factory=_Conn, repository_factory=lambda _: _Repo(None, credential=credential, binding={**binding, "runtime_owner":"devlap"}))
+        provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL", master_key_version=version, master_key_bytes=key, conn_factory=_Conn, repository_factory=lambda _: _Repo(None, credential=credential, bindings={manual_key: {**binding, "runtime_owner":"devlap"}}))
 
 
 def test_readiness_is_metadata_only_and_identity_is_stable() -> None:
@@ -106,3 +134,127 @@ def test_provisioning_path_has_no_broker_import_or_live_gate_mutation() -> None:
     assert not any("bitvavo_client" in name or name.startswith("src.executor.manual_execution_bitvavo") for name in imports)
     source = Path("src/account_provisioning/trade_execution_provisioning_v1.py").read_text()
     assert "SYNTH_BROKER_WRITE_PERMISSION" not in source and "live_trading_enabled" not in source
+
+
+# --- Shared-executor tuple / multi-binding coverage (Issue: shared-executor binding provisioning fix) ---
+
+def test_supported_tuples_are_exactly_manual_and_shared() -> None:
+    assert SUPPORTED_EXECUTOR_BINDING_TUPLES == frozenset({
+        (MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, MANUAL_EXECUTION_RUNTIME_OWNER),
+        (SHARED_EXECUTOR_IDENTITY, SHARED_EXECUTOR_RUNTIME_OWNER),
+    })
+
+
+def test_shared_tuple_provisions_and_idempotently_resolves() -> None:
+    repo = _Repo(None)
+    result, conn = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert result.created_binding and conn.committed
+    assert result.executor_identity == SHARED_EXECUTOR_IDENTITY
+    assert result.runtime_owner == SHARED_EXECUTOR_RUNTIME_OWNER
+    first_binding_id = result.executor_credential_binding_id
+
+    # Idempotent retry against the same repo state: no duplicate row created.
+    result2, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert not result2.created_credential and not result2.created_binding
+    assert result2.executor_credential_binding_id == first_binding_id
+
+
+def test_one_credential_can_hold_both_manual_and_shared_active_bindings() -> None:
+    repo = _Repo(None)
+    manual_result, _ = _run(repo)
+    shared_result, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+
+    assert manual_result.trading_account_credential_id == shared_result.trading_account_credential_id == 7
+    assert manual_result.executor_credential_binding_id != shared_result.executor_credential_binding_id
+    assert len(repo.bindings) == 2
+    manual_key = (MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, MANUAL_EXECUTION_RUNTIME_OWNER)
+    shared_key = (SHARED_EXECUTOR_IDENTITY, SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert manual_key in repo.bindings and shared_key in repo.bindings
+
+
+def test_second_tuple_never_creates_a_second_credential() -> None:
+    repo = _Repo(None)
+    manual_result, _ = _run(repo)
+    assert manual_result.created_credential
+    shared_result, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert not shared_result.created_credential
+    assert shared_result.trading_account_credential_id == manual_result.trading_account_credential_id
+    assert len(repo.envelopes) == 1  # exactly one credential ever encrypted/inserted
+
+
+def test_lookup_does_not_raise_ambiguous_identity_with_two_legitimate_bindings() -> None:
+    repo = _Repo(None)
+    _run(repo)
+    _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    # Re-resolving either tuple must not observe the other binding or raise.
+    manual_report = readiness_report(trading_account_id=1, venue="bitvavo", conn_factory=_Conn, repository_factory=lambda _: repo)
+    shared_report = readiness_report(trading_account_id=1, venue="bitvavo", conn_factory=_Conn, repository_factory=lambda _: repo,
+        executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert manual_report["EXECUTOR_CREDENTIAL_BINDING_READY"] is True
+    assert shared_report["EXECUTOR_CREDENTIAL_BINDING_READY"] is True
+    assert manual_report["EXECUTOR_CREDENTIAL_BINDING_ID"] != shared_report["EXECUTOR_CREDENTIAL_BINDING_ID"]
+
+
+def test_manual_binding_id_two_is_never_touched_by_shared_provisioning() -> None:
+    manual_key = (MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY, MANUAL_EXECUTION_RUNTIME_OWNER)
+    existing_manual_binding = {"executor_credential_binding_id": 2, "trading_account_credential_id": 7,
+                                "executor_identity": MANUAL_EXECUTION_BITVAVO_EXECUTOR_IDENTITY,
+                                "runtime_owner": MANUAL_EXECUTION_RUNTIME_OWNER}
+    _, key = _DEFAULT_MASTER_KEY
+    credential = {"trading_account_credential_id":7, "credential_status":"ACTIVE", "permission_scope":"TRADE_EXECUTION",
+                  "allowed_order_write":1, "allowed_withdrawal":0, "credential_fingerprint": compute_fingerprint("bitvavo", "KEY_SENTINEL", key)}
+    repo = _Repo(None, credential=credential, bindings={manual_key: dict(existing_manual_binding)})
+
+    result, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+
+    assert repo.bindings[manual_key] == existing_manual_binding  # untouched: identical dict, id still 2
+    assert result.executor_credential_binding_id != 2
+
+
+def test_duplicate_exact_tuple_is_idempotent_not_duplicated() -> None:
+    repo = _Repo(None)
+    first, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    second, _ = _run(repo, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER)
+    assert first.executor_credential_binding_id == second.executor_credential_binding_id
+    assert second.created_binding is False
+    assert len(repo.bindings) == 1
+
+
+@pytest.mark.parametrize("executor_identity,runtime_owner", [
+    ("manual_execution_bitvavo_v1", "gurkdb"),       # right identity, wrong owner
+    ("shared-executor-v1", "odroid"),                 # right identity, wrong owner (swapped)
+    ("some_unreviewed_executor_v1", "odroid"),
+    ("shared-executor-v1", "devlap"),
+])
+def test_invalid_identity_owner_pair_fails_closed(executor_identity, runtime_owner) -> None:
+    version, key = parse_master_key(generate_test_master_key())
+    with pytest.raises(ValueError, match="UNSUPPORTED_EXECUTOR_BINDING_TUPLE"):
+        provision_trade_execution_credential(trading_account_id=1, venue="bitvavo", api_key="KEY_SENTINEL", api_secret="SECRET_SENTINEL",
+            master_key_version=version, master_key_bytes=key, executor_identity=executor_identity, runtime_owner=runtime_owner,
+            conn_factory=_Conn, repository_factory=lambda _: _Repo(None))
+    with pytest.raises(ValueError, match="UNSUPPORTED_EXECUTOR_BINDING_TUPLE"):
+        readiness_report(trading_account_id=1, venue="bitvavo", executor_identity=executor_identity, runtime_owner=runtime_owner,
+            conn_factory=_Conn, repository_factory=lambda _: _Repo(None))
+
+
+def test_multi_account_isolation_for_shared_tuple() -> None:
+    repo_a = _Repo(None)
+    repo_b = _Repo(None)
+    result_a, _ = _run(repo_a, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER, trading_account_id=1)
+    result_b, _ = _run(repo_b, executor_identity=SHARED_EXECUTOR_IDENTITY, runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER, trading_account_id=5)
+    # Distinct repositories model distinct accounts' rows; each provisions its own credential/binding independently.
+    assert result_a.trading_account_credential_id == 7 and result_b.trading_account_credential_id == 7
+    assert repo_a.bindings is not repo_b.bindings
+    assert set(repo_a.bindings) == {(SHARED_EXECUTOR_IDENTITY, SHARED_EXECUTOR_RUNTIME_OWNER)}
+    assert set(repo_b.bindings) == {(SHARED_EXECUTOR_IDENTITY, SHARED_EXECUTOR_RUNTIME_OWNER)}
+
+
+def test_cli_rejects_unsupported_executor_identity_owner_pair() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--trading-account-id", "1", "--executor-identity", "shared-executor-v1", "--runtime-owner", "odroid"])
+
+
+def test_cli_accepts_canonical_shared_tuple() -> None:
+    args = parse_args(["--trading-account-id", "1", "--executor-identity", "shared-executor-v1", "--runtime-owner", "gurkdb"])
+    assert args.executor_identity == SHARED_EXECUTOR_IDENTITY
+    assert args.runtime_owner == SHARED_EXECUTOR_RUNTIME_OWNER
