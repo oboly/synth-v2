@@ -25,7 +25,9 @@ database entirely. It is not reused here.
 `src/account_provisioning/trade_execution_provisioning_v1.py` (credential +
 `executor_credential_binding` provisioning) already assumes the target
 `trading_account` row exists. This document's module is the missing step
-before that one.
+before that one. See
+`docs/ops/trade_execution_credential_binding_provisioning_v1.md` for that
+module's tuple-scoped binding contract (manual vs. shared-executor roles).
 
 ## Scope
 
