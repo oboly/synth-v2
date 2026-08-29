@@ -32,6 +32,7 @@ class CredentialScopeBinding:
     allowed_withdrawal: bool
     allowed_private_read: bool = False
     validation_state: str = CredentialValidationState.UNVALIDATED.value
+    validated_ts_utc: Any | None = None
     binding_status: str = BINDING_STATUS_ACTIVE
 
 
@@ -52,7 +53,7 @@ SELECT binding.executor_credential_binding_id, binding.trading_account_credentia
  credential.venue AS credential_venue, credential.permission_scope AS credential_permission_scope,
  credential.credential_status, credential.credential_source,
  credential.allowed_private_read, credential.allowed_order_write, credential.allowed_withdrawal,
- credential.validation_state
+ credential.validation_state, credential.validated_ts_utc
 FROM executor_credential_binding AS binding
 INNER JOIN trading_account_credential AS credential
  ON credential.trading_account_credential_id=binding.trading_account_credential_id
@@ -67,18 +68,17 @@ WHERE binding.trading_account_id=%s AND binding.venue=%s
 
 def _row_to_binding(row: Any) -> CredentialScopeBinding:
     bool_fields = {"allowed_private_read", "allowed_order_write", "allowed_withdrawal"}
-    return CredentialScopeBinding(
-        **{
-            key: (
-                bool(row[key])
-                if key in bool_fields
-                else int(row[key])
-                if key.endswith("_id")
-                else str(row[key])
-            )
-            for key in CredentialScopeBinding.__dataclass_fields__
-        }
-    )
+    values: dict[str, Any] = {}
+    for key in CredentialScopeBinding.__dataclass_fields__:
+        if key == "validated_ts_utc":
+            values[key] = row[key]
+        elif key in bool_fields:
+            values[key] = bool(row[key])
+        elif key.endswith("_id"):
+            values[key] = int(row[key])
+        else:
+            values[key] = str(row[key])
+    return CredentialScopeBinding(**values)
 
 
 def _assert_credential_identity_match(row: Any, *, binding: CredentialScopeBinding) -> None:
@@ -161,5 +161,9 @@ class ExecutorCredentialScopeRepository:
         if binding.validation_state != VALID_TRADE_EXECUTION_STATE:
             raise CredentialScopeDeniedError(
                 "CREDENTIAL_SCOPE_CREDENTIAL_NOT_VALIDATED_FOR_TRADE_EXECUTION"
+            )
+        if binding.validated_ts_utc is None:
+            raise CredentialScopeDeniedError(
+                "CREDENTIAL_SCOPE_CREDENTIAL_VALIDATION_TIMESTAMP_MISSING"
             )
         return binding
