@@ -125,6 +125,18 @@ def test_evidence_query_uses_scalar_latest_lookups_without_history_join_product(
     assert result[7]["signal_ts_1h_utc"] == "2026-08-29 12:05:00"
 
 
+def _args(*, write_db: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        config="unused.yaml",
+        venue="bitvavo",
+        limit=1,
+        asset_id=7,
+        ppp_csv=None,
+        out_csv="unused.csv",
+        write_db=write_db,
+    )
+
+
 def test_run_emits_phase_start_end_and_row_counts(monkeypatch, capsys) -> None:
     conn = _Connection([])
     candidate = SimpleNamespace(asset_id=7)
@@ -146,17 +158,7 @@ def test_run_emits_phase_start_end_and_row_counts(monkeypatch, capsys) -> None:
     monkeypatch.setattr(runner, "build_shadow_rows", lambda **_kwargs: [])
     monkeypatch.setattr(runner, "write_csv", lambda _path, _rows: None)
 
-    args = SimpleNamespace(
-        config="unused.yaml",
-        venue="bitvavo",
-        limit=1,
-        asset_id=7,
-        ppp_csv=None,
-        out_csv="unused.csv",
-        write_db=False,
-    )
-
-    assert runner.run(args) == 0
+    assert runner.run(_args()) == 0
     output = capsys.readouterr().out
 
     for phase in (
@@ -173,4 +175,52 @@ def test_run_emits_phase_start_end_and_row_counts(monkeypatch, capsys) -> None:
     assert "PHASE_END name=fetch_bounded_evidence_timestamps rows=1" in output
     assert "elapsed_s=" in output
     assert "FINISHED runner=entry_quality_shadow_bounded_v1" in output
+    assert conn.closed is True
+
+
+def test_interrupt_preserves_completed_csv_and_emits_single_terminal(monkeypatch, capsys) -> None:
+    conn = _Connection([])
+    candidate = SimpleNamespace(asset_id=7)
+    installed_handlers = {}
+    csv_written = []
+
+    monkeypatch.setattr(runner.signal, "getsignal", lambda _signum: "previous")
+
+    def fake_signal(signum, handler):
+        if callable(handler):
+            installed_handlers[signum] = handler
+
+    monkeypatch.setattr(runner.signal, "signal", fake_signal)
+    monkeypatch.setattr(runner, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(runner, "load_selection_config", lambda _path: {})
+    monkeypatch.setattr(
+        runner,
+        "fetch_bounded_selection_candidates",
+        lambda *_args, **_kwargs: [candidate],
+    )
+    monkeypatch.setattr(runner, "rank_candidates", lambda _rows, _config: [candidate])
+    monkeypatch.setattr(
+        runner,
+        "fetch_bounded_evidence_timestamps",
+        lambda *_args, **_kwargs: {7: {}},
+    )
+    monkeypatch.setattr(runner, "_load_ppp_csv", lambda _path: {})
+    monkeypatch.setattr(runner, "build_shadow_rows", lambda **_kwargs: [])
+    monkeypatch.setattr(runner, "write_csv", lambda path, _rows: csv_written.append(path))
+
+    def interrupt_during_db(_conn, _rows):
+        installed_handlers[runner.signal.SIGTERM](runner.signal.SIGTERM, None)
+        raise AssertionError("signal handler must interrupt")
+
+    monkeypatch.setattr(runner, "write_shadow_rows", interrupt_during_db)
+
+    assert runner.run(_args(write_db=True)) == 130
+    output = capsys.readouterr().out
+
+    assert csv_written == ["unused.csv"]
+    assert output.count("INTERRUPTED runner=entry_quality_shadow_bounded_v1") == 1
+    assert "FINISHED runner=entry_quality_shadow_bounded_v1" not in output
+    assert "FAILED runner=entry_quality_shadow_bounded_v1" not in output
+    assert "resumable=1" in output
+    assert conn.rolled_back is True
     assert conn.closed is True
