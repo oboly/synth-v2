@@ -18,8 +18,11 @@ and reviewed for Issue #392 phases 1-6 and reports their state:
 - ``src/execution_planner/automatic_exit_execution_handoff_adapter_v1.py`` +
   ``automatic_exit_execution_handoff_application_v1.py`` (candidate ->
   decision_gate -> planner -> executor handoff seam)
-- ``deploy/ownership/account_runtime_capability_ownership_v1.json``
-  (runtime/service ownership and activation status)
+- ``deploy/ownership/account_runtime_capability_ownership_v1.json`` (runtime/
+  service ownership design metadata only -- capability existence and
+  ``owner_host``; ``activation_status`` is never read as runtime evidence)
+- ``src/ops/systemd_runtime_readiness_probe_v1.py`` (Issue #585: read-only
+  ``systemctl show`` observation of the actual installed service/timer state)
 
 Phase 1 boundary
 ----------------
@@ -90,6 +93,13 @@ from src.account.account_mode_contract_v1 import (
 from src.executor.shared_executor_identity_v1 import (
     SHARED_EXECUTOR_IDENTITY,
     SHARED_EXECUTOR_RUNTIME_OWNER,
+)
+from src.ops.systemd_runtime_readiness_probe_v1 import (
+    REQUIRED_RUNTIME_CAPABILITY_CONTRACTS_V1,
+    STATUS_PASS as _RUNTIME_CAPABILITY_STATUS_PASS,
+    SystemdProbeV1,
+    default_systemd_probe_v1,
+    evaluate_runtime_capability_readiness_v1,
 )
 
 # --- Contract constants -----------------------------------------------
@@ -169,7 +179,6 @@ REQUIRED_RUNTIME_CAPABILITY_IDS: Final[tuple[str, ...]] = (
     "AUTOMATIC_EXIT_POLICY_RUNTIME",
     "SHARED_EXECUTOR_RUNTIME",
 )
-_RUNTIME_ACTIVE_STATUSES: Final[frozenset[str]] = frozenset({"ACTIVE", "ENABLED", "RUNNING"})
 
 # Issue #551 account-mode split: canonical account_mode vocabulary
 # (paper / live_readonly / live) and its live_trading_enabled agreement
@@ -311,6 +320,7 @@ class ControllerConfigV1:
     connection_factory: Callable[[], Any] | None = None
     credential_scope_repository: Any | None = None
     kill_switch_repository: Any | None = None
+    systemd_probe: SystemdProbeV1 | None = None
 
 
 # --- Small helpers --------------------------------------------------------
@@ -655,6 +665,15 @@ def _phase_kill_switch_ready(config: ControllerConfigV1) -> tuple[PhaseResultV1,
 
 
 def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
+    """Issue #585: RUNTIME_READY reports actual read-only systemd state.
+
+    ``deploy/ownership/account_runtime_capability_ownership_v1.json`` supplies
+    ownership/design metadata only (capability existence, ``owner_host``).
+    Its ``activation_status`` field is never read here and can never make
+    this phase pass on its own -- the only evidence that can pass this phase
+    is a live ``systemctl show`` observation of the installed service/timer
+    pair, via ``evaluate_runtime_capability_readiness_v1``.
+    """
     path = config.ownership_registry_path
     try:
         raw = path.read_text(encoding="utf-8")
@@ -667,29 +686,30 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
         for entry in registry.get("capabilities", [])
         if isinstance(entry, dict)
     }
-    not_active: dict[str, str] = {}
+    probe = config.systemd_probe or default_systemd_probe_v1
+
+    per_capability: dict[str, dict[str, Any]] = {}
+    not_ready: dict[str, str] = {}
     for capability_id in REQUIRED_RUNTIME_CAPABILITY_IDS:
-        entry = capabilities.get(capability_id)
-        if entry is None:
-            not_active[capability_id] = "MISSING"
-            continue
-        owner_host = str(entry.get("owner_host", "UNKNOWN"))
-        if owner_host != SHARED_EXECUTOR_RUNTIME_OWNER:
-            return _blocked(
-                PHASE_RUNTIME_READY,
-                "RUNTIME_CAPABILITY_OWNER_MISMATCH",
-                {
-                    "capability_id": capability_id,
-                    "expected_owner_host": SHARED_EXECUTOR_RUNTIME_OWNER,
-                    "observed_owner_host": owner_host,
-                },
-            )
-        status = str(entry.get("activation_status", "UNKNOWN"))
-        if status not in _RUNTIME_ACTIVE_STATUSES:
-            not_active[capability_id] = status
-    if not_active:
-        return _blocked(PHASE_RUNTIME_READY, "RUNTIME_CAPABILITY_NOT_ACTIVE", {"not_active": not_active})
-    return _passed(PHASE_RUNTIME_READY, "OK", {"checked_capabilities": list(REQUIRED_RUNTIME_CAPABILITY_IDS)})
+        contract = REQUIRED_RUNTIME_CAPABILITY_CONTRACTS_V1[capability_id]
+        result = evaluate_runtime_capability_readiness_v1(
+            contract, capabilities.get(capability_id), probe
+        )
+        per_capability[capability_id] = {
+            "status": result.status,
+            "reason_code": result.reason_code,
+            "detail": result.detail,
+        }
+        if result.status != _RUNTIME_CAPABILITY_STATUS_PASS:
+            not_ready[capability_id] = result.reason_code
+
+    if not_ready:
+        return _blocked(
+            PHASE_RUNTIME_READY,
+            "RUNTIME_CAPABILITY_NOT_READY",
+            {"not_ready": not_ready, "capabilities": per_capability},
+        )
+    return _passed(PHASE_RUNTIME_READY, "OK", {"capabilities": per_capability})
 
 
 def _build_synthetic_acceptance_plan() -> Any:
