@@ -182,8 +182,8 @@ python -m src.ops.sell_live_activation_controller_v1 \
   --check \
   --trading-account-id <id> \
   --venue bitvavo \
-  --executor-identity manual_execution_bitvavo_v1 \
-  --runtime-owner odroid \
+  --executor-identity shared-executor-v1 \
+  --runtime-owner gurkdb \
   --canary-market <MARKET> \
   --canary-max-orders-per-cycle 1 \
   --canary-max-notional-eur 25 \

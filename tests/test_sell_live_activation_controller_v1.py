@@ -28,6 +28,10 @@ from src.executor.execution_kill_switch_v1 import (
     ExecutionKillSwitchEventV1,
     ExecutionKillSwitchRepositoryV1,
 )
+from src.executor.shared_executor_identity_v1 import (
+    SHARED_EXECUTOR_IDENTITY,
+    SHARED_EXECUTOR_RUNTIME_OWNER,
+)
 from src.ops import sell_live_activation_controller_v1 as controller
 
 
@@ -94,15 +98,20 @@ def _connection_factory(*, tables=REQUIRED_TABLES, account_row=None, fail=False)
     return lambda: _FakeConnection(tables=tables, account_row=account_row, fail=fail)
 
 
-def _credential_repo(*, granted: bool = True) -> ExecutorCredentialScopeRepository:
+def _credential_repo(
+    *,
+    granted: bool = True,
+    executor_identity: str = SHARED_EXECUTOR_IDENTITY,
+    runtime_owner: str = SHARED_EXECUTOR_RUNTIME_OWNER,
+) -> ExecutorCredentialScopeRepository:
     binding = CredentialScopeBinding(
         executor_credential_binding_id=1,
         trading_account_credential_id=1,
         trading_account_id=3,
         venue="bitvavo",
         permission_scope="TRADE_EXECUTION",
-        executor_identity="manual_execution_bitvavo_v1",
-        runtime_owner="odroid",
+        executor_identity=executor_identity,
+        runtime_owner=runtime_owner,
         credential_status="ACTIVE",
         credential_source="db_encrypted",
         allowed_order_write=True,
@@ -111,9 +120,14 @@ def _credential_repo(*, granted: bool = True) -> ExecutorCredentialScopeReposito
 
     class _Repo(ExecutorCredentialScopeRepository):
         def resolve(self, **kwargs):  # type: ignore[override]
-            if not granted:
-                from src.executor.execution_credential_scope_v1 import CredentialScopeDeniedError
+            from src.executor.execution_credential_scope_v1 import CredentialScopeDeniedError
 
+            if not granted:
+                raise CredentialScopeDeniedError("CREDENTIAL_SCOPE_NOT_BOUND")
+            if (
+                kwargs.get("executor_identity") != binding.executor_identity
+                or kwargs.get("runtime_owner") != binding.runtime_owner
+            ):
                 raise CredentialScopeDeniedError("CREDENTIAL_SCOPE_NOT_BOUND")
             return binding
 
@@ -166,7 +180,11 @@ def _no_permission_history(monkeypatch: pytest.MonkeyPatch) -> None:
 def _active_ownership_registry_path(tmp_path: Path) -> Path:
     registry = {
         "capabilities": [
-            {"capability_id": capability_id, "activation_status": "ACTIVE"}
+            {
+                "capability_id": capability_id,
+                "owner_host": SHARED_EXECUTOR_RUNTIME_OWNER,
+                "activation_status": "ACTIVE",
+            }
             for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS
         ]
     }
@@ -179,8 +197,8 @@ def _base_config(**overrides: Any) -> controller.ControllerConfigV1:
     values: dict[str, Any] = dict(
         trading_account_id=3,
         venue="bitvavo",
-        executor_identity="manual_execution_bitvavo_v1",
-        runtime_owner="odroid",
+        executor_identity=SHARED_EXECUTOR_IDENTITY,
+        runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
         canary_allowed_market="SOL-EUR",
         canary_max_orders_per_cycle=1,
         canary_max_notional_eur="25",
@@ -245,6 +263,8 @@ def test_all_checks_green_yields_live_authorization_required(
     statuses = {entry["phase"]: entry["status"] for entry in artifact["phase_results"]}
     assert all(status == "PASSED" for status in statuses.values())
     assert artifact["canary_contract_preview"]["allowed_side"] == "SELL"
+    assert artifact["canary_contract_preview"]["executor_identity"] == SHARED_EXECUTOR_IDENTITY
+    assert artifact["canary_contract_preview"]["runtime_owner"] == SHARED_EXECUTOR_RUNTIME_OWNER
 
 
 # --- Individual fail-closed cases -----------------------------------
@@ -266,6 +286,37 @@ def test_credential_missing_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     result = next(r for r in artifact["phase_results"] if r["phase"] == "CREDENTIAL_BINDING_READY")
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "CREDENTIAL_SCOPE_NOT_BOUND"
+
+
+def test_historical_manual_binding_cannot_satisfy_shared_runtime_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _base_config(
+        executor_identity="manual_execution_bitvavo_v1",
+        runtime_owner="odroid",
+        credential_scope_repository=_credential_repo(
+            executor_identity="manual_execution_bitvavo_v1",
+            runtime_owner="odroid",
+        ),
+    )
+    artifact = _run(config, monkeypatch)
+
+    precheck = next(
+        r for r in artifact["phase_results"] if r["phase"] == "PRECHECK"
+    )
+    assert precheck["status"] == "BLOCKED"
+    assert (
+        precheck["reason_code"]
+        == "EXECUTOR_IDENTITY_NOT_CANONICAL_SHARED_EXECUTOR"
+    )
+
+    credential = next(
+        r
+        for r in artifact["phase_results"]
+        if r["phase"] == "CREDENTIAL_BINDING_READY"
+    )
+    assert credential["status"] == "BLOCKED"
+    assert credential["reason_code"] == "CREDENTIAL_SCOPE_NOT_BOUND"
 
 
 def test_live_permission_absent_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,6 +402,30 @@ def test_runtime_missing_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "RUNTIME_CAPABILITY_NOT_ACTIVE"
     assert set(result["detail"]["not_active"]) == set(controller.REQUIRED_RUNTIME_CAPABILITY_IDS)
+
+
+def test_runtime_owner_mismatch_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    registry = {
+        "capabilities": [
+            {
+                "capability_id": capability_id,
+                "owner_host": "odroid",
+                "activation_status": "ACTIVE",
+            }
+            for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS
+        ]
+    }
+    path = tmp_path / "wrong-owner.json"
+    path.write_text(json.dumps(registry), encoding="utf-8")
+
+    artifact = _run(_base_config(ownership_registry_path=path), monkeypatch)
+    result = next(
+        r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY"
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "RUNTIME_CAPABILITY_OWNER_MISMATCH"
 
 
 def test_runtime_registry_unreadable_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -448,18 +523,34 @@ def test_persist_artifact_writes_json(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_canary_preview_rejects_non_sell_side() -> None:
     with pytest.raises(controller.SellLiveCanaryContractPreviewError):
         controller.SellLiveCanaryContractPreviewV1(
-            version=controller.CONTROLLER_VERSION, trading_account_id=3, venue="bitvavo",
-            allowed_side="BUY", allowed_market="SOL-EUR", max_orders_per_cycle=1,
-            max_notional_eur="25", kill_switch_required=True, deployed_sha="abc123",
+            version=controller.CONTROLLER_VERSION,
+            trading_account_id=3,
+            venue="bitvavo",
+            executor_identity=SHARED_EXECUTOR_IDENTITY,
+            runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
+            allowed_side="BUY",
+            allowed_market="SOL-EUR",
+            max_orders_per_cycle=1,
+            max_notional_eur="25",
+            kill_switch_required=True,
+            deployed_sha="abc123",
         )
 
 
 def test_canary_preview_requires_kill_switch_required_true() -> None:
     with pytest.raises(controller.SellLiveCanaryContractPreviewError):
         controller.SellLiveCanaryContractPreviewV1(
-            version=controller.CONTROLLER_VERSION, trading_account_id=3, venue="bitvavo",
-            allowed_side="SELL", allowed_market="SOL-EUR", max_orders_per_cycle=1,
-            max_notional_eur="25", kill_switch_required=False, deployed_sha="abc123",
+            version=controller.CONTROLLER_VERSION,
+            trading_account_id=3,
+            venue="bitvavo",
+            executor_identity=SHARED_EXECUTOR_IDENTITY,
+            runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
+            allowed_side="SELL",
+            allowed_market="SOL-EUR",
+            max_orders_per_cycle=1,
+            max_notional_eur="25",
+            kill_switch_required=False,
+            deployed_sha="abc123",
         )
 
 
