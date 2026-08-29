@@ -124,19 +124,21 @@ def fetch_latest_prices_by_symbol(
         latest_symbol_filter = f"AND symbol IN ({joined})"
         outer_symbol_filter = f"AND m.symbol IN ({joined})"
 
+    # Keep market identity in the latest-row key. A newer row for the same
+    # symbol but a different market must never hide the canonical quote market.
     sql = f"""
     WITH latest_price AS (
         SELECT
             venue,
             symbol,
+            market,
             quote_currency,
             MAX(observed_ts_utc) AS observed_ts_utc
         FROM market_price_snapshot
         WHERE venue = %(venue)s
           AND quote_currency = %(quote_currency)s
-          AND UPPER(market) = CONCAT(UPPER(symbol), '-', UPPER(quote_currency))
           {latest_symbol_filter}
-        GROUP BY venue, symbol, quote_currency
+        GROUP BY venue, symbol, market, quote_currency
     )
     SELECT
         m.venue,
@@ -151,13 +153,13 @@ def fetch_latest_prices_by_symbol(
     JOIN latest_price lp
       ON lp.venue = m.venue
      AND lp.symbol = m.symbol
+     AND lp.market = m.market
      AND lp.quote_currency = m.quote_currency
      AND lp.observed_ts_utc = m.observed_ts_utc
     WHERE m.venue = %(venue)s
       AND m.quote_currency = %(quote_currency)s
-      AND UPPER(m.market) = CONCAT(UPPER(m.symbol), '-', UPPER(m.quote_currency))
       {outer_symbol_filter}
-    ORDER BY m.symbol, m.source_ts_utc DESC, m.source_name DESC
+    ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC
     """
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -166,15 +168,19 @@ def fetch_latest_prices_by_symbol(
     out: dict[str, MarketPriceSnapshot] = {}
     for row in rows:
         symbol = normalize_symbol(str(row["symbol"]))
-        # ORDER BY makes equal-observation ties deterministic; keep the first
-        # (newest provider timestamp/source) row for each symbol.
+        quote = str(row["quote_currency"]).strip().upper()
+        market = str(row["market"]).strip().upper()
+        if market != f"{symbol}-{quote}":
+            continue
+        # SQL ordering makes equal-observation ties deterministic; keep the
+        # newest canonical row for each symbol.
         if symbol in out:
             continue
         out[symbol] = MarketPriceSnapshot(
             venue=str(row["venue"]),
             symbol=symbol,
-            market=str(row["market"]),
-            quote_currency=str(row["quote_currency"]),
+            market=market,
+            quote_currency=quote,
             price=Decimal(str(row["price"])),
             source_name=str(row["source_name"]),
             source_ts_utc=row.get("source_ts_utc"),
