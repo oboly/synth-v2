@@ -46,10 +46,12 @@ VALID_CREDENTIAL_VALIDATION_STATES = frozenset(
         "UNVALIDATED",
         "VALID_READ_ONLY",
         "VALID_PRIVATE_READ",
+        "VALID_TRADE_EXECUTION",
         "INVALID_CREDENTIALS",
     }
 )
 VALIDATED_PRIVATE_READ_STATES = frozenset({"VALID_READ_ONLY", "VALID_PRIVATE_READ"})
+VALIDATED_TRADE_EXECUTION_STATES = frozenset({"VALID_TRADE_EXECUTION"})
 
 SECRET_FIELD_NAMES = frozenset(
     {
@@ -74,12 +76,7 @@ class CredentialBindingValidationError(ValueError):
 
 @dataclass(frozen=True)
 class CredentialBindingProfile:
-    """
-    Non-secret resolved credential profile.
-
-    This is safe to print as a diagnostic contract object: it includes no
-    plaintext key, secret, encrypted envelope, or master decryption material.
-    """
+    """Non-secret resolved credential profile."""
 
     trading_account_id: int
     account_code: str
@@ -100,7 +97,6 @@ class CredentialBindingProfile:
     last_validation_error_code: str | None
 
     def public_report(self) -> dict[str, Any]:
-        """Return a non-secret report payload for logs/tests/docs."""
         return {
             "trading_account_id": self.trading_account_id,
             "account_code": self.account_code,
@@ -129,16 +125,7 @@ def validate_credential_binding(
     require_validated: bool = True,
     allow_legacy_source: bool = False,
 ) -> CredentialBindingProfile:
-    """
-    Validate deterministic binding:
-
-      trading_account_id + venue + required_permission_scope
-        -> exactly one ACTIVE credential profile.
-
-    The caller supplies repository rows from a query that joins
-    trading_account to trading_account_credential. This function validates the
-    contract and returns only non-secret metadata.
-    """
+    """Resolve exactly one ACTIVE credential profile for one account/scope."""
     if required_permission_scope not in VALID_PERMISSION_SCOPES:
         raise CredentialBindingValidationError(
             "UNKNOWN_REQUIRED_PERMISSION_SCOPE",
@@ -168,7 +155,6 @@ def validate_credential_binding(
         if profile.credential_status == CREDENTIAL_STATUS_ACTIVE
         and profile.permission_scope == required_permission_scope
     ]
-
     if not matches:
         raise CredentialBindingValidationError(
             "NO_CREDENTIAL_BINDING",
@@ -216,6 +202,19 @@ def validate_credential_binding(
                 "ORDER_WRITE_CAPABILITY_IN_READ_ONLY_CONTEXT",
                 "READ_ONLY_PRIVATE credentials must not allow order writes",
             )
+        validated_states = VALIDATED_PRIVATE_READ_STATES
+    else:
+        if not profile.allowed_private_read:
+            raise CredentialBindingValidationError(
+                "MISSING_REQUIRED_PRIVATE_READ_SCOPE",
+                "TRADE_EXECUTION validation requires allowed_private_read=1",
+            )
+        if not profile.allowed_order_write:
+            raise CredentialBindingValidationError(
+                "MISSING_REQUIRED_ORDER_WRITE_SCOPE",
+                "TRADE_EXECUTION credentials require allowed_order_write=1",
+            )
+        validated_states = VALIDATED_TRADE_EXECUTION_STATES
 
     if profile.allowed_withdrawal:
         raise CredentialBindingValidationError(
@@ -223,13 +222,18 @@ def validate_credential_binding(
             "Synth never accepts withdrawal-capable credentials",
         )
 
-    if require_validated and profile.validation_state not in VALIDATED_PRIVATE_READ_STATES:
+    if require_validated and profile.validation_state not in validated_states:
         raise CredentialBindingValidationError(
             "UNVALIDATED_CREDENTIAL",
             (
                 f"validation_state={profile.validation_state!r} "
                 f"last_validation_error_code={profile.last_validation_error_code!r}"
             ),
+        )
+    if require_validated and profile.validated_ts_utc is None:
+        raise CredentialBindingValidationError(
+            "CREDENTIAL_VALIDATION_TIMESTAMP_MISSING",
+            "validated credential requires validated_ts_utc",
         )
 
     return profile
