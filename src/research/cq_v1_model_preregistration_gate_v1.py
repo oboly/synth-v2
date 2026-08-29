@@ -26,6 +26,13 @@ def _canonical_sha256(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _required_json_int(payload: Mapping[str, Any], key: str) -> int:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(key)
+    return value
+
+
 def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
     reasons: list[str] = []
 
@@ -35,17 +42,24 @@ def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
         reasons.append("TERMINAL_STATE_NOT_FINISHED")
 
     try:
-        sample_count = int(payload["sample_count"])
-        mrp_count = int(payload["mrp_available_count"])
-        sector_count = int(payload["sector_available_count"])
-        joint_count = int(payload["joint_available_count"])
-    except (KeyError, TypeError, ValueError):
+        sample_count = _required_json_int(payload, "sample_count")
+        mrp_count = _required_json_int(payload, "mrp_available_count")
+        sector_count = _required_json_int(payload, "sector_available_count")
+        joint_count = _required_json_int(payload, "joint_available_count")
+    except (KeyError, TypeError):
         return CoverageGateResult(BLOCKED_STATE, None, tuple(reasons + ["INVALID_OR_MISSING_COUNTS"]))
 
     if sample_count <= 0:
         reasons.append("EMPTY_SAMPLE")
-    if sample_count > 0 and payload.get("last_shadow_id") is None:
-        reasons.append("LAST_SHADOW_ID_REQUIRED")
+
+    if sample_count > 0:
+        try:
+            last_shadow_id = _required_json_int(payload, "last_shadow_id")
+        except (KeyError, TypeError):
+            reasons.append("LAST_SHADOW_ID_INVALID_OR_MISSING")
+        else:
+            if last_shadow_id <= 0:
+                reasons.append("LAST_SHADOW_ID_INVALID_OR_MISSING")
 
     for name, value in (
         ("MRP_COUNT", mrp_count),
