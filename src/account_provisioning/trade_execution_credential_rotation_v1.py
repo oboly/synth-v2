@@ -254,8 +254,8 @@ def check_trade_execution_credential_rotation_v1(
             code="DATABASE_UNAVAILABLE",
         )
     try:
-        repo = repository_factory(conn)
         try:
+            repo = repository_factory(conn)
             row = _validate_row(
                 repo.load_credential(
                     trading_account_credential_id=trading_account_credential_id
