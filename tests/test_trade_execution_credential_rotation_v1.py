@@ -10,7 +10,10 @@ from src.account_provisioning.credential_crypto_v1 import (
     generate_test_master_key,
     parse_master_key,
 )
-from src.account_provisioning.contracts_v1 import EncryptedCredentialEnvelope
+from src.account_provisioning.contracts_v1 import (
+    ENCRYPTION_ALGORITHM,
+    EncryptedCredentialEnvelope,
+)
 from src.account_provisioning.trade_execution_credential_rotation_v1 import (
     CHECK_BLOCKED,
     CHECK_READY,
@@ -73,7 +76,7 @@ def _row(master_key_bytes: bytes) -> dict:
         "trading_account_id": 5,
         "venue": "bitvavo",
         "credential_kind": "API_KEY_SECRET",
-        "encryption_algorithm": "AES-256-GCM",
+        "encryption_algorithm": ENCRYPTION_ALGORITHM,
         "key_version": "v1",
         "credential_fingerprint": compute_fingerprint("bitvavo", "old-key", master_key_bytes),
         "credential_status": "ACTIVE",
