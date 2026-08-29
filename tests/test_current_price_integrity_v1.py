@@ -151,6 +151,42 @@ def test_latest_lookup_keeps_market_identity_and_skips_noncanonical_rows() -> No
     sql = conn.cursor_instance.sql
     assert "GROUP BY venue, symbol, market, quote_currency" in sql
     assert "AND lp.market = m.market" in sql
-    assert "ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC" in sql
+    assert "ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC, m.price DESC" in sql
     assert result["AAVE"].market == "AAVE-EUR"
     assert result["AAVE"].price == Decimal("106.50")
+
+
+def test_latest_lookup_resolves_fully_tied_rows_by_price() -> None:
+    observed = NOW.replace(tzinfo=None)
+    rows = [
+        {
+            "venue": "bitvavo",
+            "symbol": "AAVE",
+            "market": "AAVE-EUR",
+            "quote_currency": "EUR",
+            "price": Decimal("106.50"),
+            "source_name": "same_source",
+            "source_ts_utc": observed,
+            "observed_ts_utc": observed,
+        },
+        {
+            "venue": "bitvavo",
+            "symbol": "AAVE",
+            "market": "AAVE-EUR",
+            "quote_currency": "EUR",
+            "price": Decimal("108.58"),
+            "source_name": "same_source",
+            "source_ts_utc": observed,
+            "observed_ts_utc": observed,
+        },
+    ]
+    conn = _Connection(rows)
+
+    result = fetch_latest_prices_by_symbol(
+        conn,
+        venue="bitvavo",
+        quote_currency="EUR",
+        symbols=["AAVE"],
+    )
+
+    assert result["AAVE"].price == Decimal("108.58")
