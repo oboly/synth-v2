@@ -120,6 +120,22 @@ def test_gate_rejects_preassigned_weights_or_scores() -> None:
     assert "CQ_V1_SCORES_ALREADY_EMITTED" in result.reasons
 
 
+def test_gate_rejects_boolean_or_noninteger_zero_markers() -> None:
+    cases = (
+        ("weights_assigned", False, "WEIGHTS_ASSIGNED_INVALID_OR_MISSING"),
+        ("weights_assigned", 0.0, "WEIGHTS_ASSIGNED_INVALID_OR_MISSING"),
+        ("cq_v1_scores_emitted", False, "CQ_V1_SCORES_EMITTED_INVALID_OR_MISSING"),
+        ("cq_v1_scores_emitted", "0", "CQ_V1_SCORES_EMITTED_INVALID_OR_MISSING"),
+    )
+    for key, bad_value, reason in cases:
+        payload = valid_payload()
+        payload[key] = bad_value
+        result = validate_coverage_summary(payload)
+        assert result.state == BLOCKED_STATE
+        assert reason in result.reasons
+        assert result.artifact_sha256 is None
+
+
 def test_artifact_digest_changes_when_coverage_changes() -> None:
     original = validate_coverage_summary(valid_payload())
     changed_payload = deepcopy(valid_payload())
