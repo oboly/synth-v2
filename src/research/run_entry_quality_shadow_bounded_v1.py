@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import time
 from decimal import Decimal
 from typing import Any
@@ -17,6 +18,12 @@ from src.selection.run_selection_engine_v2 import DEFAULT_CONFIG_PATH
 from src.selection.selection_engine_v2 import SelectionCandidate, load_selection_config, rank_candidates
 
 RUNNER_NAME = "entry_quality_shadow_bounded_v1"
+
+
+class _Interrupted(RuntimeError):
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"signal={signum}")
+        self.signum = signum
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -232,8 +239,18 @@ def run(args: argparse.Namespace) -> int:
         "execution_planner=none executor=none",
         flush=True,
     )
+
     conn = None
+    previous_handlers: dict[int, Any] = {}
+
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        raise _Interrupted(signum)
+
     try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _handle_signal)
+
         conn = get_db_connection()
         config = load_selection_config(args.config)
 
@@ -312,6 +329,18 @@ def run(args: argparse.Namespace) -> int:
             flush=True,
         )
         return 0
+    except _Interrupted as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(
+            f"INTERRUPTED runner={RUNNER_NAME} mode={mode} signal={exc.signum} "
+            f"resumable=1 elapsed_s={time.perf_counter()-started:.3f}",
+            flush=True,
+        )
+        return 130
     except Exception as exc:
         if conn is not None:
             try:
@@ -327,6 +356,8 @@ def run(args: argparse.Namespace) -> int:
     finally:
         if conn is not None:
             conn.close()
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
