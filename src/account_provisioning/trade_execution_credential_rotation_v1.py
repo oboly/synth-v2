@@ -236,6 +236,21 @@ def _blocked_check(
     )
 
 
+def _best_effort_rollback(conn: Any) -> bool:
+    try:
+        conn.rollback()
+    except Exception:
+        return False
+    return True
+
+
+def _best_effort_close(conn: Any) -> None:
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 def check_trade_execution_credential_rotation_v1(
     *,
     trading_account_id: int,
@@ -253,9 +268,11 @@ def check_trade_execution_credential_rotation_v1(
             venue=venue,
             code="DATABASE_UNAVAILABLE",
         )
+
+    result: TradeExecutionCredentialRotationCheckV1
     try:
-        repo = repository_factory(conn)
         try:
+            repo = repository_factory(conn)
             row = _validate_row(
                 repo.load_credential(
                     trading_account_credential_id=trading_account_credential_id
@@ -268,24 +285,39 @@ def check_trade_execution_credential_rotation_v1(
                 trading_account_credential_id=trading_account_credential_id
             )
         except TradeExecutionCredentialRotationError as exc:
-            conn.rollback()
-            return _blocked_check(
+            result = _blocked_check(
                 trading_account_id=trading_account_id,
                 trading_account_credential_id=trading_account_credential_id,
                 venue=venue,
                 code=exc.code,
             )
-        conn.rollback()
-        return TradeExecutionCredentialRotationCheckV1(
-            check_state=CHECK_READY,
-            trading_account_id=trading_account_id,
-            trading_account_credential_id=trading_account_credential_id,
-            venue=venue,
-            binding_count=binding_count,
-            previous_validation_state=str(row["validation_state"]),
-        )
+        except Exception:
+            result = _blocked_check(
+                trading_account_id=trading_account_id,
+                trading_account_credential_id=trading_account_credential_id,
+                venue=venue,
+                code="CHECK_FAILED",
+            )
+        else:
+            result = TradeExecutionCredentialRotationCheckV1(
+                check_state=CHECK_READY,
+                trading_account_id=trading_account_id,
+                trading_account_credential_id=trading_account_credential_id,
+                venue=venue,
+                binding_count=binding_count,
+                previous_validation_state=str(row["validation_state"]),
+            )
+
+        if not _best_effort_rollback(conn):
+            return _blocked_check(
+                trading_account_id=trading_account_id,
+                trading_account_credential_id=trading_account_credential_id,
+                venue=venue,
+                code="CHECK_FAILED",
+            )
+        return result
     finally:
-        conn.close()
+        _best_effort_close(conn)
 
 
 def rotate_trade_execution_credential_v1(
