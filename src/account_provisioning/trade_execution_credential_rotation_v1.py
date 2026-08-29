@@ -87,6 +87,7 @@ class TradeExecutionCredentialRotationRepositoryV1:
                     trading_account_id,
                     venue,
                     credential_kind,
+                    encrypted_envelope,
                     encryption_algorithm,
                     key_version,
                     credential_fingerprint,
@@ -151,6 +152,8 @@ class TradeExecutionCredentialRotationRepositoryV1:
                   AND allowed_private_read = 1
                   AND allowed_order_write = 1
                   AND allowed_withdrawal = 0
+                  AND encrypted_envelope = %s
+                  AND encryption_algorithm = %s
                   AND credential_fingerprint = %s
                   AND key_version = %s
                 """,
@@ -162,6 +165,8 @@ class TradeExecutionCredentialRotationRepositoryV1:
                     int(row["trading_account_credential_id"]),
                     int(row["trading_account_id"]),
                     str(row["venue"]),
+                    str(row["encrypted_envelope"]),
+                    str(row["encryption_algorithm"]),
                     str(row["credential_fingerprint"]),
                     str(row["key_version"]),
                 ),
@@ -205,6 +210,8 @@ def _validate_row(
         raise TradeExecutionCredentialRotationError("CREDENTIAL_MISSING_ORDER_WRITE_SCOPE")
     if bool(row["allowed_withdrawal"]):
         raise TradeExecutionCredentialRotationError("CREDENTIAL_WITHDRAWAL_CAPABILITY_NOT_ALLOWED")
+    if not str(row["encrypted_envelope"]):
+        raise TradeExecutionCredentialRotationError("CREDENTIAL_ENCRYPTED_ENVELOPE_MISSING")
     if str(row["encryption_algorithm"]) != ENCRYPTION_ALGORITHM:
         raise TradeExecutionCredentialRotationError("UNSUPPORTED_CREDENTIAL_ENCRYPTION_ALGORITHM")
     if not str(row["credential_fingerprint"]):
