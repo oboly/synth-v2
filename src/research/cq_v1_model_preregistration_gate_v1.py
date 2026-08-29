@@ -7,8 +7,30 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 RUNNER_NAME = "cq_v1_pit_extractor_v1"
+CONTRACT_NAME = "cq_v1_pit_extractor_v1"
+CONTRACT_VERSION = "1.0.0"
 READY_STATE = "READY_FOR_MODEL_FREEZE"
 BLOCKED_STATE = "BLOCKED_INVALID_COVERAGE_ARTIFACT"
+
+ALLOWED_FIELDS = frozenset(
+    {
+        "runner",
+        "contract_name",
+        "contract_version",
+        "sample_count",
+        "observations_in_this_invocation",
+        "mrp_available_count",
+        "sector_available_count",
+        "joint_available_count",
+        "mrp_coverage",
+        "sector_coverage",
+        "joint_coverage",
+        "last_shadow_id",
+        "terminal_state",
+        "weights_assigned",
+        "cq_v1_scores_emitted",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -23,7 +45,13 @@ class CoverageGateResult:
 
 
 def _canonical_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -44,16 +72,33 @@ def _required_finite_json_number(payload: Mapping[str, Any], key: str) -> float:
     return numeric
 
 
-def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
+def _validate_exact_json_schema(payload: Mapping[str, Any]) -> tuple[str, ...]:
     reasons: list[str] = []
+    keys = set(payload.keys())
+    if keys != ALLOWED_FIELDS:
+        reasons.append("ARTIFACT_SCHEMA_MISMATCH")
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError):
+        reasons.append("ARTIFACT_NOT_STRICT_JSON")
+    return tuple(reasons)
+
+
+def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
+    reasons = list(_validate_exact_json_schema(payload))
 
     if payload.get("runner") != RUNNER_NAME:
         reasons.append("RUNNER_MISMATCH")
+    if payload.get("contract_name") != CONTRACT_NAME:
+        reasons.append("CONTRACT_NAME_MISMATCH")
+    if payload.get("contract_version") != CONTRACT_VERSION:
+        reasons.append("CONTRACT_VERSION_MISMATCH")
     if payload.get("terminal_state") != "FINISHED":
         reasons.append("TERMINAL_STATE_NOT_FINISHED")
 
     try:
         sample_count = _required_json_int(payload, "sample_count")
+        invocation_count = _required_json_int(payload, "observations_in_this_invocation")
         mrp_count = _required_json_int(payload, "mrp_available_count")
         sector_count = _required_json_int(payload, "sector_available_count")
         joint_count = _required_json_int(payload, "joint_available_count")
@@ -62,6 +107,8 @@ def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
 
     if sample_count <= 0:
         reasons.append("EMPTY_SAMPLE")
+    if invocation_count < 0 or invocation_count > sample_count:
+        reasons.append("INVOCATION_COUNT_OUT_OF_RANGE")
 
     if sample_count > 0:
         try:
