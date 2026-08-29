@@ -134,6 +134,7 @@ def fetch_latest_prices_by_symbol(
         FROM market_price_snapshot
         WHERE venue = %(venue)s
           AND quote_currency = %(quote_currency)s
+          AND UPPER(market) = CONCAT(UPPER(symbol), '-', UPPER(quote_currency))
           {latest_symbol_filter}
         GROUP BY venue, symbol, quote_currency
     )
@@ -154,7 +155,9 @@ def fetch_latest_prices_by_symbol(
      AND lp.observed_ts_utc = m.observed_ts_utc
     WHERE m.venue = %(venue)s
       AND m.quote_currency = %(quote_currency)s
+      AND UPPER(m.market) = CONCAT(UPPER(m.symbol), '-', UPPER(m.quote_currency))
       {outer_symbol_filter}
+    ORDER BY m.symbol, m.source_ts_utc DESC, m.source_name DESC
     """
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -163,6 +166,10 @@ def fetch_latest_prices_by_symbol(
     out: dict[str, MarketPriceSnapshot] = {}
     for row in rows:
         symbol = normalize_symbol(str(row["symbol"]))
+        # ORDER BY makes equal-observation ties deterministic; keep the first
+        # (newest provider timestamp/source) row for each symbol.
+        if symbol in out:
+            continue
         out[symbol] = MarketPriceSnapshot(
             venue=str(row["venue"]),
             symbol=symbol,
