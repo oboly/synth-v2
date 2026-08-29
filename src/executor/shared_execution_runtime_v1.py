@@ -38,6 +38,10 @@ from src.executor.live_canary_bounds_v1 import (
     assert_plan_notional_within_canary_bound_v1,
     load_live_canary_bounds_from_env_v1,
 )
+from src.executor.shared_executor_identity_v1 import (
+    SHARED_EXECUTOR_IDENTITY,
+    SHARED_EXECUTOR_RUNTIME_OWNER,
+)
 
 
 DEFAULT_LEASE_SECONDS: Final[int] = 60
@@ -46,7 +50,6 @@ DEFAULT_BATCH_LIMIT: Final[int] = 100
 LIVE_EXECUTION_PERMISSION_ENV: Final[str] = "SYNTH_LIVE_EXECUTION_PERMISSION"
 BROKER_WRITE_PERMISSION_ENV: Final[str] = "SYNTH_BROKER_WRITE_PERMISSION"
 _GRANTED: Final[str] = "GRANTED"
-_AUTHORIZED_LIVE_EXECUTOR_IDENTITY: Final[str] = "shared-executor-v1"
 
 
 class SharedExecutorRuntimeConfigurationError(ValueError):
@@ -164,10 +167,10 @@ def _build_live_adapter_factory_v1(
 ) -> LiveExecutorRuntimeAdapterFactoryV1:
     """Compose the LIVE-capable adapter factory, or fail closed.
 
-    Sequence: env permissions -> executor identity -> canary bounds resolved
-    -> master key resolved -> DB connection resolved. No DB/broker/secret
-    work happens before the cheap, deterministic checks earlier in the
-    sequence.
+    Sequence: env permissions -> executor identity/runtime owner -> canary
+    bounds resolved -> master key resolved -> DB connection resolved. No
+    DB/broker/secret work happens before the cheap, deterministic checks
+    earlier in the sequence.
     """
     if os.getenv(LIVE_EXECUTION_PERMISSION_ENV) != _GRANTED:
         raise SharedExecutorModeAdapterUnavailableError(
@@ -177,9 +180,13 @@ def _build_live_adapter_factory_v1(
         raise SharedExecutorModeAdapterUnavailableError(
             "BROKER_WRITE_PERMISSION_NOT_GRANTED"
         )
-    if config.executor_identity != _AUTHORIZED_LIVE_EXECUTOR_IDENTITY:
+    if config.executor_identity != SHARED_EXECUTOR_IDENTITY:
         raise SharedExecutorModeAdapterUnavailableError(
             "LIVE_EXECUTOR_IDENTITY_NOT_AUTHORIZED"
+        )
+    if config.runtime_owner != SHARED_EXECUTOR_RUNTIME_OWNER:
+        raise SharedExecutorModeAdapterUnavailableError(
+            "LIVE_RUNTIME_OWNER_NOT_AUTHORIZED"
         )
     try:
         canary_bounds = canary_bounds_loader()

@@ -87,6 +87,10 @@ from src.account.account_mode_contract_v1 import (
     SUPPORTED_ACCOUNT_MODES as CANONICAL_SUPPORTED_ACCOUNT_MODES,
     is_account_mode_live_trading_enabled_consistent,
 )
+from src.executor.shared_executor_identity_v1 import (
+    SHARED_EXECUTOR_IDENTITY,
+    SHARED_EXECUTOR_RUNTIME_OWNER,
+)
 
 # --- Contract constants -----------------------------------------------
 
@@ -220,6 +224,8 @@ class SellLiveCanaryContractPreviewV1:
     version: str
     trading_account_id: int
     venue: str
+    executor_identity: str
+    runtime_owner: str
     allowed_side: str
     allowed_market: str
     max_orders_per_cycle: int
@@ -238,6 +244,14 @@ class SellLiveCanaryContractPreviewV1:
             raise SellLiveCanaryContractPreviewError("CANARY_ACCOUNT_MUST_BE_POSITIVE_INT")
         if not isinstance(self.venue, str) or not self.venue.strip():
             raise SellLiveCanaryContractPreviewError("CANARY_VENUE_REQUIRED")
+        if self.executor_identity != SHARED_EXECUTOR_IDENTITY:
+            raise SellLiveCanaryContractPreviewError(
+                "CANARY_EXECUTOR_IDENTITY_NOT_CANONICAL_SHARED_EXECUTOR"
+            )
+        if self.runtime_owner != SHARED_EXECUTOR_RUNTIME_OWNER:
+            raise SellLiveCanaryContractPreviewError(
+                "CANARY_RUNTIME_OWNER_NOT_CANONICAL_SHARED_EXECUTOR"
+            )
         if self.allowed_side != "SELL":
             raise SellLiveCanaryContractPreviewError("CANARY_SIDE_MUST_BE_SELL")
         if not isinstance(self.allowed_market, str) or not self.allowed_market.strip():
@@ -368,6 +382,24 @@ def _phase_precheck(config: ControllerConfigV1, repository_sha: str) -> PhaseRes
         return _blocked(PHASE_PRECHECK, "EXECUTOR_IDENTITY_REQUIRED")
     if not config.runtime_owner or not config.runtime_owner.strip():
         return _blocked(PHASE_PRECHECK, "RUNTIME_OWNER_REQUIRED")
+    if config.executor_identity != SHARED_EXECUTOR_IDENTITY:
+        return _blocked(
+            PHASE_PRECHECK,
+            "EXECUTOR_IDENTITY_NOT_CANONICAL_SHARED_EXECUTOR",
+            {
+                "expected_executor_identity": SHARED_EXECUTOR_IDENTITY,
+                "observed_executor_identity": config.executor_identity,
+            },
+        )
+    if config.runtime_owner != SHARED_EXECUTOR_RUNTIME_OWNER:
+        return _blocked(
+            PHASE_PRECHECK,
+            "RUNTIME_OWNER_NOT_CANONICAL_SHARED_EXECUTOR",
+            {
+                "expected_runtime_owner": SHARED_EXECUTOR_RUNTIME_OWNER,
+                "observed_runtime_owner": config.runtime_owner,
+            },
+        )
 
     detail: dict[str, Any] = {"repository_sha": repository_sha}
     if config.expected_deployed_sha:
@@ -486,19 +518,35 @@ def _phase_credential_binding_ready(config: ControllerConfigV1) -> PhaseResultV1
         binding = repo.resolve(
             trading_account_id=config.trading_account_id,
             venue=config.venue,
-            executor_identity=config.executor_identity,
-            runtime_owner=config.runtime_owner,
+            executor_identity=SHARED_EXECUTOR_IDENTITY,
+            runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
         )
     except CredentialScopeDeniedError as exc:
         return _blocked(PHASE_CREDENTIAL_BINDING_READY, str(exc), _exc_detail(exc))
     except Exception as exc:
         return _blocked(PHASE_CREDENTIAL_BINDING_READY, "PRODUCTION_DB_UNAVAILABLE", _exc_detail(exc))
+    if (
+        binding.executor_identity != SHARED_EXECUTOR_IDENTITY
+        or binding.runtime_owner != SHARED_EXECUTOR_RUNTIME_OWNER
+    ):
+        return _blocked(
+            PHASE_CREDENTIAL_BINDING_READY,
+            "CREDENTIAL_BINDING_IDENTITY_MISMATCH",
+            {
+                "expected_executor_identity": SHARED_EXECUTOR_IDENTITY,
+                "expected_runtime_owner": SHARED_EXECUTOR_RUNTIME_OWNER,
+                "observed_executor_identity": binding.executor_identity,
+                "observed_runtime_owner": binding.runtime_owner,
+            },
+        )
     return _passed(
         PHASE_CREDENTIAL_BINDING_READY,
         "OK",
         {
             "executor_credential_binding_id": binding.executor_credential_binding_id,
             "credential_status": binding.credential_status,
+            "executor_identity": binding.executor_identity,
+            "runtime_owner": binding.runtime_owner,
         },
     )
 
@@ -625,6 +673,17 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
         if entry is None:
             not_active[capability_id] = "MISSING"
             continue
+        owner_host = str(entry.get("owner_host", "UNKNOWN"))
+        if owner_host != SHARED_EXECUTOR_RUNTIME_OWNER:
+            return _blocked(
+                PHASE_RUNTIME_READY,
+                "RUNTIME_CAPABILITY_OWNER_MISMATCH",
+                {
+                    "capability_id": capability_id,
+                    "expected_owner_host": SHARED_EXECUTOR_RUNTIME_OWNER,
+                    "observed_owner_host": owner_host,
+                },
+            )
         status = str(entry.get("activation_status", "UNKNOWN"))
         if status not in _RUNTIME_ACTIVE_STATUSES:
             not_active[capability_id] = status
@@ -766,6 +825,8 @@ def _phase_canary_ready(config: ControllerConfigV1, repository_sha: str) -> tupl
             version=CONTROLLER_VERSION,
             trading_account_id=config.trading_account_id,
             venue=config.venue,
+            executor_identity=SHARED_EXECUTOR_IDENTITY,
+            runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
             allowed_side="SELL",
             allowed_market=config.canary_allowed_market,
             max_orders_per_cycle=config.canary_max_orders_per_cycle,
