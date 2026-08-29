@@ -275,6 +275,86 @@ path. See the matching canonical statement in
 production migration, credential/authority/kill-switch provisioning, service/
 timer activation, or broker call was performed or authorized by this fix.
 
+**Update (2026-08-29, Issue #588, canonical write path for
+`automatic_exit_live_decision_gate_permission_v1`):** the module described in
+the "LIVE-capable decision-gate extension" section below
+(`automatic_exit_live_permission_repository_v1.py`) was read-only-only prior
+to this change; there was no reviewed grant/insert path at all. This change
+adds the canonical, narrowly-scoped, append-only grant path, still without
+performing any production grant or LIVE activation:
+
+- `automatic_exit_live_permission_repository_v1.py` gained exactly one write
+  function, `insert_automatic_exit_live_decision_gate_permission_v1` (a bare
+  single-row `INSERT`, no read-modify-write, no eligibility logic of its
+  own — the DB triggers still reject every `UPDATE`/`DELETE` unconditionally
+  as a second, independent enforcement layer), and one new read function,
+  `load_trading_account_live_readiness_v1` (account existence/`account_mode`/
+  `enabled`/`live_trading_enabled` only; optional `FOR UPDATE` row lock to
+  serialize concurrent grant calls for the same account, mirroring
+  `account_protection_policy_provisioning_v1._resolve_trading_account_id`).
+- New service module `automatic_exit_live_permission_grant_v1.py` owns every
+  eligibility, idempotency, and conflict decision: `trading_account` must
+  exist, `enabled=1`, `account_mode='live'`, `live_trading_enabled=1`; the
+  existing permission/revocation history is resolved through the unchanged
+  pure contract resolver
+  (`resolve_automatic_exit_live_decision_gate_permission_v1`) at the request
+  timestamp. An already-effective `GRANTED` row returns `ALREADY_GRANTED`
+  (idempotent, no new row); an active DENY fact or an ambiguous/overlapping
+  (including future-dated) permission history fails closed
+  (`CONFLICTING_LIVE_PERMISSION_STATE` / `OVERLAPPING_LIVE_PERMISSION_STATE`)
+  rather than inserting. A new grant is always open-ended
+  (`effective_until_ts_utc=NULL`, `live_execution_permitted=True`);
+  revocation remains the wholly separate, pre-existing append-only
+  revocation path and is not touched by this change.
+- New ops CLI `run_grant_automatic_exit_live_permission_v1.py` with
+  `--check` (read-only eligibility report) and `--apply` (performs the
+  grant or reports `ALREADY_GRANTED`) modes; required input is
+  `--trading-account-id` only — the CLI never accepts or prints an
+  operator-supplied permission id, and holds no validation logic of its own
+  (it only parses arguments, opens the DB connection, and prints the typed
+  service result).
+- No credential, account-binding, kill-switch, executor LIVE-authority, or
+  broker/order code was touched; the grant module and CLI import none of
+  `src.executor`, `src.credential`, or `src.kill_switch` (guarded by
+  `tests/test_automatic_exit_live_permission_grant_v1.py::test_no_executor_credential_kill_switch_side_effects`).
+  This remains decision-gate LIVE permission only, exactly as described
+  above — it is not executor operational LIVE authority.
+- `trading_account_id=5` is the canonical LIVE execution identity referenced
+  by this task's context; **no grant was applied to any production account
+  by this change** — the CLI was exercised only via `--help` and the full
+  test suite below, never against a real database.
+
+Tests added: `tests/test_automatic_exit_live_permission_grant_v1.py` (check
+with no grant, first apply, idempotent already-granted, disabled account,
+non-live account, `live_trading_enabled=0`, unknown account, conflicting
+history, active-deny-blocks-grant, revocation-history interaction (grant
+succeeds once the blocking deny fact is itself revoked), future-dated-row
+overlap block, rollback-on-insert-failure leaves no row, accounts 2/3 never
+touched, append-only — no `UPDATE`/`DELETE` ever issued across a grant plus
+idempotent replay, no executor/credential/kill-switch import). The shared
+sqlite test fixture `tests/automatic_exit_runtime_fixtures_v1.py` gained one
+line stripping `FOR UPDATE` for sqlite compatibility (mirrors the existing
+convention already used by
+`tests/automatic_buy_account_allocation_evidence_fixtures_v1.py`); no other
+fixture behavior changed.
+
+Safety markers for this change:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate=automatic_exit_live_permission_grant_v1
+execution_planner=none
+executor=none
+production_db_mutation=0
+production_grant_applied=0
+credential_mutation=0
+kill_switch_mutation=0
+executor_live_authority_grant=0
+```
+
 This document is the repository-level readiness record for Issue #392 Phase 6
 ("LIVE activation: separately authorized decision and issue only after Phase 5
 acceptance"). It audits current `main` (base SHA `d4fae21d1cf38be1a11025f0e0fa5dd220e33a9e`)
@@ -1012,7 +1092,9 @@ merged and reviewed, and no step authorizes skipping ahead:
    fail-closed LIVE permission contract (see above). Provisioning an
    `automatic_exit_live_decision_gate_permission_v1` row per production
    account remains a further prerequisite before any account's automatic-exit
-   candidates could reach an `APPROVED` LIVE decision.
+   candidates could reach an `APPROVED` LIVE decision. A reviewed,
+   append-only grant path for that row now exists (Issue #588, see the
+   2026-08-29 update above); no production row has been granted using it.
 3. ~~Typed planner -> shared-handoff adapter/runtime seam (blocker A)~~ —
    DONE (see above). Only now that the gate can correctly produce a
    LIVE-eligible `APPROVED` decision did connecting the planner's output to
