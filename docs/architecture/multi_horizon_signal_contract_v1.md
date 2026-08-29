@@ -51,8 +51,8 @@ market data / feature owners
 Hard boundaries:
 
 - `selection_engine` remains market-only and account-agnostic;
-- `decision_gate` remains the sole account-aware permission layer;
-- `execution_planner` owns execution intent only;
+- `decision_gate` remains the sole account-aware permission layer and owns approved account-scoped intent;
+- `execution_planner` owns execution-plan formation only after approved `decision_gate` permission;
 - executor/agents own order handling only;
 - reporting is a read-only consumer;
 - this contract grants no market-ranking, account, execution, broker, or order authority.
