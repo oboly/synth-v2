@@ -83,10 +83,21 @@ def validate_coverage_summary(payload: Mapping[str, Any]) -> CoverageGateResult:
     if joint_count > mrp_count or joint_count > sector_count:
         reasons.append("JOINT_COUNT_EXCEEDS_FAMILY_COUNT")
 
-    if payload.get("weights_assigned") != 0:
-        reasons.append("WEIGHTS_ALREADY_ASSIGNED")
-    if payload.get("cq_v1_scores_emitted") != 0:
-        reasons.append("CQ_V1_SCORES_ALREADY_EMITTED")
+    try:
+        weights_assigned = _required_json_int(payload, "weights_assigned")
+    except (KeyError, TypeError):
+        reasons.append("WEIGHTS_ASSIGNED_INVALID_OR_MISSING")
+    else:
+        if weights_assigned != 0:
+            reasons.append("WEIGHTS_ALREADY_ASSIGNED")
+
+    try:
+        scores_emitted = _required_json_int(payload, "cq_v1_scores_emitted")
+    except (KeyError, TypeError):
+        reasons.append("CQ_V1_SCORES_EMITTED_INVALID_OR_MISSING")
+    else:
+        if scores_emitted != 0:
+            reasons.append("CQ_V1_SCORES_ALREADY_EMITTED")
 
     if sample_count > 0:
         expected = {
