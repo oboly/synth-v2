@@ -115,17 +115,17 @@ class _Connection:
         return self.cursor_instance
 
 
-def test_latest_lookup_requires_canonical_market_and_resolves_equal_time_ties_deterministically() -> None:
+def test_latest_lookup_keeps_market_identity_and_skips_noncanonical_rows() -> None:
     observed = NOW.replace(tzinfo=None)
     rows = [
         {
             "venue": "bitvavo",
             "symbol": "AAVE",
-            "market": "AAVE-EUR",
+            "market": "AAVE-USDC",
             "quote_currency": "EUR",
-            "price": Decimal("106.50"),
-            "source_name": "z_source",
-            "source_ts_utc": observed - timedelta(seconds=1),
+            "price": Decimal("108.58"),
+            "source_name": "wrong_market",
+            "source_ts_utc": observed,
             "observed_ts_utc": observed,
         },
         {
@@ -133,10 +133,10 @@ def test_latest_lookup_requires_canonical_market_and_resolves_equal_time_ties_de
             "symbol": "AAVE",
             "market": "AAVE-EUR",
             "quote_currency": "EUR",
-            "price": Decimal("108.58"),
-            "source_name": "a_source",
-            "source_ts_utc": observed - timedelta(seconds=5),
-            "observed_ts_utc": observed,
+            "price": Decimal("106.50"),
+            "source_name": "canonical",
+            "source_ts_utc": observed - timedelta(seconds=1),
+            "observed_ts_utc": observed - timedelta(seconds=1),
         },
     ]
     conn = _Connection(rows)
@@ -149,6 +149,8 @@ def test_latest_lookup_requires_canonical_market_and_resolves_equal_time_ties_de
     )
 
     sql = conn.cursor_instance.sql
-    assert "UPPER(market) = CONCAT(UPPER(symbol), '-', UPPER(quote_currency))" in sql
-    assert "ORDER BY m.symbol, m.source_ts_utc DESC, m.source_name DESC" in sql
+    assert "GROUP BY venue, symbol, market, quote_currency" in sql
+    assert "AND lp.market = m.market" in sql
+    assert "ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC" in sql
+    assert result["AAVE"].market == "AAVE-EUR"
     assert result["AAVE"].price == Decimal("106.50")
