@@ -1,0 +1,53 @@
+registry_name: cq_v1_model_preregistration_gate_v1
+registry_version: "1.0.0"
+issue: 568
+phase: 2D0
+research_only: true
+market_only: true
+account_agnostic: true
+
+inputs:
+  coverage_artifact: coverage_summary.json
+  required_runner: cq_v1_pit_extractor_v1
+  source_contract: config/research/cq_v1_pit_extractor_v1.yaml
+  source_contract_version: "1.0.0"
+
+coverage_gate:
+  terminal_state_must_equal: FINISHED
+  sample_count_must_be_positive: true
+  last_shadow_id_required_when_nonempty: true
+  counts_must_be_within_sample: true
+  joint_count_must_not_exceed_family_counts: true
+  coverage_must_match_recomputed_counts_at_6_decimals: true
+  weights_assigned_must_equal: 0
+  cq_v1_scores_emitted_must_equal: 0
+  canonical_artifact_sha256_required_for_model_freeze: true
+
+model_freeze_boundary:
+  transforms_may_be_frozen_before_valid_coverage_artifact: false
+  weights_may_be_frozen_before_valid_coverage_artifact: false
+  cq_v1_formula_may_be_frozen_before_valid_coverage_artifact: false
+  forward_outcomes_may_be_read_by_this_gate: false
+  holdout_may_be_inspected_by_this_gate: false
+  feature_families_may_expand_after_coverage: false
+  valid_gate_state_required_for_next_slice: READY_FOR_MODEL_FREEZE
+
+states:
+  - BLOCKED_COVERAGE_ARTIFACT_REQUIRED
+  - BLOCKED_INVALID_COVERAGE_ARTIFACT
+  - READY_FOR_MODEL_FREEZE
+
+safety:
+  research_only: 1
+  market_only: 1
+  account_awareness: 0
+  db_writes: 0
+  production_ranking_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  runtime_activation: 0

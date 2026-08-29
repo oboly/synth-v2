@@ -14,6 +14,8 @@ from src.common.db import get_connection
 from src.research.cq_v1_pit_extractor_v1 import ShadowObservation, extract_features
 
 RUNNER_NAME = "cq_v1_pit_extractor_v1"
+CONTRACT_NAME = "cq_v1_pit_extractor_v1"
+CONTRACT_VERSION = "1.0.0"
 DEFAULT_BATCH_SIZE = 100
 _STOP_REQUESTED = False
 
@@ -232,6 +234,8 @@ def main() -> int:
         denominator = processed or 1
         summary = {
             "runner": RUNNER_NAME,
+            "contract_name": CONTRACT_NAME,
+            "contract_version": CONTRACT_VERSION,
             "sample_count": processed,
             "observations_in_this_invocation": invocation_count,
             "mrp_available_count": mrp_count,
