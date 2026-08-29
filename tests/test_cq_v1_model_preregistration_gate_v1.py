@@ -95,6 +95,21 @@ def test_gate_rejects_coverage_not_recomputed_from_same_population() -> None:
     assert "JOINT_COVERAGE_MISMATCH" in result.reasons
 
 
+def test_gate_rejects_boolean_string_or_nonfinite_coverage_values() -> None:
+    for key, bad_value in (
+        ("mrp_coverage", True),
+        ("sector_coverage", "0.7"),
+        ("joint_coverage", float("nan")),
+        ("joint_coverage", float("inf")),
+    ):
+        payload = valid_payload()
+        payload[key] = bad_value
+        result = validate_coverage_summary(payload)
+        assert result.state == BLOCKED_STATE
+        assert f"{key.upper()}_INVALID_OR_MISSING" in result.reasons
+        assert result.artifact_sha256 is None
+
+
 def test_gate_rejects_preassigned_weights_or_scores() -> None:
     payload = valid_payload()
     payload["weights_assigned"] = 1
