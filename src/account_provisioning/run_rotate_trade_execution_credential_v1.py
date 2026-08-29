@@ -39,6 +39,9 @@ def _prompt_secret(label: str) -> str:
 
 def _print_payload(payload: object) -> None:
     print(json.dumps(asdict(payload), sort_keys=True, default=str))
+    print("decision_gate=none")
+    print("execution_planner=none")
+    print("executor=none")
     print("broker_private_calls=0")
     print("broker_writes=0")
     print("order_submission=0")
