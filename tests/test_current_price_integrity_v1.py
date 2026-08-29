@@ -49,7 +49,7 @@ def test_fresh_observation_cannot_make_stale_provider_price_fresh() -> None:
         now_utc=NOW,
     )
 
-    assert display.status == "INCONSISTENT_CURRENT_PRICE"
+    assert display.status == "STALE_CURRENT_PRICE"
     assert display.safe_price is None
     assert display.age_min == Decimal("2")
 
@@ -63,7 +63,7 @@ def test_noncanonical_market_cannot_be_used_as_current_symbol_price() -> None:
         now_utc=NOW,
     )
 
-    assert display.status == "INCONSISTENT_CURRENT_PRICE"
+    assert display.status == "STALE_CURRENT_PRICE"
     assert display.safe_price is None
 
 
@@ -73,7 +73,7 @@ def test_future_provider_timestamp_fails_closed() -> None:
         now_utc=NOW,
     )
 
-    assert display.status == "INCONSISTENT_CURRENT_PRICE"
+    assert display.status == "STALE_CURRENT_PRICE"
     assert display.safe_price is None
 
 
