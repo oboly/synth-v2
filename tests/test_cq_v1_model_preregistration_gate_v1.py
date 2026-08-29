@@ -10,7 +10,10 @@ from src.research.cq_v1_model_preregistration_gate_v1 import (
 def valid_payload() -> dict:
     return {
         "runner": "cq_v1_pit_extractor_v1",
+        "contract_name": "cq_v1_pit_extractor_v1",
+        "contract_version": "1.0.0",
         "sample_count": 100,
+        "observations_in_this_invocation": 100,
         "mrp_available_count": 80,
         "sector_available_count": 70,
         "joint_available_count": 60,
@@ -35,23 +38,38 @@ def test_valid_coverage_artifact_is_ready_and_hashed_deterministically() -> None
     assert first.artifact_sha256 == second.artifact_sha256
 
 
-def test_gate_rejects_wrong_runner_or_nonfinished_artifact() -> None:
+def test_gate_rejects_wrong_runner_contract_or_nonfinished_artifact() -> None:
     payload = valid_payload()
     payload["runner"] = "other_runner"
+    payload["contract_name"] = "other_contract"
+    payload["contract_version"] = "9.9.9"
     payload["terminal_state"] = "INTERRUPTED"
     result = validate_coverage_summary(payload)
     assert result.state == BLOCKED_STATE
     assert "RUNNER_MISMATCH" in result.reasons
+    assert "CONTRACT_NAME_MISMATCH" in result.reasons
+    assert "CONTRACT_VERSION_MISMATCH" in result.reasons
     assert "TERMINAL_STATE_NOT_FINISHED" in result.reasons
+    assert result.artifact_sha256 is None
+
+
+def test_gate_rejects_extra_or_non_json_fields() -> None:
+    payload = valid_payload()
+    payload["unexpected"] = float("nan")
+    result = validate_coverage_summary(payload)
+    assert result.state == BLOCKED_STATE
+    assert "ARTIFACT_SCHEMA_MISMATCH" in result.reasons
+    assert "ARTIFACT_NOT_STRICT_JSON" in result.reasons
     assert result.artifact_sha256 is None
 
 
 def test_gate_rejects_empty_or_inconsistent_counts() -> None:
     payload = valid_payload()
-    payload.update(sample_count=0, mrp_available_count=1, sector_available_count=0, joint_available_count=1)
+    payload.update(sample_count=0, observations_in_this_invocation=1, mrp_available_count=1, sector_available_count=0, joint_available_count=1)
     result = validate_coverage_summary(payload)
     assert result.state == BLOCKED_STATE
     assert "EMPTY_SAMPLE" in result.reasons
+    assert "INVOCATION_COUNT_OUT_OF_RANGE" in result.reasons
     assert "MRP_COUNT_OUT_OF_RANGE" in result.reasons
     assert "JOINT_COUNT_OUT_OF_RANGE" in result.reasons
 
@@ -59,6 +77,7 @@ def test_gate_rejects_empty_or_inconsistent_counts() -> None:
 def test_gate_rejects_fractional_or_boolean_count_values() -> None:
     for key, bad_value in (
         ("sample_count", 100.0),
+        ("observations_in_this_invocation", True),
         ("mrp_available_count", 79.9),
         ("sector_available_count", True),
         ("joint_available_count", False),
@@ -84,6 +103,7 @@ def test_gate_rejects_zero_fractional_boolean_or_missing_last_shadow_id() -> Non
     del payload["last_shadow_id"]
     result = validate_coverage_summary(payload)
     assert result.state == BLOCKED_STATE
+    assert "ARTIFACT_SCHEMA_MISMATCH" in result.reasons
     assert "LAST_SHADOW_ID_INVALID_OR_MISSING" in result.reasons
 
 
