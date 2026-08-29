@@ -38,6 +38,23 @@ def utc_now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _rank_datetime(value: Any) -> float:
+    if not isinstance(value, datetime):
+        return float("-inf")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.timestamp()
+
+
+def _latest_row_rank(row: dict[str, Any]) -> tuple[float, float, str, Decimal]:
+    return (
+        _rank_datetime(row.get("observed_ts_utc")),
+        _rank_datetime(row.get("source_ts_utc")),
+        str(row.get("source_name") or ""),
+        Decimal(str(row.get("price"))),
+    )
+
+
 def insert_market_price_snapshots(
     conn: Any,
     snapshots: list[MarketPriceSnapshot],
@@ -48,8 +65,6 @@ def insert_market_price_snapshots(
         require_writer_mutation_authorization,
     )
 
-    # Fail closed before any SQL execution: the mutation determines its own
-    # capability owner; a missing/invalid context is denied.
     require_writer_mutation_authorization(authorization, "public_price_snapshot")
     if not snapshots:
         return 0
@@ -124,8 +139,6 @@ def fetch_latest_prices_by_symbol(
         latest_symbol_filter = f"AND symbol IN ({joined})"
         outer_symbol_filter = f"AND m.symbol IN ({joined})"
 
-    # Keep market identity in the latest-row key. A newer row for the same
-    # symbol but a different market must never hide the canonical quote market.
     sql = f"""
     WITH latest_price AS (
         SELECT
@@ -159,28 +172,31 @@ def fetch_latest_prices_by_symbol(
     WHERE m.venue = %(venue)s
       AND m.quote_currency = %(quote_currency)s
       {outer_symbol_filter}
-    ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC
+    ORDER BY m.symbol, m.observed_ts_utc DESC, m.source_ts_utc DESC, m.source_name DESC, m.price DESC
     """
     with conn.cursor() as cur:
         cur.execute(sql, params)
         rows = list(cur.fetchall())
 
-    out: dict[str, MarketPriceSnapshot] = {}
-    for row in rows:
+    best_row_by_symbol: dict[str, dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
         symbol = normalize_symbol(str(row["symbol"]))
         quote = str(row["quote_currency"]).strip().upper()
         market = str(row["market"]).strip().upper()
         if market != f"{symbol}-{quote}":
             continue
-        # SQL ordering makes equal-observation ties deterministic; keep the
-        # newest canonical row for each symbol.
-        if symbol in out:
-            continue
+        previous = best_row_by_symbol.get(symbol)
+        if previous is None or _latest_row_rank(row) > _latest_row_rank(previous):
+            best_row_by_symbol[symbol] = row
+
+    out: dict[str, MarketPriceSnapshot] = {}
+    for symbol, row in best_row_by_symbol.items():
         out[symbol] = MarketPriceSnapshot(
             venue=str(row["venue"]),
             symbol=symbol,
-            market=market,
-            quote_currency=quote,
+            market=str(row["market"]).strip().upper(),
+            quote_currency=str(row["quote_currency"]).strip().upper(),
             price=Decimal(str(row["price"])),
             source_name=str(row["source_name"]),
             source_ts_utc=row.get("source_ts_utc"),
