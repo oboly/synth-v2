@@ -359,7 +359,11 @@ class _Cursor:
         return [self.row]
 
 
-def _scope_row(validation_state: str) -> dict[str, object]:
+def _scope_row(
+    validation_state: str,
+    *,
+    validated_ts_utc: object | None = NOW,
+) -> dict[str, object]:
     return {
         "executor_credential_binding_id": 2,
         "trading_account_credential_id": 5,
@@ -378,6 +382,7 @@ def _scope_row(validation_state: str) -> dict[str, object]:
         "allowed_order_write": 1,
         "allowed_withdrawal": 0,
         "validation_state": validation_state,
+        "validated_ts_utc": validated_ts_utc,
     }
 
 
@@ -395,6 +400,21 @@ def test_executor_scope_denies_unvalidated_and_private_read_only_states() -> Non
         assert str(excinfo.value) == "CREDENTIAL_SCOPE_CREDENTIAL_NOT_VALIDATED_FOR_TRADE_EXECUTION"
 
 
+def test_executor_scope_rejects_valid_trade_state_without_timestamp() -> None:
+    repo = ExecutorCredentialScopeRepository()
+    with pytest.raises(CredentialScopeDeniedError) as excinfo:
+        repo.resolve(
+            trading_account_id=ACCOUNT_ID,
+            venue=VENUE,
+            executor_identity="shared-executor-v1",
+            runtime_owner="gurkdb",
+            cursor=_Cursor(
+                _scope_row("VALID_TRADE_EXECUTION", validated_ts_utc=None)
+            ),
+        )
+    assert str(excinfo.value) == "CREDENTIAL_SCOPE_CREDENTIAL_VALIDATION_TIMESTAMP_MISSING"
+
+
 def test_executor_scope_accepts_only_valid_trade_execution_state() -> None:
     repo = ExecutorCredentialScopeRepository()
     binding = repo.resolve(
@@ -405,4 +425,5 @@ def test_executor_scope_accepts_only_valid_trade_execution_state() -> None:
         cursor=_Cursor(_scope_row("VALID_TRADE_EXECUTION")),
     )
     assert binding.validation_state == "VALID_TRADE_EXECUTION"
+    assert binding.validated_ts_utc == NOW
     assert binding.allowed_private_read is True
