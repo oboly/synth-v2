@@ -17,7 +17,8 @@ machine-readable run:
 | TRADE_EXECUTION credential binding | `src/executor/execution_credential_scope_v1.py::ExecutorCredentialScopeRepository` |
 | decision_gate LIVE permission (Gate 1) | `src/decision_gate/automatic_exit_live_permission_repository_v1.py` + `automatic_exit_live_permission_contract_v1.py` |
 | Global kill switch | `src/executor/execution_kill_switch_v1.py::ExecutionKillSwitchRepositoryV1` |
-| Runtime/service ownership | `deploy/ownership/account_runtime_capability_ownership_v1.json` |
+| Runtime/service ownership (`owner_host` only) | `deploy/ownership/account_runtime_capability_ownership_v1.json` |
+| Runtime/service *actual running state* | `src/ops/systemd_runtime_readiness_v1.py`, reading live read-only `systemctl show` state (Issue #585) |
 | Exact-path acceptance (DRY_RUN/PAPER) | `src/execution_planner/automatic_exit_execution_handoff_adapter_v1.py` + `automatic_exit_execution_handoff_application_v1.py`, exercised against a synthetic in-memory fixture |
 | Idempotency/restart readiness | `derive_automatic_exit_plan_reference_id_v1` determinism, checked inside `DRY_RUN_ACCEPTANCE` |
 | Bounded SELL canary feasibility | new, controller-owned `SellLiveCanaryContractPreviewV1` (see below) |
@@ -72,6 +73,69 @@ pass, rather than stopping at the first failure. `LIVE_AUTHORIZATION_REQUIRED`
 is only evaluated (and only ever `PASSED`) when every gated phase passed; if
 any gated phase is `BLOCKED`, `LIVE_AUTHORIZATION_REQUIRED` is reported as
 `NOT_EVALUATED` and the run's `terminal_state` is `BLOCKED`.
+
+## RUNTIME_READY: observed systemd truth, never registry activation_status
+
+Issue #585 makes `RUNTIME_READY` truthful. Before this change, the phase
+only checked `deploy/ownership/account_runtime_capability_ownership_v1.json`'s
+`activation_status` field -- registry metadata this controller's own writer
+could set to any value without a single systemd unit ever being installed.
+That registry schema is **not** changed by this issue and never gains an
+ACTIVE/ENABLED/RUNNING value; it remains ownership/design metadata only
+(`owner_host`, `runtime_entrypoint`, `lock_scope`, `private_read_authority`,
+`broker_writes`, `order_submission`, `live_orders`, `activation_status`).
+
+`RUNTIME_READY` now combines two disjoint sources for each required
+capability (`AUTOMATIC_EXIT_POLICY_RUNTIME`, `SHARED_EXECUTOR_RUNTIME`):
+
+1. The registry's `owner_host` field -- still the sole source of *which*
+   host is supposed to own the capability.
+2. `src/ops/systemd_runtime_readiness_v1.py::evaluate_capability_runtime_readiness_v1`
+   -- actual, live, read-only `systemctl --system show <unit> --no-pager
+   --property=LoadState,ActiveState,UnitFileState,FragmentPath` state for
+   the capability's canonical service and timer unit pair.
+
+The registry's `activation_status` field is **never read** by
+`systemd_runtime_readiness_v1.py`, and a registry-only ACTIVE-like value can
+never by itself make this phase PASS -- only observed systemd state can.
+
+A capability is `READY` only when all of the following hold:
+
+- a registry entry exists and its `owner_host` matches the capability's
+  canonical owner (`gurkdb` for both current capabilities)
+- the service unit is `loaded` and its `FragmentPath` matches the expected
+  installed path (`/etc/systemd/system/<service_unit>`)
+- the timer unit is `loaded` and its `FragmentPath` matches the expected
+  installed path (`/etc/systemd/system/<timer_unit>`)
+- the timer's `UnitFileState` is `enabled`
+- the timer's `ActiveState` is `active`
+
+The service's own `ActiveState` is **deliberately never checked** -- both
+capabilities are `Type=oneshot` services fired periodically by their timer,
+so idle/`inactive`/`dead` between firings is the expected, healthy steady
+state. Only the timer's enabled+active state is authoritative for "is this
+capability actually scheduled to run."
+
+Any of the following fails closed (`NOT_READY`) for that capability, folded
+into the phase's `RUNTIME_CAPABILITY_NOT_READY` blocker detail
+(`not_ready: {capability_id: reason_code}`):
+
+- `REGISTRY_ENTRY_MISSING` -- no registry entry for the capability
+- `REGISTRY_OWNER_MISMATCH` -- registry `owner_host` != canonical owner
+- `SERVICE_UNIT_NOT_FOUND` / `TIMER_UNIT_NOT_FOUND` -- unit not `loaded`
+- `SERVICE_UNIT_WRONG_FRAGMENT_PATH` / `TIMER_UNIT_WRONG_FRAGMENT_PATH` --
+  loaded from an unexpected path (e.g. a stray dev checkout unit)
+- `TIMER_NOT_ENABLED` -- timer `UnitFileState` != `enabled`
+- `TIMER_NOT_ACTIVE` -- timer `ActiveState` != `active`
+- `SERVICE_PROBE_FAILED` / `TIMER_PROBE_FAILED` -- the `systemctl show`
+  probe itself raised or returned a non-zero exit / unreadable output
+
+`systemd_runtime_readiness_v1.py` never mutates systemd: it has no
+enable/start/stop/disable/mask/daemon-reload call anywhere in the module,
+and its dependency-injection seam (`SystemdUnitProbe`) means every test in
+`tests/test_systemd_runtime_readiness_v1.py` and every RUNTIME_READY test in
+`tests/test_sell_live_activation_controller_v1.py` runs against a fully
+injected fake and never shells out to real `systemctl`.
 
 ## Fail-closed semantics
 
