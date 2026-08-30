@@ -1,0 +1,142 @@
+version: "1.0.0"
+issue: 593
+status: research_only
+canonical_horizon_contract: docs/architecture/multi_horizon_signal_contract_v1.md
+
+existing_rotation_v1:
+  model_id: market_rotation_pressure
+  model_version: "1.0"
+  snapshot_table: market_rotation_pressure_snapshot_v1
+  observation_table: market_rotation_pressure_observation_v1
+  effective_horizon: REGIME
+  lookback_horizon:
+    - 24h
+    - 168h
+  semantics_unchanged: true
+
+candidate_family:
+  - id: C1
+    name: fast_relative_flow_rotation_impulse
+    target_operator_timescale: 15m
+    effective_horizon: VERY_SHORT
+    status: discovery_candidate
+  - id: C2
+    name: tactical_relative_flow_rotation
+    target_operator_timescale: 1h
+    effective_horizon: SHORT
+    status: discovery_candidate
+  - id: C3
+    name: swing_relative_flow_rotation
+    target_operator_timescale: 4h
+    effective_horizon: MID
+    status: discovery_candidate
+
+candidate_input_families:
+  - short_horizon_asset_return
+  - cross_sectional_market_relative_return
+  - short_horizon_signed_relative_volume_or_canonical_flow
+  - short_horizon_persistence_or_continuity
+
+forbidden_candidate_behavior:
+  - mechanically_copy_rotation_v1_weights_to_shorter_windows
+  - infer_effective_horizon_from_input_interval
+  - infer_lifecycle_from_input_interval
+  - infer_lifecycle_from_lookback
+  - inspect_final_holdout_before_formula_freeze
+  - add_post_holdout_candidate_and_winner_pick
+
+baselines:
+  - id: B0
+    name: rotation_pressure_v1_only
+  - id: B1
+    name: comparable_horizon_price_momentum
+  - id: B2
+    name: replay_safe_canonical_rsi_or_momentum_context
+    availability: where_replay_safe
+
+replay:
+  chronological_only: true
+  phases:
+    - discovery
+    - validation
+    - final_holdout
+  point_in_time_rules:
+    source_asof_lte_observation_asof: true
+    same_venue: true
+    frozen_model_version: true
+    future_rows: forbidden
+    latest_now_fallback: forbidden
+    current_truth_backfill: forbidden
+    missing_evidence: preserve_missing
+
+evaluation_metrics:
+  - sample_count
+  - coverage_missingness
+  - cross_horizon_correlation
+  - comparable_momentum_correlation
+  - lead_lag_at_turns
+  - persistence
+  - false_turn_chop_rate
+  - forward_response_15m
+  - forward_response_1h
+  - forward_response_4h
+  - forward_response_24h
+  - incremental_utility_vs_B0
+  - incremental_utility_vs_B1
+  - incremental_utility_vs_B2
+  - effect_size
+  - uncertainty
+  - regime_cohort_stability
+
+selection_discipline:
+  frozen_candidate_ids:
+    - C1
+    - C2
+    - C3
+  paired_same_eligible_observations: true
+  multiple_comparison_control_required: true
+  arbitrary_fixed_percent_improvement_threshold: false
+
+promotion_requirements:
+  - incremental_information_vs_rotation_v1
+  - incremental_information_vs_simple_momentum
+  - multi_regime_or_multi_cohort_stability_where_possible
+  - acceptable_coverage_and_freshness
+  - no_material_chop_regression
+  - effect_size_uncertainty_sample_count_reported
+  - deterministic_replayable_model_version_identity
+
+persistence:
+  duplicate_v1_truth_forbidden: true
+  audit_existing_storage_first: true
+  accepted_fast_variant_identity:
+    - venue
+    - asset_or_market_identity
+    - model_id
+    - model_version
+    - effective_horizon
+    - asof_ts
+  idempotent_required: true
+  operator_live_history_target: approximately_30d_minimum_where_practical
+  validation_history: broadest_defensible_multi_regime_replay
+
+cross_horizon_relation_enum:
+  - ALIGNED
+  - NESTED
+  - TRANSITIONAL
+  - CONFLICTING
+  - NOT_COMPARABLE
+  - INSUFFICIENT_DATA
+
+safety:
+  market_only: true
+  account_awareness: false
+  selection_engine_production_changes: false
+  decision_gate_changes: false
+  execution_planner_changes: false
+  executor_changes: false
+  broker_private_calls: false
+  broker_writes: false
+  order_submission: false
+  live_orders: false
+  production_runtime_activation: false
