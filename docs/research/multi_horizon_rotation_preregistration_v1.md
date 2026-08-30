@@ -277,7 +277,7 @@ Rules:
 - existing V1 snapshot/observation tables remain authoritative for V1;
 - no parallel duplicate V1 truth;
 - accepted faster models require distinct model/version/horizon identity;
-- deterministic identity must include market + model/version + horizon + as-of;
+- deterministic persistence identity must include `venue + unambiguous asset/market identity + model_id + model_version + effective_horizon + asof_ts`;
 - idempotent persistence required;
 - ~30d is an operator/live-history target, not the validation period.
 
