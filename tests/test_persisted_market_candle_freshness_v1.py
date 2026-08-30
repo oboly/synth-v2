@@ -19,6 +19,9 @@ from src.operations.persisted_market_candle_freshness_v1 import (
     fetch_persisted_candle_boundary,
     fetch_universe_latest_close_by_symbol,
 )
+from src.operations.run_public_candle_coverage_health_check_v1 import (
+    filter_enabled_symbols_to_active_markets,
+)
 
 
 EXPECTED = datetime(2026, 7, 18, 12, tzinfo=UTC)
@@ -98,6 +101,7 @@ def test_missing_stale_future_and_malformed_inputs_fail_closed() -> None:
 # ---------------------------------------------------------------------------
 
 LAG_1H = EXPECTED.replace(hour=EXPECTED.hour - 1)
+LAG_2H = EXPECTED.replace(hour=EXPECTED.hour - 2)
 FUTURE_1H = EXPECTED.replace(hour=EXPECTED.hour + 1)
 
 
@@ -147,6 +151,15 @@ def test_fetch_universe_latest_close_is_one_select_with_no_write_statement() -> 
 def test_fetch_universe_latest_close_empty_symbols_short_circuits() -> None:
     conn = _UniverseConnection([])
     assert fetch_universe_latest_close_by_symbol(conn, venue="bitvavo", interval_code="1h", symbols=[]) == {}
+
+
+def test_writer_eligibility_excludes_enabled_but_inactive_market() -> None:
+    symbols = filter_enabled_symbols_to_active_markets(
+        enabled_symbols=["BTC", "ALMANAK", "ETH", "btc"],
+        active_markets={"BTC-EUR", "ETH-EUR", "USDC-EUR"},
+        quote_asset="eur",
+    )
+    assert symbols == ["BTC", "ETH"]
 
 
 def test_universe_all_current_is_current() -> None:
@@ -202,13 +215,30 @@ def test_universe_shared_stall_boundary_is_writer_failed() -> None:
     assert coverage.dominant_lag_symbol_count == 4
 
 
+def test_universe_tied_dominant_lag_uses_latest_timestamp_deterministically() -> None:
+    coverage = classify_universe_candle_coverage(
+        interval_code="1h",
+        expected_close_ts_utc=EXPECTED,
+        symbol_latest_close={
+            "BTC": LAG_2H,
+            "ETH": LAG_1H,
+            "ICP": LAG_2H,
+            "SOL": LAG_1H,
+        },
+        writer_failed_dominance_ratio=0.75,
+    )
+    assert coverage.overall_state == STALE
+    assert coverage.dominant_lag_symbol_count == 2
+    assert coverage.dominant_lag_close_ts_utc == LAG_1H
+
+
 def test_universe_no_dominant_boundary_without_current_symbols_is_stale() -> None:
     coverage = classify_universe_candle_coverage(
         interval_code="1h",
         expected_close_ts_utc=EXPECTED,
         symbol_latest_close={
             "BTC": LAG_1H,
-            "ETH": EXPECTED.replace(hour=EXPECTED.hour - 2),
+            "ETH": LAG_2H,
             "ICP": EXPECTED.replace(hour=EXPECTED.hour - 3),
         },
     )
