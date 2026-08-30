@@ -1,33 +1,18 @@
-"""Bind an existing ACTIVE TRADE_EXECUTION credential to one reviewed
-executor identity/runtime-owner tuple, without re-entering or rotating
-broker secrets.
+"""Bind an existing validated TRADE_EXECUTION credential to one reviewed executor tuple.
 
-This is the canonical path for adding a second (or later) executor binding
-to a credential that was already provisioned by
-`run_provision_trade_execution_credential_v1.py`. It never decrypts, prompts
-for, or persists credential secret material, and it never mutates the
-`trading_account_credential` row -- it only reads it to verify the exact
-tuple-scoped identity, then appends/reuses one `executor_credential_binding`
-row.
-
-Only canonical, reviewed (executor_identity, runtime_owner) tuples from
-`trade_execution_provisioning_v1.SUPPORTED_EXECUTOR_BINDING_TUPLES` are
-accepted. An unreviewed pair fails closed.
-
-Safety:
-  broker_private_calls=0
-  broker_writes=0
-  order_submission=0
-  live_orders=0
-  decision_gate=none
-  execution_planner=none
-  executor=none
+This path never decrypts, prompts for, or persists credential secret material and never
+mutates the trading_account_credential row. Read-only checks and explicit apply share
+the same fail-closed eligibility validation.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Final
 
+from src.account_provisioning.credential_binding_contract_v1 import (
+    CREDENTIAL_SOURCE_DB_ENCRYPTED,
+    VALIDATED_TRADE_EXECUTION_STATES,
+)
 from src.account_provisioning.trade_execution_provisioning_v1 import (
     SUPPORTED_EXECUTOR_BINDING_TUPLES,
     TRADE_EXECUTION_SCOPE,
@@ -47,16 +32,12 @@ class BindExistingCredentialResult:
     executor_identity: str
     runtime_owner: str
     venue: str
+    binding_exists: bool
     created_binding: bool
 
 
 class BindExistingTradeExecutionCredentialRepository:
-    """Non-secret metadata queries and inserts; caller owns the transaction.
-
-    Reads only credential metadata columns -- no encrypted_envelope,
-    key_version, or fingerprint -- so secret material never passes through
-    this path.
-    """
+    """Non-secret metadata queries and binding insert; caller owns transaction."""
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
@@ -72,7 +53,8 @@ class BindExistingTradeExecutionCredentialRepository:
     def find_credential_by_id(self, *, trading_account_credential_id: int) -> Any | None:
         return self._one(
             "SELECT trading_account_credential_id, trading_account_id, venue, "
-            "permission_scope, credential_status, allowed_order_write, allowed_withdrawal "
+            "permission_scope, credential_status, allowed_order_write, allowed_withdrawal, "
+            "credential_source, validation_state, validated_ts_utc, allowed_private_read "
             "FROM trading_account_credential WHERE trading_account_credential_id = %s",
             (trading_account_credential_id,),
         )
@@ -86,14 +68,14 @@ class BindExistingTradeExecutionCredentialRepository:
         if row is None:
             raise ValueError("TRADING_ACCOUNT_VENUE_NOT_FOUND")
 
-    def find_active_binding(self, *, trading_account_id: int, venue: str,
-                             executor_identity: str, runtime_owner: str) -> Any | None:
-        """Look up the ACTIVE binding for one exact identity tuple only.
-
-        Scoped by the full uniqueness grain (account, venue, permission
-        scope, executor_identity, runtime_owner) so another executor's
-        ACTIVE binding for the same account/venue is never observed here.
-        """
+    def find_active_binding(
+        self,
+        *,
+        trading_account_id: int,
+        venue: str,
+        executor_identity: str,
+        runtime_owner: str,
+    ) -> Any | None:
         return self._one(
             "SELECT executor_credential_binding_id, trading_account_credential_id, "
             "executor_identity, runtime_owner FROM executor_credential_binding "
@@ -103,8 +85,15 @@ class BindExistingTradeExecutionCredentialRepository:
             (trading_account_id, venue, executor_identity, runtime_owner),
         )
 
-    def insert_binding(self, *, credential_id: int, trading_account_id: int, venue: str,
-                        executor_identity: str, runtime_owner: str) -> int:
+    def insert_binding(
+        self,
+        *,
+        credential_id: int,
+        trading_account_id: int,
+        venue: str,
+        executor_identity: str,
+        runtime_owner: str,
+    ) -> int:
         with self._conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO executor_credential_binding (trading_account_credential_id, "
@@ -123,15 +112,13 @@ def bind_existing_trade_execution_credential(
     runtime_owner: str,
     conn_factory: Callable[[], Any],
     repository_factory: Callable[[Any], Any] = BindExistingTradeExecutionCredentialRepository,
+    apply: bool = False,
 ) -> BindExistingCredentialResult:
-    """Append/reuse one executor binding for an existing TRADE_EXECUTION
-    credential. Never creates, rotates, or mutates the credential row.
+    """Check or append/reuse one executor binding for an existing credential.
 
-    Fails closed if the credential does not match the account, is not an
-    ACTIVE TRADE_EXECUTION, non-withdrawal-capable credential, if the
-    (executor_identity, runtime_owner) pair is not a reviewed tuple, or if
-    an existing ACTIVE binding for the exact tuple already points at a
-    different credential.
+    ``apply=False`` is strictly read-only and is the safe default: it validates
+    eligibility and existing binding state, rolls the transaction back, and never
+    calls ``insert_binding``. Mutation requires explicit ``apply=True``.
     """
     if (executor_identity, runtime_owner) not in SUPPORTED_EXECUTOR_BINDING_TUPLES:
         raise ValueError("UNSUPPORTED_EXECUTOR_BINDING_TUPLE")
@@ -145,8 +132,7 @@ def bind_existing_trade_execution_credential(
         if credential is None:
             raise ValueError("TRADE_EXECUTION_CREDENTIAL_NOT_FOUND")
 
-        credential_trading_account_id = int(_value(credential, "trading_account_id", 1))
-        if credential_trading_account_id != trading_account_id:
+        if int(_value(credential, "trading_account_id", 1)) != trading_account_id:
             raise ValueError("CREDENTIAL_ACCOUNT_ID_MISMATCH")
 
         venue = str(_value(credential, "venue", 2))
@@ -158,36 +144,61 @@ def bind_existing_trade_execution_credential(
             raise ValueError("CREDENTIAL_MISSING_ORDER_WRITE_SCOPE")
         if bool(_value(credential, "allowed_withdrawal", 6)):
             raise ValueError("CREDENTIAL_WITHDRAWAL_CAPABILITY_NOT_ALLOWED")
+        if str(_value(credential, "credential_source", 7)) != CREDENTIAL_SOURCE_DB_ENCRYPTED:
+            raise ValueError("CREDENTIAL_SOURCE_MISMATCH")
+        if str(_value(credential, "validation_state", 8)) not in VALIDATED_TRADE_EXECUTION_STATES:
+            raise ValueError("CREDENTIAL_NOT_VALID_TRADE_EXECUTION")
+        if _value(credential, "validated_ts_utc", 9) is None:
+            raise ValueError("CREDENTIAL_VALIDATION_TIMESTAMP_MISSING")
+        if not bool(_value(credential, "allowed_private_read", 10)):
+            raise ValueError("CREDENTIAL_MISSING_PRIVATE_READ_SCOPE")
 
-        # Cross-validate venue against the trading_account row itself, not
-        # only against the credential's own venue column.
         repo.require_account(trading_account_id=trading_account_id, venue=venue)
 
         binding = repo.find_active_binding(
-            trading_account_id=trading_account_id, venue=venue,
-            executor_identity=executor_identity, runtime_owner=runtime_owner,
+            trading_account_id=trading_account_id,
+            venue=venue,
+            executor_identity=executor_identity,
+            runtime_owner=runtime_owner,
         )
+        binding_exists = binding is not None
         created_binding = False
+
         if binding is None:
-            binding_id = repo.insert_binding(
-                credential_id=trading_account_credential_id, trading_account_id=trading_account_id,
-                venue=venue, executor_identity=executor_identity, runtime_owner=runtime_owner,
-            )
-            created_binding = True
+            if apply:
+                binding_id = repo.insert_binding(
+                    credential_id=trading_account_credential_id,
+                    trading_account_id=trading_account_id,
+                    venue=venue,
+                    executor_identity=executor_identity,
+                    runtime_owner=runtime_owner,
+                )
+                binding_exists = True
+                created_binding = True
+            else:
+                binding_id = 0
         else:
             binding_id = int(_value(binding, "executor_credential_binding_id", 0))
-            if not (int(_value(binding, "trading_account_credential_id", 1)) == trading_account_credential_id
-                    and _value(binding, "executor_identity", 2) == executor_identity
-                    and _value(binding, "runtime_owner", 3) == runtime_owner):
+            if not (
+                int(_value(binding, "trading_account_credential_id", 1))
+                == trading_account_credential_id
+                and _value(binding, "executor_identity", 2) == executor_identity
+                and _value(binding, "runtime_owner", 3) == runtime_owner
+            ):
                 raise ValueError("ACTIVE_EXECUTOR_CREDENTIAL_BINDING_CONFLICT")
 
-        conn.commit()
+        if apply:
+            conn.commit()
+        else:
+            conn.rollback()
+
         return BindExistingCredentialResult(
             trading_account_credential_id=trading_account_credential_id,
             executor_credential_binding_id=binding_id,
             executor_identity=executor_identity,
             runtime_owner=runtime_owner,
             venue=venue,
+            binding_exists=binding_exists,
             created_binding=created_binding,
         )
     except Exception:
