@@ -33,6 +33,7 @@ from src.executor.shared_executor_identity_v1 import (
     SHARED_EXECUTOR_RUNTIME_OWNER,
 )
 from src.ops import sell_live_activation_controller_v1 as controller
+from src.ops import systemd_runtime_readiness_v1 as systemd_readiness
 
 
 NOW = datetime(2026, 8, 27, 12, 0, tzinfo=timezone.utc)
@@ -177,13 +178,21 @@ def _no_permission_history(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _active_ownership_registry_path(tmp_path: Path) -> Path:
+def _active_ownership_registry_path(
+    tmp_path: Path, *, activation_status: str = "ACTIVE"
+) -> Path:
+    """A registry with owner_host correct for every required capability.
+
+    ``activation_status`` is intentionally still written (mirroring the real
+    registry schema) but Issue #585's RUNTIME_READY phase must never read it
+    -- readiness is decided solely by the injected systemd probe.
+    """
     registry = {
         "capabilities": [
             {
                 "capability_id": capability_id,
                 "owner_host": SHARED_EXECUTOR_RUNTIME_OWNER,
-                "activation_status": "ACTIVE",
+                "activation_status": activation_status,
             }
             for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS
         ]
@@ -191,6 +200,50 @@ def _active_ownership_registry_path(tmp_path: Path) -> Path:
     path = tmp_path / "active_ownership.json"
     path.write_text(json.dumps(registry), encoding="utf-8")
     return path
+
+
+def _healthy_unit_state(unit: str, contract: systemd_readiness.SystemdUnitContractV1) -> systemd_readiness.SystemdUnitStateV1:
+    if unit == contract.service_unit:
+        return systemd_readiness.SystemdUnitStateV1(
+            unit=unit,
+            load_state="loaded",
+            # Oneshot services are expected idle/dead between timer firings;
+            # this must never block readiness.
+            active_state="inactive",
+            unit_file_state="static",
+            fragment_path=contract.expected_service_fragment_path,
+        )
+    return systemd_readiness.SystemdUnitStateV1(
+        unit=unit,
+        load_state="loaded",
+        active_state="active",
+        unit_file_state="enabled",
+        fragment_path=contract.expected_timer_fragment_path,
+    )
+
+
+def _systemd_probe(
+    overrides: dict[str, systemd_readiness.SystemdUnitStateV1] | None = None,
+    *,
+    raise_for_units: frozenset[str] = frozenset(),
+) -> systemd_readiness.SystemdUnitProbe:
+    """Build a fake DI systemd probe. Never shells out to real systemd."""
+    overrides = overrides or {}
+
+    def probe(unit: str) -> systemd_readiness.SystemdUnitStateV1:
+        if unit in raise_for_units:
+            raise RuntimeError("SIMULATED_SYSTEMCTL_FAILURE")
+        if unit in overrides:
+            return overrides[unit]
+        for contract in systemd_readiness.CAPABILITY_UNIT_CONTRACTS.values():
+            if unit in (contract.service_unit, contract.timer_unit):
+                return _healthy_unit_state(unit, contract)
+        raise AssertionError(f"unexpected unit probed in test: {unit}")
+
+    return probe
+
+
+_AUTOMATIC_EXIT_CONTRACT = systemd_readiness.CAPABILITY_UNIT_CONTRACTS["AUTOMATIC_EXIT_POLICY_RUNTIME"]
 
 
 def _base_config(**overrides: Any) -> controller.ControllerConfigV1:
@@ -211,6 +264,9 @@ def _base_config(**overrides: Any) -> controller.ControllerConfigV1:
                 created_ts_utc=NOW - timedelta(minutes=5),
             )
         ),
+        # Default: both required capabilities READY per a fully-injected
+        # fake systemd probe. Never shells out to real systemd.
+        systemd_unit_probe=_systemd_probe(),
     )
     values.update(overrides)
     return controller.ControllerConfigV1(**values)
@@ -393,15 +449,18 @@ def test_kill_switch_invalid_state_blocks(monkeypatch: pytest.MonkeyPatch) -> No
     assert result["reason_code"] == "KILL_SWITCH_STATE_AMBIGUOUS"
 
 
-def test_runtime_missing_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_runtime_missing_registry_entry_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     registry_path = tmp_path / "ownership.json"
     registry_path.write_text(json.dumps({"capabilities": []}), encoding="utf-8")
     config = _base_config(ownership_registry_path=registry_path)
     artifact = _run(config, monkeypatch)
     result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
     assert result["status"] == "BLOCKED"
-    assert result["reason_code"] == "RUNTIME_CAPABILITY_NOT_ACTIVE"
-    assert set(result["detail"]["not_active"]) == set(controller.REQUIRED_RUNTIME_CAPABILITY_IDS)
+    assert result["reason_code"] == "RUNTIME_CAPABILITY_NOT_READY"
+    assert result["detail"]["not_ready"] == {
+        capability_id: "REGISTRY_ENTRY_MISSING"
+        for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS
+    }
 
 
 def test_runtime_owner_mismatch_blocks(
@@ -425,7 +484,11 @@ def test_runtime_owner_mismatch_blocks(
         r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY"
     )
     assert result["status"] == "BLOCKED"
-    assert result["reason_code"] == "RUNTIME_CAPABILITY_OWNER_MISMATCH"
+    assert result["reason_code"] == "RUNTIME_CAPABILITY_NOT_READY"
+    assert result["detail"]["not_ready"] == {
+        capability_id: "REGISTRY_OWNER_MISMATCH"
+        for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS
+    }
 
 
 def test_runtime_registry_unreadable_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -434,6 +497,150 @@ def test_runtime_registry_unreadable_blocks(monkeypatch: pytest.MonkeyPatch, tmp
     result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "RUNTIME_OWNERSHIP_REGISTRY_UNREADABLE"
+
+
+def test_runtime_service_unit_not_found_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    missing = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.service_unit, load_state="not-found",
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.service_unit: missing}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "SERVICE_UNIT_NOT_FOUND"
+
+
+def test_runtime_timer_unit_not_found_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    missing = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.timer_unit, load_state="not-found",
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.timer_unit: missing}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "TIMER_UNIT_NOT_FOUND"
+
+
+def test_runtime_disabled_timer_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    disabled = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.timer_unit,
+        load_state="loaded",
+        active_state="active",
+        unit_file_state="disabled",
+        fragment_path=_AUTOMATIC_EXIT_CONTRACT.expected_timer_fragment_path,
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.timer_unit: disabled}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "TIMER_NOT_ENABLED"
+
+
+def test_runtime_inactive_timer_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    inactive = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.timer_unit,
+        load_state="loaded",
+        active_state="inactive",
+        unit_file_state="enabled",
+        fragment_path=_AUTOMATIC_EXIT_CONTRACT.expected_timer_fragment_path,
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.timer_unit: inactive}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "TIMER_NOT_ACTIVE"
+
+
+def test_runtime_wrong_fragment_path_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    wrong_path = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.service_unit,
+        load_state="loaded",
+        active_state="inactive",
+        unit_file_state="static",
+        fragment_path="/etc/systemd/system/some-other-unrelated.service",
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.service_unit: wrong_path}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "SERVICE_UNIT_WRONG_FRAGMENT_PATH"
+
+
+def test_runtime_probe_error_blocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe(raise_for_units={_AUTOMATIC_EXIT_CONTRACT.service_unit}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "SERVICE_PROBE_FAILED"
+
+
+def test_runtime_healthy_oneshot_service_and_enabled_active_timer_passes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    config = _base_config(ownership_registry_path=_active_ownership_registry_path(tmp_path))
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "PASSED"
+    for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS:
+        capability_detail = result["detail"]["capabilities"][capability_id]
+        assert capability_detail["status"] == systemd_readiness.STATUS_READY
+        # Oneshot service is idle between firings; this must never block.
+        assert capability_detail["service_active_state"] == "inactive"
+        assert capability_detail["timer_active_state"] == "active"
+        assert capability_detail["timer_unit_file_state"] == "enabled"
+
+
+def test_runtime_registry_activation_status_alone_cannot_pass_readiness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A registry entry with activation_status=ACTIVE must never make
+    RUNTIME_READY pass when the injected systemd probe reports the unit is
+    not actually installed -- registry metadata is never read as runtime
+    proof (Issue #585)."""
+    not_installed = systemd_readiness.SystemdUnitStateV1(
+        unit=_AUTOMATIC_EXIT_CONTRACT.service_unit, load_state="not-found",
+    )
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path, activation_status="ACTIVE"),
+        systemd_unit_probe=_systemd_probe({_AUTOMATIC_EXIT_CONTRACT.service_unit: not_installed}),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert result["detail"]["not_ready"]["AUTOMATIC_EXIT_POLICY_RUNTIME"] == "SERVICE_UNIT_NOT_FOUND"
+
+
+def test_runtime_readiness_never_calls_real_systemctl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Controller-level read-only guarantee: production's real
+    probe_systemd_unit_v1 (which shells out to systemctl) is never invoked
+    when a systemd_unit_probe is injected."""
+
+    def _forbidden_real_probe(unit: str) -> systemd_readiness.SystemdUnitStateV1:
+        raise AssertionError("real systemctl probe must never be called from a DI-configured test")
+
+    monkeypatch.setattr(controller, "probe_systemd_unit_v1", _forbidden_real_probe)
+    config = _base_config(ownership_registry_path=_active_ownership_registry_path(tmp_path))
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "PASSED"
 
 
 def test_dry_run_and_paper_acceptance_pass_without_db(monkeypatch: pytest.MonkeyPatch) -> None:
