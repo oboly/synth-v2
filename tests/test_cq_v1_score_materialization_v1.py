@@ -244,6 +244,26 @@ def test_resume_discards_malformed_uncheckpointed_tail(tmp_path: Path, monkeypat
     assert [json.loads(line)["shadow_id"] for line in final_rows] == [10, 11]
 
 
+def test_connection_failure_writes_failed_terminal_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    features_path = tmp_path / "features.jsonl"
+    _write_features(features_path, [_feature()])
+    output_dir = tmp_path / "out"
+
+    def fail_connection():
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(runner, "get_db_connection", fail_connection)
+    args = argparse.Namespace(features_jsonl=str(features_path), output_dir=str(output_dir), batch_size=100, resume=False)
+    with pytest.raises(RuntimeError, match="db unavailable"):
+        runner.run(args)
+    summary = json.loads((output_dir / runner.OUTPUT_SUMMARY).read_text(encoding="utf-8"))
+    checkpoint = json.loads((output_dir / runner.OUTPUT_CHECKPOINT).read_text(encoding="utf-8"))
+    assert summary["terminal_state"] == "FAILED"
+    assert summary["sample_count"] == 0
+    assert checkpoint["terminal_state"] == "FAILED"
+    assert checkpoint["processed"] == 0
+
+
 def test_runner_has_no_forward_outcome_dependency_or_candle_query() -> None:
     source = inspect.getsource(runner).lower()
     assert "entry_quality_forward_validation" not in source
