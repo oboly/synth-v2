@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, getcontext
 
 from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, Candle, evaluate_candidate
 
@@ -62,6 +62,38 @@ def test_all_frozen_candidates_produce_bounded_numeric_scores() -> None:
         assert all(row.observed_lifecycle == "UNMEASURED" for row in complete)
         assert all(row.freshness == "FRESH" for row in complete)
         assert all(row.provenance.startswith("obs_market_candle:15m:") for row in complete)
+
+
+def test_decimal_precision_does_not_change_candidate_outputs() -> None:
+    original_precision = getcontext().prec
+    try:
+        cohort = _cohort()
+        outputs_by_precision: dict[int, dict[str, list[tuple[int, Decimal | None, Decimal | None, Decimal | None, Decimal | None, str]]]] = {}
+        for precision in (12, 28):
+            getcontext().prec = precision
+            candidate_outputs: dict[str, list[tuple[int, Decimal | None, Decimal | None, Decimal | None, Decimal | None, str]]] = {}
+            for spec in CANDIDATE_SPECS:
+                rows = evaluate_candidate(
+                    candles_by_asset=cohort,
+                    asof_ts=ASOF,
+                    spec=spec,
+                    venue="bitvavo",
+                )
+                candidate_outputs[spec.candidate_id] = [
+                    (
+                        row.asset_id,
+                        row.relative_return_unit,
+                        row.signed_flow_unit,
+                        row.relative_acceleration_unit,
+                        row.rotation_score,
+                        row.data_quality,
+                    )
+                    for row in rows
+                ]
+            outputs_by_precision[precision] = candidate_outputs
+        assert outputs_by_precision[12] == outputs_by_precision[28]
+    finally:
+        getcontext().prec = original_precision
 
 
 def test_off_grid_asof_fails_closed() -> None:
