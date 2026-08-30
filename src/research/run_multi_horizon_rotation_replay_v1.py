@@ -13,11 +13,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
-from src.research.multi_horizon_rotation_replay_v1 import (
-    CANDIDATE_SPECS,
-    Candle,
-    evaluate_candidate,
-)
+from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, Candle, evaluate_candidate
 
 
 RUNNER_NAME = "run_multi_horizon_rotation_replay_v1"
@@ -71,10 +67,7 @@ def fetch_candles(conn: Any, *, venue: str, asof_ts: datetime) -> dict[int, list
     for row in rows:
         asset_id = int(row["asset_id"])
         ts = row["close_ts_utc"]
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        else:
-            ts = ts.astimezone(UTC)
+        ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
         out.setdefault(asset_id, []).append(
             Candle(
                 close_ts_utc=ts,
@@ -112,7 +105,12 @@ def main(argv: list[str] | None = None) -> int:
         complete_rows = 0
         for spec in specs:
             emit(f"PHASE_STARTED name=evaluate_candidate candidate={spec.candidate_id}")
-            results = evaluate_candidate(candles_by_asset=candles_by_asset, asof_ts=asof, spec=spec)
+            results = evaluate_candidate(
+                candles_by_asset=candles_by_asset,
+                asof_ts=asof,
+                spec=spec,
+                venue=args.venue,
+            )
             for result in results:
                 emit(json.dumps(asdict(result), sort_keys=True, default=json_default))
             complete = sum(result.data_quality == "COMPLETE" for result in results)
