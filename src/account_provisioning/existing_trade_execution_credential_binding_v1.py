@@ -112,13 +112,13 @@ def bind_existing_trade_execution_credential(
     runtime_owner: str,
     conn_factory: Callable[[], Any],
     repository_factory: Callable[[Any], Any] = BindExistingTradeExecutionCredentialRepository,
-    apply: bool = True,
+    apply: bool = False,
 ) -> BindExistingCredentialResult:
     """Check or append/reuse one executor binding for an existing credential.
 
-    ``apply=False`` is strictly read-only: it validates eligibility and existing binding
-    state, rolls the transaction back, and never calls ``insert_binding``. ``apply=True``
-    preserves the prior idempotent insert/reuse behavior.
+    ``apply=False`` is strictly read-only and is the safe default: it validates
+    eligibility and existing binding state, rolls the transaction back, and never
+    calls ``insert_binding``. Mutation requires explicit ``apply=True``.
     """
     if (executor_identity, runtime_owner) not in SUPPORTED_EXECUTOR_BINDING_TUPLES:
         raise ValueError("UNSUPPORTED_EXECUTOR_BINDING_TUPLE")
