@@ -195,6 +195,10 @@ def classify_universe_candle_coverage(
     persisted ``close_ts_utc`` (``None``/missing entries count as no data).
     This function does no I/O and does not know about venues or SQL -- it is
     a pure classifier so it can be exercised with fixture data.
+
+    Fail closed on timestamp drift: only an exact expected-boundary match is
+    current. A future-dated persisted candle is non-current just like any
+    other invalid boundary and must never make the health check pass.
     """
     expected = expected_close_ts_utc.astimezone(UTC)
     universe_size = len(symbol_latest_close)
@@ -214,10 +218,11 @@ def classify_universe_candle_coverage(
         if latest is None:
             missing_count += 1
             continue
-        if latest >= expected:
+        if latest == expected:
             current_count += 1
             continue
-        lag_counts[latest] += 1
+        if latest < expected:
+            lag_counts[latest] += 1
 
     stale_count = universe_size - current_count - missing_count
     non_current_count = universe_size - current_count
