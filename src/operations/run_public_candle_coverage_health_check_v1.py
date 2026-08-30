@@ -28,6 +28,7 @@ execution_planner=none executor=none
 """
 
 import argparse
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -49,11 +50,15 @@ from src.operations.persisted_market_candle_freshness_v1 import (
 )
 
 RUNNER_NAME = "run_public_candle_coverage_health_check_v1"
-RUNNER_VERSION = "0.2"
+RUNNER_VERSION = "0.3"
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_QUOTE_ASSET = "EUR"
 DEFAULT_INTERVALS = ["1h", "4h"]
 DEFAULT_TIMEOUT_SECONDS = 20
+
+
+def emit(message: str) -> None:
+    print(message, flush=True)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -90,12 +95,7 @@ def filter_enabled_symbols_to_active_markets(
     active_markets: set[str],
     quote_asset: str,
 ) -> list[str]:
-    """Apply the same market eligibility predicate as ``run_candles_etl``.
-
-    The writer constructs ``SYMBOL-QUOTE`` and retains only markets returned
-    by ``fetch_active_bitvavo_markets``. Keep output deterministic for logs and
-    tests regardless of the exchange payload order.
-    """
+    """Apply the same market eligibility predicate as ``run_candles_etl``."""
     quote = quote_asset.upper()
     return sorted(
         symbol
@@ -111,8 +111,8 @@ def _format_utc_z(value: datetime | None) -> str:
 
 
 def emit_coverage(coverage: UniverseCandleCoverage) -> None:
-    print(
-        f"interval={coverage.interval_code} overall_state={coverage.overall_state} "
+    emit(
+        f"COVERAGE interval={coverage.interval_code} overall_state={coverage.overall_state} "
         f"reason={coverage.reason} "
         f"expected_close_ts_utc={_format_utc_z(coverage.expected_close_ts_utc)} "
         f"universe_size={coverage.universe_size} "
@@ -125,8 +125,8 @@ def emit_coverage(coverage: UniverseCandleCoverage) -> None:
 
 
 def emit_source_unavailable(interval_code: str, reason: str) -> None:
-    print(
-        f"interval={interval_code} overall_state={SOURCE_UNAVAILABLE} reason={reason} "
+    emit(
+        f"COVERAGE interval={interval_code} overall_state={SOURCE_UNAVAILABLE} reason={reason} "
         "expected_close_ts_utc=not_available universe_size=0 current_count=0 "
         "stale_count=0 missing_count=0 dominant_lag_close_ts_utc=not_available "
         "dominant_lag_symbol_count=0"
@@ -137,73 +137,134 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_dotenv(dotenv_path=".env", override=False)
     intervals = args.intervals or DEFAULT_INTERVALS
+    started = time.perf_counter()
     now = utc_now().astimezone(UTC)
 
-    print(
-        f"runner={RUNNER_NAME} version={RUNNER_VERSION} mode=select_plus_public_market_metadata "
-        f"venue={args.venue} intervals={','.join(intervals)} now_utc={_format_utc_z(now)}"
+    emit(
+        f"STARTED {RUNNER_NAME} version={RUNNER_VERSION} "
+        f"mode=select_plus_public_market_metadata venue={args.venue} "
+        f"intervals={','.join(intervals)} now_utc={_format_utc_z(now)}"
     )
 
     conn = None
     overall_states: list[str] = []
+    terminal_kind = "FINISHED"
+    terminal_reason = "completed"
+    exit_code = 1
+
     try:
+        phase_started = time.perf_counter()
+        emit("PHASE_STARTED name=open_read_only_database")
         conn = get_connection()
         with conn.cursor() as cur:
             cur.execute("START TRANSACTION READ ONLY")
+        emit(
+            f"PHASE_FINISHED name=open_read_only_database "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+        )
 
+        phase_started = time.perf_counter()
+        emit("PHASE_STARTED name=load_enabled_assets")
         enabled_symbols = fetch_enabled_symbols(conn)
+        emit(
+            f"PHASE_FINISHED name=load_enabled_assets count={len(enabled_symbols)} "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+        )
         if not enabled_symbols:
             emit_source_unavailable("ALL", "NO_ENABLED_ASSETS")
-            print("database_writes=0 public_exchange_calls=1 broker_private_calls=0 broker_writes=0")
-            return 1
-
-        session = build_requests_session()
-        active_markets = fetch_active_bitvavo_markets(
-            session=session,
-            timeout_seconds=args.timeout_seconds,
-        )
-        symbols = filter_enabled_symbols_to_active_markets(
-            enabled_symbols=enabled_symbols,
-            active_markets=active_markets,
-            quote_asset=args.quote_asset,
-        )
-        if not symbols:
-            emit_source_unavailable("ALL", "NO_WRITER_ELIGIBLE_ACTIVE_MARKETS")
-            print("database_writes=0 public_exchange_calls=1 broker_private_calls=0 broker_writes=0")
-            return 1
-
-        print(
-            f"universe_enabled_count={len(enabled_symbols)} "
-            f"active_market_count={len(active_markets)} "
-            f"writer_eligible_symbol_count={len(symbols)}"
-        )
-
-        for interval_code in intervals:
-            expected_close_ts_utc = floor_to_interval(now, interval_code)
-            symbol_latest_close = fetch_universe_latest_close_by_symbol(
-                conn,
-                venue=args.venue,
-                interval_code=interval_code,
-                symbols=symbols,
+            overall_states = [SOURCE_UNAVAILABLE]
+            terminal_reason = "no_enabled_assets"
+        else:
+            phase_started = time.perf_counter()
+            emit(
+                f"PHASE_STARTED name=fetch_active_bitvavo_markets "
+                f"timeout_seconds={args.timeout_seconds}"
             )
-            coverage = classify_universe_candle_coverage(
-                interval_code=interval_code,
-                expected_close_ts_utc=expected_close_ts_utc,
-                symbol_latest_close=symbol_latest_close,
+            session = build_requests_session()
+            active_markets = fetch_active_bitvavo_markets(
+                session=session,
+                timeout_seconds=args.timeout_seconds,
             )
-            emit_coverage(coverage)
-            overall_states.append(coverage.overall_state)
+            emit(
+                f"PHASE_FINISHED name=fetch_active_bitvavo_markets "
+                f"count={len(active_markets)} "
+                f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+            )
+
+            symbols = filter_enabled_symbols_to_active_markets(
+                enabled_symbols=enabled_symbols,
+                active_markets=active_markets,
+                quote_asset=args.quote_asset,
+            )
+            emit(
+                f"PROGRESS stage=writer_eligible_universe "
+                f"enabled_count={len(enabled_symbols)} active_market_count={len(active_markets)} "
+                f"writer_eligible_symbol_count={len(symbols)}"
+            )
+
+            if not symbols:
+                emit_source_unavailable("ALL", "NO_WRITER_ELIGIBLE_ACTIVE_MARKETS")
+                overall_states = [SOURCE_UNAVAILABLE]
+                terminal_reason = "no_writer_eligible_active_markets"
+            else:
+                for index, interval_code in enumerate(intervals, start=1):
+                    phase_started = time.perf_counter()
+                    emit(
+                        f"PHASE_STARTED name=classify_interval interval={interval_code} "
+                        f"index={index} total={len(intervals)}"
+                    )
+                    expected_close_ts_utc = floor_to_interval(now, interval_code)
+                    symbol_latest_close = fetch_universe_latest_close_by_symbol(
+                        conn,
+                        venue=args.venue,
+                        interval_code=interval_code,
+                        symbols=symbols,
+                    )
+                    coverage = classify_universe_candle_coverage(
+                        interval_code=interval_code,
+                        expected_close_ts_utc=expected_close_ts_utc,
+                        symbol_latest_close=symbol_latest_close,
+                    )
+                    emit_coverage(coverage)
+                    overall_states.append(coverage.overall_state)
+                    emit(
+                        f"PHASE_FINISHED name=classify_interval interval={interval_code} "
+                        f"state={coverage.overall_state} "
+                        f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+                    )
+                    emit(
+                        f"PROGRESS stage=intervals completed={index}/{len(intervals)} "
+                        f"latest_interval={interval_code} latest_state={coverage.overall_state}"
+                    )
+
+        exit_code = (
+            0
+            if overall_states and all(state == CURRENT for state in overall_states)
+            else 1
+        )
+        terminal_reason = "all_intervals_current" if exit_code == 0 else terminal_reason
+    except KeyboardInterrupt:
+        terminal_kind = "INTERRUPTED"
+        terminal_reason = "keyboard_interrupt"
+        exit_code = 130
     except Exception as exc:
+        terminal_kind = "FAILED"
+        terminal_reason = f"{exc.__class__.__name__}:{exc}"
+        exit_code = 1
         for interval_code in intervals:
-            emit_source_unavailable(interval_code, f"{exc.__class__.__name__}:{exc}")
-        overall_states = [SOURCE_UNAVAILABLE]
+            emit_source_unavailable(interval_code, terminal_reason)
     finally:
         if conn is not None:
             conn.rollback()
             conn.close()
+        emit(
+            f"{terminal_kind} {RUNNER_NAME} reason={terminal_reason} exit_code={exit_code} "
+            f"elapsed_s={time.perf_counter() - started:.3f} "
+            "database_writes=0 public_exchange_calls=1 broker_private_calls=0 "
+            "broker_writes=0 order_submission=0 live_orders=0"
+        )
 
-    print("database_writes=0 public_exchange_calls=1 broker_private_calls=0 broker_writes=0")
-    return 0 if overall_states and all(state == CURRENT for state in overall_states) else 1
+    return exit_code
 
 
 if __name__ == "__main__":
