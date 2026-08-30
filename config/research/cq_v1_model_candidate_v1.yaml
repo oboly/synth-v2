@@ -1,0 +1,86 @@
+registry_name: cq_v1_model_candidate_v1
+registry_version: "1.0.0"
+issue: 610
+parent_issue: 568
+phase: 2D1
+research_only: true
+market_only: true
+account_agnostic: true
+
+freeze_evidence:
+  coverage_artifact: data/research/cq_v1_pit_extractor_v1_full_20260830T133005Z/coverage_summary.json
+  coverage_artifact_sha256: f09a515535dd72c5422cbfea7ad449163132b298d1759f32701f0152c78aff2d
+  sample_count: 419
+  mrp_available_count: 203
+  mrp_coverage: 0.484487
+  sector_available_count: 419
+  sector_coverage: 1.000000
+  joint_available_count: 203
+  joint_coverage: 0.484487
+  holdout_outcomes_inspected: false
+
+source_contracts:
+  cq_v0:
+    source: research_entry_quality_shadow.entry_quality_score
+    model_version: cq_shadow_v1
+    native_domain: [0.0, 1.0]
+    neutral_point: null
+    transform: identity_then_six_decimal_round
+  market_rotation_pressure:
+    aggregate_model_version: "1.0"
+    per_asset_model_version: "1.0"
+    support_requires: [mrp_aggregate, mrp_asset]
+    numeric_field_used: mrp_aggregate.market_score
+    native_domain: [-100.0, 100.0]
+    neutral_point: 0.0
+    transform: (market_score + 100) / 200
+    transform_domain: [0.0, 1.0]
+    note: per-asset score_total is intentionally not transformed because the canonical read model validates it only as finite and does not expose a hard numeric range
+  sector_rotation:
+    model_version: sector-rotation-v1.0.0
+    window_code: 4h
+    status: ELIGIBLE_BUT_NOT_SCORED_IN_MODEL_FAMILY_V1
+    reason: canonical audited source is replayable, but no hard numeric domain contract for rotation_score was found; v1 does not invent clipping or normalization bounds
+
+candidate_family:
+  candidate_count: 2
+  score_rounding_decimals: 6
+  clamp_output_0_1: true
+  missingness_states: [AVAILABLE, INSUFFICIENT_DATA, BLOCKED]
+  candidates:
+    - candidate_id: cq_v1_mrp_balanced_v1
+      version: "1.0.0"
+      support: MRP_AVAILABLE_REQUIRES_AGGREGATE_AND_PER_ASSET
+      weights:
+        cq_v0: 0.500000
+        mrp_market_score_normalized: 0.500000
+    - candidate_id: cq_v1_mrp_anchor_v1
+      version: "1.0.0"
+      support: MRP_AVAILABLE_REQUIRES_AGGREGATE_AND_PER_ASSET
+      weights:
+        cq_v0: 0.750000
+        mrp_market_score_normalized: 0.250000
+
+missingness:
+  imputation: forbidden
+  current_truth_fallback: forbidden
+  future_truth_fallback: forbidden
+  weight_renormalization_on_missing_features: forbidden
+  different_support_requires_separate_model_version: true
+
+forbidden:
+  forward_outcome_reads: true
+  learned_transforms: true
+  quantile_fitting: true
+  weight_grid_search: true
+  post_holdout_weight_tuning: true
+  new_feature_family_discovery: true
+  database_queries_in_scorer: true
+  database_writes: true
+  production_ranking_changes: true
+
+freeze_state:
+  transforms_frozen: true
+  model_family_frozen: true
+  candidate_count_lte_3: true
+  holdout_outcomes_inspected: false
