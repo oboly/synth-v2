@@ -27,6 +27,21 @@ on `PUBLIC_PRICE_VALIDATION_BLOCKED`, preventing normal Profit Plan refreshes.
 The writers recovered after restoring the canonical checkout to exact current
 `origin/main`.
 
+### Recurrence: 2026-08-29/30 (Issue #606)
+
+The same failure class recurred: the canonical checkout was left on a
+feature branch (`agent/550-...`) and additionally carried untracked research
+artifacts under `data/research/`. The guard's untracked-file check failed
+closed identically, stalling `public_candle_freshness` across every Bitvavo
+interval for the entire enabled asset universe (not an isolated market) from
+`2026-08-29T12:52:00Z` until the checkout was restored to clean `main` and
+the stray artifacts were moved into a dedicated issue worktree rather than
+left in place or deleted. See
+`docs/ops/public_candle_freshness_incident_20260829_checkout_hygiene.md` for
+full timeline and evidence. The Required Invariant below already covered
+this exact case; the recurrence is a workflow-discipline gap, not a guard
+defect.
+
 ## Required Invariant
 
 All providers and agents, including Claude Code and Codex, must follow these
