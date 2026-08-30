@@ -1,7 +1,23 @@
 from __future__ import annotations
 
-"""Fail-closed validation of a persisted canonical candle boundary."""
+"""Fail-closed validation of a persisted canonical candle boundary.
 
+Two levels of freshness truth live here:
+
+- ``classify_persisted_candle_boundary`` -- single (venue, interval) boundary
+  check against one expected close. This is the existing per-market/per-call
+  contract consumed by callers that already know which symbol they care
+  about.
+- ``classify_universe_candle_coverage`` -- aggregate, whole-universe view
+  across every eligible symbol for one (venue, interval). This distinguishes
+  an isolated per-symbol gap (``PARTIAL_COVERAGE``) from a systemic producer
+  outage where every symbol stalled at the same boundary (``WRITER_FAILED``),
+  which the per-symbol check alone cannot reveal (Issue #606: an ICP-EUR
+  freshness gap traced back to a global writer stall was previously visible
+  only market-by-market).
+"""
+
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping
@@ -14,6 +30,17 @@ MISSING = "MISSING"
 MALFORMED = "MALFORMED"
 FUTURE = "FUTURE"
 STALE = "STALE"
+
+# Universe-level coverage states (Issue #606 freshness contract).
+CURRENT = "CURRENT"
+PARTIAL_COVERAGE = "PARTIAL_COVERAGE"
+WRITER_FAILED = "WRITER_FAILED"
+SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+
+# Default fraction of the non-current universe that must share one identical
+# lagging close boundary before the gap is classified as a systemic writer
+# outage rather than a set of unrelated per-symbol gaps.
+DEFAULT_WRITER_FAILED_DOMINANCE_RATIO = 0.9
 
 
 @dataclass(frozen=True)
@@ -105,4 +132,148 @@ def classify_persisted_candle_boundary(
         )
     return PersistedMarketCandleFreshness(
         PASS, FRESH, "EXPECTED_CLOSE_PERSISTED", expected, latest, exact_count
+    )
+
+
+def fetch_universe_latest_close_by_symbol(
+    conn: Any,
+    *,
+    venue: str,
+    interval_code: str,
+    symbols: list[str],
+) -> Mapping[str, Any]:
+    """One SELECT for the latest persisted close per symbol in ``symbols``.
+
+    Callers must pass the already-resolved eligible symbol universe. For the
+    Bitvavo writer this means enabled assets intersected with the exchange's
+    current ``status=trading`` market set. A disabled, delisted, or suspended
+    market must never count against persisted candle coverage.
+    """
+    if not symbols:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(symbols))
+    sql = f"""
+        SELECT a.symbol AS symbol, MAX(c.close_ts_utc) AS latest_close_ts_utc
+        FROM asset a
+        LEFT JOIN obs_market_candle c
+            ON c.asset_id = a.asset_id
+            AND c.venue = %s
+            AND c.interval_code = %s
+        WHERE a.symbol IN ({placeholders})
+        GROUP BY a.symbol
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue.lower(), interval_code, *symbols))
+        rows = cur.fetchall()
+    return {str(row["symbol"]): row.get("latest_close_ts_utc") for row in rows}
+
+
+@dataclass(frozen=True)
+class UniverseCandleCoverage:
+    interval_code: str
+    overall_state: str
+    reason: str
+    expected_close_ts_utc: datetime
+    universe_size: int
+    current_count: int
+    stale_count: int
+    missing_count: int
+    dominant_lag_close_ts_utc: datetime | None
+    dominant_lag_symbol_count: int
+
+
+def classify_universe_candle_coverage(
+    *,
+    interval_code: str,
+    expected_close_ts_utc: datetime,
+    symbol_latest_close: Mapping[str, object],
+    writer_failed_dominance_ratio: float = DEFAULT_WRITER_FAILED_DOMINANCE_RATIO,
+) -> UniverseCandleCoverage:
+    """Classify whole-universe coverage for one (venue, interval) boundary.
+
+    ``symbol_latest_close`` maps every eligible symbol to its latest
+    persisted ``close_ts_utc`` (``None``/missing entries count as no data).
+    This function does no I/O and does not know about venues or SQL -- it is
+    a pure classifier so it can be exercised with fixture data.
+
+    Fail closed on timestamp drift: only an exact expected-boundary match is
+    current. A future-dated persisted candle is non-current just like any
+    other invalid boundary and must never make the health check pass.
+
+    Dominant-lag selection is deterministic. If multiple lag boundaries have
+    the same maximum count, the latest (closest-to-expected) lag timestamp is
+    selected for reporting.
+    """
+    expected = expected_close_ts_utc.astimezone(UTC)
+    universe_size = len(symbol_latest_close)
+
+    if universe_size == 0:
+        return UniverseCandleCoverage(
+            interval_code, SOURCE_UNAVAILABLE, "NO_ELIGIBLE_SYMBOLS",
+            expected, 0, 0, 0, 0, None, 0,
+        )
+
+    current_count = 0
+    missing_count = 0
+    lag_counts: Counter[datetime] = Counter()
+
+    for raw_latest in symbol_latest_close.values():
+        latest = _as_utc(raw_latest)
+        if latest is None:
+            missing_count += 1
+            continue
+        if latest == expected:
+            current_count += 1
+            continue
+        if latest < expected:
+            lag_counts[latest] += 1
+
+    stale_count = universe_size - current_count - missing_count
+    non_current_count = universe_size - current_count
+
+    dominant_lag_ts: datetime | None = None
+    dominant_lag_count = 0
+    if lag_counts:
+        dominant_lag_count = max(lag_counts.values())
+        dominant_lag_ts = max(
+            timestamp
+            for timestamp, count in lag_counts.items()
+            if count == dominant_lag_count
+        )
+
+    if current_count == universe_size:
+        return UniverseCandleCoverage(
+            interval_code, CURRENT, "ALL_SYMBOLS_AT_EXPECTED_BOUNDARY",
+            expected, universe_size, current_count, stale_count, missing_count,
+            None, 0,
+        )
+
+    if missing_count == universe_size:
+        return UniverseCandleCoverage(
+            interval_code, MISSING, "NO_SYMBOL_HAS_ANY_PERSISTED_CANDLE",
+            expected, universe_size, current_count, stale_count, missing_count,
+            None, 0,
+        )
+
+    if current_count == 0 and dominant_lag_count / non_current_count >= writer_failed_dominance_ratio:
+        return UniverseCandleCoverage(
+            interval_code, WRITER_FAILED,
+            f"DOMINANT_LAG_BOUNDARY_SHARED_BY_{dominant_lag_count}_OF_{universe_size}_SYMBOLS",
+            expected, universe_size, current_count, stale_count, missing_count,
+            dominant_lag_ts, dominant_lag_count,
+        )
+
+    if current_count == 0:
+        return UniverseCandleCoverage(
+            interval_code, STALE, "NO_SYMBOL_AT_EXPECTED_BOUNDARY_NO_DOMINANT_LAG",
+            expected, universe_size, current_count, stale_count, missing_count,
+            dominant_lag_ts, dominant_lag_count,
+        )
+
+    return UniverseCandleCoverage(
+        interval_code, PARTIAL_COVERAGE,
+        f"{current_count}_OF_{universe_size}_SYMBOLS_AT_EXPECTED_BOUNDARY",
+        expected, universe_size, current_count, stale_count, missing_count,
+        dominant_lag_ts, dominant_lag_count,
     )

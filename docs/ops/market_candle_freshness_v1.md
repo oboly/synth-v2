@@ -1,5 +1,18 @@
 # Market Candle Freshness v1
 
+See `docs/ops/public_candle_freshness_incident_20260829_checkout_hygiene.md`
+for the 2026-08-29/30 systemic freshness stall (Issue #606): every Bitvavo
+interval stopped advancing when the canonical gurkDB writer checkout was left
+impure (feature branch + untracked files), correctly tripping the checkout-
+purity guard below. That incident also added a whole-universe coverage
+classifier (`classify_universe_candle_coverage` in
+`src/operations/persisted_market_candle_freshness_v1.py`, run via
+`src/operations/run_public_candle_coverage_health_check_v1.py`) that
+distinguishes an isolated per-symbol gap (`PARTIAL_COVERAGE`) from a systemic
+writer outage (`WRITER_FAILED`) -- the per-boundary check documented below
+answers "is this one symbol fresh?"; the coverage classifier answers "is the
+writer itself healthy across the whole universe?"
+
 The public candle writer keeps `obs_market_candle` fresh for:
 
 - `15m` with a 72-hour refresh window;
