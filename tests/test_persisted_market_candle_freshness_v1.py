@@ -98,6 +98,7 @@ def test_missing_stale_future_and_malformed_inputs_fail_closed() -> None:
 # ---------------------------------------------------------------------------
 
 LAG_1H = EXPECTED.replace(hour=EXPECTED.hour - 1)
+FUTURE_1H = EXPECTED.replace(hour=EXPECTED.hour + 1)
 
 
 class _UniverseCursor:
@@ -158,6 +159,17 @@ def test_universe_all_current_is_current() -> None:
     assert coverage.current_count == 3
     assert coverage.stale_count == 0
     assert coverage.missing_count == 0
+
+
+def test_universe_future_boundary_fails_closed_not_current() -> None:
+    coverage = classify_universe_candle_coverage(
+        interval_code="1h",
+        expected_close_ts_utc=EXPECTED,
+        symbol_latest_close={"BTC": FUTURE_1H, "ETH": FUTURE_1H, "ICP": FUTURE_1H},
+    )
+    assert coverage.overall_state == STALE
+    assert coverage.current_count == 0
+    assert coverage.stale_count == 3
 
 
 def test_universe_isolated_lag_is_partial_coverage_not_writer_failed() -> None:
