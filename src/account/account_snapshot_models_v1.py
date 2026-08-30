@@ -47,6 +47,20 @@ class WalletRefreshResult:
 
 
 @dataclass(frozen=True)
+class ExactAccountStateRefreshResult:
+    trading_account_id: int
+    account_code: str
+    venue: str
+    account_mode: str
+    snapshot_ts_utc: datetime
+    balance_count: int
+    order_count: int
+    position_count: int | None
+    account_asset_inserted: int
+    account_asset_existing: int
+
+
+@dataclass(frozen=True)
 class MarketSyncRow:
     market: str
     base: str
