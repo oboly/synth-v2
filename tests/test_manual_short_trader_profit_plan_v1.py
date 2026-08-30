@@ -462,6 +462,119 @@ def test_load_zone_contexts_retired_tier_metadata_reaches_importer_as_unavailabl
             assert "MAP_TIER_NOT_CONFIRMED_CURRENT" not in _pp_module._action_gate_blocking_reason_codes(card), symbol
 
 
+def test_load_zone_contexts_target_already_passed_is_not_shown_as_forward_target() -> None:
+    """Issue #550 ICP-EUR production regression, 2026-08-29.
+
+    Live ICP-EUR evidence: native map ext_1_618 target 2.1543772 (displayed
+    as 2.1544) with reload_r382/r500 2.0689772/2.0589. Independently verified
+    against live obs_market_candle (1h and 4h, venue=bitvavo, asset ICP) that
+    the max primary-interval high since the map's anchor_end_ts_utc
+    (2026-08-24T16:00:00Z) reached 2.1595 by the 2026-08-29T12:00:00Z close --
+    already above both native ext_1_272 (2.1248288) and ext_1_618 (2.1543772).
+    Calling _build_target_level_statuses directly with this exact
+    production data already proves the pure lifecycle function classifies
+    2.1543772 as PASSED, not forward/active -- this test proves the full
+    producer (native row) -> snapshot (write_context_rows) ->
+    import (load_zone_contexts) -> build_profit_plan_card path preserves
+    that PASSED classification end-to-end and never re-displays an
+    already-passed target as if it were current forward opportunity
+    context (the #550 regression invariant), given a history join that
+    matches the real candle data. This does not assert anything about
+    market-data candle ingestion freshness/cadence, which is a distinct,
+    separately-owned concern.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        row = dataclasses.replace(
+            _native_short_row(symbol="ICP"),
+            anchor_start_ts_utc=datetime(2026, 8, 24, 4, 0, tzinfo=UTC),
+            anchor_end_ts_utc=datetime(2026, 8, 24, 16, 0, tzinfo=UTC),
+            anchor_low_price=Decimal("2.0162"),
+            anchor_high_price=Decimal("2.1016"),
+            breakout_gate_price=Decimal("2.1016"),
+            latest_primary_close_ts_utc=datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
+            latest_support_close_ts_utc=datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
+            latest_primary_close_price=Decimal("2.0745"),
+            ext_1_272_price=Decimal("2.1248288"),
+            ext_1_618_price=Decimal("2.1543772"),
+            ext_2_000_price=Decimal("2.1870"),
+            active_target_levels=(Decimal("2.1543772"), Decimal("2.1870")),
+            previous_target_levels=(),
+            reload_r382_price=Decimal("2.0689772"),
+            reload_r500_price=Decimal("2.0589"),
+            reload_r618_price=Decimal("2.0488228"),
+            reload_r786_price=Decimal("2.0344756"),
+            invalidation_price=Decimal("2.0162"),
+            max_primary_high_since_anchor=Decimal("2.1595"),
+            min_primary_low_since_anchor=Decimal("2.0429"),
+            current_map_status="CURRENT_ACTIVE_MAP",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[row], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ICP-EUR"],
+            prices={"ICP-EUR": Decimal("2.0776")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        evidence = result.evidence_by_symbol["ICP"]
+        assert evidence.native_map_status == "AVAILABLE"
+
+        # Real candle evidence since anchor_end_ts_utc: 1h/4h high reached
+        # 2.1595 by the 2026-08-29T12:00:00Z close, already above both
+        # native ext_1_272 and ext_1_618 -- matching a fresh re-render of
+        # the same live data fetch_market_target_history_by_symbol() performs.
+        history_candles = (
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 8, 27, 12, 0, tzinfo=UTC),
+                high_price=Decimal("2.1200"),
+                low_price=Decimal("2.0712"),
+            ),
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+                high_price=Decimal("2.1595"),
+                low_price=Decimal("2.1059"),
+            ),
+        )
+        card = build_profit_plan_card(
+            symbol="ICP",
+            market="ICP-EUR",
+            current_price=Decimal("2.0776"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status=result.input_status_by_symbol["ICP"],
+            short_context_coverage_status=result.coverage_status_by_symbol["ICP"],
+            short_context_display_state=result.display_state_by_symbol["ICP"],
+            fib_ext=result.fib_ext_by_symbol.get("ICP"),
+            reentry=result.reentry_by_symbol.get("ICP"),
+            history_high_since_activation=Decimal("2.1595"),
+            history_low_since_activation=Decimal("2.0007"),
+            history_candles_since_activation=history_candles,
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=evidence,
+            planning_provenance=result.planning_provenance_by_symbol.get("ICP"),
+        )
+
+        passed_level = Decimal("2.1543772")
+        matching_statuses = [s for s in card.target_level_statuses if s.level == passed_level]
+        assert matching_statuses, "native ext_1_618 target must reach target_level_statuses"
+        assert matching_statuses[0].lifecycle_state == "PASSED"
+
+        # The #550 regression invariant: an already-passed target must never
+        # be re-displayed as the forward/active target zone.
+        assert passed_level not in card.target_exit_zone
+        assert card.active_target != passed_level
+        for status in card.target_level_statuses:
+            assert not (status.level == passed_level and status.is_active_target)
+
+
 def test_load_zone_contexts_canonical_row_surfaces_rollover_and_previous_cycle() -> None:
     """Issue #494: a canonical row that actually rolled over must surface its
     real rollover_state/previous_map_cycle_id/previous_map_lifecycle_state,
