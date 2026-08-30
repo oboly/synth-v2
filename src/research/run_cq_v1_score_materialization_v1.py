@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -20,7 +21,9 @@ from src.research.cq_v1_model_candidate_v1 import (
 RUNNER_NAME = "cq_v1_score_materialization_v1"
 OUTPUT_ROWS = "cq_v1_scores.jsonl"
 OUTPUT_SUMMARY = "summary.json"
+OUTPUT_CHECKPOINT = "checkpoint.json"
 DEFAULT_BATCH_SIZE = 100
+_STOP_REQUESTED = False
 
 IDENTITY_FIELDS = (
     "shadow_id",
@@ -37,7 +40,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--features-jsonl", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args(argv)
+
+
+def _signal_handler(signum: int, _frame: Any) -> None:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = True
+    print(f"SIGNAL received={signum} action=checkpoint_then_stop", flush=True)
 
 
 def _parse_ts(value: Any) -> datetime:
@@ -62,6 +72,15 @@ def _json_default(value: Any) -> Any:
     raise TypeError(type(value).__name__)
 
 
+def _decimal_or_none(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    result = Decimal(str(value))
+    if not result.is_finite():
+        raise ValueError("cq_v0 must be finite when present")
+    return result
+
+
 def load_feature_rows(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     prior_shadow_id: int | None = None
@@ -79,6 +98,8 @@ def load_feature_rows(path: Path) -> list[dict[str, Any]]:
             missing = [field for field in IDENTITY_FIELDS if field not in row]
             if missing:
                 raise ValueError(f"features JSONL line {line_number} missing identity fields: {','.join(missing)}")
+            if "cq_v0" not in row:
+                raise ValueError(f"features JSONL line {line_number} missing frozen cq_v0")
             shadow_id = int(row["shadow_id"])
             if prior_shadow_id is not None and shadow_id <= prior_shadow_id:
                 raise ValueError("features shadow_id sequence must be strictly increasing")
@@ -135,6 +156,10 @@ def validate_identity(feature: Mapping[str, Any], shadow: Mapping[str, Any] | No
     mismatched = [field for field in expected if expected[field] != observed[field]]
     if mismatched:
         raise ValueError(f"shadow_id={shadow_id}:IDENTITY_MISMATCH:{','.join(mismatched)}")
+    frozen_cq = _decimal_or_none(feature.get("cq_v0"))
+    current_cq = _decimal_or_none(shadow.get("entry_quality_score"))
+    if frozen_cq != current_cq:
+        raise ValueError(f"shadow_id={shadow_id}:CQ_V0_MISMATCH")
 
 
 def _score_payload(score: CandidateScore) -> dict[str, Any]:
@@ -146,9 +171,9 @@ def _score_payload(score: CandidateScore) -> dict[str, Any]:
     }
 
 
-def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any]) -> dict[str, Any]:
+def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any] | None) -> dict[str, Any]:
     validate_identity(feature, shadow)
-    cq_v0 = shadow.get("entry_quality_score")
+    cq_v0 = _decimal_or_none(feature.get("cq_v0"))
     scores = score_all_candidates(cq_v0=cq_v0, features=feature)
     return {
         "shadow_id": int(feature["shadow_id"]),
@@ -164,10 +189,8 @@ def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any]) -> di
     }
 
 
-def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    state_counts: dict[str, dict[str, int]] = {
-        spec.candidate_id: {} for spec in CANDIDATES
-    }
+def summarize(rows: list[dict[str, Any]], terminal_state: str) -> dict[str, Any]:
+    state_counts: dict[str, dict[str, int]] = {spec.candidate_id: {} for spec in CANDIDATES}
     for row in rows:
         for candidate_id, payload in row["candidates"].items():
             state = str(payload["state"])
@@ -177,7 +200,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     available = {
         candidate_id: {
             "count": counts.get("AVAILABLE", 0),
-            "rate": round(counts.get("AVAILABLE", 0) / sample_count, 6),
+            "rate": round(counts.get("AVAILABLE", 0) / sample_count, 6) if sample_count else 0.0,
         }
         for candidate_id, counts in state_counts.items()
     }
@@ -189,25 +212,119 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
         "candidate_state_counts": state_counts,
         "candidate_available": available,
-        "terminal_state": "FINISHED",
+        "terminal_state": terminal_state,
         "forward_outcomes_read": 0,
         "production_ranking_changed": 0,
     }
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _append_row(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, sort_keys=True, default=_json_default) + "\n")
+        handle.flush()
+
+
+def _read_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"score JSONL line {line_number} is malformed") from exc
+        if not isinstance(row, dict):
+            raise ValueError(f"score JSONL line {line_number} must be an object")
+        rows.append(row)
+    return rows
+
+
+def _checkpoint_payload(features_path: Path, batch_size: int, rows: list[dict[str, Any]], terminal_state: str) -> dict[str, Any]:
+    return {
+        "runner": RUNNER_NAME,
+        "features_jsonl": str(features_path),
+        "batch_size": batch_size,
+        "processed": len(rows),
+        "last_shadow_id": rows[-1]["shadow_id"] if rows else None,
+        "terminal_state": terminal_state,
+        "model_family_version": MODEL_FAMILY_VERSION,
+        "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+        "updated_ts_utc": datetime.now(UTC).isoformat(),
+    }
+
+
+def _load_resume(output_dir: Path, features_path: Path, batch_size: int) -> list[dict[str, Any]]:
+    checkpoint_path = output_dir / OUTPUT_CHECKPOINT
+    rows_path = output_dir / OUTPUT_ROWS
+    if not checkpoint_path.exists():
+        raise SystemExit("--resume requires checkpoint.json")
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    if checkpoint.get("runner") != RUNNER_NAME:
+        raise SystemExit("checkpoint runner mismatch")
+    if checkpoint.get("features_jsonl") != str(features_path):
+        raise SystemExit("checkpoint features_jsonl mismatch")
+    if int(checkpoint.get("batch_size")) != batch_size:
+        raise SystemExit("checkpoint batch_size mismatch")
+    if checkpoint.get("model_family_version") != MODEL_FAMILY_VERSION:
+        raise SystemExit("checkpoint model family mismatch")
+    if checkpoint.get("coverage_artifact_sha256") != COVERAGE_ARTIFACT_SHA256:
+        raise SystemExit("checkpoint coverage artifact mismatch")
+    rows = _read_rows(rows_path)
+    processed = int(checkpoint.get("processed", 0))
+    if len(rows) < processed:
+        raise ValueError("checkpoint/output mismatch: score JSONL shorter than checkpoint")
+    if len(rows) > processed:
+        rows = rows[:processed]
+        with rows_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, sort_keys=True, default=_json_default) + "\n")
+    expected_last = checkpoint.get("last_shadow_id")
+    actual_last = rows[-1]["shadow_id"] if rows else None
+    if expected_last != actual_last:
+        raise ValueError("checkpoint/output mismatch: last_shadow_id differs")
+    return rows
+
+
 def run(args: argparse.Namespace) -> int:
+    global _STOP_REQUESTED
+    _STOP_REQUESTED = False
     if args.batch_size < 1 or args.batch_size > 1000:
         raise SystemExit("--batch-size must be within 1..1000")
     features_path = Path(args.features_jsonl)
     output_dir = Path(args.output_dir)
     rows_path = output_dir / OUTPUT_ROWS
     summary_path = output_dir / OUTPUT_SUMMARY
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise SystemExit("output directory is not empty; use a new immutable output directory")
+    checkpoint_path = output_dir / OUTPUT_CHECKPOINT
 
     features = load_feature_rows(features_path)
+    if args.resume:
+        materialized = _load_resume(output_dir, features_path, args.batch_size)
+    else:
+        if output_dir.exists() and any(output_dir.iterdir()):
+            raise SystemExit("output directory is not empty; use --resume or a new immutable output directory")
+        materialized = []
+
+    processed = len(materialized)
+    if processed > len(features):
+        raise ValueError("checkpoint processed exceeds feature population")
+    if processed and int(features[processed - 1]["shadow_id"]) != int(materialized[-1]["shadow_id"]):
+        raise ValueError("checkpoint/output does not align with feature population")
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
     print(
-        f"STARTED runner={RUNNER_NAME} features={features_path} observations={len(features)} batch_size={args.batch_size}",
+        f"STARTED runner={RUNNER_NAME} features={features_path} observations={len(features)} "
+        f"processed={processed} batch_size={args.batch_size} resume={int(args.resume)}",
         flush=True,
     )
     print(
@@ -217,31 +334,38 @@ def run(args: argparse.Namespace) -> int:
     )
 
     conn = get_db_connection()
-    materialized: list[dict[str, Any]] = []
+    terminal_state = "FINISHED"
     try:
-        for batch in _chunks(features, args.batch_size):
+        remaining_features = features[processed:]
+        for batch in _chunks(remaining_features, args.batch_size):
             shadow_ids = [int(row["shadow_id"]) for row in batch]
             shadow_by_id = fetch_shadow_rows(conn, shadow_ids)
             for feature in batch:
-                shadow_id = int(feature["shadow_id"])
-                materialized.append(materialize_row(feature, shadow_by_id.get(shadow_id)))
+                row = materialize_row(feature, shadow_by_id.get(int(feature["shadow_id"])))
+                _append_row(rows_path, row)
+                materialized.append(row)
+                _write_json(checkpoint_path, _checkpoint_payload(features_path, args.batch_size, materialized, "RUNNING"))
+                print(f"PROGRESS shadow_id={row['shadow_id']} processed={len(materialized)}", flush=True)
+                if _STOP_REQUESTED:
+                    terminal_state = "INTERRUPTED"
+                    break
+            if _STOP_REQUESTED:
+                break
+    except Exception:
+        terminal_state = "FAILED"
+        raise
     finally:
         conn.close()
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with rows_path.open("w", encoding="utf-8") as handle:
-        for row in materialized:
-            handle.write(json.dumps(row, sort_keys=True, default=_json_default) + "\n")
-    summary = summarize(materialized)
-    summary_path.write_text(json.dumps(summary, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"WRITE event=scores path={rows_path} rows={len(materialized)}", flush=True)
-    print(f"WRITE event=summary path={summary_path}", flush=True)
-    print(
-        f"FINISHED runner={RUNNER_NAME} rows={len(materialized)} last_shadow_id={summary['last_shadow_id']} "
-        f"forward_outcomes_read=0 production_ranking_changed=0",
-        flush=True,
-    )
-    return 0
+        summary = summarize(materialized, terminal_state)
+        _write_json(summary_path, summary)
+        _write_json(checkpoint_path, _checkpoint_payload(features_path, args.batch_size, materialized, terminal_state))
+        print(f"WRITE event=summary path={summary_path} terminal_state={terminal_state}", flush=True)
+        print(
+            f"{terminal_state} runner={RUNNER_NAME} rows={len(materialized)} "
+            f"last_shadow_id={summary['last_shadow_id'] or 'none'} forward_outcomes_read=0 production_ranking_changed=0",
+            flush=True,
+        )
+    return 130 if terminal_state == "INTERRUPTED" else 0
 
 
 def main() -> int:
