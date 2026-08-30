@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import signal
 import time
@@ -50,6 +51,14 @@ def _signal_handler(signum: int, _frame: Any) -> None:
     print(f"SIGNAL received={signum} action=checkpoint_then_stop", flush=True)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _parse_ts(value: Any) -> datetime:
     if isinstance(value, datetime):
         parsed = value
@@ -70,6 +79,10 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return _iso_z(value)
     raise TypeError(type(value).__name__)
+
+
+def _jsonable(value: Any) -> Any:
+    return json.loads(json.dumps(value, sort_keys=True, default=_json_default))
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:
@@ -171,8 +184,7 @@ def _score_payload(score: CandidateScore) -> dict[str, Any]:
     }
 
 
-def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any] | None) -> dict[str, Any]:
-    validate_identity(feature, shadow)
+def expected_row_from_feature(feature: Mapping[str, Any]) -> dict[str, Any]:
     cq_v0 = _decimal_or_none(feature.get("cq_v0"))
     scores = score_all_candidates(cq_v0=cq_v0, features=feature)
     return {
@@ -189,7 +201,12 @@ def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any] | None
     }
 
 
-def summarize(rows: list[dict[str, Any]], terminal_state: str) -> dict[str, Any]:
+def materialize_row(feature: Mapping[str, Any], shadow: Mapping[str, Any] | None) -> dict[str, Any]:
+    validate_identity(feature, shadow)
+    return expected_row_from_feature(feature)
+
+
+def summarize(rows: list[dict[str, Any]], terminal_state: str, features_sha256: str) -> dict[str, Any]:
     state_counts: dict[str, dict[str, int]] = {spec.candidate_id: {} for spec in CANDIDATES}
     for row in rows:
         for candidate_id, payload in row["candidates"].items():
@@ -208,6 +225,7 @@ def summarize(rows: list[dict[str, Any]], terminal_state: str) -> dict[str, Any]
         "runner": RUNNER_NAME,
         "sample_count": sample_count,
         "last_shadow_id": rows[-1]["shadow_id"] if rows else None,
+        "features_sha256": features_sha256,
         "model_family_version": MODEL_FAMILY_VERSION,
         "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
         "candidate_state_counts": state_counts,
@@ -249,10 +267,17 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _checkpoint_payload(features_path: Path, batch_size: int, rows: list[dict[str, Any]], terminal_state: str) -> dict[str, Any]:
+def _checkpoint_payload(
+    features_path: Path,
+    features_sha256: str,
+    batch_size: int,
+    rows: list[dict[str, Any]],
+    terminal_state: str,
+) -> dict[str, Any]:
     return {
         "runner": RUNNER_NAME,
         "features_jsonl": str(features_path),
+        "features_sha256": features_sha256,
         "batch_size": batch_size,
         "processed": len(rows),
         "last_shadow_id": rows[-1]["shadow_id"] if rows else None,
@@ -263,7 +288,13 @@ def _checkpoint_payload(features_path: Path, batch_size: int, rows: list[dict[st
     }
 
 
-def _load_resume(output_dir: Path, features_path: Path, batch_size: int) -> list[dict[str, Any]]:
+def _load_resume(
+    output_dir: Path,
+    features_path: Path,
+    features: list[dict[str, Any]],
+    features_sha256: str,
+    batch_size: int,
+) -> list[dict[str, Any]]:
     checkpoint_path = output_dir / OUTPUT_CHECKPOINT
     rows_path = output_dir / OUTPUT_ROWS
     if not checkpoint_path.exists():
@@ -273,6 +304,8 @@ def _load_resume(output_dir: Path, features_path: Path, batch_size: int) -> list
         raise SystemExit("checkpoint runner mismatch")
     if checkpoint.get("features_jsonl") != str(features_path):
         raise SystemExit("checkpoint features_jsonl mismatch")
+    if checkpoint.get("features_sha256") != features_sha256:
+        raise SystemExit("checkpoint features SHA-256 mismatch")
     if int(checkpoint.get("batch_size")) != batch_size:
         raise SystemExit("checkpoint batch_size mismatch")
     if checkpoint.get("model_family_version") != MODEL_FAMILY_VERSION:
@@ -281,6 +314,8 @@ def _load_resume(output_dir: Path, features_path: Path, batch_size: int) -> list
         raise SystemExit("checkpoint coverage artifact mismatch")
     rows = _read_rows(rows_path)
     processed = int(checkpoint.get("processed", 0))
+    if processed > len(features):
+        raise ValueError("checkpoint processed exceeds feature population")
     if len(rows) < processed:
         raise ValueError("checkpoint/output mismatch: score JSONL shorter than checkpoint")
     if len(rows) > processed:
@@ -292,6 +327,10 @@ def _load_resume(output_dir: Path, features_path: Path, batch_size: int) -> list
     actual_last = rows[-1]["shadow_id"] if rows else None
     if expected_last != actual_last:
         raise ValueError("checkpoint/output mismatch: last_shadow_id differs")
+    for index, row in enumerate(rows):
+        expected = _jsonable(expected_row_from_feature(features[index]))
+        if row != expected:
+            raise ValueError(f"checkpoint/output mismatch: row {index + 1} differs from frozen feature input")
     return rows
 
 
@@ -306,25 +345,21 @@ def run(args: argparse.Namespace) -> int:
     summary_path = output_dir / OUTPUT_SUMMARY
     checkpoint_path = output_dir / OUTPUT_CHECKPOINT
 
+    features_sha256 = _sha256_file(features_path)
     features = load_feature_rows(features_path)
     if args.resume:
-        materialized = _load_resume(output_dir, features_path, args.batch_size)
+        materialized = _load_resume(output_dir, features_path, features, features_sha256, args.batch_size)
     else:
         if output_dir.exists() and any(output_dir.iterdir()):
             raise SystemExit("output directory is not empty; use --resume or a new immutable output directory")
         materialized = []
 
     processed = len(materialized)
-    if processed > len(features):
-        raise ValueError("checkpoint processed exceeds feature population")
-    if processed and int(features[processed - 1]["shadow_id"]) != int(materialized[-1]["shadow_id"]):
-        raise ValueError("checkpoint/output does not align with feature population")
-
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
     print(
-        f"STARTED runner={RUNNER_NAME} features={features_path} observations={len(features)} "
-        f"processed={processed} batch_size={args.batch_size} resume={int(args.resume)}",
+        f"STARTED runner={RUNNER_NAME} features={features_path} features_sha256={features_sha256} "
+        f"observations={len(features)} processed={processed} batch_size={args.batch_size} resume={int(args.resume)}",
         flush=True,
     )
     print(
@@ -344,7 +379,10 @@ def run(args: argparse.Namespace) -> int:
                 row = materialize_row(feature, shadow_by_id.get(int(feature["shadow_id"])))
                 _append_row(rows_path, row)
                 materialized.append(row)
-                _write_json(checkpoint_path, _checkpoint_payload(features_path, args.batch_size, materialized, "RUNNING"))
+                _write_json(
+                    checkpoint_path,
+                    _checkpoint_payload(features_path, features_sha256, args.batch_size, materialized, "RUNNING"),
+                )
                 print(f"PROGRESS shadow_id={row['shadow_id']} processed={len(materialized)}", flush=True)
                 if _STOP_REQUESTED:
                     terminal_state = "INTERRUPTED"
@@ -356,9 +394,12 @@ def run(args: argparse.Namespace) -> int:
         raise
     finally:
         conn.close()
-        summary = summarize(materialized, terminal_state)
+        summary = summarize(materialized, terminal_state, features_sha256)
         _write_json(summary_path, summary)
-        _write_json(checkpoint_path, _checkpoint_payload(features_path, args.batch_size, materialized, terminal_state))
+        _write_json(
+            checkpoint_path,
+            _checkpoint_payload(features_path, features_sha256, args.batch_size, materialized, terminal_state),
+        )
         print(f"WRITE event=summary path={summary_path} terminal_state={terminal_state}", flush=True)
         print(
             f"{terminal_state} runner={RUNNER_NAME} rows={len(materialized)} "
