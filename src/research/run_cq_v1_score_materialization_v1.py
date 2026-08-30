@@ -250,20 +250,29 @@ def _append_row(path: Path, row: dict[str, Any]) -> None:
         handle.flush()
 
 
-def _read_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def _parse_checkpointed_prefix(rows_path: Path, processed: int) -> list[dict[str, Any]]:
+    if processed == 0:
+        if rows_path.exists() and rows_path.read_bytes():
+            rows_path.write_bytes(b"")
         return []
+    if not rows_path.exists():
+        raise ValueError("checkpoint/output mismatch: score JSONL missing")
+    raw_lines = rows_path.read_bytes().splitlines(keepends=True)
+    if len(raw_lines) < processed:
+        raise ValueError("checkpoint/output mismatch: score JSONL shorter than checkpoint")
     rows: list[dict[str, Any]] = []
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        if not raw.strip():
-            continue
+    for index in range(processed):
+        raw = raw_lines[index].decode("utf-8").strip()
         try:
             row = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"score JSONL line {line_number} is malformed") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"checkpointed score JSONL line {index + 1} is malformed") from exc
         if not isinstance(row, dict):
-            raise ValueError(f"score JSONL line {line_number} must be an object")
+            raise ValueError(f"checkpointed score JSONL line {index + 1} must be an object")
         rows.append(row)
+    if len(raw_lines) != processed:
+        rows_path.write_bytes(b"".join(raw_lines[:processed]))
+        print(f"RESUME_RECONCILE action=truncate_jsonl to_rows={processed}", flush=True)
     return rows
 
 
@@ -312,17 +321,10 @@ def _load_resume(
         raise SystemExit("checkpoint model family mismatch")
     if checkpoint.get("coverage_artifact_sha256") != COVERAGE_ARTIFACT_SHA256:
         raise SystemExit("checkpoint coverage artifact mismatch")
-    rows = _read_rows(rows_path)
     processed = int(checkpoint.get("processed", 0))
     if processed > len(features):
         raise ValueError("checkpoint processed exceeds feature population")
-    if len(rows) < processed:
-        raise ValueError("checkpoint/output mismatch: score JSONL shorter than checkpoint")
-    if len(rows) > processed:
-        rows = rows[:processed]
-        with rows_path.open("w", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, default=_json_default) + "\n")
+    rows = _parse_checkpointed_prefix(rows_path, processed)
     expected_last = checkpoint.get("last_shadow_id")
     actual_last = rows[-1]["shadow_id"] if rows else None
     if expected_last != actual_last:
