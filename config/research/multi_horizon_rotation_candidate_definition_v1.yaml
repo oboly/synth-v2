@@ -1,0 +1,150 @@
+version: "1.0.0"
+issue: 593
+status: research_only
+preregistration: docs/research/multi_horizon_rotation_preregistration_v1.md
+canonical_horizon_contract: docs/architecture/multi_horizon_signal_contract_v1.md
+
+source:
+  candle_table: obs_market_candle
+  input_interval: 15m
+  required_fields:
+    - close_ts_utc
+    - close_price
+    - canonical_non_negative_volume_measure
+  volume_semantic_must_be_resolved_before_replay: true
+  reporting_sources_forbidden: true
+
+cohort:
+  same_venue_only: true
+  minimum_assets: 20
+  future_rows_forbidden: true
+  latest_now_fallback_forbidden: true
+  current_universe_backfill_forbidden: true
+  asof_must_align_exactly_to_input_close_grid: true
+
+candidates:
+  - id: C1
+    model_id: multi_horizon_rotation_relative_flow
+    model_version: 1.0.0-c1
+    input_interval: 15m
+    horizon_minutes: 15
+    operator_alias: 15m
+    effective_horizon: VERY_SHORT
+    history_windows: 8
+  - id: C2
+    model_id: multi_horizon_rotation_relative_flow
+    model_version: 1.0.0-c2
+    input_interval: 15m
+    horizon_minutes: 60
+    operator_alias: 1h
+    effective_horizon: SHORT
+    history_windows: 8
+  - id: C3
+    model_id: multi_horizon_rotation_relative_flow
+    model_version: 1.0.0-c3
+    input_interval: 15m
+    horizon_minutes: 240
+    operator_alias: 4h
+    effective_horizon: MID
+    history_windows: 8
+
+windows:
+  current: "(t-H,t]"
+  previous_non_overlapping: true
+  every_boundary_must_align_exactly_to_input_close_grid: true
+  return_start_boundary_close_must_exist_exactly: true
+  return_end_boundary_close_must_exist_exactly: true
+  stale_pre_boundary_close_substitution: forbidden
+  expected_candles_per_window:
+    C1: 1
+    C2: 4
+    C3: 16
+  contiguous_input_candles_required: true
+  missing_boundary_or_gap_result: INSUFFICIENT_DATA
+  partial_window_scaling: forbidden
+  interpolation: forbidden
+
+normalization:
+  method: cross_sectional_median_mad
+  mad_scale: 1.4826
+  robust_z_divisor: 3.0
+  clip_min: -1.0
+  clip_max: 1.0
+  degenerate_mad_threshold: 1.0e-12
+
+volume:
+  reference_windows: 8
+  reference_statistic: median
+  epsilon: 1.0e-12
+  transform: natural_log_ratio
+  direction_source: sign_of_current_market_relative_return
+
+components:
+  - name: relative_return_unit
+    definition: robust_normalize_current_return_minus_cross_sectional_median_return
+  - name: signed_flow_unit
+    definition: sign_current_relative_return_times_robust_normalized_current_vs_prior8_median_volume_log_ratio
+  - name: relative_acceleration_unit
+    definition: robust_normalize_current_relative_return_minus_previous_relative_return
+
+score:
+  weights:
+    relative_return_unit: 0.3333333333333333
+    signed_flow_unit: 0.3333333333333333
+    relative_acceleration_unit: 0.3333333333333333
+  formula: arithmetic_mean_of_three_unit_components
+  multiplier: 100
+  decimals: 6
+  min: -100
+  max: 100
+  renormalize_on_missing_components: false
+
+missingness:
+  numeric_score_requires_all_components: true
+  missing_score: null
+  missing_state: INSUFFICIENT_DATA
+
+observed_lifecycle:
+  initial_status: UNMEASURED
+  infer_from_input_interval: false
+  infer_from_effective_horizon: false
+
+persistence_identity:
+  - venue
+  - asset_or_market_identity
+  - model_id
+  - model_version
+  - effective_horizon
+  - asof_ts
+
+forbidden_inputs:
+  - account_state
+  - cq_value
+  - fib_state
+  - breathline_state
+  - sector_label
+  - strategy_state
+  - reporting_derived_values
+  - rotation_v1_internal_components
+
+baselines:
+  B0: rotation_pressure_v1_model_1_0
+  B1: comparable_horizon_raw_price_momentum
+  B2: replay_safe_canonical_rsi_or_momentum_where_available
+  paired_eligible_observations_required: true
+
+cross_horizon_relations_produced: false
+
+safety:
+  research_only: true
+  market_only: true
+  account_awareness: false
+  selection_engine_production_changes: false
+  decision_gate_changes: false
+  execution_planner_changes: false
+  executor_changes: false
+  broker_private_calls: false
+  broker_writes: false
+  order_submission: false
+  live_orders: false
+  production_runtime_activation: false
