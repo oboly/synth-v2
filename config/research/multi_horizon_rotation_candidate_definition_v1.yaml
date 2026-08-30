@@ -20,6 +20,7 @@ cohort:
   future_rows_forbidden: true
   latest_now_fallback_forbidden: true
   current_universe_backfill_forbidden: true
+  asof_must_align_exactly_to_input_close_grid: true
 
 candidates:
   - id: C1
@@ -50,10 +51,16 @@ candidates:
 windows:
   current: "(t-H,t]"
   previous_non_overlapping: true
+  every_boundary_must_align_exactly_to_input_close_grid: true
+  return_start_boundary_close_must_exist_exactly: true
+  return_end_boundary_close_must_exist_exactly: true
+  stale_pre_boundary_close_substitution: forbidden
   expected_candles_per_window:
     C1: 1
     C2: 4
     C3: 16
+  contiguous_input_candles_required: true
+  missing_boundary_or_gap_result: INSUFFICIENT_DATA
   partial_window_scaling: forbidden
   interpolation: forbidden
 
