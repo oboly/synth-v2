@@ -15,9 +15,10 @@ duplicate the shared contract here.
 Supporting documents:
 
 ```text
-docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host rules
-docs/ops/agent_search_hygiene_v1.md           untrusted search / log / tool-output handling
-docs/ops/state_model_discipline_v1.md         lifecycle vs temporary health / degraded-state design
+docs/ops/agent_orchestration_contract_v1.md           orchestration / handoff / thread / host rules
+docs/ops/agent_autonomy_minimal_guardrails_v1.md      autonomy / human gates / anti-safety-bloat rules
+docs/ops/agent_search_hygiene_v1.md                   untrusted search / log / tool-output handling
+docs/ops/state_model_discipline_v1.md                 lifecycle vs temporary health / degraded-state design
 ```
 
 ## Role
