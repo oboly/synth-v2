@@ -232,6 +232,18 @@ def test_resume_rejects_tampered_checkpointed_identity(tmp_path: Path, monkeypat
         runner.run(resume_args)
 
 
+def test_resume_discards_malformed_uncheckpointed_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    features_path, output_dir, _ = _interrupted_fixture(tmp_path, monkeypatch)
+    rows_path = output_dir / runner.OUTPUT_ROWS
+    with rows_path.open("ab") as handle:
+        handle.write(b'{"shadow_id":11,"candidates":')
+    resume_args = argparse.Namespace(features_jsonl=str(features_path), output_dir=str(output_dir), batch_size=100, resume=True)
+    assert runner.run(resume_args) == 0
+    final_rows = rows_path.read_text(encoding="utf-8").splitlines()
+    assert len(final_rows) == 2
+    assert [json.loads(line)["shadow_id"] for line in final_rows] == [10, 11]
+
+
 def test_runner_has_no_forward_outcome_dependency_or_candle_query() -> None:
     source = inspect.getsource(runner).lower()
     assert "entry_quality_forward_validation" not in source
