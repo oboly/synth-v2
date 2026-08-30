@@ -11,7 +11,7 @@ state and does not emit trading permission or execution intent.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Context, Decimal, ROUND_HALF_UP, localcontext
 from typing import Iterable, Mapping
 
 
@@ -25,6 +25,7 @@ SCORE_QUANTUM = Decimal("0.000001")
 MODEL_ID = "multi_horizon_rotation_relative_flow"
 OBSERVED_LIFECYCLE = "UNMEASURED"
 PROVENANCE = "obs_market_candle:15m:close_price+volume_base;owner=public_candle_freshness_writer"
+DECIMAL_CONTEXT = Context(prec=50, rounding=ROUND_HALF_UP)
 
 
 @dataclass(frozen=True)
@@ -207,69 +208,70 @@ def evaluate_candidate(
     *, candles_by_asset: Mapping[int, Iterable[Candle]], asof_ts: datetime,
     spec: CandidateSpec, venue: str = "bitvavo", minimum_cohort: int = MINIMUM_COHORT,
 ) -> list[CandidateResult]:
-    asof = ensure_utc(asof_ts)
-    try:
-        _expected_boundary_times(asof, spec)
-    except ValueError as exc:
-        return [
-            _result(venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=0,
-                    data_quality="INSUFFICIENT_DATA", reason=str(exc))
-            for asset_id in sorted(candles_by_asset)
-        ]
+    with localcontext(DECIMAL_CONTEXT):
+        asof = ensure_utc(asof_ts)
+        try:
+            _expected_boundary_times(asof, spec)
+        except ValueError as exc:
+            return [
+                _result(venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=0,
+                        data_quality="INSUFFICIENT_DATA", reason=str(exc))
+                for asset_id in sorted(candles_by_asset)
+            ]
 
-    primitives: dict[int, _AssetPrimitives] = {}
-    for asset_id, candles in candles_by_asset.items():
-        built = _build_asset_primitives(asset_id=asset_id, candles=candles, asof_ts=asof, spec=spec)
-        if built is not None:
-            primitives[asset_id] = built
+        primitives: dict[int, _AssetPrimitives] = {}
+        for asset_id, candles in candles_by_asset.items():
+            built = _build_asset_primitives(asset_id=asset_id, candles=candles, asof_ts=asof, spec=spec)
+            if built is not None:
+                primitives[asset_id] = built
 
-    cohort_size = len(primitives)
-    if cohort_size < minimum_cohort:
-        return [
-            _result(venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=cohort_size,
-                    data_quality="INSUFFICIENT_DATA", reason="COHORT_BELOW_MINIMUM")
-            for asset_id in sorted(candles_by_asset)
-        ]
+        cohort_size = len(primitives)
+        if cohort_size < minimum_cohort:
+            return [
+                _result(venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=cohort_size,
+                        data_quality="INSUFFICIENT_DATA", reason="COHORT_BELOW_MINIMUM")
+                for asset_id in sorted(candles_by_asset)
+            ]
 
-    median_return_w0 = median(item.returns[0] for item in primitives.values())
-    median_return_w1 = median(item.returns[1] for item in primitives.values())
-    rr0 = {asset_id: item.returns[0] - median_return_w0 for asset_id, item in primitives.items()}
-    rr1 = {asset_id: item.returns[1] - median_return_w1 for asset_id, item in primitives.items()}
-    relative_return_unit = robust_normalize(rr0)
+        median_return_w0 = median(item.returns[0] for item in primitives.values())
+        median_return_w1 = median(item.returns[1] for item in primitives.values())
+        rr0 = {asset_id: item.returns[0] - median_return_w0 for asset_id, item in primitives.items()}
+        rr1 = {asset_id: item.returns[1] - median_return_w1 for asset_id, item in primitives.items()}
+        relative_return_unit = robust_normalize(rr0)
 
-    volume_log_ratio: dict[int, Decimal] = {}
-    for asset_id, item in primitives.items():
-        volume_ref = median(item.volumes[1:9])
-        if volume_ref > 0:
-            volume_log_ratio[asset_id] = ((item.volumes[0] + EPSILON) / (volume_ref + EPSILON)).ln()
-    volume_surprise_unit = robust_normalize(volume_log_ratio)
-    accel_raw = {asset_id: rr0[asset_id] - rr1[asset_id] for asset_id in primitives}
-    relative_acceleration_unit = robust_normalize(accel_raw)
+        volume_log_ratio: dict[int, Decimal] = {}
+        for asset_id, item in primitives.items():
+            volume_ref = median(item.volumes[1:9])
+            if volume_ref > 0:
+                volume_log_ratio[asset_id] = ((item.volumes[0] + EPSILON) / (volume_ref + EPSILON)).ln()
+        volume_surprise_unit = robust_normalize(volume_log_ratio)
+        accel_raw = {asset_id: rr0[asset_id] - rr1[asset_id] for asset_id in primitives}
+        relative_acceleration_unit = robust_normalize(accel_raw)
 
-    normalized_available = all(
-        component is not None
-        for component in (relative_return_unit, volume_surprise_unit, relative_acceleration_unit)
-    )
+        normalized_available = all(
+            component is not None
+            for component in (relative_return_unit, volume_surprise_unit, relative_acceleration_unit)
+        )
 
-    results: list[CandidateResult] = []
-    for asset_id in sorted(candles_by_asset):
-        if asset_id not in primitives or not normalized_available or asset_id not in volume_log_ratio:
+        results: list[CandidateResult] = []
+        for asset_id in sorted(candles_by_asset):
+            if asset_id not in primitives or not normalized_available or asset_id not in volume_log_ratio:
+                results.append(_result(
+                    venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=cohort_size,
+                    data_quality="INSUFFICIENT_DATA", reason="MISSING_OR_DEGENERATE_COMPONENT",
+                ))
+                continue
+            rr_unit = relative_return_unit[asset_id]  # type: ignore[index]
+            flow_surprise = volume_surprise_unit[asset_id]  # type: ignore[index]
+            sign = Decimal("1") if rr0[asset_id] > 0 else Decimal("-1") if rr0[asset_id] < 0 else Decimal("0")
+            signed_flow = sign * flow_surprise
+            accel_unit = relative_acceleration_unit[asset_id]  # type: ignore[index]
+            score = (Decimal("100") * (rr_unit + signed_flow + accel_unit) / Decimal("3")).quantize(
+                SCORE_QUANTUM, rounding=ROUND_HALF_UP
+            )
             results.append(_result(
                 venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=cohort_size,
-                data_quality="INSUFFICIENT_DATA", reason="MISSING_OR_DEGENERATE_COMPONENT",
+                data_quality="COMPLETE", reason="OK", relative_return_unit=rr_unit,
+                signed_flow_unit=signed_flow, relative_acceleration_unit=accel_unit, rotation_score=score,
             ))
-            continue
-        rr_unit = relative_return_unit[asset_id]  # type: ignore[index]
-        flow_surprise = volume_surprise_unit[asset_id]  # type: ignore[index]
-        sign = Decimal("1") if rr0[asset_id] > 0 else Decimal("-1") if rr0[asset_id] < 0 else Decimal("0")
-        signed_flow = sign * flow_surprise
-        accel_unit = relative_acceleration_unit[asset_id]  # type: ignore[index]
-        score = (Decimal("100") * (rr_unit + signed_flow + accel_unit) / Decimal("3")).quantize(
-            SCORE_QUANTUM, rounding=ROUND_HALF_UP
-        )
-        results.append(_result(
-            venue=venue, asset_id=asset_id, spec=spec, asof=asof, cohort_size=cohort_size,
-            data_quality="COMPLETE", reason="OK", relative_return_unit=rr_unit,
-            signed_flow_unit=signed_flow, relative_acceleration_unit=accel_unit, rotation_score=score,
-        ))
-    return results
+        return results
