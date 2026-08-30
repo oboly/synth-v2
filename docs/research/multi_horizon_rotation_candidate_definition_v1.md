@@ -90,7 +90,10 @@ no latest-now fallback
 no current-universe backfill requirement
 no future listing/delisting information
 minimum eligible cohort size = 20 assets
+asof_ts must align exactly to the canonical 15m close grid
 ```
+
+If `asof_ts` is not exactly aligned to a canonical 15m close boundary, the candidate observation is `INSUFFICIENT_DATA`.
 
 If fewer than 20 assets satisfy the candidate coverage requirements, the candidate observation is `INSUFFICIENT_DATA`.
 
@@ -120,7 +123,16 @@ W1 = (t-2H, t-H]
 W8 = (t-9H, t-8H]
 ```
 
-A window is valid only when the expected contiguous 15m candle count is present:
+Every `t-kH` boundary used by W0..W8 must itself align exactly to the canonical 15m close grid. A return may only use candles whose `close_ts_utc` exactly equals the required start and end boundary. The implementation must not use a stale close from before a boundary.
+
+A window is valid only when both conditions hold:
+
+```text
+1. exact start-boundary close exists
+2. expected contiguous 15m candle count inside the window is present
+```
+
+Expected in-window candle counts:
 
 ```text
 C1: 1 candle/window
@@ -128,19 +140,23 @@ C2: 4 candles/window
 C3: 16 candles/window
 ```
 
+A missing exact boundary close, an off-grid as-of/window boundary, or any gap in the expected 15m sequence makes that asset/window unavailable and therefore yields `INSUFFICIENT_DATA` for the affected candidate observation.
+
 No partial-window scaling or interpolation is allowed.
 
 ## 6. Primitive definitions
 
 ### 6.1 Horizon return
 
-For window `Wk`, using the last close at/before the window start and the final close in the window:
+For window `Wk`, use the close exactly at the window start boundary and the close exactly at the window end boundary:
 
 ```text
-r_i,k = ln(close_i,end / close_i,start)
+r_i,k = ln(close_i,end_boundary / close_i,start_boundary)
 ```
 
-If either price is missing or non-positive, that asset/window is unavailable.
+Both boundaries are exact canonical 15m close timestamps. A candle merely earlier than the required start boundary is invalid and must never be substituted.
+
+If either exact boundary close is missing, either price is non-positive, or the required contiguous in-window 15m sequence is incomplete, that asset/window is unavailable.
 
 ### 6.2 Cross-sectional relative return
 
@@ -280,6 +296,9 @@ Do not renormalize weights over the remaining components. That would create a di
 Minimum requirements include:
 
 ```text
+asof_ts exactly on canonical 15m close grid
+all W0..W8 boundaries exactly on canonical 15m close grid
+exact start/end boundary close for every required return
 complete current window
 complete W1 for acceleration
 complete W1..W8 volume reference
@@ -359,13 +378,14 @@ Those relations require separately validated deterministic comparison logic unde
 The next implementation slice may add research-only code/tests to:
 
 1. resolve canonical 15m candles and volume semantics;
-2. construct exact W0..W8 windows;
-3. calculate C1/C2/C3 deterministically;
-4. attach existing Rotation V1 PIT observations;
-5. calculate B1 and available B2 on the same observation cohort;
-6. produce replay artifacts, never production truth;
-7. measure coverage/correlation/lead-lag/persistence/chop/forward response;
-8. freeze chronological discovery/validation/holdout boundaries before final holdout inspection.
+2. require exact 15m grid alignment for `asof_ts` and every W0..W8 boundary;
+3. require exact start/end boundary closes plus contiguous completed 15m windows;
+4. calculate C1/C2/C3 deterministically;
+5. attach existing Rotation V1 PIT observations;
+6. calculate B1 and available B2 on the same observation cohort;
+7. produce replay artifacts, never production truth;
+8. measure coverage/correlation/lead-lag/persistence/chop/forward response;
+9. freeze chronological discovery/validation/holdout boundaries before final holdout inspection.
 
 It must not:
 
