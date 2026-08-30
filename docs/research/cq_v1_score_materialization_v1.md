@@ -21,9 +21,11 @@ The scorer, transforms, weights and support policy come only from `src/research/
 
 ## Input
 
-`--features-jsonl` points to a completed Phase 2C `features.jsonl` artifact.
+`--features-jsonl` points to a completed Phase 2C `features.jsonl` artifact generated after the #612 CQ-v0 provenance amendment.
 
-For each feature row, the runner reads the corresponding `research_entry_quality_shadow` row by `shadow_id` and verifies the complete immutable identity:
+Every feature row must contain the contemporaneous Phase-1 `entry_quality_score` as `cq_v0`. This value is frozen in the PIT artifact before score materialization.
+
+For each feature row, the runner reads the corresponding `research_entry_quality_shadow` row by `shadow_id` and verifies:
 
 ```text
 asset_id
@@ -31,24 +33,38 @@ venue
 asof_ts_utc
 evidence_key
 cq_model_version
+current entry_quality_score == frozen feature cq_v0
 ```
 
-Only after the identity matches is `entry_quality_score` supplied as CQ v0 to the frozen scorer. A missing or mismatched research-shadow row fails the run.
+The frozen feature `cq_v0`, not the mutable current DB value, is supplied to the Phase 2D1 scorer. A missing row, identity mismatch or changed CQ v0 fails the run. This prevents an upsert-backed shadow rewrite from silently changing a supposedly frozen candidate score.
 
 Database reads are bounded by `--batch-size` (default 100). The runner does not scan candle/outcome tables.
 
 ## Output
 
-`--output-dir` must be a new/empty evidence directory and receives:
+A new run uses an empty evidence directory. It receives:
 
 ```text
 cq_v1_scores.jsonl
 summary.json
+checkpoint.json
 ```
 
-Each JSONL row contains the immutable shadow identity, CQ v0, frozen model-family/hash identity and both candidate state/score/reason payloads.
+Each JSONL row contains the immutable shadow identity, frozen CQ v0, frozen model-family/hash identity and both candidate state/score/reason payloads.
 
 The summary reports actual state counts and AVAILABLE rates. It never forces the pre-model 203/419 MRP coverage result; agreement or disagreement is evidence to inspect after the run.
+
+## Interruption and resume
+
+The repository research-runner contract requires clean interruption handling. After each complete score row the runner writes a checkpoint containing the processed count, last shadow id, feature-artifact path, batch size and frozen model/hash identity.
+
+SIGINT/SIGTERM stops after the current complete row, writes:
+
+```text
+terminal_state=INTERRUPTED
+```
+
+and returns 130. `--resume` verifies checkpoint scope, reconciles any uncheckpointed JSONL tail and continues from the next feature row. A resumed run cannot switch feature input, batch size, model-family version or coverage-artifact hash.
 
 ## Missingness
 
@@ -65,6 +81,8 @@ forward_outcomes_read=0
 ```
 
 After a full materialization artifact is accepted, the next #568 slice may pair these frozen scores with the separately preregistered 1h/4h/24h forward labels. The current source population is a single as-of cross-section, so any first paired result must be labeled bounded/cross-sectional rather than final chronological or multi-regime validation.
+
+Because the prior Phase 2C artifact predates frozen `cq_v0` in `features.jsonl`, it must be regenerated through source exhaustion after this change. Its coverage summary should remain arithmetically unchanged; that must be verified rather than assumed.
 
 ## Safety
 
