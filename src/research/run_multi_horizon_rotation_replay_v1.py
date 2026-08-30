@@ -100,14 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     try:
         emit("PHASE_STARTED name=fetch_canonical_15m_candles")
-        fetch_started = time.perf_counter()
+        phase_started = time.perf_counter()
         conn = get_db_connection()
+        query_started = time.perf_counter()
         candles_by_asset, query_rows = fetch_candles(conn, venue=args.venue, asof_ts=asof)
-        query_elapsed = time.perf_counter() - fetch_started
+        query_elapsed = time.perf_counter() - query_started
         emit(
             f"PHASE_FINISHED name=fetch_canonical_15m_candles asset_count={len(candles_by_asset)} "
             f"query_rows={query_rows} query_elapsed_s={query_elapsed:.3f} "
-            f"elapsed_s={time.perf_counter() - started:.3f}"
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}"
         )
 
         total_rows = 0
