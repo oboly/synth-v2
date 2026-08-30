@@ -221,6 +221,12 @@ Refresh writes are always scoped to exactly one `trading_account_id`. One accoun
 `account_asset`, balance snapshot, and order snapshot rows must never touch another
 account's rows.
 
+For a LIVE-capable trading account (`account_mode='live'`), `linked_account_resolver_v1`
+permanently refuses profile-primary resolution (`LIVE_TRADING_ENABLED`). Exact-account
+private-read refresh for such accounts is a separate seam:
+`docs/ops/exact_account_private_read_refresh_v1.md`
+(`src/account/run_exact_account_state_refresh_v1.py`).
+
 The aligned header is additionally scoped by `trading_account_id + venue +
 source_name + snapshot_ts_utc`. Retry of the same persisted evidence reuses the
 same header; a different account or venue creates independent evidence.
