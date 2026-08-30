@@ -19,6 +19,7 @@ from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, Candl
 RUNNER_NAME = "run_multi_horizon_rotation_replay_v1"
 RUNNER_VERSION = "0.1"
 MAX_LOOKBACK = timedelta(hours=36)
+WORKERS = 1
 
 
 def emit(message: str) -> None:
@@ -48,7 +49,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def fetch_candles(conn: Any, *, venue: str, asof_ts: datetime) -> dict[int, list[Candle]]:
+def fetch_candles(
+    conn: Any,
+    *,
+    venue: str,
+    asof_ts: datetime,
+) -> tuple[dict[int, list[Candle]], int]:
     start_ts = asof_ts - MAX_LOOKBACK
     sql = """
     SELECT asset_id, close_ts_utc, close_price, volume_base
@@ -75,7 +81,7 @@ def fetch_candles(conn: Any, *, venue: str, asof_ts: datetime) -> dict[int, list
                 volume_base=Decimal(str(row["volume_base"])),
             )
         )
-    return out
+    return out, len(rows)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,17 +93,20 @@ def main(argv: list[str] | None = None) -> int:
     specs = [spec for spec in CANDIDATE_SPECS if spec.candidate_id in requested]
 
     emit(
-        f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} mode=read_only "
+        f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} mode=read_only workers={WORKERS} "
         f"venue={args.venue} asof={asof.isoformat()} candidates={','.join(spec.candidate_id for spec in specs)}"
     )
 
     conn = None
     try:
         emit("PHASE_STARTED name=fetch_canonical_15m_candles")
+        fetch_started = time.perf_counter()
         conn = get_db_connection()
-        candles_by_asset = fetch_candles(conn, venue=args.venue, asof_ts=asof)
+        candles_by_asset, query_rows = fetch_candles(conn, venue=args.venue, asof_ts=asof)
+        query_elapsed = time.perf_counter() - fetch_started
         emit(
             f"PHASE_FINISHED name=fetch_canonical_15m_candles asset_count={len(candles_by_asset)} "
+            f"query_rows={query_rows} query_elapsed_s={query_elapsed:.3f} "
             f"elapsed_s={time.perf_counter() - started:.3f}"
         )
 
@@ -105,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         complete_rows = 0
         for spec in specs:
             emit(f"PHASE_STARTED name=evaluate_candidate candidate={spec.candidate_id}")
+            candidate_started = time.perf_counter()
             results = evaluate_candidate(
                 candles_by_asset=candles_by_asset,
                 asof_ts=asof,
@@ -118,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
             complete_rows += complete
             emit(
                 f"PHASE_FINISHED name=evaluate_candidate candidate={spec.candidate_id} "
-                f"rows={len(results)} complete={complete}"
+                f"rows={len(results)} complete={complete} "
+                f"elapsed_s={time.perf_counter() - candidate_started:.3f}"
             )
 
         emit(
