@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Mapping
 
 MRP_MODEL_VERSION = "1.0"
@@ -17,6 +18,7 @@ class ShadowObservation:
     asof_ts_utc: datetime
     evidence_key: str
     cq_model_version: str
+    cq_v0: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class FeatureExtraction:
     mrp_asset_status: str
     sector_membership_status: str
     sector_rotation_status: str
+    cq_v0: Decimal | None = None
 
     @property
     def mrp_available(self) -> bool:
@@ -180,6 +183,7 @@ def extract_features(cursor: Any, observation: ShadowObservation) -> FeatureExtr
         mrp_asset_status="AVAILABLE" if asset is not None else "UNAVAILABLE_MRP_ASSET",
         sector_membership_status="AVAILABLE" if sector_code is not None else "UNAVAILABLE_PRIMARY_SECTOR",
         sector_rotation_status="AVAILABLE" if sector is not None else "UNAVAILABLE_SECTOR_ROTATION",
+        cq_v0=observation.cq_v0,
     )
 
 

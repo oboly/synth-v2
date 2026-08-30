@@ -119,7 +119,8 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 
 def _fetch_shadow_batch(conn: Any, after_shadow_id: int, batch_size: int, venue: str | None) -> list[ShadowObservation]:
     sql = """
-        SELECT shadow_id, asset_id, venue, asof_ts_utc, evidence_key, cq_model_version
+        SELECT shadow_id, asset_id, venue, asof_ts_utc, evidence_key, cq_model_version,
+               entry_quality_score AS cq_v0
         FROM research_entry_quality_shadow
         WHERE shadow_id > %s
     """
