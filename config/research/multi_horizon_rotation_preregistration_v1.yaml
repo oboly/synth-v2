@@ -110,7 +110,9 @@ persistence:
   duplicate_v1_truth_forbidden: true
   audit_existing_storage_first: true
   accepted_fast_variant_identity:
-    - market
+    - venue
+    - asset_or_market_identity
+    - model_id
     - model_version
     - effective_horizon
     - asof_ts
