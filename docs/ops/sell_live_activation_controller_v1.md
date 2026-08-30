@@ -17,7 +17,8 @@ machine-readable run:
 | TRADE_EXECUTION credential binding | `src/executor/execution_credential_scope_v1.py::ExecutorCredentialScopeRepository` |
 | decision_gate LIVE permission (Gate 1) | `src/decision_gate/automatic_exit_live_permission_repository_v1.py` + `automatic_exit_live_permission_contract_v1.py` |
 | Global kill switch | `src/executor/execution_kill_switch_v1.py::ExecutionKillSwitchRepositoryV1` |
-| Runtime/service ownership | `deploy/ownership/account_runtime_capability_ownership_v1.json` |
+| Runtime/service ownership metadata | `deploy/ownership/account_runtime_capability_ownership_v1.json` (`owner_host` only) |
+| Runtime/service *observed* state (Issue #585) | `src/ops/systemd_runtime_readiness_v1.py`, read-only `systemctl show` (or injected fake) against `AUTOMATIC_EXIT_POLICY_RUNTIME` and `SHARED_EXECUTOR_RUNTIME`'s installed service/timer units |
 | Exact-path acceptance (DRY_RUN/PAPER) | `src/execution_planner/automatic_exit_execution_handoff_adapter_v1.py` + `automatic_exit_execution_handoff_application_v1.py`, exercised against a synthetic in-memory fixture |
 | Idempotency/restart readiness | `derive_automatic_exit_plan_reference_id_v1` determinism, checked inside `DRY_RUN_ACCEPTANCE` |
 | Bounded SELL canary feasibility | new, controller-owned `SellLiveCanaryContractPreviewV1` (see below) |
@@ -99,6 +100,56 @@ any gated phase is `BLOCKED`, `LIVE_AUTHORIZATION_REQUIRED` is reported as
   repository's existing fixed-uppercase-reason-code style, that code. This
   keeps out any accidental leakage of connection parameters or other
   incidental exception text.
+
+## RUNTIME_READY truthfulness (Issue #585)
+
+`RUNTIME_READY` no longer treats
+`deploy/ownership/account_runtime_capability_ownership_v1.json`'s
+`activation_status` field as observed runtime state. That registry stays
+ownership/design metadata only (`owner_host`, `runtime_entrypoint`, lock
+scope, private-read authority); this phase reads only its `owner_host`
+value and passes it, alongside a versioned expected-unit spec, to
+`src/ops/systemd_runtime_readiness_v1.py::evaluate_capability_runtime_readiness_v1`,
+which performs (or, in tests, receives an injected fake for) a real
+read-only `systemctl show` probe of both the capability's service and timer
+units. A registry-only value -- including a hypothetical future `ACTIVE`
+spelling -- can never by itself make this phase pass.
+
+For each of `AUTOMATIC_EXIT_POLICY_RUNTIME` and `SHARED_EXECUTOR_RUNTIME`:
+
+- `owner_host` recorded in the registry must equal the capability's
+  canonical expected owner host (`gurkdb`).
+- The service unit (`synth-automatic-exit-policy-runtime.service` /
+  `synth-shared-executor-runtime.service`) must be `loaded` from its exact
+  expected installed `FragmentPath` (`/etc/systemd/system/<unit>`).
+- The timer unit (`...timer`) must be `loaded` from its own exact expected
+  `FragmentPath`, `UnitFileState=enabled`, and `ActiveState=active`.
+- The service's own `ActiveState` is **not** required to be `active`: a
+  correctly firing `Type=oneshot` service is idle
+  (`inactive`/`activating`/`deactivating`) between timer firings by design.
+  Only that known-benign set is accepted -- notably `failed` is not, and
+  fails closed with `SERVICE_UNIT_ACTIVE_STATE_UNKNOWN`.
+- Unit not found, disabled timer, inactive timer, wrong owner, wrong
+  fragment path, a probe failure (non-zero `systemctl show` exit or a
+  subprocess error), or any other unrecognized state fails closed with an
+  explicit per-capability reason code. `RUNTIME_READY` itself reports
+  `RUNTIME_CAPABILITY_NOT_READY` with a `not_ready` map of
+  `capability_id -> reason_code` and a `capabilities` map of full per-unit
+  observed detail (non-secret: unit names and systemd state fields only)
+  whenever at least one required capability is not ready.
+- Dependency injection: `ControllerConfigV1.systemd_prober` (test-only seam,
+  mirroring `credential_scope_repository`/`kill_switch_repository`) lets
+  every test in `tests/test_systemd_runtime_readiness_v1.py` and the
+  `RUNTIME_READY`-specific tests in
+  `tests/test_sell_live_activation_controller_v1.py` inject a fake prober;
+  production runs (`main()`) never set it and fall back to
+  `default_systemd_unit_prober_v1`, which shells out to read-only
+  `systemctl --system show ... --no-pager`.
+- This phase, and `src/ops/systemd_runtime_readiness_v1.py` itself, never
+  call `systemctl enable`/`start`/`daemon-reload`/`install`/`disable`/
+  `stop`/`mask` or otherwise mutate systemd state. See
+  `docs/ops/runtime_capability_systemd_deployment_v1.md` for the separate,
+  explicit, human-operated install/enable/rollback runbook.
 
 ## Exact-path acceptance boundary
 

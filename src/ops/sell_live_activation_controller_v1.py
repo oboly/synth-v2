@@ -19,7 +19,10 @@ and reviewed for Issue #392 phases 1-6 and reports their state:
   ``automatic_exit_execution_handoff_application_v1.py`` (candidate ->
   decision_gate -> planner -> executor handoff seam)
 - ``deploy/ownership/account_runtime_capability_ownership_v1.json``
-  (runtime/service ownership and activation status)
+  (runtime/service *ownership* metadata -- owner_host only; never treated as
+  a substitute for observed runtime state)
+- ``src/ops/systemd_runtime_readiness_v1.py`` (Issue #585: actual read-only
+  ``systemctl show`` state for the two required runtime capabilities)
 
 Phase 1 boundary
 ----------------
@@ -66,6 +69,7 @@ Safety:
   live_permission_provisioning=0
   kill_switch_mutation=0
   service_mutation=0
+  systemctl_mutations=0
   decision_gate=read-only (queries persisted permission evidence only)
   execution_planner=read-only (synthetic in-memory fixture only)
   executor=read-only (kill switch + credential scope reads only)
@@ -90,6 +94,13 @@ from src.account.account_mode_contract_v1 import (
 from src.executor.shared_executor_identity_v1 import (
     SHARED_EXECUTOR_IDENTITY,
     SHARED_EXECUTOR_RUNTIME_OWNER,
+)
+from src.ops.systemd_runtime_readiness_v1 import (
+    REQUIRED_CAPABILITY_RUNTIME_SPECS,
+    STATUS_PASSED as _SYSTEMD_STATUS_PASSED,
+    SystemdUnitProber,
+    default_systemd_unit_prober_v1,
+    evaluate_capability_runtime_readiness_v1,
 )
 
 # --- Contract constants -----------------------------------------------
@@ -165,11 +176,7 @@ REQUIRED_PRODUCTION_TABLES: Final[tuple[str, ...]] = (
 # Capabilities that must exist and be actively running before a SELL LIVE
 # canary could ever execute end to end. Report-only: this controller never
 # starts, enables, or installs any of these.
-REQUIRED_RUNTIME_CAPABILITY_IDS: Final[tuple[str, ...]] = (
-    "AUTOMATIC_EXIT_POLICY_RUNTIME",
-    "SHARED_EXECUTOR_RUNTIME",
-)
-_RUNTIME_ACTIVE_STATUSES: Final[frozenset[str]] = frozenset({"ACTIVE", "ENABLED", "RUNNING"})
+REQUIRED_RUNTIME_CAPABILITY_IDS: Final[tuple[str, ...]] = tuple(REQUIRED_CAPABILITY_RUNTIME_SPECS.keys())
 
 # Issue #551 account-mode split: canonical account_mode vocabulary
 # (paper / live_readonly / live) and its live_trading_enabled agreement
@@ -311,6 +318,7 @@ class ControllerConfigV1:
     connection_factory: Callable[[], Any] | None = None
     credential_scope_repository: Any | None = None
     kill_switch_repository: Any | None = None
+    systemd_prober: SystemdUnitProber | None = None
 
 
 # --- Small helpers --------------------------------------------------------
@@ -655,6 +663,18 @@ def _phase_kill_switch_ready(config: ControllerConfigV1) -> tuple[PhaseResultV1,
 
 
 def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
+    """Issue #585: truthful RUNTIME_READY from actual observed systemd state.
+
+    The ownership registry is read only for its ``owner_host`` design
+    metadata. Its ``activation_status`` field is never read or consulted
+    here -- a registry-only value (however it is spelled, including a future
+    "ACTIVE"-like value) can never by itself make this phase pass. Every
+    PASSED capability below required a real ``systemctl show`` probe (or, in
+    tests, an injected fake) to observe that the service is loaded from its
+    expected installed path, the timer is loaded from its expected installed
+    path, enabled, and active, and the oneshot service itself is in a known,
+    non-``failed`` state.
+    """
     path = config.ownership_registry_path
     try:
         raw = path.read_text(encoding="utf-8")
@@ -667,29 +687,39 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
         for entry in registry.get("capabilities", [])
         if isinstance(entry, dict)
     }
-    not_active: dict[str, str] = {}
+    prober = config.systemd_prober or default_systemd_unit_prober_v1
+    capability_detail: dict[str, Any] = {}
+    not_ready: dict[str, str] = {}
     for capability_id in REQUIRED_RUNTIME_CAPABILITY_IDS:
+        spec = REQUIRED_CAPABILITY_RUNTIME_SPECS[capability_id]
         entry = capabilities.get(capability_id)
         if entry is None:
-            not_active[capability_id] = "MISSING"
+            not_ready[capability_id] = "MISSING_FROM_OWNERSHIP_REGISTRY"
             continue
-        owner_host = str(entry.get("owner_host", "UNKNOWN"))
-        if owner_host != SHARED_EXECUTOR_RUNTIME_OWNER:
-            return _blocked(
-                PHASE_RUNTIME_READY,
-                "RUNTIME_CAPABILITY_OWNER_MISMATCH",
-                {
-                    "capability_id": capability_id,
-                    "expected_owner_host": SHARED_EXECUTOR_RUNTIME_OWNER,
-                    "observed_owner_host": owner_host,
-                },
-            )
-        status = str(entry.get("activation_status", "UNKNOWN"))
-        if status not in _RUNTIME_ACTIVE_STATUSES:
-            not_active[capability_id] = status
-    if not_active:
-        return _blocked(PHASE_RUNTIME_READY, "RUNTIME_CAPABILITY_NOT_ACTIVE", {"not_active": not_active})
-    return _passed(PHASE_RUNTIME_READY, "OK", {"checked_capabilities": list(REQUIRED_RUNTIME_CAPABILITY_IDS)})
+        registry_owner_host = entry.get("owner_host")
+        result = evaluate_capability_runtime_readiness_v1(
+            spec,
+            registry_owner_host=str(registry_owner_host) if registry_owner_host is not None else None,
+            prober=prober,
+        )
+        capability_detail[capability_id] = {
+            "status": result.status,
+            "reason_code": result.reason_code,
+            **result.detail,
+        }
+        if result.status != _SYSTEMD_STATUS_PASSED:
+            not_ready[capability_id] = result.reason_code
+    if not_ready:
+        return _blocked(
+            PHASE_RUNTIME_READY,
+            "RUNTIME_CAPABILITY_NOT_READY",
+            {"not_ready": not_ready, "capabilities": capability_detail},
+        )
+    return _passed(
+        PHASE_RUNTIME_READY,
+        "OK",
+        {"checked_capabilities": list(REQUIRED_RUNTIME_CAPABILITY_IDS), "capabilities": capability_detail},
+    )
 
 
 def _build_synthetic_acceptance_plan() -> Any:
