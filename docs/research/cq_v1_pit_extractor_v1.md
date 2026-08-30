@@ -28,6 +28,8 @@ evidence_key
 cq_model_version
 ```
 
+The feature artifact also preserves the observation's contemporaneous `entry_quality_score` as `cq_v0`. `cq_v0` is not an additional identity dimension, but it is frozen alongside the PIT feature payload so later scoring cannot silently combine the same feature identity with a subsequently rewritten shadow score. Downstream materialization must reject a current research-shadow `entry_quality_score` that differs from this frozen `cq_v0`.
+
 The runner reads in bounded batches (default 100, maximum 1000). It does not fetch unbounded history into memory.
 
 ## Point-in-time Market Rotation Pressure
@@ -93,6 +95,8 @@ joint MRP + Sector coverage
 Missing context stays missing. There is no imputation or current-truth fallback.
 
 A low coverage result is a valid negative research result. Phase 2C must not compensate by adding new features after seeing coverage or forward outcomes.
+
+Adding frozen `cq_v0` to `features.jsonl` does not change coverage-summary arithmetic or the Phase 2D0 gate schema. It changes the immutable feature payload only.
 
 ## Resume and crash safety
 
