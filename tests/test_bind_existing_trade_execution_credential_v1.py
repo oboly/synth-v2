@@ -89,7 +89,7 @@ def _run(
     runtime_owner=SHARED_EXECUTOR_RUNTIME_OWNER,
     trading_account_id=5,
     trading_account_credential_id=5,
-    apply=True,
+    apply=False,
 ):
     conn = _Conn()
     result = bind_existing_trade_execution_credential(
@@ -104,9 +104,9 @@ def _run(
     return result, conn
 
 
-def test_check_is_read_only_when_binding_missing() -> None:
+def test_default_service_call_is_read_only_when_binding_missing() -> None:
     repo = _Repo(None)
-    result, conn = _run(repo, apply=False)
+    result, conn = _run(repo)
     assert result.binding_exists is False
     assert result.created_binding is False
     assert result.executor_credential_binding_id == 0
@@ -116,7 +116,7 @@ def test_check_is_read_only_when_binding_missing() -> None:
 
 def test_apply_binds_new_shared_tuple_to_existing_credential() -> None:
     repo = _Repo(None)
-    result, conn = _run(repo)
+    result, conn = _run(repo, apply=True)
     assert result.binding_exists is True
     assert result.created_binding is True
     assert result.executor_identity == SHARED_EXECUTOR_IDENTITY
@@ -133,7 +133,7 @@ def test_check_existing_binding_is_idempotent_and_read_only() -> None:
         "runtime_owner": SHARED_EXECUTOR_RUNTIME_OWNER,
     }
     repo = _Repo(None, bindings={_SHARED_KEY: existing})
-    result, conn = _run(repo, apply=False)
+    result, conn = _run(repo)
     assert result.binding_exists is True
     assert result.executor_credential_binding_id == 9
     assert result.created_binding is False
@@ -143,8 +143,8 @@ def test_check_existing_binding_is_idempotent_and_read_only() -> None:
 
 def test_idempotent_apply_does_not_duplicate() -> None:
     repo = _Repo(None)
-    first, _ = _run(repo)
-    second, _ = _run(repo)
+    first, _ = _run(repo, apply=True)
+    second, _ = _run(repo, apply=True)
     assert first.executor_credential_binding_id == second.executor_credential_binding_id
     assert second.created_binding is False
     assert repo.insert_calls == 1
@@ -158,7 +158,7 @@ def test_existing_manual_binding_is_untouched() -> None:
         "runtime_owner": MANUAL_EXECUTION_RUNTIME_OWNER,
     }
     repo = _Repo(None, bindings={_MANUAL_KEY: dict(existing_manual)})
-    result, _ = _run(repo)
+    result, _ = _run(repo, apply=True)
     assert repo.bindings[_MANUAL_KEY] == existing_manual
     assert result.executor_credential_binding_id != 2
     assert _SHARED_KEY in repo.bindings
@@ -180,20 +180,20 @@ def test_existing_manual_binding_is_untouched() -> None:
 def test_credential_eligibility_fails_closed(overrides, expected_error) -> None:
     repo = _Repo(None, credential={**_ACTIVE_CREDENTIAL, **overrides})
     with pytest.raises(ValueError, match=expected_error):
-        _run(repo, apply=False)
+        _run(repo)
     assert repo.insert_calls == 0
 
 
 def test_credential_not_found_and_account_mismatch_fail_closed() -> None:
     with pytest.raises(ValueError, match="TRADE_EXECUTION_CREDENTIAL_NOT_FOUND"):
-        _run(_Repo(None, credential=None), apply=False)
+        _run(_Repo(None, credential=None))
     with pytest.raises(ValueError, match="CREDENTIAL_ACCOUNT_ID_MISMATCH"):
-        _run(_Repo(None, credential={**_ACTIVE_CREDENTIAL, "trading_account_id": 999}), apply=False)
+        _run(_Repo(None, credential={**_ACTIVE_CREDENTIAL, "trading_account_id": 999}))
 
 
 def test_trading_account_venue_not_found_fails_closed() -> None:
     with pytest.raises(ValueError, match="TRADING_ACCOUNT_VENUE_NOT_FOUND"):
-        _run(_Repo(None, account=False), apply=False)
+        _run(_Repo(None, account=False))
 
 
 def test_binding_conflict_fails_closed() -> None:
@@ -204,7 +204,7 @@ def test_binding_conflict_fails_closed() -> None:
         "runtime_owner": SHARED_EXECUTOR_RUNTIME_OWNER,
     }
     with pytest.raises(ValueError, match="ACTIVE_EXECUTOR_CREDENTIAL_BINDING_CONFLICT"):
-        _run(_Repo(None, bindings={_SHARED_KEY: conflicting}), apply=False)
+        _run(_Repo(None, bindings={_SHARED_KEY: conflicting}))
 
 
 def test_unsupported_tuple_fails_closed() -> None:
@@ -249,8 +249,9 @@ def test_no_secret_or_broker_capability_imports() -> None:
     assert not any("bitvavo_client" in name or "credential_crypto" in name for name in imports)
 
 
-def test_repository_default_is_real_class() -> None:
+def test_repository_default_is_real_class_and_apply_defaults_read_only() -> None:
     import inspect
 
     sig = inspect.signature(bind_existing_trade_execution_credential)
     assert sig.parameters["repository_factory"].default is BindExistingTradeExecutionCredentialRepository
+    assert sig.parameters["apply"].default is False
