@@ -262,8 +262,8 @@ def _parse_checkpointed_prefix(rows_path: Path, processed: int) -> list[dict[str
         raise ValueError("checkpoint/output mismatch: score JSONL shorter than checkpoint")
     rows: list[dict[str, Any]] = []
     for index in range(processed):
-        raw = raw_lines[index].decode("utf-8").strip()
         try:
+            raw = raw_lines[index].decode("utf-8").strip()
             row = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"checkpointed score JSONL line {index + 1} is malformed") from exc
@@ -370,9 +370,10 @@ def run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    conn = get_db_connection()
+    conn: Any | None = None
     terminal_state = "FINISHED"
     try:
+        conn = get_db_connection()
         remaining_features = features[processed:]
         for batch in _chunks(remaining_features, args.batch_size):
             shadow_ids = [int(row["shadow_id"]) for row in batch]
@@ -395,7 +396,8 @@ def run(args: argparse.Namespace) -> int:
         terminal_state = "FAILED"
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
         summary = summarize(materialized, terminal_state, features_sha256)
         _write_json(summary_path, summary)
         _write_json(
