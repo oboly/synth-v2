@@ -413,16 +413,26 @@ def test_actionable_ppp_available_with_valid_current_map_and_lifecycle() -> None
     assert pp._actionable_ppp(card) is not None
 
 
-def test_actionable_ppp_unavailable_when_selected_map_tier_unavailable() -> None:
+def test_actionable_ppp_available_when_selected_map_tier_unavailable() -> None:
+    """Issue #550 regression: the native SHORT snapshot contract permanently
+    retires ``selected_map_tier`` (native_row.current_map_status) to
+    DATA_UNAVAILABLE even on a fully AVAILABLE/canonical row (Issue #496), so
+    every real production card carries this exact value. Actionable PPP must
+    not fail closed on retired, non-canonical bridge metadata when genuine
+    canonical map/lifecycle authority (native_map_status, map_cycle_id,
+    lifecycle, entry activation) is otherwise proven."""
     card = _activated_card(evidence=_active_map_evidence(selected_map_tier="DATA_UNAVAILABLE"))
-    assert pp._actionable_ppp_eligible(card) is False
-    assert pp._actionable_ppp(card) is None
+    assert pp._actionable_ppp_eligible(card) is True
+    assert pp._actionable_ppp(card) is not None
 
 
-def test_actionable_ppp_unavailable_when_selected_map_tier_not_current() -> None:
+def test_actionable_ppp_available_when_selected_map_tier_not_current() -> None:
+    """Same Issue #550 contract: an arbitrary non-canonical reported tier
+    value must not gate Actionable PPP either -- selected_map_tier carries no
+    authority at all post-#496."""
     card = _activated_card(evidence=_active_map_evidence(selected_map_tier="PRIOR_MAP_REFERENCE"))
-    assert pp._actionable_ppp_eligible(card) is False
-    assert pp._actionable_ppp(card) is None
+    assert pp._actionable_ppp_eligible(card) is True
+    assert pp._actionable_ppp(card) is not None
 
 
 def test_actionable_ppp_unavailable_when_lifecycle_state_data_unavailable() -> None:
