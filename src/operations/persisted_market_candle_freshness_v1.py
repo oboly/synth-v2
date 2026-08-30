@@ -144,9 +144,10 @@ def fetch_universe_latest_close_by_symbol(
 ) -> Mapping[str, Any]:
     """One SELECT for the latest persisted close per symbol in ``symbols``.
 
-    Callers pass the already-resolved eligible/enabled symbol universe (the
-    same active-market filter the writer itself applies) so a delisted or
-    disabled market never counts against coverage.
+    Callers must pass the already-resolved eligible symbol universe. For the
+    Bitvavo writer this means enabled assets intersected with the exchange's
+    current ``status=trading`` market set. A disabled, delisted, or suspended
+    market must never count against persisted candle coverage.
     """
     if not symbols:
         return {}
@@ -199,6 +200,10 @@ def classify_universe_candle_coverage(
     Fail closed on timestamp drift: only an exact expected-boundary match is
     current. A future-dated persisted candle is non-current just like any
     other invalid boundary and must never make the health check pass.
+
+    Dominant-lag selection is deterministic. If multiple lag boundaries have
+    the same maximum count, the latest (closest-to-expected) lag timestamp is
+    selected for reporting.
     """
     expected = expected_close_ts_utc.astimezone(UTC)
     universe_size = len(symbol_latest_close)
@@ -230,7 +235,12 @@ def classify_universe_candle_coverage(
     dominant_lag_ts: datetime | None = None
     dominant_lag_count = 0
     if lag_counts:
-        dominant_lag_ts, dominant_lag_count = lag_counts.most_common(1)[0]
+        dominant_lag_count = max(lag_counts.values())
+        dominant_lag_ts = max(
+            timestamp
+            for timestamp, count in lag_counts.items()
+            if count == dominant_lag_count
+        )
 
     if current_count == universe_size:
         return UniverseCandleCoverage(
