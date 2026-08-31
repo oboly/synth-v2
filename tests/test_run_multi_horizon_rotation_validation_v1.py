@@ -7,7 +7,7 @@ from pathlib import Path
 from src.research.run_multi_horizon_rotation_validation_v1 import (
     load_rows,
     load_split_manifest,
-    select_phase_rows,
+    validate_phase_scoped_rows,
 )
 
 
@@ -33,6 +33,25 @@ def _manifest() -> dict[str, object]:
             },
         },
     }
+
+
+def _validation_row(timestamp: datetime, asset_id: int):
+    from src.research.multi_horizon_rotation_validation_v1 import ValidationRow
+
+    return ValidationRow(
+        venue="bitvavo",
+        asset_id=asset_id,
+        asof_ts=timestamp,
+        candidate_id="C1",
+        candidate_score=1.0,
+        b0_score=1.0,
+        b0_pressure_state="ROTATION_IN",
+        b1_return=0.01,
+        forward_15m=0.01,
+        forward_1h=0.01,
+        forward_4h=0.01,
+        forward_24h=0.01,
+    )
 
 
 def test_manifest_requires_uninspected_final_holdout(tmp_path: Path) -> None:
@@ -87,36 +106,34 @@ def test_manifest_rejects_inverted_phase(tmp_path: Path) -> None:
         raise AssertionError("expected inverted manifest to fail")
 
 
-def test_select_phase_rows_never_exposes_holdout() -> None:
+def test_phase_scoped_validation_artifact_passes() -> None:
     manifest = _manifest()
-    rows_path_values = [
-        BASE + timedelta(days=1),
-        BASE + timedelta(days=7),
-        BASE + timedelta(days=9),
-    ]
-    from src.research.multi_horizon_rotation_validation_v1 import ValidationRow
-
     rows = [
-        ValidationRow(
-            venue="bitvavo",
-            asset_id=index + 1,
-            asof_ts=timestamp,
-            candidate_id="C1",
-            candidate_score=1.0,
-            b0_score=1.0,
-            b0_pressure_state="ROTATION_IN",
-            b1_return=0.01,
-            forward_15m=0.01,
-            forward_1h=0.01,
-            forward_4h=0.01,
-            forward_24h=0.01,
-        )
-        for index, timestamp in enumerate(rows_path_values)
+        _validation_row(BASE + timedelta(days=6, hours=1), 1),
+        _validation_row(BASE + timedelta(days=7), 2),
     ]
-    validation_rows = select_phase_rows(rows, manifest, "validation")
-    assert [row.asset_id for row in validation_rows] == [2]
+    assert validate_phase_scoped_rows(rows, manifest, "validation") == rows
+
+
+def test_mixed_phase_or_holdout_artifact_fails_closed() -> None:
+    manifest = _manifest()
+    rows = [
+        _validation_row(BASE + timedelta(days=7), 1),
+        _validation_row(BASE + timedelta(days=9), 2),
+    ]
     try:
-        select_phase_rows(rows, manifest, "final_holdout")
+        validate_phase_scoped_rows(rows, manifest, "validation")
+    except ValueError as exc:
+        assert "not phase-scoped" in str(exc)
+    else:
+        raise AssertionError("mixed validation/holdout artifact must fail")
+
+
+def test_final_holdout_phase_is_not_available() -> None:
+    manifest = _manifest()
+    rows = [_validation_row(BASE + timedelta(days=9), 1)]
+    try:
+        validate_phase_scoped_rows(rows, manifest, "final_holdout")
     except ValueError as exc:
         assert "final holdout" in str(exc)
     else:
