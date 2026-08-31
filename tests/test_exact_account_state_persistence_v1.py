@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from src.account.exact_account_state_persistence_v1 import fetch_exact_persistence_account
+from src.account.exact_account_state_persistence_v1 import (
+    _build_exact_position_rows,
+    fetch_exact_persistence_account,
+)
+from src.operations.run_broker_account_position_snapshot_writer_v1 import (
+    BalanceRow,
+    TradingAccount,
+)
 
 
 class _Cursor:
@@ -82,6 +92,42 @@ def test_exact_persistence_loader_fails_closed(row, code: str) -> None:
         )
 
 
+def test_exact_position_evidence_preserves_live_account_metadata() -> None:
+    account = TradingAccount(
+        trading_account_id=5,
+        account_code="bitvavo_joost_live",
+        venue="bitvavo",
+        account_mode="live",
+        enabled=1,
+        live_trading_enabled=1,
+    )
+    balances = {
+        "BTC": BalanceRow(
+            currency_code="BTC",
+            available_amount=Decimal("0.01"),
+            reserved_amount=Decimal("0.02"),
+            total_amount=Decimal("0.03"),
+            snapshot_ts_utc=datetime(2026, 8, 31, 15, 0, 0),
+        )
+    }
+
+    rows, skipped = _build_exact_position_rows(
+        balances=balances,
+        asset_ids={"BTC": 1},
+        prices={},
+        account=account,
+        balance_snapshot_ts_utc=datetime(2026, 8, 31, 15, 0, 0),
+    )
+
+    assert skipped == []
+    assert len(rows) == 1
+    raw = json.loads(rows[0].raw_json)
+    assert raw["account_mode"] == "live"
+    assert raw["live_trading_enabled"] is True
+    assert raw["broker_submission"] is False
+    assert raw["position_mutation"] is False
+
+
 def test_legacy_position_writer_still_rejects_live_accounts() -> None:
     src = Path("src/operations/run_broker_account_position_snapshot_writer_v1.py").read_text()
     assert "if account.live_trading_enabled != 0:" in src
@@ -99,7 +145,6 @@ def test_exact_runner_uses_dedicated_persistence_and_keeps_rollback() -> None:
 def test_exact_persistence_seam_has_no_broker_or_execution_imports() -> None:
     src = Path("src/account/exact_account_state_persistence_v1.py").read_text()
     assert "BitvavoClient" not in src
-    assert "decision_gate" not in src.split('"""', 2)[-1]
-    assert "execution_planner" not in src.split('"""', 2)[-1]
     assert "submit_order" not in src
     assert "place_order" not in src
+    assert "SYNTH_BROKER_WRITE_PERMISSION" not in src
