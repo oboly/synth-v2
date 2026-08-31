@@ -1,6 +1,6 @@
 # Multi-Horizon Rotation Dataset Builder v1
 
-Issue: #593  
+Issue: #593
 Status: research-only dataset construction contract
 
 Depends on:
