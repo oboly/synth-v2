@@ -14,6 +14,7 @@ from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
     ALLOWED_PHASES,
     build_validation_row,
     chunk_asof_grid_by_utc_day,
+    fetch_rotation_v1_points,
     load_checkpoint,
     manifest_fingerprint,
     mark_checkpoint_terminal,
@@ -97,6 +98,64 @@ def test_concurrent_frozen_manifest_creation_has_one_winner_and_reuses_identical
     assert states.count("REUSED") == 7
     assert all(manifest_fingerprint(manifest) == manifest_fingerprint(candidate) for manifest, _ in results)
     assert manifest_fingerprint(_manifest()) == manifest_fingerprint(candidate)
+
+
+def test_rotation_v1_pit_fetch_uses_bounded_fetchmany_and_preserves_order() -> None:
+    rows = [
+        {"asset_id": 1, "as_of_ts_utc": BASE, "score_total": -10, "pressure_state": "ROTATION_OUT"},
+        {
+            "asset_id": 1,
+            "as_of_ts_utc": BASE + timedelta(minutes=15),
+            "score_total": 5,
+            "pressure_state": "MIXED",
+        },
+        {"asset_id": 2, "as_of_ts_utc": BASE, "score_total": 20, "pressure_state": "ROTATION_IN"},
+    ]
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.offset = 0
+            self.fetchmany_sizes: list[int] = []
+            self.executed: tuple[str, tuple[object, ...]] | None = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql: str, params: tuple[object, ...]) -> None:
+            self.executed = (sql, params)
+
+        def fetchmany(self, size: int):
+            self.fetchmany_sizes.append(size)
+            batch = rows[self.offset : self.offset + size]
+            self.offset += len(batch)
+            return batch
+
+        def fetchall(self):
+            raise AssertionError("broad Rotation V1 PIT fetch must not call fetchall")
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_obj = Cursor()
+
+        def cursor(self):
+            return self.cursor_obj
+
+    conn = Connection()
+    cutoff = BASE + timedelta(days=1)
+    index = fetch_rotation_v1_points(conn, venue="bitvavo", through_ts=cutoff, batch_size=2)
+
+    assert conn.cursor_obj.fetchmany_sizes == [2, 2, 2]
+    assert conn.cursor_obj.executed is not None
+    sql, params = conn.cursor_obj.executed
+    assert "ORDER BY o.asset_id, o.as_of_ts_utc, o.pressure_obs_id" in sql
+    assert params[-2] == cutoff.replace(tzinfo=None)
+    assert params[-1] == cutoff.replace(tzinfo=None)
+    assert index.latest_at_or_before(asset_id=1, asof_ts=BASE).score_total == -10.0
+    assert index.latest_at_or_before(asset_id=1, asof_ts=BASE + timedelta(minutes=15)).score_total == 5.0
+    assert index.latest_at_or_before(asset_id=2, asof_ts=BASE).score_total == 20.0
 
 
 def test_asof_grid_chunks_by_utc_day_without_reordering() -> None:
