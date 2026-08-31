@@ -221,9 +221,11 @@ def test_promotion_rule_research_further_when_underpowered() -> None:
     assert verdict == "RESEARCH_FURTHER"
 
 
-def test_nonempty_output_preflight_emits_failed_summary(tmp_path) -> None:
+def test_nonempty_output_preflight_never_mutates_existing_artifact(tmp_path) -> None:
     output_dir = tmp_path / "occupied"
     output_dir.mkdir()
+    existing_summary = '{"terminal_state":"FINISHED","immutable":true}\n'
+    (output_dir / "summary.json").write_text(existing_summary, encoding="utf-8")
     (output_dir / "existing.txt").write_text("keep", encoding="utf-8")
     args = Namespace(
         protocol="missing-protocol.yaml",
@@ -235,6 +237,5 @@ def test_nonempty_output_preflight_emits_failed_summary(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="OUTPUT_DIRECTORY_NOT_EMPTY"):
         run(args)
-    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
-    assert summary["terminal_state"] == "FAILED"
+    assert (output_dir / "summary.json").read_text(encoding="utf-8") == existing_summary
     assert (output_dir / "existing.txt").read_text(encoding="utf-8") == "keep"
