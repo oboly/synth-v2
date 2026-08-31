@@ -25,6 +25,7 @@ from src.research.multi_horizon_rotation_dataset_builder_v1 import (
     comparable_horizon_return,
     derive_common_source_span,
     forward_response,
+    observed_asset_ids_at_asof,
     split_manifest_payload,
 )
 from src.research.multi_horizon_rotation_replay_v1 import (
@@ -305,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
                 phase_end=phase_end,
             )
             query_rows += fetched
+            observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
+            for asset_id in observed_ids:
+                replay_candles.setdefault(asset_id, [])
             for spec in CANDIDATE_SPECS:
                 results = evaluate_candidate(
                     candles_by_asset=replay_candles,
@@ -325,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
             if index % 96 == 0:
                 emit(
                     f"HEARTBEAT phase={args.phase} asofs_completed={index} rows_built={len(output_rows)} "
-                    f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
+                    f"observed_assets={len(observed_ids)} source_rows_read={query_rows} "
+                    f"elapsed_s={time.perf_counter() - phase_started:.3f}"
                 )
 
         artifact_path = output_dir / f"{args.phase}_rows_v1.jsonl"
@@ -338,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
             "row_count": len(output_rows),
             "asof_count": len(grid),
             "source_rows_read": query_rows,
+            "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
             "final_holdout_access": "DENY",
             "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
             "database_writes": 0,
