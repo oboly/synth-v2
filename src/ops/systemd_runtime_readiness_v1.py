@@ -18,6 +18,12 @@ host is supposed to own a capability); the registry's ``activation_status``
 field is never read by this module and must never by itself make a
 capability's runtime readiness PASS.
 
+A registry-only ``owner_host`` value is also never enough on its own: this
+module additionally checks that it is actually executing on that same host
+(``socket.gethostname()``, or an injected fake in tests) before it will
+trust anything a local ``systemctl show`` reports. Identically named,
+fully healthy local units on any other machine fail closed.
+
 This module never mutates systemd: it only ever runs
 ``systemctl --system show <unit> --no-pager --property=...``, a read-only
 query. No enable/start/stop/disable/mask/daemon-reload call exists anywhere
@@ -33,6 +39,7 @@ Safety:
 """
 from __future__ import annotations
 
+import socket
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Final
@@ -103,6 +110,22 @@ class SystemdUnitStateV1:
 # Dependency-injection seam: production uses probe_systemd_unit_v1; tests
 # inject a fake that never shells out to real systemd.
 SystemdUnitProbe = Callable[[str], SystemdUnitStateV1]
+
+# --- Host-truth seam ---------------------------------------------------------
+#
+# A local ``systemctl show`` probe only proves something about *this* host's
+# units. It can never prove anything about a capability's declared owner host
+# unless this process is actually executing on that owner host. Without this
+# check, any machine with identically named local units (healthy or not)
+# could reach STATUS_READY purely because the ownership *registry* happens to
+# record the correct owner_host string -- a value describing intended
+# ownership, not where this code is currently running.
+HostnameResolver = Callable[[], str]
+
+
+def default_hostname_resolver_v1() -> str:
+    """Read-only local hostname read. Never mutates anything."""
+    return socket.gethostname()
 
 
 def _parse_show_properties(output: str) -> dict[str, str]:
@@ -175,16 +198,24 @@ def evaluate_capability_runtime_readiness_v1(
     *,
     registry_owner_host: str | None,
     probe: SystemdUnitProbe = probe_systemd_unit_v1,
+    hostname_resolver: HostnameResolver = default_hostname_resolver_v1,
 ) -> CapabilityRuntimeReadinessV1:
     """Evaluate one capability's actual, observed systemd runtime state.
 
     Fails closed on every unresolved condition: unknown capability, missing
-    registry entry, wrong owner, unit not found, wrong installed fragment
-    path, disabled timer, inactive timer, or a probe error. The oneshot
-    service's own ``active_state`` is deliberately never a pass/fail
-    condition -- it is expected to be idle/dead between timer firings; only
-    the timer's enabled+active state is authoritative for "is this capability
-    actually scheduled to run."
+    registry entry, wrong owner, wrong probe host, unit not found, wrong
+    installed fragment path, disabled timer, inactive timer, or a probe
+    error. The oneshot service's own ``active_state`` is deliberately never
+    a pass/fail condition -- it is expected to be idle/dead between timer
+    firings; only the timer's enabled+active state is authoritative for "is
+    this capability actually scheduled to run."
+
+    Local systemd state is never treated as this capability's canonical
+    runtime truth unless ``hostname_resolver()`` -- the actual host this
+    process is executing on -- equals the capability's declared owner host.
+    Any mismatch fails closed *before* the local probe is even consulted:
+    identically named healthy local units on the wrong host must never be
+    able to reach STATUS_READY.
     """
     contract = CAPABILITY_UNIT_CONTRACTS.get(capability_id)
     if contract is None:
@@ -199,6 +230,17 @@ def evaluate_capability_runtime_readiness_v1(
             {
                 "expected_owner_host": contract.owner_host,
                 "observed_owner_host": registry_owner_host,
+            },
+        )
+
+    observed_local_host = hostname_resolver()
+    if observed_local_host != contract.owner_host:
+        return _not_ready(
+            capability_id,
+            "RUNTIME_PROBE_NOT_ON_OWNER_HOST",
+            {
+                "expected_owner_host": contract.owner_host,
+                "observed_local_host": observed_local_host,
             },
         )
 

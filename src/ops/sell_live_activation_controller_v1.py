@@ -97,7 +97,9 @@ from src.executor.shared_executor_identity_v1 import (
 )
 from src.ops.systemd_runtime_readiness_v1 import (
     STATUS_READY as RUNTIME_CAPABILITY_STATUS_READY,
+    HostnameResolver,
     SystemdUnitProbe,
+    default_hostname_resolver_v1,
     evaluate_capability_runtime_readiness_v1,
     probe_systemd_unit_v1,
 )
@@ -324,6 +326,7 @@ class ControllerConfigV1:
     credential_scope_repository: Any | None = None
     kill_switch_repository: Any | None = None
     systemd_unit_probe: SystemdUnitProbe | None = None
+    hostname_resolver: HostnameResolver | None = None
 
 
 # --- Small helpers --------------------------------------------------------
@@ -677,7 +680,10 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
     ``src.ops.systemd_runtime_readiness_v1`` reading live, read-only
     ``systemctl show`` state on that owner host. A registry-only
     ``activation_status`` value -- however ACTIVE-looking -- is never read
-    here and can never by itself make this phase PASS (Issue #585).
+    here and can never by itself make this phase PASS (Issue #585). Nor can
+    the registry's ``owner_host`` string alone: this phase's local probe
+    result is never trusted unless the process is actually executing on
+    that declared owner host.
     """
     path = config.ownership_registry_path
     try:
@@ -692,6 +698,7 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
         if isinstance(entry, dict)
     }
     probe = config.systemd_unit_probe or probe_systemd_unit_v1
+    hostname_resolver = config.hostname_resolver or default_hostname_resolver_v1
 
     capability_results: dict[str, PhaseResultV1] = {}
     not_ready: dict[str, str] = {}
@@ -699,7 +706,10 @@ def _phase_runtime_ready(config: ControllerConfigV1) -> PhaseResultV1:
         entry = capabilities.get(capability_id)
         registry_owner_host = str(entry.get("owner_host")) if isinstance(entry, dict) and entry.get("owner_host") else None
         readiness = evaluate_capability_runtime_readiness_v1(
-            capability_id, registry_owner_host=registry_owner_host, probe=probe
+            capability_id,
+            registry_owner_host=registry_owner_host,
+            probe=probe,
+            hostname_resolver=hostname_resolver,
         )
         capability_results[capability_id] = readiness
         if readiness.status != RUNTIME_CAPABILITY_STATUS_READY:

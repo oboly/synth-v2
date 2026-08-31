@@ -243,6 +243,15 @@ def _systemd_probe(
     return probe
 
 
+def _owner_host_resolver(hostname: str = SHARED_EXECUTOR_RUNTIME_OWNER) -> systemd_readiness.HostnameResolver:
+    """Fake ``hostname_resolver`` -- never reads the real local hostname.
+
+    Defaults to the canonical owner host so every test in this module stays
+    on the healthy RUNTIME_READY path unless it explicitly overrides this.
+    """
+    return lambda: hostname
+
+
 _AUTOMATIC_EXIT_CONTRACT = systemd_readiness.CAPABILITY_UNIT_CONTRACTS["AUTOMATIC_EXIT_POLICY_RUNTIME"]
 
 
@@ -267,6 +276,7 @@ def _base_config(**overrides: Any) -> controller.ControllerConfigV1:
         # Default: both required capabilities READY per a fully-injected
         # fake systemd probe. Never shells out to real systemd.
         systemd_unit_probe=_systemd_probe(),
+        hostname_resolver=_owner_host_resolver(),
     )
     values.update(overrides)
     return controller.ControllerConfigV1(**values)
@@ -606,6 +616,29 @@ def test_runtime_healthy_oneshot_service_and_enabled_active_timer_passes(
         assert capability_detail["service_active_state"] == "inactive"
         assert capability_detail["timer_active_state"] == "active"
         assert capability_detail["timer_unit_file_state"] == "enabled"
+
+
+def test_runtime_non_owner_host_with_healthy_identically_named_local_units_cannot_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Issue #585 BLOCK fix: local systemd state is never canonical runtime
+    truth unless this process is actually executing on the declared owner
+    host. Registry ownership and the local probe are both fully healthy
+    here -- only the injected hostname resolver says this is running on a
+    non-owner machine -- and RUNTIME_READY must still block, without ever
+    reading the (healthy) probe result as proof of anything."""
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_systemd_probe(),
+        hostname_resolver=_owner_host_resolver("some-other-laptop"),
+    )
+    artifact = _run(config, monkeypatch)
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert all(
+        reason == "RUNTIME_PROBE_NOT_ON_OWNER_HOST"
+        for reason in result["detail"]["not_ready"].values()
+    )
 
 
 def test_runtime_registry_activation_status_alone_cannot_pass_readiness(
