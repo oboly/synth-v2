@@ -8,12 +8,14 @@ final-holdout phase option.
 """
 
 import argparse
+import hashlib
 import json
+import os
 import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, BinaryIO
 
 from dotenv import load_dotenv
 
@@ -75,7 +77,96 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--phase", required=True, choices=ALLOWED_PHASES)
     parser.add_argument("--output-dir", default="data/research/multi_horizon_rotation_validation_v1")
+    parser.add_argument("--resume", action="store_true")
     return parser.parse_args(argv)
+
+
+def manifest_fingerprint(manifest: dict[str, object]) -> str:
+    encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def checkpoint_path(output_dir: Path, phase: str) -> Path:
+    return output_dir / f".{phase}_checkpoint_v1.json"
+
+
+def write_checkpoint(
+    path: Path,
+    *,
+    venue: str,
+    phase: str,
+    manifest_sha256: str,
+    last_completed_asof: datetime | None,
+    asofs_completed: int,
+    row_count: int,
+    partial_bytes: int,
+    source_query_count: int,
+    source_rows_read: int,
+    terminal_state: str,
+) -> None:
+    payload = {
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "venue": venue,
+        "phase": phase,
+        "manifest_sha256": manifest_sha256,
+        "last_completed_asof": None if last_completed_asof is None else json_default(last_completed_asof),
+        "asofs_completed": asofs_completed,
+        "row_count": row_count,
+        "partial_bytes": partial_bytes,
+        "source_query_count": source_query_count,
+        "source_rows_read": source_rows_read,
+        "terminal_state": terminal_state,
+        "updated_ts_utc": json_default(datetime.now(UTC)),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_checkpoint(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise ValueError("resume requested but checkpoint is missing")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("checkpoint must be a JSON object")
+    return raw
+
+
+def validate_resume_checkpoint(
+    checkpoint: dict[str, Any],
+    *,
+    venue: str,
+    phase: str,
+    expected_manifest_sha256: str,
+) -> None:
+    if checkpoint.get("runner") != RUNNER_NAME or checkpoint.get("runner_version") != RUNNER_VERSION:
+        raise ValueError("checkpoint runner/version mismatch")
+    if checkpoint.get("venue") != venue or checkpoint.get("phase") != phase:
+        raise ValueError("checkpoint venue/phase mismatch")
+    if checkpoint.get("manifest_sha256") != expected_manifest_sha256:
+        raise ValueError("checkpoint split/source manifest mismatch")
+    if checkpoint.get("terminal_state") == "FINISHED":
+        raise ValueError("checkpoint is already FINISHED; start a new run without --resume")
+    for key in ("asofs_completed", "row_count", "partial_bytes"):
+        if int(checkpoint.get(key, -1)) < 0:
+            raise ValueError(f"checkpoint {key} must be non-negative")
+
+
+def reconcile_partial_to_checkpoint(partial_path: Path, checkpoint: dict[str, Any]) -> None:
+    if not partial_path.exists():
+        raise ValueError("resume requested but partial artifact is missing")
+    expected_bytes = int(checkpoint["partial_bytes"])
+    actual_bytes = partial_path.stat().st_size
+    if actual_bytes < expected_bytes:
+        raise ValueError(
+            f"partial artifact shorter than checkpoint: actual={actual_bytes} expected={expected_bytes}"
+        )
+    with partial_path.open("r+b") as handle:
+        handle.truncate(expected_bytes)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def fetch_asset_coverage(conn: Any, *, venue: str) -> list[AssetCoverage]:
@@ -278,8 +369,9 @@ def build_validation_row(
     return row
 
 
-def write_row(handle: TextIO, row: dict[str, Any]) -> None:
-    handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
+def write_row(handle: BinaryIO, row: dict[str, Any]) -> None:
+    payload = (json.dumps(row, sort_keys=True, default=json_default) + "\n").encode("utf-8")
+    handle.write(payload)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -288,7 +380,8 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     emit(
         f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} mode=research-read-only "
-        f"venue={args.venue} phase={args.phase} workers=1 final_holdout_access=DENY"
+        f"venue={args.venue} phase={args.phase} workers=1 resume={int(bool(args.resume))} "
+        "final_holdout_access=DENY"
     )
     emit(
         "SAFETY research_only=1 market_only=1 database_reads=1 database_writes=0 account_awareness=0 "
@@ -296,7 +389,15 @@ def main(argv: list[str] | None = None) -> int:
         "order_submission=0 live_orders=0"
     )
     conn = None
+    output_dir: Path | None = None
     partial_path: Path | None = None
+    cp_path: Path | None = None
+    manifest_sha256: str | None = None
+    last_completed_asof: datetime | None = None
+    asofs_completed = 0
+    row_count = 0
+    query_count = 0
+    query_rows = 0
     try:
         conn = get_db_connection()
 
@@ -306,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
         rotation_first = fetch_rotation_v1_first_ts(conn, venue=args.venue)
         span = derive_common_source_span(coverage=coverage, rotation_v1_first_ts=rotation_first)
         manifest = split_manifest_payload(span)
+        manifest_sha256 = manifest_fingerprint(manifest)
         split = manifest["splits"][args.phase]
         phase_start = parse_ts(split["start"])
         phase_end = parse_ts(split["end"])
@@ -319,14 +421,49 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = output_dir / "split_manifest_v1.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
         artifact_path = output_dir / f"{args.phase}_rows_v1.jsonl"
         partial_path = output_dir / f".{args.phase}_rows_v1.jsonl.partial"
         summary_path = output_dir / f"{args.phase}_summary_v1.json"
-        for stale_path in (artifact_path, partial_path, summary_path):
-            if stale_path.exists():
-                stale_path.unlink()
+        cp_path = checkpoint_path(output_dir, args.phase)
+
+        if args.resume:
+            checkpoint = load_checkpoint(cp_path)
+            validate_resume_checkpoint(
+                checkpoint,
+                venue=args.venue,
+                phase=args.phase,
+                expected_manifest_sha256=manifest_sha256,
+            )
+            reconcile_partial_to_checkpoint(partial_path, checkpoint)
+            last_raw = checkpoint.get("last_completed_asof")
+            last_completed_asof = None if last_raw is None else parse_ts(last_raw)
+            asofs_completed = int(checkpoint["asofs_completed"])
+            row_count = int(checkpoint["row_count"])
+            query_count = int(checkpoint.get("source_query_count", 0))
+            query_rows = int(checkpoint.get("source_rows_read", 0))
+            emit(
+                f"RESUME checkpoint={cp_path} last_completed_asof={last_completed_asof} "
+                f"asofs_completed={asofs_completed} rows={row_count} partial_bytes={checkpoint['partial_bytes']}"
+            )
+        else:
+            for stale_path in (artifact_path, partial_path, summary_path, cp_path):
+                if stale_path.exists():
+                    stale_path.unlink()
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            partial_path.touch()
+            write_checkpoint(
+                cp_path,
+                venue=args.venue,
+                phase=args.phase,
+                manifest_sha256=manifest_sha256,
+                last_completed_asof=None,
+                asofs_completed=0,
+                row_count=0,
+                partial_bytes=0,
+                source_query_count=0,
+                source_rows_read=0,
+                terminal_state="RUNNING",
+            )
 
         emit("PHASE_STARTED name=load_rotation_v1_pit")
         phase_started = time.perf_counter()
@@ -336,13 +473,13 @@ def main(argv: list[str] | None = None) -> int:
         emit(f"PHASE_STARTED name=build_{args.phase}_artifact")
         phase_started = time.perf_counter()
         spec_by_id = {spec.candidate_id: spec for spec in CANDIDATE_SPECS}
-        query_rows = 0
-        query_count = 0
-        row_count = 0
-        asofs_completed = 0
-        grid = asof_grid(phase_start, phase_end)
-        chunks = chunk_asof_grid_by_utc_day(grid)
-        with partial_path.open("w", encoding="utf-8") as handle:
+        full_grid = asof_grid(phase_start, phase_end)
+        remaining_grid = [
+            asof for asof in full_grid
+            if last_completed_asof is None or ensure_utc(asof) > ensure_utc(last_completed_asof)
+        ]
+        chunks = chunk_asof_grid_by_utc_day(remaining_grid)
+        with partial_path.open("ab") as handle:
             for chunk in chunks:
                 chunk_candles, close_maps, fetched = fetch_candles_for_chunk(
                     conn,
@@ -376,30 +513,64 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             write_row(handle, row)
                             row_count += 1
+                    handle.flush()
+                    os.fsync(handle.fileno())
                     asofs_completed += 1
+                    last_completed_asof = asof
+                    partial_bytes = handle.tell()
+                    write_checkpoint(
+                        cp_path,
+                        venue=args.venue,
+                        phase=args.phase,
+                        manifest_sha256=manifest_sha256,
+                        last_completed_asof=last_completed_asof,
+                        asofs_completed=asofs_completed,
+                        row_count=row_count,
+                        partial_bytes=partial_bytes,
+                        source_query_count=query_count,
+                        source_rows_read=query_rows,
+                        terminal_state="RUNNING",
+                    )
                     if asofs_completed % 96 == 0:
-                        handle.flush()
                         emit(
                             f"HEARTBEAT phase={args.phase} asofs_completed={asofs_completed} rows_built={row_count} "
                             f"observed_assets={len(observed_ids)} source_queries={query_count} "
                             f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
                         )
-            handle.flush()
 
+        if asofs_completed != len(full_grid):
+            raise ValueError(
+                f"as-of completion mismatch: completed={asofs_completed} expected={len(full_grid)}"
+            )
         partial_path.replace(artifact_path)
         partial_path = None
+        final_bytes = artifact_path.stat().st_size
+        write_checkpoint(
+            cp_path,
+            venue=args.venue,
+            phase=args.phase,
+            manifest_sha256=manifest_sha256,
+            last_completed_asof=last_completed_asof,
+            asofs_completed=asofs_completed,
+            row_count=row_count,
+            partial_bytes=final_bytes,
+            source_query_count=query_count,
+            source_rows_read=query_rows,
+            terminal_state="FINISHED",
+        )
         summary = {
             "runner": RUNNER_NAME,
             "runner_version": RUNNER_VERSION,
             "venue": args.venue,
             "phase": args.phase,
             "row_count": row_count,
-            "asof_count": len(grid),
+            "asof_count": len(full_grid),
             "source_query_count": query_count,
             "source_rows_read": query_rows,
             "source_batching": "one_bounded_query_per_utc_asof_day",
             "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
-            "artifact_write": "streamed_atomic_partial_then_replace",
+            "artifact_write": "streamed_checkpointed_atomic_partial_then_replace",
+            "resume_supported": True,
             "final_holdout_access": "DENY",
             "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
             "database_writes": 0,
@@ -418,15 +589,49 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except KeyboardInterrupt:
+        if cp_path is not None and manifest_sha256 is not None and partial_path is not None and partial_path.exists():
+            checkpoint = load_checkpoint(cp_path)
+            write_checkpoint(
+                cp_path,
+                venue=args.venue,
+                phase=args.phase,
+                manifest_sha256=manifest_sha256,
+                last_completed_asof=last_completed_asof,
+                asofs_completed=asofs_completed,
+                row_count=row_count,
+                partial_bytes=int(checkpoint["partial_bytes"]),
+                source_query_count=query_count,
+                source_rows_read=query_rows,
+                terminal_state="INTERRUPTED",
+            )
         emit(
-            f"INTERRUPTED runner={RUNNER_NAME} partial_artifact={partial_path} final_holdout_access=DENY "
-            f"database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+            f"INTERRUPTED runner={RUNNER_NAME} partial_artifact={partial_path} checkpoint={cp_path} "
+            f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 130
     except Exception as exc:
+        if cp_path is not None and manifest_sha256 is not None and partial_path is not None and partial_path.exists():
+            try:
+                checkpoint = load_checkpoint(cp_path)
+                write_checkpoint(
+                    cp_path,
+                    venue=args.venue,
+                    phase=args.phase,
+                    manifest_sha256=manifest_sha256,
+                    last_completed_asof=last_completed_asof,
+                    asofs_completed=asofs_completed,
+                    row_count=row_count,
+                    partial_bytes=int(checkpoint["partial_bytes"]),
+                    source_query_count=query_count,
+                    source_rows_read=query_rows,
+                    terminal_state="FAILED",
+                )
+            except Exception:
+                pass
         emit(
             f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} partial_artifact={partial_path} "
-            f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+            f"checkpoint={cp_path} final_holdout_access=DENY database_writes=0 "
+            f"elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 1
     finally:
