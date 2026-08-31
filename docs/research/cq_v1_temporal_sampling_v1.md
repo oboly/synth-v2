@@ -1,6 +1,6 @@
 # CQ v1 Temporal Sampling Contract v1
 
-Issue: #646  
+Issue: #646
 Parent: #568
 
 ## Purpose
