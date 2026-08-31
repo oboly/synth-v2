@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -12,6 +13,12 @@ from src.research.cq_v1_temporal_population_v1 import (
     fetch_sampling_grid,
     source_age_hours,
     summarize,
+)
+from src.research.run_cq_v1_temporal_population_v1 import (
+    PINNED_SELECTION_CONFIG_PATH,
+    PINNED_SELECTION_CONFIG_SHA256,
+    _identity_payload,
+    _load_checkpoint_rows,
 )
 
 
@@ -124,3 +131,39 @@ def test_summary_preserves_missingness_and_candidate_support():
     assert result["candidate_available_count"]["cq_v1_mrp_balanced_v1"] == 1
     assert result["max_signal_source_age_hours"]["signal_ts_1d_utc_age_hours"] == 24.0
     assert result["forward_outcome_reads"] == 0
+
+
+def test_resume_truncates_only_uncheckpointed_tail_and_requires_contiguous_ids(tmp_path):
+    path = tmp_path / "observations.jsonl"
+    rows = [
+        {"temporal_observation_id": 1, "asset_id": 1},
+        {"temporal_observation_id": 2, "asset_id": 2},
+        {"temporal_observation_id": 999, "asset_id": 3},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    kept = _load_checkpoint_rows(path, rows_written=2)
+
+    assert [row["temporal_observation_id"] for row in kept] == [1, 2]
+    persisted = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["temporal_observation_id"] for row in persisted] == [1, 2]
+
+    path.write_text(json.dumps({"temporal_observation_id": 7}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="temporal_observation_id mismatch"):
+        _load_checkpoint_rows(path, rows_written=1)
+
+
+def test_resume_identity_pins_grid_and_selection_config():
+    grid = [datetime(2026, 7, 16, 20, 0, tzinfo=timezone.utc)]
+    identity = _identity_payload(
+        venue="bitvavo",
+        limit=500,
+        max_asofs=0,
+        grid=grid,
+        config_sha256=PINNED_SELECTION_CONFIG_SHA256,
+    )
+
+    assert identity["selection_config_path"] == PINNED_SELECTION_CONFIG_PATH
+    assert identity["selection_config_sha256"] == PINNED_SELECTION_CONFIG_SHA256
+    assert identity["asofs_total"] == 1
+    assert len(identity["grid_sha256"]) == 64
