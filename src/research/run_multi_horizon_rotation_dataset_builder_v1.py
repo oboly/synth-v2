@@ -16,7 +16,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from dotenv import load_dotenv
 
@@ -550,6 +550,23 @@ def write_row(handle: BinaryIO, row: dict[str, Any]) -> None:
     handle.write(payload)
 
 
+def finalize_artifact_with_checkpoint(
+    *,
+    partial_path: Path,
+    artifact_path: Path,
+    persist_finished_checkpoint: Callable[[int], None],
+) -> int:
+    """Rename to final only while preserving rollback if FINISHED checkpoint persistence fails."""
+    partial_path.replace(artifact_path)
+    final_bytes = artifact_path.stat().st_size
+    try:
+        persist_finished_checkpoint(final_bytes)
+    except BaseException:
+        artifact_path.replace(partial_path)
+        raise
+    return final_bytes
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_dotenv(dotenv_path=".env", override=False)
@@ -727,22 +744,27 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 f"as-of completion mismatch: completed={asofs_completed} expected={len(full_grid)}"
             )
-        partial_path.replace(artifact_path)
-        partial_path = None
-        final_bytes = artifact_path.stat().st_size
-        write_checkpoint(
-            cp_path,
-            venue=args.venue,
-            phase=args.phase,
-            manifest_sha256=manifest_sha256,
-            last_completed_asof=last_completed_asof,
-            asofs_completed=asofs_completed,
-            row_count=row_count,
-            partial_bytes=final_bytes,
-            source_query_count=query_count,
-            source_rows_read=query_rows,
-            terminal_state="FINISHED",
+        def persist_finished_checkpoint(final_bytes: int) -> None:
+            write_checkpoint(
+                cp_path,
+                venue=args.venue,
+                phase=args.phase,
+                manifest_sha256=manifest_sha256,
+                last_completed_asof=last_completed_asof,
+                asofs_completed=asofs_completed,
+                row_count=row_count,
+                partial_bytes=final_bytes,
+                source_query_count=query_count,
+                source_rows_read=query_rows,
+                terminal_state="FINISHED",
+            )
+
+        final_bytes = finalize_artifact_with_checkpoint(
+            partial_path=partial_path,
+            artifact_path=artifact_path,
+            persist_finished_checkpoint=persist_finished_checkpoint,
         )
+        partial_path = None
         summary = {
             "runner": RUNNER_NAME,
             "runner_version": RUNNER_VERSION,
