@@ -22,6 +22,7 @@ holdout:
 inputs:
   frozen_manifest_name: cq_v1_holdout_input_manifest_v1
   frozen_manifest_version: 1.0.0
+  frozen_manifest_sha256: PENDING_RUNTIME_FREEZE
   forward_outcome_runner: entry_quality_forward_validation_v1
   score_runner: cq_v1_score_materialization_v1
   required_identity_fields:
