@@ -115,7 +115,7 @@ def load_rows(path: Path) -> list[ValidationRow]:
     return rows
 
 
-def select_phase_rows(rows: list[ValidationRow], manifest: dict[str, Any], phase: str) -> list[ValidationRow]:
+def validate_phase_scoped_rows(rows: list[ValidationRow], manifest: dict[str, Any], phase: str) -> list[ValidationRow]:
     if phase not in ALLOWED_PHASES:
         raise ValueError("final holdout is not available in validation runner v1")
     split = manifest["splits"][phase]
@@ -124,7 +124,12 @@ def select_phase_rows(rows: list[ValidationRow], manifest: dict[str, Any], phase
     holdout_start = parse_ts(manifest["splits"]["final_holdout"]["start"])
     if end > holdout_start:
         raise ValueError("requested phase overlaps final holdout")
-    return [row for row in rows if start <= ensure_utc(row.asof_ts) < end]
+    outside = [row for row in rows if not (start <= ensure_utc(row.asof_ts) < end)]
+    if outside:
+        raise ValueError(
+            f"input artifact is not phase-scoped: {len(outside)} row(s) outside requested {phase} interval"
+        )
+    return rows
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,10 +149,10 @@ def main(argv: list[str] | None = None) -> int:
 
         load_started = time.perf_counter()
         emit("PHASE_STARTED name=load_validation_rows")
-        all_rows = load_rows(Path(args.input_jsonl))
-        rows = select_phase_rows(all_rows, manifest, args.phase)
+        rows = load_rows(Path(args.input_jsonl))
+        validate_phase_scoped_rows(rows, manifest, args.phase)
         emit(
-            f"PHASE_FINISHED name=load_validation_rows input_rows={len(all_rows)} phase_rows={len(rows)} "
+            f"PHASE_FINISHED name=load_validation_rows phase_rows={len(rows)} "
             f"elapsed_s={time.perf_counter() - load_started:.3f}"
         )
 
