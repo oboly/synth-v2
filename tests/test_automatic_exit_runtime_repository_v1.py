@@ -9,7 +9,9 @@ import src.exit_policy.automatic_exit_runtime_repository_v1 as repository_module
 from src.exit_policy.automatic_exit_runtime_contract_v1 import AutomaticExitRuntimeContractError
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     AutomaticExitRuntimeRepositoryError,
+    build_manual_action_runtime_item_v1,
     build_runtime_item_v1,
+    load_asset_execution_capability_v1,
     load_blocking_conflict,
     load_eligible_trading_accounts,
     load_latest_complete_account_state_bundle,
@@ -20,6 +22,7 @@ from src.exit_policy.automatic_exit_runtime_repository_v1 import (
 from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
+    insert_asset,
     insert_balance,
     bind_account_market,
     insert_complete_bundle,
@@ -440,3 +443,112 @@ def test_multi_account_correctness_no_implicit_global_account() -> None:
     insert_trading_account(conn, account_id=9)
     accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
     assert {a.trading_account_id for a in accounts} == {7, 9}
+
+
+# Issue #653: canonical asset.execution_mode integration before automated
+# venue-market resolution.
+
+
+def test_load_asset_execution_capability_defaults_to_automated() -> None:
+    conn = FakeConnection()
+    insert_asset(conn, asset_id=101, symbol="BTC")
+    capability = load_asset_execution_capability_v1(conn, asset_id=101)
+    assert capability.execution_mode == "AUTOMATED"
+    assert capability.automated_execution_eligible is True
+    assert capability.execution_disposition == "AUTOMATED_ELIGIBLE"
+
+
+def test_load_asset_execution_capability_manual_rfq() -> None:
+    conn = FakeConnection()
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL_RFQ")
+    capability = load_asset_execution_capability_v1(conn, asset_id=1372)
+    assert capability.execution_mode == "MANUAL_RFQ"
+    assert capability.manual_trade is True
+    assert capability.automated_execution_eligible is False
+    assert capability.execution_disposition == "MANUAL_ACTION_REQUIRED"
+
+
+def test_load_asset_execution_capability_none_is_not_executable() -> None:
+    conn = FakeConnection()
+    insert_asset(conn, asset_id=201, symbol="DELISTED", execution_mode="NONE")
+    capability = load_asset_execution_capability_v1(conn, asset_id=201)
+    assert capability.execution_disposition == "NOT_EXECUTABLE"
+    assert capability.automated_execution_eligible is False
+
+
+def test_load_asset_execution_capability_missing_asset_fails_closed() -> None:
+    conn = FakeConnection()
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="ASSET_EXECUTION_MODE_MISSING"):
+        load_asset_execution_capability_v1(conn, asset_id=999)
+
+
+def test_manual_rfq_position_builds_without_venue_market() -> None:
+    """A held MANUAL_RFQ position with no venue_market never needs one (Issue #653)."""
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL_RFQ")
+    insert_position(conn, asset_id=1372, symbol="MDT", quantity_base=Decimal("40"), available_quantity_base=Decimal("40"))
+    insert_balance(conn, currency_code="MDT", available_amount=Decimal("40"))
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+
+    capability = load_asset_execution_capability_v1(conn, asset_id=position.asset_id)
+    assert capability.execution_disposition == "MANUAL_ACTION_REQUIRED"
+
+    # No venue_market row exists at all: resolving it would raise
+    # POSITION_MARKET_IDENTITY_MISSING, proving the manual builder never calls it.
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_MISSING"):
+        resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=1372, symbol="MDT")
+
+    item = build_manual_action_runtime_item_v1(
+        conn, account=account, bundle=bundle, position=position, now=NOW, execution_capability=capability,
+    )
+    assert item.execution_mode == "MANUAL_RFQ"
+    assert item.execution_disposition == "MANUAL_ACTION_REQUIRED"
+    assert item.symbol == "MDT"
+    assert item.held_quantity_base == Decimal("40")
+    assert item.free_quantity_base == Decimal("40")
+
+
+def test_manual_action_item_preserves_sizing_with_reservations_and_stale_orders() -> None:
+    """Sizing evidence (held/free quantity) is identical to the automated path."""
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL")
+    insert_position(conn, asset_id=1372, symbol="MDT", quantity_base=Decimal("10"), available_quantity_base=Decimal("10"))
+    insert_balance(conn, currency_code="MDT", available_amount=Decimal("10"))
+    insert_sell_reservation(conn, asset_id=1372, symbol="MDT", quantity_base=Decimal("3"), idempotency_key="mdt-reservation-1")
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    capability = load_asset_execution_capability_v1(conn, asset_id=position.asset_id)
+
+    item = build_manual_action_runtime_item_v1(
+        conn, account=account, bundle=bundle, position=position, now=NOW, execution_capability=capability,
+    )
+    assert item.held_quantity_base == Decimal("10")
+    assert item.free_quantity_base == Decimal("7")
+
+
+def test_none_execution_mode_builds_manual_item_without_venue_market() -> None:
+    """NONE fails closed for automation but is still visible with sizing evidence, never fabricating a market."""
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_asset(conn, asset_id=301, symbol="DELISTED", execution_mode="NONE")
+    insert_position(conn, asset_id=301, symbol="DELISTED", quantity_base=Decimal("5"), available_quantity_base=Decimal("5"))
+    insert_balance(conn, currency_code="DELISTED", available_amount=Decimal("5"))
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    capability = load_asset_execution_capability_v1(conn, asset_id=position.asset_id)
+    assert capability.execution_disposition == "NOT_EXECUTABLE"
+
+    item = build_manual_action_runtime_item_v1(
+        conn, account=account, bundle=bundle, position=position, now=NOW, execution_capability=capability,
+    )
+    assert item.execution_disposition == "NOT_EXECUTABLE"
+    assert item.held_quantity_base == Decimal("5")

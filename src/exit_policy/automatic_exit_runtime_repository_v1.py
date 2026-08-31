@@ -25,6 +25,11 @@ from src.decision_gate.free_base_quantity_v1 import (
     resolve_free_base_quantity_core_v1,
 )
 from src.decision_gate.sell_reservation_v1 import SellReservationRepository
+from src.execution_capability.execution_capability_v1 import (
+    ExecutionCapabilityError,
+    ExecutionCapabilityV1,
+    capability_for_mode,
+)
 from src.exit_policy.automatic_exit_runtime_contract_v1 import (
     AutomaticExitPlanningPermissionV1,
     AutomaticExitProfileV1,
@@ -46,6 +51,7 @@ DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS: Final[int] = 15 * 60
 REASON_MISSING_AUTOMATIC_EXIT_PERMISSION: Final[str] = "MISSING_AUTOMATIC_EXIT_PERMISSION"
 REASON_MISSING_VENUE_CONSTRAINT: Final[str] = "MISSING_VENUE_CONSTRAINT"
 REASON_FREE_BASE_QUANTITY_BLOCKED: Final[str] = "FREE_BASE_QUANTITY_BLOCKED"
+REASON_ASSET_EXECUTION_MODE_MISSING: Final[str] = "ASSET_EXECUTION_MODE_MISSING"
 
 class AutomaticExitRuntimeRepositoryError(RuntimeError):
     """Fail-closed evidence-loading error. ``args[0]`` is the reason code."""
@@ -171,6 +177,34 @@ class RuntimeItemV1:
     market_price_snapshot_id: int
     automatic_exit_permission_id: int
     venue_constraint_id: int
+
+
+@dataclass(frozen=True)
+class ManualActionRuntimeItemV1:
+    """One held position whose canonical asset.execution_mode is not AUTOMATED.
+
+    Carries the same position-sizing evidence as ``RuntimeItemV1`` (held and
+    free base quantity) so a manual reviewer retains SELL/REDUCE/EXIT sizing
+    context, but never resolves or requires an automated ``venue_market``
+    identity (Issue #653): MANUAL_RFQ/MANUAL/NONE instruments are canonically
+    not automated-market-eligible, not merely missing evidence.
+    """
+
+    trading_account_id: int
+    account_code: str
+    position_reference: str
+    venue: str
+    asset_id: int
+    symbol: str
+    held_quantity_base: Decimal
+    free_quantity_base: Decimal
+    execution_mode: str
+    execution_disposition: str
+    account_state_observed_ts_utc: datetime
+    account_state_snapshot_run_id: int
+    position_snapshot_id: int
+    balance_snapshot_id: int
+    open_order_snapshot_run_id: int
 
 
 def load_eligible_trading_accounts(conn: Any, *, venue: str) -> list[EligibleAccountV1]:
@@ -340,6 +374,26 @@ def load_blocking_conflict(conn: Any, *, bundle: AccountStateBundleV1, market: s
     _reject(total_row is None or int(total_row["rows_total"]) != bundle.open_order_count, "OPEN_ORDER_SNAPSHOT_COUNT_MISMATCH")
     assert market_row is not None
     return int(market_row["rows_total"]) > 0
+
+
+def load_asset_execution_capability_v1(conn: Any, *, asset_id: int) -> ExecutionCapabilityV1:
+    """Canonical execution-capability disposition for one asset (Issue #653).
+
+    Reads only the structural ``asset.execution_mode`` column; never touches
+    ``venue_market``. This must run before any automated market-identity
+    resolution so a MANUAL_RFQ/MANUAL/NONE asset is never routed through
+    ``resolve_position_market_v1``.
+    """
+    sql = "SELECT execution_mode FROM asset WHERE asset_id = %s"
+    with conn.cursor() as cur:
+        cur.execute(sql, (asset_id,))
+        row = _fetch_one(cur)
+    _reject(row is None, REASON_ASSET_EXECUTION_MODE_MISSING)
+    assert row is not None
+    try:
+        return capability_for_mode(row["execution_mode"])
+    except ExecutionCapabilityError as exc:
+        raise AutomaticExitRuntimeRepositoryError(str(exc)) from exc
 
 
 def resolve_position_market_v1(
@@ -523,22 +577,19 @@ def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int:
     return int(row["venue_execution_constraint_id"])
 
 
-def build_runtime_item_v1(
+def _resolve_position_sizing_evidence_v1(
     conn: Any,
     *,
     account: EligibleAccountV1,
     bundle: AccountStateBundleV1,
     position: PositionEvidenceV1,
     now: datetime,
-    max_market_price_age_seconds: int = DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS,
-    max_profile_age_seconds: int | None = None,
-) -> RuntimeItemV1:
-    """Assemble one complete, independently-idempotent runtime item.
+) -> tuple[BalanceEvidenceV1, Decimal]:
+    """Shared balance/free-quantity evidence for automated and manual items alike.
 
-    Every persisted-evidence reference required by
-    automatic_exit_idempotency_key_v1() is resolved here, before any
-    candidate/gate/planner call, so identical evidence always yields an
-    identical idempotency key regardless of the eventual outcome.
+    Position sizing evidence is identical regardless of execution_mode: a
+    manual reviewer needs the same held/free base quantity an automated plan
+    would have used. Only market-dependent evidence differs downstream.
     """
     balance = load_balance_evidence(conn, bundle=bundle, currency_code=position.symbol)
     reservation_repository = SellReservationRepository()
@@ -579,6 +630,72 @@ def build_runtime_item_v1(
             REASON_FREE_BASE_QUANTITY_BLOCKED + ":" + ",".join(free_quantity_result.blocking_reasons)
         )
     assert free_quantity_result.free_base_quantity is not None
+    return balance, free_quantity_result.free_base_quantity
+
+
+def build_manual_action_runtime_item_v1(
+    conn: Any,
+    *,
+    account: EligibleAccountV1,
+    bundle: AccountStateBundleV1,
+    position: PositionEvidenceV1,
+    now: datetime,
+    execution_capability: ExecutionCapabilityV1,
+) -> ManualActionRuntimeItemV1:
+    """Assemble sizing evidence for a canonical non-automated position (Issue #653).
+
+    Never resolves or requires ``venue_market``: MANUAL_RFQ/MANUAL/NONE
+    instruments are not automated-market-identity-eligible by canonical
+    execution-capability contract, not merely missing data, so no fake
+    venue market is created or required here.
+    """
+    balance, free_quantity = _resolve_position_sizing_evidence_v1(
+        conn, account=account, bundle=bundle, position=position, now=now,
+    )
+    return ManualActionRuntimeItemV1(
+        trading_account_id=account.trading_account_id,
+        account_code=account.account_code,
+        position_reference=f"account_position_snapshot:{position.account_position_snapshot_id}",
+        venue=bundle.venue,
+        asset_id=position.asset_id,
+        symbol=position.symbol,
+        held_quantity_base=position.quantity_base,
+        free_quantity_base=free_quantity,
+        execution_mode=execution_capability.execution_mode,
+        execution_disposition=execution_capability.execution_disposition,
+        account_state_observed_ts_utc=bundle.snapshot_ts_utc,
+        account_state_snapshot_run_id=bundle.account_state_snapshot_run_id,
+        position_snapshot_id=position.account_position_snapshot_id,
+        balance_snapshot_id=balance.trading_account_balance_snapshot_id,
+        open_order_snapshot_run_id=bundle.account_open_order_snapshot_run_id,
+    )
+
+
+def build_runtime_item_v1(
+    conn: Any,
+    *,
+    account: EligibleAccountV1,
+    bundle: AccountStateBundleV1,
+    position: PositionEvidenceV1,
+    now: datetime,
+    max_market_price_age_seconds: int = DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS,
+    max_profile_age_seconds: int | None = None,
+) -> RuntimeItemV1:
+    """Assemble one complete, independently-idempotent runtime item.
+
+    AUTOMATED only: callers must resolve ``asset.execution_mode`` via
+    ``load_asset_execution_capability_v1`` first and route non-automated
+    dispositions through ``build_manual_action_runtime_item_v1`` instead of
+    calling this function (Issue #653).
+
+    Every persisted-evidence reference required by
+    automatic_exit_idempotency_key_v1() is resolved here, before any
+    candidate/gate/planner call, so identical evidence always yields an
+    identical idempotency key regardless of the eventual outcome.
+    """
+    balance, free_quantity = _resolve_position_sizing_evidence_v1(
+        conn, account=account, bundle=bundle, position=position, now=now,
+    )
     market_identity = resolve_position_market_v1(
         conn,
         trading_account_id=account.trading_account_id,
@@ -620,7 +737,7 @@ def build_runtime_item_v1(
         market=market,
         symbol=position.symbol,
         held_quantity_base=position.quantity_base,
-        free_quantity_base=free_quantity_result.free_base_quantity,
+        free_quantity_base=free_quantity,
         current_price=price_evidence.price,
         account_enabled=account.enabled,
         account_mode=account.account_mode,

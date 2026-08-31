@@ -28,7 +28,8 @@ CREATE TABLE trading_account (
 
 CREATE TABLE asset (
     asset_id INTEGER PRIMARY KEY,
-    symbol TEXT NOT NULL
+    symbol TEXT NOT NULL,
+    execution_mode TEXT NOT NULL DEFAULT 'AUTOMATED'
 );
 
 CREATE TABLE venue_market (
@@ -396,6 +397,17 @@ def insert_position(
             (account_id, venue, source_name, snapshot_ts_utc, asset_id, symbol, quantity_base, available_quantity_base),
         )
         return cur.lastrowid
+
+
+def insert_asset(
+    conn: FakeConnection, *, asset_id: int = 101, symbol: str = "BTC", execution_mode: str = "AUTOMATED",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT OR IGNORE INTO asset (asset_id, symbol, execution_mode) VALUES (%s,%s,%s)",
+            (asset_id, symbol, execution_mode),
+        )
+        return asset_id
 
 
 def insert_venue_market(
