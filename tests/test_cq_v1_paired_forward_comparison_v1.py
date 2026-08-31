@@ -75,6 +75,11 @@ def test_cq_v0_mismatch_fails() -> None:
         pair_rows([score(1)], [outcome(1, "1h", cq_v0="0.700000")])
 
 
+def test_duplicate_score_shadow_id_fails() -> None:
+    with pytest.raises(ValueError, match="duplicate score shadow_id"):
+        pair_rows([score(1), score(1)], [outcome(1, "1h")])
+
+
 def test_duplicate_shadow_horizon_fails() -> None:
     with pytest.raises(ValueError, match="duplicate outcome identity"):
         pair_rows([score(1)], [outcome(1, "1h"), outcome(1, "1h")])
