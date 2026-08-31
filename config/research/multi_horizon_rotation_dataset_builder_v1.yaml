@@ -1,0 +1,71 @@
+registry_name: multi_horizon_rotation_dataset_builder_v1
+registry_version: 1.0.0
+issue: 593
+research_only: true
+
+source:
+  venue_scope: one_venue_per_run
+  candle_table: obs_market_candle
+  candle_interval: 15m
+  candle_fields: [asset_id, close_ts_utc, close_price, volume_base]
+  rotation_v1_snapshot_table: market_rotation_pressure_snapshot_v1
+  rotation_v1_observation_table: market_rotation_pressure_observation_v1
+  rotation_v1_model_version: "1.0"
+
+source_span:
+  outcome_independent: true
+  minimum_cohort: 20
+  candidate_max_lookback_hours: 36
+  start_rule: max(twentieth_smallest_asset_first_close_plus_36h, rotation_v1_first_pit_ts)
+  end_rule: twentieth_largest_asset_last_close
+  boundary_grid: 15m
+  contiguous_candle_validation: delegated_to_candidate_replay_per_observation
+  split: [0.60, 0.20, 0.20]
+
+phases:
+  allowed: [discovery, validation]
+  final_holdout_runner_access: DENY
+  artifact_scope: one_phase_per_file
+  forward_label_endpoint_must_be_strictly_before_phase_end: true
+
+candidate_replay:
+  implementation: src/research/multi_horizon_rotation_replay_v1.py
+  candidates: [C1, C2, C3]
+  minimum_cohort: 20
+
+baselines:
+  B0:
+    source: canonical_rotation_pressure_v1
+    pit_rule: latest_same_asset_same_venue_model_at_or_before_asof
+    value_field: score_total
+    state_field: pressure_state
+  B1:
+    source: canonical_15m_candles
+    rule: exact_boundary_log_return_matching_candidate_horizon
+  B2:
+    status: UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE
+
+forward_response:
+  horizons_minutes: [15, 60, 240, 1440]
+  rule: exact_boundary_log_return
+  phase_boundary_policy: purge_if_endpoint_gte_phase_end
+
+artifacts:
+  split_manifest: split_manifest_v1.json
+  phase_rows: "{phase}_rows_v1.jsonl"
+  phase_summary: "{phase}_summary_v1.json"
+  production_truth: false
+
+safety:
+  database_reads: 1
+  database_writes: 0
+  account_awareness: 0
+  selection_engine_production_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  production_runtime_activation: 0
