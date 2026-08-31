@@ -66,7 +66,8 @@ def run(args: argparse.Namespace) -> int:
     )
     print(
         "SAFETY research_only=1 market_only=1 db_reads=0 db_writes=0 frozen_model_changed=0 "
-        "production_ranking_changes=0 broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0",
+        "production_ranking_changes=0 decision_gate=none execution_planner=none executor=none "
+        "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0",
         flush=True,
     )
 
