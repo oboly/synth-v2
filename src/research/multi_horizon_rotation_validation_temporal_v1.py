@@ -3,7 +3,7 @@ from __future__ import annotations
 """Frozen temporal/stability metrics for Issue #593 validation."""
 
 from dataclasses import asdict, dataclass
-from datetime import timedelta
+from math import isfinite
 from statistics import mean
 from typing import Sequence
 
@@ -35,7 +35,7 @@ class LeadLagResult:
 
 
 def _state(value: float | None) -> int | None:
-    if value is None:
+    if value is None or not isfinite(value):
         return None
     if value > 0:
         return 1
@@ -64,10 +64,7 @@ def _turns(rows: Sequence[ValidationRow], *, field: str) -> list:
         contiguous = previous_ts is not None and ts - previous_ts == SAMPLE_INTERVAL
         if state is not None and previous_state is not None and contiguous and state != previous_state:
             turns.append(ts)
-        if state is None or not contiguous:
-            previous_state = state
-        else:
-            previous_state = state
+        previous_state = state
         previous_ts = ts
     return turns
 
@@ -146,7 +143,7 @@ def regime_stability(rows: Sequence[ValidationRow]) -> dict[str, dict[str, objec
         for state in states:
             group = [row for row in candidate_rows if row.b0_pressure_state == state]
             sample_count = len(group)
-            complete_count = sum(row.candidate_score is not None for row in group)
+            complete_count = sum(row.candidate_score is not None and isfinite(row.candidate_score) for row in group)
             coverage = complete_count / sample_count if sample_count else 0.0
             if sample_count < MIN_REGIME_SAMPLE_COUNT:
                 candidate_output[str(state)] = {
