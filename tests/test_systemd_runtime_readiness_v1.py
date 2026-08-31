@@ -101,6 +101,34 @@ def test_wrong_local_host_blocks_without_probing_even_with_identically_named_hea
     assert probed_units == []
 
 
+def test_hostname_resolver_exception_blocks_without_probing() -> None:
+    """A raising ``hostname_resolver`` must fail closed, not propagate.
+
+    Fails with ``HOSTNAME_RESOLUTION_FAILED`` before the local probe is ever
+    consulted, and records only the exception's type -- never its message,
+    which could leak host/environment detail into the artifact.
+    """
+    probed_units: list[str] = []
+
+    def probe(unit: str) -> readiness.SystemdUnitStateV1:
+        probed_units.append(unit)
+        return _healthy_state(unit)
+
+    def _raising_resolver() -> str:
+        raise OSError("some sensitive local network detail")
+
+    result = readiness.evaluate_capability_runtime_readiness_v1(
+        "AUTOMATIC_EXIT_POLICY_RUNTIME",
+        registry_owner_host="gurkdb",
+        probe=probe,
+        hostname_resolver=_raising_resolver,
+    )
+    assert result.status == readiness.STATUS_NOT_READY
+    assert result.reason_code == "HOSTNAME_RESOLUTION_FAILED"
+    assert result.detail == {"exception_type": "OSError"}
+    assert probed_units == []
+
+
 def test_default_hostname_resolver_reads_real_socket_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(readiness.socket, "gethostname", lambda: "fake-real-host")
     assert readiness.default_hostname_resolver_v1() == "fake-real-host"

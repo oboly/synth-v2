@@ -203,19 +203,24 @@ def evaluate_capability_runtime_readiness_v1(
     """Evaluate one capability's actual, observed systemd runtime state.
 
     Fails closed on every unresolved condition: unknown capability, missing
-    registry entry, wrong owner, wrong probe host, unit not found, wrong
-    installed fragment path, disabled timer, inactive timer, or a probe
-    error. The oneshot service's own ``active_state`` is deliberately never
-    a pass/fail condition -- it is expected to be idle/dead between timer
-    firings; only the timer's enabled+active state is authoritative for "is
-    this capability actually scheduled to run."
+    registry entry, wrong owner, hostname resolution failure, wrong probe
+    host, unit not found, wrong installed fragment path, disabled timer,
+    inactive timer, or a probe error. The oneshot service's own
+    ``active_state`` is deliberately never a pass/fail condition -- it is
+    expected to be idle/dead between timer firings; only the timer's
+    enabled+active state is authoritative for "is this capability actually
+    scheduled to run."
 
     Local systemd state is never treated as this capability's canonical
     runtime truth unless ``hostname_resolver()`` -- the actual host this
     process is executing on -- equals the capability's declared owner host.
-    Any mismatch fails closed *before* the local probe is even consulted:
-    identically named healthy local units on the wrong host must never be
-    able to reach STATUS_READY.
+    Any mismatch, or any exception raised by ``hostname_resolver()`` itself,
+    fails closed *before* the local probe is even consulted: identically
+    named healthy local units on the wrong host must never be able to reach
+    STATUS_READY, and a resolver failure must never abort this evaluation or
+    the controller run. Only the exception's type name is ever recorded in
+    ``detail`` -- never its message, which could otherwise leak host or
+    environment detail into an artifact.
     """
     contract = CAPABILITY_UNIT_CONTRACTS.get(capability_id)
     if contract is None:
@@ -233,7 +238,14 @@ def evaluate_capability_runtime_readiness_v1(
             },
         )
 
-    observed_local_host = hostname_resolver()
+    try:
+        observed_local_host = hostname_resolver()
+    except Exception as exc:  # noqa: BLE001 - resolution failure must fail closed, not raise
+        return _not_ready(
+            capability_id,
+            "HOSTNAME_RESOLUTION_FAILED",
+            {"exception_type": type(exc).__name__},
+        )
     if observed_local_host != contract.owner_host:
         return _not_ready(
             capability_id,

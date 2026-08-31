@@ -641,6 +641,51 @@ def test_runtime_non_owner_host_with_healthy_identically_named_local_units_canno
     )
 
 
+def test_runtime_hostname_resolver_exception_blocks_and_controller_still_finishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A raising ``hostname_resolver`` must never abort the controller run.
+
+    RUNTIME_READY fails closed with HOSTNAME_RESOLUTION_FAILED, no unit is
+    ever probed, and run_controller still reaches its normal terminal
+    BLOCKED artifact / FINISHED emit path instead of propagating the
+    exception.
+    """
+    probed_units: list[str] = []
+
+    def _tracking_probe(unit: str) -> systemd_readiness.SystemdUnitStateV1:
+        probed_units.append(unit)
+        return _healthy_unit_state(unit, _AUTOMATIC_EXIT_CONTRACT)
+
+    def _raising_resolver() -> str:
+        raise OSError("some sensitive local network detail")
+
+    config = _base_config(
+        ownership_registry_path=_active_ownership_registry_path(tmp_path),
+        systemd_unit_probe=_tracking_probe,
+        hostname_resolver=_raising_resolver,
+    )
+    events: list[dict[str, Any]] = []
+    _granted_permission_history(monkeypatch, trading_account_id=config.trading_account_id)
+    artifact = controller.run_controller(config, emit=events.append)
+
+    result = next(r for r in artifact["phase_results"] if r["phase"] == "RUNTIME_READY")
+    assert result["status"] == "BLOCKED"
+    assert all(
+        reason == "HOSTNAME_RESOLUTION_FAILED" for reason in result["detail"]["not_ready"].values()
+    )
+    for capability_id in controller.REQUIRED_RUNTIME_CAPABILITY_IDS:
+        assert result["detail"]["capabilities"][capability_id]["exception_type"] == "OSError"
+    assert probed_units == []
+
+    assert artifact["terminal_state"] == controller.TERMINAL_BLOCKED
+    assert events[-1] == {
+        "event": "FINISHED",
+        "terminal_state": controller.TERMINAL_BLOCKED,
+        "blocker_count": len(artifact["blockers"]),
+    }
+
+
 def test_runtime_registry_activation_status_alone_cannot_pass_readiness(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
