@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from copy import deepcopy
 
 import pytest
@@ -10,6 +12,10 @@ from src.research.cq_v1_holdout_comparison_v1 import (
     evaluate,
     join_artifacts,
     promotion_verdict,
+)
+from src.research.run_cq_v1_holdout_comparison_v1 import (
+    _validate_frozen_population,
+    run,
 )
 
 ASOF = "2026-08-26T20:15:47Z"
@@ -75,6 +81,30 @@ def _outcome(shadow_id: int, horizon: str, forward: float, *, ppp_kind: str | No
     }
 
 
+def _verdict_evaluation(
+    *,
+    sample_count: int,
+    deltas: dict[str, tuple[float, float, float]],
+    top_bucket_return: float = 1.0,
+) -> dict:
+    candidate_comparisons = {}
+    for candidate_id in REQUIRED_CANDIDATES:
+        candidate_comparisons[candidate_id] = {}
+        for horizon, delta in zip(("1h", "4h", "24h"), deltas[candidate_id], strict=True):
+            candidate_comparisons[candidate_id][horizon] = {
+                "eligible_sample_count": sample_count,
+                "metrics": {
+                    candidate_id: {
+                        "spearman_forward_return": 0.10 + delta,
+                        "buckets": [{"mean_forward_return_pct": top_bucket_return}],
+                    },
+                    "cq_v0": {"spearman_forward_return": 0.10},
+                    "selection_score": {"spearman_forward_return": 0.05},
+                },
+            }
+    return {"candidate_comparisons": candidate_comparisons}
+
+
 def test_correlation_handles_ties_deterministically() -> None:
     result = correlation([1.0, 1.0, 2.0, 3.0], [0.0, 0.0, 1.0, 2.0])
     assert result.sample_count == 4
@@ -111,8 +141,7 @@ def test_evaluation_uses_identical_candidate_baseline_samples() -> None:
     ]
     scores[-1]["candidates"][REQUIRED_CANDIDATES[0]]["state"] = "INSUFFICIENT_DATA"
     scores[-1]["candidates"][REQUIRED_CANDIDATES[0]]["score"] = None
-    joined = join_artifacts(outcomes, scores, required_asof=ASOF)
-    result = evaluate(joined)
+    result = evaluate(join_artifacts(outcomes, scores, required_asof=ASOF))
     balanced = result["candidate_comparisons"][REQUIRED_CANDIDATES[0]]["1h"]
     anchor = result["candidate_comparisons"][REQUIRED_CANDIDATES[1]]["1h"]
     assert balanced["eligible_sample_count"] == 9
@@ -133,13 +162,79 @@ def test_ppp_kinds_are_never_mixed() -> None:
         assert kind[REQUIRED_CANDIDATES[0]]["1h"]["eligible_sample_count"] == 1
 
 
-def test_promotion_rule_returns_research_further_when_sample_is_too_small() -> None:
-    scores = [_score_row(i, i / 10, i / 10) for i in range(1, 6)]
-    outcomes = [
-        _outcome(i, horizon, float(i))
-        for i in range(1, 6)
-        for horizon in ("1h", "4h", "24h")
-    ]
-    evaluation = evaluate(join_artifacts(outcomes, scores, required_asof=ASOF))
+def test_frozen_population_rejects_truncated_score_artifact() -> None:
+    protocol = {
+        "holdout": {
+            "observation_asof_ts_utc": ASOF,
+            "required_horizons": ["1h", "4h", "24h"],
+            "frozen_population": {
+                "score_row_count": 419,
+                "last_shadow_id": 619,
+                "outcome_row_count": 1257,
+                "outcome_rows_per_horizon": 419,
+            },
+        }
+    }
+    with pytest.raises(ValueError, match="FROZEN_SCORE_POPULATION_COUNT_MISMATCH"):
+        _validate_frozen_population(
+            protocol,
+            [],
+            [{"shadow_id": value} for value in range(1, 419)],
+            {},
+            {},
+        )
+
+
+def test_promotion_rule_ranking_candidate() -> None:
+    evaluation = _verdict_evaluation(
+        sample_count=120,
+        deltas={REQUIRED_CANDIDATES[0]: (0.03, 0.03, 0.03), REQUIRED_CANDIDATES[1]: (0.0, 0.0, 0.0)},
+    )
+    verdict, _ = promotion_verdict(evaluation, minimum_candidate_sample=100, material_delta=0.02)
+    assert verdict == "RANKING_PROMOTION_CANDIDATE"
+
+
+def test_promotion_rule_shadow_accepted() -> None:
+    evaluation = _verdict_evaluation(
+        sample_count=120,
+        deltas={REQUIRED_CANDIDATES[0]: (0.01, 0.01, 0.0), REQUIRED_CANDIDATES[1]: (0.0, 0.0, 0.0)},
+    )
+    verdict, _ = promotion_verdict(evaluation, minimum_candidate_sample=100, material_delta=0.02)
+    assert verdict == "CQ_V1_SHADOW_ACCEPTED"
+
+
+def test_promotion_rule_reject() -> None:
+    evaluation = _verdict_evaluation(
+        sample_count=120,
+        deltas={REQUIRED_CANDIDATES[0]: (-0.03, -0.03, 0.0), REQUIRED_CANDIDATES[1]: (-0.03, -0.03, 0.0)},
+    )
+    verdict, _ = promotion_verdict(evaluation, minimum_candidate_sample=100, material_delta=0.02)
+    assert verdict == "REJECT"
+
+
+def test_promotion_rule_research_further_when_underpowered() -> None:
+    evaluation = _verdict_evaluation(
+        sample_count=50,
+        deltas={REQUIRED_CANDIDATES[0]: (0.03, 0.03, 0.03), REQUIRED_CANDIDATES[1]: (0.03, 0.03, 0.03)},
+    )
     verdict, _ = promotion_verdict(evaluation, minimum_candidate_sample=100, material_delta=0.02)
     assert verdict == "RESEARCH_FURTHER"
+
+
+def test_nonempty_output_preflight_emits_failed_summary(tmp_path) -> None:
+    output_dir = tmp_path / "occupied"
+    output_dir.mkdir()
+    (output_dir / "existing.txt").write_text("keep", encoding="utf-8")
+    args = Namespace(
+        protocol="missing-protocol.yaml",
+        forward_outcomes_jsonl="missing-outcomes.jsonl",
+        forward_summary_json="missing-forward-summary.json",
+        cq_v1_scores_jsonl="missing-scores.jsonl",
+        cq_v1_score_summary_json="missing-score-summary.json",
+        output_dir=str(output_dir),
+    )
+    with pytest.raises(ValueError, match="OUTPUT_DIRECTORY_NOT_EMPTY"):
+        run(args)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["terminal_state"] == "FAILED"
+    assert (output_dir / "existing.txt").read_text(encoding="utf-8") == "keep"
