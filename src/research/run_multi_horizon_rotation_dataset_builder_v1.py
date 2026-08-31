@@ -10,7 +10,6 @@ final-holdout phase option.
 import argparse
 import json
 import time
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -128,8 +127,8 @@ def fetch_rotation_v1_points(
     WHERE s.venue = %s
       AND o.model_version = %s
       AND s.model_version = %s
-      AND o.as_of_ts_utc <= %s
-      AND s.as_of_ts_utc <= %s
+      AND o.as_of_ts_utc < %s
+      AND s.as_of_ts_utc < %s
     ORDER BY o.asset_id, o.as_of_ts_utc, o.pressure_obs_id
     """
     cutoff = ensure_utc(through_ts).replace(tzinfo=None)
@@ -297,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
         output_rows: list[dict[str, Any]] = []
         spec_by_id = {spec.candidate_id: spec for spec in CANDIDATE_SPECS}
         query_rows = 0
-        for index, asof in enumerate(asof_grid(phase_start, phase_end), start=1):
+        grid = asof_grid(phase_start, phase_end)
+        for index, asof in enumerate(grid, start=1):
             replay_candles, close_maps, fetched = fetch_candles_for_asof(
                 conn,
                 venue=args.venue,
@@ -336,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             "venue": args.venue,
             "phase": args.phase,
             "row_count": len(output_rows),
-            "asof_count": len(asof_grid(phase_start, phase_end)),
+            "asof_count": len(grid),
             "source_rows_read": query_rows,
             "final_holdout_access": "DENY",
             "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
