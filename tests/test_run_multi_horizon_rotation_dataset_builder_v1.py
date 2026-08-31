@@ -17,6 +17,7 @@ from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
     manifest_fingerprint,
     mark_checkpoint_terminal,
     parse_args,
+    persist_or_reuse_manifest,
     reconcile_partial_to_checkpoint,
     replay_candles_at_asof,
     validate_resume_checkpoint,
@@ -25,6 +26,25 @@ from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
 
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _manifest(*, end: str = "2026-02-01T00:00:00Z") -> dict[str, object]:
+    return {
+        "manifest_version": "1.0.0",
+        "venue": "bitvavo",
+        "source_span_method": "test",
+        "minimum_cohort": 20,
+        "coverage_asset_count": 20,
+        "source_coverage_sha256": "coverage",
+        "source_span": {"start": "2026-01-01T00:00:00Z", "end": end},
+        "rotation_v1_first_ts": "2026-01-01T00:00:00Z",
+        "final_holdout_inspected": False,
+        "splits": {
+            "discovery": {"start": "2026-01-01T00:00:00Z", "end": "2026-01-20T00:00:00Z"},
+            "validation": {"start": "2026-01-20T00:00:00Z", "end": "2026-01-26T00:00:00Z"},
+            "final_holdout": {"start": "2026-01-26T00:00:00Z", "end": end},
+        },
+    }
 
 
 def test_runner_exposes_only_discovery_and_validation_phases() -> None:
@@ -38,6 +58,27 @@ def test_runner_exposes_only_discovery_and_validation_phases() -> None:
         assert exc.code != 0
     else:
         raise AssertionError("final_holdout must not be a CLI phase")
+
+
+def test_frozen_manifest_is_created_once_reused_unchanged_and_rejects_drift(tmp_path: Path) -> None:
+    path = tmp_path / "split_manifest_v1.json"
+    candidate = _manifest()
+    first, first_state = persist_or_reuse_manifest(path, candidate)
+    first_bytes = path.read_bytes()
+    second, second_state = persist_or_reuse_manifest(path, dict(candidate))
+    assert first_state == "CREATED"
+    assert second_state == "REUSED"
+    assert first == second
+    assert path.read_bytes() == first_bytes
+
+    drifted = _manifest(end="2026-02-02T00:00:00Z")
+    try:
+        persist_or_reuse_manifest(path, drifted)
+    except ValueError as exc:
+        assert "disagrees with frozen split manifest" in str(exc)
+    else:
+        raise AssertionError("later phase must not replace a changed frozen split manifest")
+    assert path.read_bytes() == first_bytes
 
 
 def test_asof_grid_chunks_by_utc_day_without_reordering() -> None:
@@ -72,11 +113,7 @@ def test_replay_slice_never_uses_future_chunk_candles_and_keeps_missing_asset() 
 
 
 def test_interrupt_then_resume_trims_uncheckpointed_bytes_and_preserves_committed_state(tmp_path: Path) -> None:
-    manifest = {
-        "manifest_version": "1.0.0",
-        "final_holdout_inspected": False,
-        "splits": {},
-    }
+    manifest = _manifest()
     fingerprint = manifest_fingerprint(manifest)
     committed = b'{"row":1}\n{"row":2}\n'
     uncheckpointed = b'{"row":3'
