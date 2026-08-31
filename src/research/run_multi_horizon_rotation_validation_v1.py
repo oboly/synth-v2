@@ -175,9 +175,9 @@ def validate_phase_scoped_rows(rows: list[ValidationRow], manifest: dict[str, An
         asof = ensure_utc(row.asof_ts)
         for field, horizon in FORWARD_HORIZONS.items():
             value = getattr(row, field)
-            if value is not None and asof + horizon >= holdout_start:
+            if value is not None and asof + horizon >= end:
                 raise ValueError(
-                    f"{field} outcome boundary reaches final holdout for "
+                    f"{field} outcome boundary reaches next phase for "
                     f"asset_id={row.asset_id} candidate_id={row.candidate_id} asof={asof.isoformat()}"
                 )
     return rows
