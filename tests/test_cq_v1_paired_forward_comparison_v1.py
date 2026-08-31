@@ -141,9 +141,13 @@ def test_runner_pins_input_hashes_and_cross_sectional_recommendation(tmp_path: P
     args = runner.parse_args(["--scores-jsonl", str(scores), "--outcomes-jsonl", str(outcomes), "--output-dir", str(out)])
     assert runner.run(args) == 0
     stdout = capsys.readouterr().out
+    assert stdout.splitlines()[0].startswith("STARTED runner=cq_v1_paired_forward_comparison_v1")
+    assert "INPUTS_LOADED" in stdout
     assert "decision_gate=none" in stdout
     assert "execution_planner=none" in stdout
     assert "executor=none" in stdout
+    assert stdout.count("FINISHED runner=") == 1
+    assert "FAILED runner=" not in stdout
     summary = json.loads((out / runner.OUTPUT_SUMMARY).read_text(encoding="utf-8"))
     assert len(summary["score_input_sha256"]) == 64
     assert len(summary["outcome_input_sha256"]) == 64
@@ -151,3 +155,19 @@ def test_runner_pins_input_hashes_and_cross_sectional_recommendation(tmp_path: P
     assert summary["final_phase2_recommendation"] == "RESEARCH_FURTHER"
     assert summary["frozen_model_changed"] == 0
     assert summary["production_ranking_changed"] == 0
+
+
+def test_runner_invalid_input_emits_started_then_single_failed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    scores = tmp_path / "scores.jsonl"
+    outcomes = tmp_path / "outcomes.jsonl"
+    scores.write_text("{not-json}\n", encoding="utf-8")
+    outcomes.write_text("{}\n", encoding="utf-8")
+    out = tmp_path / "out"
+    args = runner.parse_args(["--scores-jsonl", str(scores), "--outcomes-jsonl", str(outcomes), "--output-dir", str(out)])
+    with pytest.raises(ValueError, match="invalid JSONL line 1"):
+        runner.run(args)
+    stdout = capsys.readouterr().out
+    lines = stdout.splitlines()
+    assert lines[0].startswith("STARTED runner=cq_v1_paired_forward_comparison_v1")
+    assert stdout.count("FAILED runner=cq_v1_paired_forward_comparison_v1") == 1
+    assert "FINISHED runner=" not in stdout
