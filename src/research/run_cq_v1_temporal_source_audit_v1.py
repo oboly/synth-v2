@@ -32,13 +32,21 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _fetch_history_summary(cursor: Any, *, table: str, ts_col: str, where_sql: str, params: tuple[Any, ...], lookback_days: int) -> dict[str, Any]:
+def _fetch_history_summary(
+    cursor: Any,
+    *,
+    from_sql: str,
+    ts_col: str,
+    where_sql: str,
+    params: tuple[Any, ...],
+    lookback_days: int,
+) -> dict[str, Any]:
     sql = f"""
         SELECT COUNT(*) AS row_count,
                COUNT(DISTINCT {ts_col}) AS distinct_ts_count,
                MIN({ts_col}) AS first_ts,
                MAX({ts_col}) AS last_ts
-        FROM {table}
+        FROM {from_sql}
         WHERE {where_sql}
           AND {ts_col} >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
     """
@@ -91,7 +99,7 @@ def run(args: argparse.Namespace) -> int:
                 params = bind_params(spec, venue=args.venue)
                 summary = _fetch_history_summary(
                     cursor,
-                    table=spec.table_name,
+                    from_sql=spec.history_from_sql or spec.table_name,
                     ts_col=spec.timestamp_column,
                     where_sql=spec.where_sql,
                     params=params,
