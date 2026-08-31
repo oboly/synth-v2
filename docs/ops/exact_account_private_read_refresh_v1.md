@@ -1,4 +1,4 @@
-# Exact-account private-read account-state refresh (Issues #614, #631)
+# Exact-account private-read account-state refresh (Issues #614, #631, #636)
 
 Status: repository code only. No production timer or LIVE authorization is
 created by this change. `broker_private_calls<=2` per run, `broker_writes=0`,
@@ -10,11 +10,15 @@ created by this change. `broker_private_calls<=2` per run, `broker_writes=0`,
 ```text
 src/account/run_exact_account_state_refresh_v1.py
 src/account/private_read_capability_compatible_resolver_v1.py
+src/account/exact_account_state_persistence_v1.py
 src/account/private_read_credential_resolver_v1.py
 ```
 
 The original strict `READ_ONLY_PRIVATE` resolver remains unchanged. Issue #631
-adds a separate opt-in resolver for bounded private-read consumers.
+adds a separate opt-in resolver for bounded private-read consumers. Issue #636
+adds a separate exact-account persistence seam so an explicitly selected LIVE
+account can persist evidence without weakening the legacy read-only position
+writer guard.
 
 ## Why this is a separate seam
 
@@ -84,6 +88,44 @@ Identity and credential resolution are independently bound to the exact
 closed. Evidence from another account is never projected onto the requested
 account.
 
+The #636 persistence seam independently reloads the exact account by
+`trading_account_id + venue`, verifies `account_code`, requires `enabled=1`, and
+fails closed on any identity mismatch. It intentionally does not reject
+`live_trading_enabled=1`, because LIVE eligibility has already been explicitly
+selected by this exact-account operator seam.
+
+## Persistence contract (#636)
+
+The legacy position snapshot writer still contains and enforces:
+
+```text
+live_trading_enabled == 0
+```
+
+for its own profile/read-only runtime. That guard is not removed or weakened.
+
+`src/account/exact_account_state_persistence_v1.py` instead reuses only local DB
+snapshot primitives. It performs no broker call and has no broker client,
+order-submit, decision-gate, execution-planner or executor path.
+
+For `--write-db` the caller transaction performs:
+
+1. exact account reload and identity verification
+2. balance snapshot writes
+3. local position derivation from that exact balance snapshot
+4. open-order snapshot writes
+5. persisted component-count verification
+6. COMPLETE open-order header
+7. COMPLETE account-state bundle header
+8. commit only after all prior steps succeed
+
+Any exception is handled by the exact refresh runner with `conn.rollback()`.
+Therefore a failed component must not leave a partial COMPLETE bundle.
+
+Position `raw_json` produced by the exact seam records the actual
+`account_mode` and `live_trading_enabled` state while retaining
+`broker_submission=false` and `position_mutation=false`.
+
 ## CLI
 
 Dry-run first:
@@ -109,10 +151,10 @@ python -m src.account.run_exact_account_state_refresh_v1 \
   --output summary
 ```
 
-Expected credential lines for production account 5 after #631:
+Expected credential lines for production account 5:
 
 ```text
-runner=exact_account_state_refresh_v1 version=0.2
+runner=exact_account_state_refresh_v1 version=0.3
 trading_account_id=5 account_code=bitvavo_joost_live
 venue=bitvavo account_mode=live
 credential_source=db_encrypted
@@ -135,13 +177,6 @@ executor=none
 
 No API key, API secret, encrypted envelope, master key, or fingerprint is
 printed.
-
-## Persistence
-
-`--write-db` continues to reuse the existing canonical account snapshot
-machinery: balances, open orders, derived positions and the all-or-nothing
-`account_state_snapshot_run_v1` COMPLETE bundle. Issue #631 changes credential
-resolution only, not persistence semantics.
 
 ## Explicitly out of scope
 
