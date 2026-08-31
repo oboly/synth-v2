@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Read-only dataset builder for Issue #593 discovery/validation artifacts.
 
-The runner derives the frozen 60/20/20 split from source availability only,
+The runner derives and freezes one 60/20/20 split from source availability,
 builds exactly one non-holdout phase per invocation, and never exposes a
 final-holdout phase option.
 """
@@ -86,6 +86,47 @@ def manifest_fingerprint(manifest: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def coverage_fingerprint(coverage: list[AssetCoverage]) -> str:
+    payload = [
+        {
+            "asset_id": row.asset_id,
+            "first_close_ts": json_default(ensure_utc(row.first_close_ts)),
+            "last_close_ts": json_default(ensure_utc(row.last_close_ts)),
+        }
+        for row in sorted(coverage, key=lambda item: item.asset_id)
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_frozen_manifest(path: Path) -> dict[str, object]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("frozen split manifest must be a JSON object")
+    if raw.get("manifest_version") != "1.0.0":
+        raise ValueError("frozen split manifest_version must be 1.0.0")
+    if raw.get("final_holdout_inspected") is not False:
+        raise ValueError("frozen split manifest must assert final_holdout_inspected=false")
+    return raw
+
+
+def persist_or_reuse_manifest(path: Path, candidate: dict[str, object]) -> tuple[dict[str, object], str]:
+    if path.exists():
+        frozen = load_frozen_manifest(path)
+        if manifest_fingerprint(frozen) != manifest_fingerprint(candidate):
+            raise ValueError("fresh source availability disagrees with frozen split manifest")
+        return frozen, "REUSED"
+    write_json_atomic(path, candidate)
+    return candidate, "CREATED"
+
+
 def checkpoint_path(output_dir: Path, phase: str) -> Path:
     return output_dir / f".{phase}_checkpoint_v1.json"
 
@@ -119,10 +160,7 @@ def write_checkpoint(
         "terminal_state": terminal_state,
         "updated_ts_utc": json_default(datetime.now(UTC)),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    write_json_atomic(path, payload)
 
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
@@ -204,17 +242,29 @@ def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
     )
 
 
-def fetch_asset_coverage(conn: Any, *, venue: str) -> list[AssetCoverage]:
-    sql = """
+def fetch_asset_coverage(
+    conn: Any,
+    *,
+    venue: str,
+    through_ts: datetime | None = None,
+) -> list[AssetCoverage]:
+    cutoff_clause = "" if through_ts is None else " AND close_ts_utc < %s"
+    sql = f"""
     SELECT asset_id, MIN(close_ts_utc) AS first_close_ts, MAX(close_ts_utc) AS last_close_ts
     FROM obs_market_candle
     WHERE venue = %s
       AND interval_code = '15m'
+      {cutoff_clause}
     GROUP BY asset_id
     ORDER BY asset_id
     """
+    params: tuple[Any, ...]
+    if through_ts is None:
+        params = (venue,)
+    else:
+        params = (venue, ensure_utc(through_ts).replace(tzinfo=None))
     with conn.cursor() as cur:
-        cur.execute(sql, (venue,))
+        cur.execute(sql, params)
         rows = cur.fetchall()
     return [
         AssetCoverage(
@@ -238,6 +288,58 @@ def fetch_rotation_v1_first_ts(conn: Any, *, venue: str) -> datetime:
     if not row or row.get("first_ts") is None:
         raise ValueError("Rotation V1 PIT history unavailable for venue")
     return parse_ts(row["first_ts"])
+
+
+def _candidate_manifest(
+    *,
+    venue: str,
+    coverage: list[AssetCoverage],
+    rotation_first: datetime,
+) -> dict[str, object]:
+    span = derive_common_source_span(coverage=coverage, rotation_v1_first_ts=rotation_first)
+    manifest = split_manifest_payload(span)
+    manifest["venue"] = venue
+    manifest["source_coverage_sha256"] = coverage_fingerprint(coverage)
+    return manifest
+
+
+def load_or_freeze_source_manifest(
+    conn: Any,
+    *,
+    venue: str,
+    manifest_path: Path,
+) -> tuple[dict[str, object], list[AssetCoverage], str]:
+    rotation_first = fetch_rotation_v1_first_ts(conn, venue=venue)
+    if manifest_path.exists():
+        frozen = load_frozen_manifest(manifest_path)
+        if frozen.get("venue") != venue:
+            raise ValueError("frozen split manifest venue mismatch")
+        source_span = frozen.get("source_span")
+        if not isinstance(source_span, dict) or "end" not in source_span:
+            raise ValueError("frozen split manifest missing source_span.end")
+        frozen_end = parse_ts(source_span["end"])
+        capped_coverage = fetch_asset_coverage(conn, venue=venue, through_ts=frozen_end)
+        candidate = _candidate_manifest(
+            venue=venue,
+            coverage=capped_coverage,
+            rotation_first=rotation_first,
+        )
+        reused, state = persist_or_reuse_manifest(manifest_path, candidate)
+        return reused, capped_coverage, state
+
+    full_coverage = fetch_asset_coverage(conn, venue=venue)
+    preliminary_span = derive_common_source_span(
+        coverage=full_coverage,
+        rotation_v1_first_ts=rotation_first,
+    )
+    capped_coverage = fetch_asset_coverage(conn, venue=venue, through_ts=preliminary_span.end)
+    candidate = _candidate_manifest(
+        venue=venue,
+        coverage=capped_coverage,
+        rotation_first=rotation_first,
+    )
+    frozen, state = persist_or_reuse_manifest(manifest_path, candidate)
+    return frozen, capped_coverage, state
 
 
 def fetch_rotation_v1_points(
@@ -424,10 +526,8 @@ def main(argv: list[str] | None = None) -> int:
         "order_submission=0 live_orders=0"
     )
     conn = None
-    output_dir: Path | None = None
     partial_path: Path | None = None
     cp_path: Path | None = None
-    manifest_sha256: str | None = None
     last_completed_asof: datetime | None = None
     asofs_completed = 0
     row_count = 0
@@ -435,27 +535,29 @@ def main(argv: list[str] | None = None) -> int:
     query_rows = 0
     try:
         conn = get_db_connection()
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = output_dir / "split_manifest_v1.json"
 
-        emit("PHASE_STARTED name=derive_source_span")
+        emit("PHASE_STARTED name=freeze_or_validate_source_manifest")
         phase_started = time.perf_counter()
-        coverage = fetch_asset_coverage(conn, venue=args.venue)
-        rotation_first = fetch_rotation_v1_first_ts(conn, venue=args.venue)
-        span = derive_common_source_span(coverage=coverage, rotation_v1_first_ts=rotation_first)
-        manifest = split_manifest_payload(span)
+        manifest, coverage, manifest_state = load_or_freeze_source_manifest(
+            conn,
+            venue=args.venue,
+            manifest_path=manifest_path,
+        )
         manifest_sha256 = manifest_fingerprint(manifest)
         split = manifest["splits"][args.phase]
         phase_start = parse_ts(split["start"])
         phase_end = parse_ts(split["end"])
+        source_span = manifest["source_span"]
         emit(
-            f"PHASE_FINISHED name=derive_source_span coverage_assets={len(coverage)} "
-            f"source_start={span.start.isoformat()} source_end={span.end.isoformat()} "
+            f"PHASE_FINISHED name=freeze_or_validate_source_manifest state={manifest_state} "
+            f"coverage_assets={len(coverage)} source_start={source_span['start']} source_end={source_span['end']} "
             f"phase_start={phase_start.isoformat()} phase_end={phase_end.isoformat()} "
-            f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+            f"manifest_sha256={manifest_sha256} elapsed_s={time.perf_counter() - phase_started:.3f}"
         )
 
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = output_dir / "split_manifest_v1.json"
         artifact_path = output_dir / f"{args.phase}_rows_v1.jsonl"
         partial_path = output_dir / f".{args.phase}_rows_v1.jsonl.partial"
         summary_path = output_dir / f"{args.phase}_summary_v1.json"
@@ -470,7 +572,6 @@ def main(argv: list[str] | None = None) -> int:
                 expected_manifest_sha256=manifest_sha256,
             )
             reconcile_partial_to_checkpoint(partial_path, checkpoint)
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             last_raw = checkpoint.get("last_completed_asof")
             last_completed_asof = None if last_raw is None else parse_ts(last_raw)
             asofs_completed = int(checkpoint["asofs_completed"])
@@ -485,7 +586,6 @@ def main(argv: list[str] | None = None) -> int:
             for stale_path in (artifact_path, partial_path, summary_path, cp_path):
                 if stale_path.exists():
                     stale_path.unlink()
-            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             partial_path.touch()
             write_checkpoint(
                 cp_path,
@@ -609,6 +709,8 @@ def main(argv: list[str] | None = None) -> int:
             "runner_version": RUNNER_VERSION,
             "venue": args.venue,
             "phase": args.phase,
+            "manifest_sha256": manifest_sha256,
+            "manifest_state": manifest_state,
             "row_count": row_count,
             "asof_count": len(full_grid),
             "source_query_count": query_count,
@@ -631,7 +733,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         emit(
             f"FINISHED runner={RUNNER_NAME} result=PASS phase={args.phase} rows={row_count} "
-            f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+            f"manifest_state={manifest_state} final_holdout_access=DENY database_writes=0 "
+            f"elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 0
     except KeyboardInterrupt:
