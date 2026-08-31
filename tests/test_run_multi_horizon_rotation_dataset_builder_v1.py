@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -79,6 +80,23 @@ def test_frozen_manifest_is_created_once_reused_unchanged_and_rejects_drift(tmp_
     else:
         raise AssertionError("later phase must not replace a changed frozen split manifest")
     assert path.read_bytes() == first_bytes
+
+
+def test_concurrent_frozen_manifest_creation_has_one_winner_and_reuses_identical_manifest(tmp_path: Path) -> None:
+    path = tmp_path / "split_manifest_v1.json"
+    candidate = _manifest()
+
+    def persist(_: int) -> tuple[dict[str, object], str]:
+        return persist_or_reuse_manifest(path, dict(candidate))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(persist, range(8)))
+
+    states = [state for _, state in results]
+    assert states.count("CREATED") == 1
+    assert states.count("REUSED") == 7
+    assert all(manifest_fingerprint(manifest) == manifest_fingerprint(candidate) for manifest, _ in results)
+    assert manifest_fingerprint(_manifest()) == manifest_fingerprint(candidate)
 
 
 def test_asof_grid_chunks_by_utc_day_without_reordering() -> None:
