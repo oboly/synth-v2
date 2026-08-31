@@ -50,7 +50,9 @@ forward_response:
   missing_boundary: INSUFFICIENT_DATA
 
 metrics:
-  minimum_paired_sample_count: 4
+  minimum_paired_sample_count:
+    raw_correlation: 4
+    partial_correlation_one_control: 5
   correlation: pearson
   forward_information_coefficient: pearson
   confidence_interval:
@@ -63,6 +65,7 @@ metrics:
     method: holm_bonferroni
     alpha: 0.05
     family: candidate_x_forward_horizon_information_coefficients
+    frozen_family_size: 12
   state_definition:
     positive: score_gt_0
     zero: score_eq_0
@@ -70,14 +73,26 @@ metrics:
   persistence:
     unit: consecutive_sample_count
     group_by: [candidate_id, asset_id]
+    break_on_missing_sample: true
+    break_on_timestamp_gap: true
   chop:
     definition: sign_flip_reverting_within_4_samples
     reversion_window_samples: 4
+  lead_lag:
+    reference: B1
+    event: sign_state_change
+    pair_rule: nearest_unmatched_reference_turn
+    max_match_lag_samples: 16
+    tie_break: earlier_reference_turn
+    delta_definition: candidate_turn_ts_minus_b1_turn_ts
+    negative_delta_means: candidate_leads
+    positive_delta_means: candidate_lags
   cross_horizon_correlation:
     paired_on: [venue, asset_id, asof_ts]
   regime_stability:
     group_by_b0_pressure_state: true
     minimum_group_sample_count: 30
+    metrics: [coverage, forward_information_coefficient]
 
 final_holdout_gate:
   require_frozen_candidate_formulas: true
