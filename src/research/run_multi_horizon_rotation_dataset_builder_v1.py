@@ -13,7 +13,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from dotenv import load_dotenv
 
@@ -241,12 +241,8 @@ def build_validation_row(
     return row
 
 
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
-        handle.flush()
+def write_row(handle: TextIO, row: dict[str, Any]) -> None:
+    handle.write(json.dumps(row, sort_keys=True, default=json_default) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -263,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         "order_submission=0 live_orders=0"
     )
     conn = None
+    partial_path: Path | None = None
     try:
         conn = get_db_connection()
 
@@ -287,6 +284,13 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path = output_dir / "split_manifest_v1.json"
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
+        artifact_path = output_dir / f"{args.phase}_rows_v1.jsonl"
+        partial_path = output_dir / f".{args.phase}_rows_v1.jsonl.partial"
+        summary_path = output_dir / f"{args.phase}_summary_v1.json"
+        for stale_path in (artifact_path, partial_path, summary_path):
+            if stale_path.exists():
+                stale_path.unlink()
+
         emit("PHASE_STARTED name=load_rotation_v1_pit")
         phase_started = time.perf_counter()
         pit_index = fetch_rotation_v1_points(conn, venue=args.venue, through_ts=phase_end)
@@ -294,82 +298,85 @@ def main(argv: list[str] | None = None) -> int:
 
         emit(f"PHASE_STARTED name=build_{args.phase}_artifact")
         phase_started = time.perf_counter()
-        output_rows: list[dict[str, Any]] = []
         spec_by_id = {spec.candidate_id: spec for spec in CANDIDATE_SPECS}
         query_rows = 0
+        row_count = 0
         grid = asof_grid(phase_start, phase_end)
-        for index, asof in enumerate(grid, start=1):
-            replay_candles, close_maps, fetched = fetch_candles_for_asof(
-                conn,
-                venue=args.venue,
-                asof_ts=asof,
-                phase_end=phase_end,
-            )
-            query_rows += fetched
-            observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
-            for asset_id in observed_ids:
-                replay_candles.setdefault(asset_id, [])
-            for spec in CANDIDATE_SPECS:
-                results = evaluate_candidate(
-                    candles_by_asset=replay_candles,
-                    asof_ts=asof,
-                    spec=spec,
+        with partial_path.open("w", encoding="utf-8") as handle:
+            for index, asof in enumerate(grid, start=1):
+                replay_candles, close_maps, fetched = fetch_candles_for_asof(
+                    conn,
                     venue=args.venue,
+                    asof_ts=asof,
+                    phase_end=phase_end,
                 )
-                for result in results:
-                    output_rows.append(
-                        build_validation_row(
+                query_rows += fetched
+                observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
+                for asset_id in observed_ids:
+                    replay_candles.setdefault(asset_id, [])
+                for spec in CANDIDATE_SPECS:
+                    results = evaluate_candidate(
+                        candles_by_asset=replay_candles,
+                        asof_ts=asof,
+                        spec=spec,
+                        venue=args.venue,
+                    )
+                    for result in results:
+                        row = build_validation_row(
                             result=result,
                             close_by_ts=close_maps.get(result.asset_id, {}),
                             spec_by_id=spec_by_id,
                             pit_index=pit_index,
                             phase_end=phase_end,
                         )
+                        write_row(handle, row)
+                        row_count += 1
+                handle.flush()
+                if index % 96 == 0:
+                    emit(
+                        f"HEARTBEAT phase={args.phase} asofs_completed={index} rows_built={row_count} "
+                        f"observed_assets={len(observed_ids)} source_rows_read={query_rows} "
+                        f"elapsed_s={time.perf_counter() - phase_started:.3f}"
                     )
-            if index % 96 == 0:
-                emit(
-                    f"HEARTBEAT phase={args.phase} asofs_completed={index} rows_built={len(output_rows)} "
-                    f"observed_assets={len(observed_ids)} source_rows_read={query_rows} "
-                    f"elapsed_s={time.perf_counter() - phase_started:.3f}"
-                )
 
-        artifact_path = output_dir / f"{args.phase}_rows_v1.jsonl"
-        write_jsonl(artifact_path, output_rows)
+        partial_path.replace(artifact_path)
+        partial_path = None
         summary = {
             "runner": RUNNER_NAME,
             "runner_version": RUNNER_VERSION,
             "venue": args.venue,
             "phase": args.phase,
-            "row_count": len(output_rows),
+            "row_count": row_count,
             "asof_count": len(grid),
             "source_rows_read": query_rows,
             "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
+            "artifact_write": "streamed_atomic_partial_then_replace",
             "final_holdout_access": "DENY",
             "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
             "database_writes": 0,
         }
-        (output_dir / f"{args.phase}_summary_v1.json").write_text(
+        summary_path.write_text(
             json.dumps(summary, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         emit(
-            f"PHASE_FINISHED name=build_{args.phase}_artifact rows={len(output_rows)} "
+            f"PHASE_FINISHED name=build_{args.phase}_artifact rows={row_count} "
             f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
         )
         emit(
-            f"FINISHED runner={RUNNER_NAME} result=PASS phase={args.phase} rows={len(output_rows)} "
+            f"FINISHED runner={RUNNER_NAME} result=PASS phase={args.phase} rows={row_count} "
             f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 0
     except KeyboardInterrupt:
         emit(
-            f"INTERRUPTED runner={RUNNER_NAME} final_holdout_access=DENY database_writes=0 "
-            f"elapsed_s={time.perf_counter() - started:.3f}"
+            f"INTERRUPTED runner={RUNNER_NAME} partial_artifact={partial_path} final_holdout_access=DENY "
+            f"database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 130
     except Exception as exc:
         emit(
-            f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
+            f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} partial_artifact={partial_path} "
             f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 1
