@@ -13,10 +13,9 @@ def _parse_utc(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError(f"timestamp must be timezone-aware UTC: {value}")
-    parsed = parsed.astimezone(UTC)
     if parsed.utcoffset() != timedelta(0):
-        raise ValueError(f"timestamp must resolve to UTC: {value}")
-    return parsed
+        raise ValueError(f"timestamp must use zero UTC offset: {value}")
+    return parsed.astimezone(UTC)
 
 
 def load_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
@@ -54,6 +53,8 @@ def derive_asofs(contract: dict[str, Any]) -> tuple[datetime, ...]:
 def split_for_asof(asof: datetime, contract: dict[str, Any]) -> str:
     if asof.tzinfo is None:
         raise ValueError("as-of must be timezone-aware UTC")
+    if asof.utcoffset() != timedelta(0):
+        raise ValueError("as-of must use zero UTC offset")
     normalized = asof.astimezone(UTC)
     if normalized not in derive_asofs(contract):
         raise ValueError(f"as-of is not a frozen temporal sample: {normalized.isoformat()}")
