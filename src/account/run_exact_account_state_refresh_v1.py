@@ -13,17 +13,16 @@ account and wants private-read account-state evidence without going through
 a profile link at all.
 
 `linked_account_resolver_v1` is not imported here and is not modified by
-this module. `resolve_private_read_credential`/`resolve_account_identity`
-(`src/account/private_read_credential_resolver_v1.py`) already resolve pure
-`trading_account_id` identity without any `account_mode`/`live_trading_enabled`
-restriction — this module relies on that existing, unmodified contract
-rather than adding a new one.
+this module.
 
 Credential source: canonical encrypted DB credential only, resolved for the
-same exact `trading_account_id` + `venue`, requiring an ACTIVE, validated
-`READ_ONLY_PRIVATE` binding with `allowed_private_read=1`. No inference of
-private-read permission from any other field. No legacy profile/global env
-credential fallback.
+same exact `trading_account_id` + `venue`. This runner explicitly opts into
+capability-compatible private-read resolution: either a validated
+`READ_ONLY_PRIVATE` binding or a validated `TRADE_EXECUTION` binding whose
+canonical contract includes `allowed_private_read=1` and
+`allowed_withdrawal=0`. The resulting broker client is always constructed via
+`BitvavoClient.for_private_read(...)`; execution/write capability is not
+exposed to this runner. No legacy profile/global env credential fallback.
 
 Persistence reuses the same canonical snapshot machinery as
 `run_account_wallet_refresh_v1.py`: balance snapshot rows, derived position
@@ -46,9 +45,11 @@ import argparse
 import sys
 
 from src.account.account_snapshot_models_v1 import ExactAccountStateRefreshResult
+from src.account.private_read_capability_compatible_resolver_v1 import (
+    resolve_private_read_capable_bitvavo_client_from_env,
+)
 from src.account.private_read_credential_resolver_v1 import (
     PrivateReadCredentialResolutionError,
-    resolve_private_read_bitvavo_client_from_env,
 )
 from src.account.run_account_wallet_refresh_v1 import (
     discover_account_assets,
@@ -60,7 +61,7 @@ from src.account.run_account_wallet_refresh_v1 import (
 from src.common.db import get_db_connection
 
 RUNNER_NAME = "exact_account_state_refresh_v1"
-RUNNER_VERSION = "0.1"
+RUNNER_VERSION = "0.2"
 DEFAULT_VENUE = "bitvavo"
 
 
@@ -102,7 +103,7 @@ def main() -> int:
     conn = get_db_connection()
     try:
         try:
-            resolved = resolve_private_read_bitvavo_client_from_env(
+            resolved = resolve_private_read_capable_bitvavo_client_from_env(
                 conn,
                 trading_account_id=args.trading_account_id,
                 venue=args.venue,
