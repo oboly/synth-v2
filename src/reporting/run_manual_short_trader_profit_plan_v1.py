@@ -91,6 +91,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ReentryContext,
     TargetHistoryCandle,
     apply_card_deltas,
+    apply_execution_capability_overlay,
     apply_fib_coverage_classification,
     apply_portfolio_account_evidence,
     apply_price_tick_normalization,
@@ -2018,6 +2019,15 @@ def main() -> int:
         market_selected_markets=market_selected_markets,
         core_sensor_markets=core_sensor_markets,
     )
+
+    # Issue #638: generic, instrument-agnostic execution capability overlay.
+    # execution_mode_by_symbol is intentionally empty here -- this runner does
+    # not yet read the canonical execution-capability source (owned by the
+    # separate #638 core implementation track). Every card therefore stays at
+    # its ProfitPlanCard default of AUTOMATED, so this call is a no-op until a
+    # canonical resolver is wired in; existing automated markets are
+    # unaffected. Do not special-case any symbol here.
+    cards = apply_execution_capability_overlay(cards, execution_mode_by_symbol={})
 
     # Issue #489: truthful per-symbol Fib coverage classification. Read-only
     # composition over the overlay facts apply_portfolio_account_evidence()

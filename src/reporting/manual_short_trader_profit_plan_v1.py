@@ -46,6 +46,22 @@ BREATHLINE_SELECTION_WEIGHT = 0
 BREATHLINE_ACTION_WEIGHT = 0
 BREATHLINE_DECISION_WEIGHT = 0
 
+# Generic, instrument-agnostic execution capability (Issue #638). This must
+# never branch on a specific symbol (e.g. "if symbol == 'MDT'") -- it is a
+# machine-readable capability supplied by the caller via
+# apply_execution_capability_overlay() and is designed to cover future
+# manual-execution instrument families (commodities, metals, bonds,
+# equities/securities, OTC, RFQ-only products), not only crypto.
+EXECUTION_MODE_AUTOMATED = "AUTOMATED"
+EXECUTION_MODE_MANUAL_RFQ = "MANUAL_RFQ"
+EXECUTION_MODE_MANUAL = "MANUAL"
+EXECUTION_MODE_NONE = "NONE"
+# Modes where the operator badge/compact "Manual Trade" indicator applies.
+# EXECUTION_MODE_NONE is deliberately excluded: it means no actionable
+# execution recommendation is treated as executable at all, which is a
+# different fact from "actionable but requires manual execution."
+MANUAL_TRADE_EXECUTION_MODES = frozenset({EXECUTION_MODE_MANUAL_RFQ, EXECUTION_MODE_MANUAL})
+
 ORDER_MATCH_TOLERANCE_PCT = Decimal("3")
 TAKE_PROFIT_WAITING_THRESHOLD_PCT = Decimal("3")
 RELOAD_ZONE_APPROACHING_THRESHOLD_PCT = Decimal("3")
@@ -575,6 +591,11 @@ class ProfitPlanCard:
     is_wallet_held: bool = False
     is_market_selected: bool = False
     is_core_sensor: bool = False
+    # Issue #638: generic execution capability, orthogonal to the four
+    # overlays above. Defaults to AUTOMATED so every existing/automated
+    # market renders identically to today until a caller explicitly attaches
+    # a non-automated capability via apply_execution_capability_overlay().
+    execution_mode: str = EXECUTION_MODE_AUTOMATED
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     breath_curve: dict[str, Any] | None = None
@@ -1462,6 +1483,43 @@ def apply_portfolio_account_evidence(
                 is_core_sensor=is_core_sensor,
             )
         )
+    return out
+
+
+def is_manual_trade_card(card: ProfitPlanCard) -> bool:
+    """True when the operator-facing "Manual Trade" badge should render.
+
+    Generic over ``execution_mode`` (Issue #638) -- never a symbol check.
+    """
+    return card.execution_mode in MANUAL_TRADE_EXECUTION_MODES
+
+
+def apply_execution_capability_overlay(
+    cards: list[ProfitPlanCard],
+    *,
+    execution_mode_by_symbol: Mapping[str, str] = {},
+) -> list[ProfitPlanCard]:
+    """Attach the generic, instrument-agnostic execution capability (Issue #638).
+
+    Read-only composition, identical in shape to
+    ``apply_portfolio_account_evidence``: the caller supplies a per-symbol
+    ``execution_mode`` (``AUTOMATED`` / ``MANUAL_RFQ`` / ``MANUAL`` /
+    ``NONE``) resolved from the canonical capability source, and this
+    function never queries a broker or a database itself. A symbol absent
+    from the map stays ``AUTOMATED`` -- the default already carried by every
+    ``ProfitPlanCard`` -- so existing automatically executable assets render
+    unchanged when the caller has not (yet) supplied a capability map.
+
+    Must never encode a symbol-specific branch (e.g. ``if symbol == 'MDT'``);
+    all instrument-specific resolution belongs in the caller-supplied map.
+    """
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        execution_mode = execution_mode_by_symbol.get(card.symbol, EXECUTION_MODE_AUTOMATED)
+        if execution_mode == card.execution_mode:
+            out.append(card)
+        else:
+            out.append(dataclasses.replace(card, execution_mode=execution_mode))
     return out
 
 
@@ -4372,6 +4430,13 @@ _CSS = """
       font-size: 10px; font-weight: 700; letter-spacing: .04em;
       color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
     }
+    /* Issue #638: generic execution-capability badge. Distinct amber tone
+       from the blue overlay badges above so an operator can immediately
+       tell "manual execution required" apart from portfolio/cohort facts. */
+    .manual-trade-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 2px 6px;
+    }
     .card[data-wallet-held='true'] { border-left: 3px solid var(--blue); }
     .card[data-portfolio-asset='true'][data-wallet-held='false'] { border-left: 3px solid var(--blue); }
     /* Market rotation pressure — read-only projection (Issue #255). Kept
@@ -5776,6 +5841,17 @@ def render_plan_card(
         badge_html_parts.append(
             "<span class='core-sensor-badge' title='Global market-structure reference symbol'>CORE SENSOR</span>"
         )
+    if is_manual_trade_card(card):
+        # Compact operator badge only (Issue #638). The low-level execution
+        # mode (e.g. MANUAL_RFQ) is intentionally kept out of the compact
+        # label and shown only in the hover title / detail evidence, per the
+        # generic manual-trade capability contract.
+        badge_html_parts.append(
+            "<span class='manual-trade-badge' "
+            f"title='Automated order submission is not available for this instrument "
+            f"(execution_mode={esc(card.execution_mode)}). Actionable outcomes require manual "
+            f"execution and never bypass decision/risk gates.'>MANUAL TRADE</span>"
+        )
     portfolio_badge_html = "".join(badge_html_parts)
 
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
@@ -6024,6 +6100,8 @@ def render_plan_card(
         f" data-presentation-mode='{esc(card.presentation_mode)}'"
         f" data-wallet-held='{str(card.is_wallet_held).lower()}'"
         f" data-portfolio-asset='{str(card.is_portfolio_asset).lower()}'"
+        f" data-manual-trade='{str(is_manual_trade_card(card)).lower()}'"
+        f" data-execution-mode='{esc(card.execution_mode)}'"
         f" data-workflow-bucket='{esc(workflow_sort_bucket)}'"
         f" data-sort-presentation='{esc(presentation_sort_value)}'"
         f" data-sort-action='{esc(action_sort_value)}'"
@@ -6489,6 +6567,8 @@ def build_json_snapshot(
                 "is_wallet_held": c.is_wallet_held,
                 "is_market_selected": c.is_market_selected,
                 "is_core_sensor": c.is_core_sensor,
+                "execution_mode": c.execution_mode,
+                "manual_trade": is_manual_trade_card(c),
                 # Deprecated compatibility alias only — always equal to
                 # is_wallet_held, never strategic portfolio membership.
                 # Canonical fields are is_portfolio_asset / is_wallet_held.
