@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from src.research.run_cq_v1_temporal_source_audit_v1 import (
     _capture_audit_window,
     _fetch_history_summary,
     _validate_output_path,
+    run,
 )
 
 
@@ -161,3 +163,42 @@ def test_audit_window_is_captured_once_and_bound_to_history_query() -> None:
         "2026-07-17 05:20:00",
         "2026-08-31 05:20:00",
     )
+
+
+def test_run_emits_one_failed_terminal_summary_and_closes_connection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class _FailingConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def cursor(self):
+            raise RuntimeError("query path failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    conn = _FailingConnection()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "src.research.run_cq_v1_temporal_source_audit_v1.get_db_connection",
+        lambda: conn,
+    )
+    args = argparse.Namespace(
+        venue="bitvavo",
+        lookback_days=45,
+        output_json="data/research/cq_v1/failure.json",
+    )
+
+    with pytest.raises(RuntimeError, match="query path failed"):
+        run(args)
+
+    stdout = capsys.readouterr().out
+    failed_lines = [line for line in stdout.splitlines() if line.startswith("FAILED ")]
+    finished_lines = [line for line in stdout.splitlines() if line.startswith("FINISHED ")]
+    assert len(failed_lines) == 1
+    assert "error_type=RuntimeError" in failed_lines[0]
+    assert finished_lines == []
+    assert conn.closed is True
