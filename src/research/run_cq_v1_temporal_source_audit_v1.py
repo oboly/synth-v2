@@ -32,6 +32,24 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def _capture_audit_window(cursor: Any, *, lookback_days: int) -> tuple[Any, Any]:
+    cursor.execute(
+        """
+        SELECT UTC_TIMESTAMP() AS audit_asof_ts_utc,
+               DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY) AS history_cutoff_ts_utc
+        """,
+        (lookback_days,),
+    )
+    row = cursor.fetchone()
+    if not isinstance(row, dict):
+        raise TypeError("expected dict cursor audit-window row")
+    audit_asof = row.get("audit_asof_ts_utc")
+    history_cutoff = row.get("history_cutoff_ts_utc")
+    if audit_asof is None or history_cutoff is None:
+        raise ValueError("audit window timestamps unavailable")
+    return audit_asof, history_cutoff
+
+
 def _fetch_history_summary(
     cursor: Any,
     *,
@@ -39,7 +57,8 @@ def _fetch_history_summary(
     ts_col: str,
     where_sql: str,
     params: tuple[Any, ...],
-    lookback_days: int,
+    history_cutoff_ts_utc: Any,
+    audit_asof_ts_utc: Any,
 ) -> dict[str, Any]:
     sql = f"""
         SELECT COUNT(*) AS row_count,
@@ -48,9 +67,10 @@ def _fetch_history_summary(
                MAX({ts_col}) AS last_ts
         FROM {from_sql}
         WHERE {where_sql}
-          AND {ts_col} >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+          AND {ts_col} >= %s
+          AND {ts_col} <= %s
     """
-    cursor.execute(sql, params + (lookback_days,))
+    cursor.execute(sql, params + (history_cutoff_ts_utc, audit_asof_ts_utc))
     row = cursor.fetchone()
     if not isinstance(row, dict):
         raise TypeError("expected dict cursor row")
@@ -95,6 +115,15 @@ def run(args: argparse.Namespace) -> int:
     try:
         results: list[dict[str, Any]] = []
         with conn.cursor() as cursor:
+            audit_asof_ts_utc, history_cutoff_ts_utc = _capture_audit_window(
+                cursor,
+                lookback_days=args.lookback_days,
+            )
+            print(
+                f"AUDIT_WINDOW audit_asof_ts_utc={audit_asof_ts_utc} "
+                f"history_cutoff_ts_utc={history_cutoff_ts_utc}",
+                flush=True,
+            )
             for spec in SOURCE_SPECS:
                 params = bind_params(spec, venue=args.venue)
                 summary = _fetch_history_summary(
@@ -103,7 +132,8 @@ def run(args: argparse.Namespace) -> int:
                     ts_col=spec.timestamp_column,
                     where_sql=spec.where_sql,
                     params=params,
-                    lookback_days=args.lookback_days,
+                    history_cutoff_ts_utc=history_cutoff_ts_utc,
+                    audit_asof_ts_utc=audit_asof_ts_utc,
                 )
                 indexes = _fetch_indexes(cursor, spec.table_name)
                 result = source_result(
@@ -126,6 +156,8 @@ def run(args: argparse.Namespace) -> int:
             "runner": RUNNER_NAME,
             "venue": args.venue,
             "lookback_days": args.lookback_days,
+            "audit_asof_ts_utc": str(audit_asof_ts_utc),
+            "history_cutoff_ts_utc": str(history_cutoff_ts_utc),
             "state": state,
             "blockers": blockers,
             "sources": results,
