@@ -117,13 +117,35 @@ def load_frozen_manifest(path: Path) -> dict[str, object]:
     return raw
 
 
+def _validate_frozen_manifest_candidate(
+    *, path: Path, candidate: dict[str, object]
+) -> tuple[dict[str, object], str]:
+    frozen = load_frozen_manifest(path)
+    if manifest_fingerprint(frozen) != manifest_fingerprint(candidate):
+        raise ValueError("fresh source availability disagrees with frozen split manifest")
+    return frozen, "REUSED"
+
+
 def persist_or_reuse_manifest(path: Path, candidate: dict[str, object]) -> tuple[dict[str, object], str]:
-    if path.exists():
-        frozen = load_frozen_manifest(path)
-        if manifest_fingerprint(frozen) != manifest_fingerprint(candidate):
-            raise ValueError("fresh source availability disagrees with frozen split manifest")
-        return frozen, "REUSED"
-    write_json_atomic(path, candidate)
+    """Create the frozen manifest exactly once; concurrent losers validate and reuse it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(candidate, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return _validate_frozen_manifest_candidate(path=path, candidate=candidate)
+
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return candidate, "CREATED"
 
 
