@@ -54,6 +54,25 @@ def _validation_row(timestamp: datetime, asset_id: int):
     )
 
 
+def _raw_row(**overrides):
+    row = {
+        "venue": "bitvavo",
+        "asset_id": 1,
+        "asof_ts": BASE.isoformat(),
+        "candidate_id": "C1",
+        "candidate_score": "12.5",
+        "b0_score": None,
+        "b0_pressure_state": None,
+        "b1_return": None,
+        "forward_15m": None,
+        "forward_1h": None,
+        "forward_4h": None,
+        "forward_24h": None,
+    }
+    row.update(overrides)
+    return row
+
+
 def test_manifest_requires_uninspected_final_holdout(tmp_path: Path) -> None:
     manifest = _manifest()
     manifest["final_holdout_inspected"] = True
@@ -142,23 +161,32 @@ def test_final_holdout_phase_is_not_available() -> None:
 
 def test_load_rows_preserves_missing_baselines(tmp_path: Path) -> None:
     path = tmp_path / "rows.jsonl"
-    row = {
-        "venue": "bitvavo",
-        "asset_id": 1,
-        "asof_ts": BASE.isoformat(),
-        "candidate_id": "C1",
-        "candidate_score": "12.5",
-        "b0_score": None,
-        "b0_pressure_state": None,
-        "b1_return": None,
-        "forward_15m": None,
-        "forward_1h": None,
-        "forward_4h": None,
-        "forward_24h": None,
-    }
-    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(_raw_row()) + "\n", encoding="utf-8")
     rows = load_rows(path)
     assert len(rows) == 1
     assert rows[0].candidate_score == 12.5
     assert rows[0].b0_score is None
     assert rows[0].b1_return is None
+
+
+def test_load_rows_rejects_non_finite_numeric_value(tmp_path: Path) -> None:
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps(_raw_row(candidate_score="NaN")) + "\n", encoding="utf-8")
+    try:
+        load_rows(path)
+    except ValueError as exc:
+        assert "must be finite" in str(exc)
+    else:
+        raise AssertionError("non-finite metric must fail")
+
+
+def test_load_rows_rejects_duplicate_identity(tmp_path: Path) -> None:
+    path = tmp_path / "rows.jsonl"
+    row = _raw_row()
+    path.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n", encoding="utf-8")
+    try:
+        load_rows(path)
+    except ValueError as exc:
+        assert "duplicate validation row identity" in str(exc)
+    else:
+        raise AssertionError("duplicate validation identity must fail")
