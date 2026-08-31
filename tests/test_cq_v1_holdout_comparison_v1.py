@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from argparse import Namespace
 from copy import deepcopy
@@ -15,8 +16,10 @@ from src.research.cq_v1_holdout_comparison_v1 import (
 )
 from src.research.run_cq_v1_holdout_comparison_v1 import (
     _validate_frozen_population,
+    _validate_manifest,
     run,
 )
+from src.research.cq_v1_model_candidate_v1 import COVERAGE_ARTIFACT_SHA256, MODEL_FAMILY_VERSION
 
 ASOF = "2026-08-26T20:15:47Z"
 
@@ -105,6 +108,10 @@ def _verdict_evaluation(
     return {"candidate_comparisons": candidate_comparisons}
 
 
+def _sha(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def test_correlation_handles_ties_deterministically() -> None:
     result = correlation([1.0, 1.0, 2.0, 3.0], [0.0, 0.0, 1.0, 2.0])
     assert result.sample_count == 4
@@ -185,6 +192,51 @@ def test_frozen_population_rejects_truncated_score_artifact() -> None:
         )
 
 
+def test_manifest_rejects_substituted_full_sized_artifact(tmp_path) -> None:
+    outcomes = tmp_path / "outcomes.jsonl"
+    forward_summary = tmp_path / "forward-summary.json"
+    scores = tmp_path / "scores.jsonl"
+    score_summary = tmp_path / "score-summary.json"
+    for path, content in (
+        (outcomes, "outcomes\n"),
+        (forward_summary, "{}\n"),
+        (scores, "scores\n"),
+        (score_summary, "{}\n"),
+    ):
+        path.write_text(content, encoding="utf-8")
+    protocol = {
+        "protocol_version": "1.0.0",
+        "holdout": {
+            "observation_asof_ts_utc": ASOF,
+            "frozen_population": {"score_row_count": 419, "outcome_row_count": 1257},
+        },
+    }
+    manifest = {
+        "manifest_name": "cq_v1_holdout_input_manifest_v1",
+        "manifest_version": "1.0.0",
+        "protocol_version": "1.0.0",
+        "observation_asof_ts_utc": ASOF,
+        "score_row_count": 419,
+        "outcome_row_count": 1257,
+        "model_family_version": MODEL_FAMILY_VERSION,
+        "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+        "forward_outcomes_jsonl_sha256": _sha(outcomes),
+        "forward_summary_json_sha256": _sha(forward_summary),
+        "cq_v1_scores_jsonl_sha256": _sha(scores),
+        "cq_v1_score_summary_json_sha256": _sha(score_summary),
+    }
+    outcomes.write_text("substituted\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="FORWARD_OUTCOMES_JSONL_SHA256_MISMATCH"):
+        _validate_manifest(
+            protocol,
+            manifest,
+            outcomes_path=outcomes,
+            forward_summary_path=forward_summary,
+            scores_path=scores,
+            score_summary_path=score_summary,
+        )
+
+
 def test_promotion_rule_ranking_candidate() -> None:
     evaluation = _verdict_evaluation(
         sample_count=120,
@@ -229,6 +281,7 @@ def test_nonempty_output_preflight_never_mutates_existing_artifact(tmp_path) -> 
     (output_dir / "existing.txt").write_text("keep", encoding="utf-8")
     args = Namespace(
         protocol="missing-protocol.yaml",
+        frozen_manifest_json="missing-manifest.json",
         forward_outcomes_jsonl="missing-outcomes.jsonl",
         forward_summary_json="missing-forward-summary.json",
         cq_v1_scores_jsonl="missing-scores.jsonl",
