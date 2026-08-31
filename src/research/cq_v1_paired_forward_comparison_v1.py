@@ -97,7 +97,12 @@ def metric_values(score: Mapping[str, Any], outcome: Mapping[str, Any]) -> tuple
 
 
 def pair_rows(scores: Iterable[Mapping[str, Any]], outcomes: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    score_by_shadow = {int(row["shadow_id"]): row for row in scores}
+    score_by_shadow: dict[int, Mapping[str, Any]] = {}
+    for row in scores:
+        shadow_id = int(row["shadow_id"])
+        if shadow_id in score_by_shadow:
+            raise ValueError(f"duplicate score shadow_id: {shadow_id}")
+        score_by_shadow[shadow_id] = row
     paired: list[dict[str, Any]] = []
     seen: set[tuple[int, str]] = set()
     for outcome in outcomes:
