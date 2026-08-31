@@ -81,12 +81,12 @@ def test_holm_bonferroni_is_step_down_and_deterministic_on_ties() -> None:
 def test_holm_missing_test_still_counts_in_frozen_family_size() -> None:
     result = holm_bonferroni(
         {
-            "available": 0.02,
+            "available": 0.03,
             "missing": None,
         },
         alpha=0.05,
     )
-    assert result["available"] is True
+    assert result["available"] is False
     assert result["missing"] is None
 
 
@@ -140,7 +140,7 @@ def test_missing_sample_breaks_persistence_and_chop_chain() -> None:
     result = persistence_and_chop(rows, reversion_window_samples=4)
     assert result.run_count == 3
     assert result.sign_flip_count == 1
-    assert result.chop_reversion_count == 1
+    assert result.chop_reversion_count == 0
 
 
 def test_timestamp_gap_breaks_persistence_without_counting_flip() -> None:
