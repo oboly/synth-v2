@@ -7,11 +7,13 @@ from src.research.multi_horizon_rotation_dataset_builder_v1 import (
     RotationV1PitIndex,
     RotationV1Point,
 )
-from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, CandidateResult
+from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, Candle, CandidateResult
 from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
     ALLOWED_PHASES,
     build_validation_row,
+    chunk_asof_grid_by_utc_day,
     parse_args,
+    replay_candles_at_asof,
 )
 
 
@@ -28,6 +30,37 @@ def test_runner_exposes_only_discovery_and_validation_phases() -> None:
         assert exc.code != 0
     else:
         raise AssertionError("final_holdout must not be a CLI phase")
+
+
+def test_asof_grid_chunks_by_utc_day_without_reordering() -> None:
+    grid = [
+        BASE + timedelta(hours=23, minutes=45),
+        BASE + timedelta(days=1),
+        BASE + timedelta(days=1, minutes=15),
+    ]
+    chunks = chunk_asof_grid_by_utc_day(grid)
+    assert chunks == [[grid[0]], [grid[1], grid[2]]]
+
+
+def test_replay_slice_never_uses_future_chunk_candles_and_keeps_missing_asset() -> None:
+    asof = BASE + timedelta(hours=40)
+    candles = {
+        1: [
+            Candle(asof - timedelta(hours=36), Decimal("100"), Decimal("1")),
+            Candle(asof, Decimal("101"), Decimal("1")),
+            Candle(asof + timedelta(minutes=15), Decimal("102"), Decimal("1")),
+        ],
+        3: [Candle(asof, Decimal("50"), Decimal("2"))],
+    }
+    sliced = replay_candles_at_asof(
+        chunk_candles=candles,
+        observed_asset_ids=(1, 2),
+        asof_ts=asof,
+    )
+    assert set(sliced) == {1, 2}
+    assert [item.close_ts_utc for item in sliced[1]] == [asof - timedelta(hours=36), asof]
+    assert sliced[2] == []
+    assert 3 not in sliced
 
 
 def test_build_validation_row_attaches_pit_b0_b1_and_purged_forwards() -> None:
