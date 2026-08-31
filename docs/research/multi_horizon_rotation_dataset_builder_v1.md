@@ -102,7 +102,7 @@ latest source row only
 
 Fields: `score_total`, `pressure_state`.
 
-Multiple rows at the same timestamp retain `pressure_obs_id` ordering; the PIT index selects the last row at that timestamp. No duplicate V1 history is created.
+The broad historical PIT query is consumed with bounded `fetchmany()` batches while preserving database ordering `(asset_id, as_of_ts_utc, pressure_obs_id)` and the same exclusive phase cutoff. Multiple rows at the same timestamp retain `pressure_obs_id` ordering; the PIT index selects the last row at that timestamp. No duplicate V1 history is created.
 
 ### B1: comparable price momentum
 
@@ -165,7 +165,7 @@ Artifacts are research evidence, not production truth.
 
 ## Runtime and resume contract
 
-Source reads are batched by UTC as-of day. Each batch covers only the 36h lookback and allowed forward window needed by that day's observations. Per-as-of replay still receives only candles at or before that as-of.
+Source reads are batched by UTC as-of day. Each candle batch covers only the 36h lookback and allowed forward window needed by that day's observations. Per-as-of replay still receives only candles at or before that as-of. Rotation V1 PIT rows are consumed in bounded cursor batches rather than one broad historical `fetchall()`.
 
 Rows stream to:
 
@@ -180,7 +180,15 @@ After every fully completed as-of:
 
 `--resume` requires a compatible checkpoint. It truncates any uncheckpointed mid-as-of bytes to the committed byte offset and verifies the committed newline/row count before appending. Changed venue, phase, runner version or frozen manifest fails closed.
 
-An interrupt or failure changes only the checkpoint terminal status while preserving the last committed counts. After all as-ofs finish, the partial artifact is atomically renamed to the final JSONL and the checkpoint becomes `FINISHED`.
+An interrupt or failure changes only the checkpoint terminal status while preserving the last committed counts.
+
+Finalization is one recoverable terminal transition:
+
+1. the completed partial JSONL is atomically renamed to the final data artifact;
+2. the final summary is atomically persisted;
+3. the checkpoint is atomically persisted as `FINISHED`.
+
+If summary persistence or the `FINISHED` checkpoint fails, any final summary is removed and the final data artifact is atomically rolled back to the `.partial` path. The existing non-`FINISHED` checkpoint therefore remains resume-compatible. `partial_path` is cleared only after the complete bundle transition succeeds.
 
 ## Safety
 
