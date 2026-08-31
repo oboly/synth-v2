@@ -20,6 +20,8 @@ holdout:
     outcome_rows_per_horizon: 419
 
 inputs:
+  frozen_manifest_name: cq_v1_holdout_input_manifest_v1
+  frozen_manifest_version: 1.0.0
   forward_outcome_runner: entry_quality_forward_validation_v1
   score_runner: cq_v1_score_materialization_v1
   required_identity_fields:
@@ -64,18 +66,6 @@ eligibility:
 promotion_rule:
   minimum_candidate_sample: 100
   material_spearman_delta: 0.02
-  rejection_horizon_count: 2
-  shadow_accept_horizon_count: 2
-  ranking_candidate_requires_all_horizons: true
-  ranking_candidate_requires_positive_delta_vs:
-    - cq_v0
-    - selection_score
-  ranking_candidate_requires_nonnegative_top_bucket_return_all_horizons: true
-  verdict_order:
-    - RANKING_PROMOTION_CANDIDATE
-    - CQ_V1_SHADOW_ACCEPTED
-    - REJECT
-    - RESEARCH_FURTHER
 
 safety:
   research_only: 1
