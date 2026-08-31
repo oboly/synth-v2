@@ -10,7 +10,7 @@ final-holdout phase option.
 import argparse
 import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TextIO
@@ -148,15 +148,19 @@ def fetch_rotation_v1_points(
     return RotationV1PitIndex(by_asset)
 
 
-def fetch_candles_for_asof(
+def fetch_candles_for_chunk(
     conn: Any,
     *,
     venue: str,
-    asof_ts: datetime,
+    chunk_asofs: list[datetime],
     phase_end: datetime,
 ) -> tuple[dict[int, list[Candle]], dict[int, dict[datetime, Decimal]], int]:
-    start = ensure_utc(asof_ts) - MAX_LOOKBACK
-    latest_needed = min(ensure_utc(asof_ts) + MAX_FORWARD, ensure_utc(phase_end) - timedelta(minutes=15))
+    if not chunk_asofs:
+        return {}, {}, 0
+    first_asof = ensure_utc(chunk_asofs[0])
+    last_asof = ensure_utc(chunk_asofs[-1])
+    start = first_asof - MAX_LOOKBACK
+    latest_needed = min(last_asof + MAX_FORWARD, ensure_utc(phase_end) - timedelta(minutes=15))
     sql = """
     SELECT asset_id, close_ts_utc, close_price, volume_base
     FROM obs_market_candle
@@ -170,23 +174,39 @@ def fetch_candles_for_asof(
         cur.execute(sql, (venue, start.replace(tzinfo=None), latest_needed.replace(tzinfo=None)))
         rows = cur.fetchall()
 
-    replay: dict[int, list[Candle]] = {}
+    candles: dict[int, list[Candle]] = {}
     closes: dict[int, dict[datetime, Decimal]] = {}
-    asof = ensure_utc(asof_ts)
     for row in rows:
         asset_id = int(row["asset_id"])
         ts = parse_ts(row["close_ts_utc"])
         close = Decimal(str(row["close_price"]))
         closes.setdefault(asset_id, {})[ts] = close
-        if ts <= asof:
-            replay.setdefault(asset_id, []).append(
-                Candle(
-                    close_ts_utc=ts,
-                    close_price=close,
-                    volume_base=Decimal(str(row["volume_base"])),
-                )
+        candles.setdefault(asset_id, []).append(
+            Candle(
+                close_ts_utc=ts,
+                close_price=close,
+                volume_base=Decimal(str(row["volume_base"])),
             )
-    return replay, closes, len(rows)
+        )
+    return candles, closes, len(rows)
+
+
+def replay_candles_at_asof(
+    *,
+    chunk_candles: dict[int, list[Candle]],
+    observed_asset_ids: tuple[int, ...],
+    asof_ts: datetime,
+) -> dict[int, list[Candle]]:
+    asof = ensure_utc(asof_ts)
+    start = asof - MAX_LOOKBACK
+    return {
+        asset_id: [
+            candle
+            for candle in chunk_candles.get(asset_id, [])
+            if start <= ensure_utc(candle.close_ts_utc) <= asof
+        ]
+        for asset_id in observed_asset_ids
+    }
 
 
 def asof_grid(start: datetime, end: datetime) -> list[datetime]:
@@ -197,6 +217,23 @@ def asof_grid(start: datetime, end: datetime) -> list[datetime]:
         out.append(current)
         current += timedelta(minutes=15)
     return out
+
+
+def chunk_asof_grid_by_utc_day(grid: list[datetime]) -> list[list[datetime]]:
+    chunks: list[list[datetime]] = []
+    current_date: date | None = None
+    current_chunk: list[datetime] = []
+    for raw_asof in grid:
+        asof = ensure_utc(raw_asof)
+        asof_date = asof.date()
+        if current_date is not None and asof_date != current_date:
+            chunks.append(current_chunk)
+            current_chunk = []
+        current_date = asof_date
+        current_chunk.append(asof)
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
 
 def build_validation_row(
@@ -300,44 +337,54 @@ def main(argv: list[str] | None = None) -> int:
         phase_started = time.perf_counter()
         spec_by_id = {spec.candidate_id: spec for spec in CANDIDATE_SPECS}
         query_rows = 0
+        query_count = 0
         row_count = 0
+        asofs_completed = 0
         grid = asof_grid(phase_start, phase_end)
+        chunks = chunk_asof_grid_by_utc_day(grid)
         with partial_path.open("w", encoding="utf-8") as handle:
-            for index, asof in enumerate(grid, start=1):
-                replay_candles, close_maps, fetched = fetch_candles_for_asof(
+            for chunk in chunks:
+                chunk_candles, close_maps, fetched = fetch_candles_for_chunk(
                     conn,
                     venue=args.venue,
-                    asof_ts=asof,
+                    chunk_asofs=chunk,
                     phase_end=phase_end,
                 )
                 query_rows += fetched
-                observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
-                for asset_id in observed_ids:
-                    replay_candles.setdefault(asset_id, [])
-                for spec in CANDIDATE_SPECS:
-                    results = evaluate_candidate(
-                        candles_by_asset=replay_candles,
+                query_count += 1
+                for asof in chunk:
+                    observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
+                    replay_candles = replay_candles_at_asof(
+                        chunk_candles=chunk_candles,
+                        observed_asset_ids=observed_ids,
                         asof_ts=asof,
-                        spec=spec,
-                        venue=args.venue,
                     )
-                    for result in results:
-                        row = build_validation_row(
-                            result=result,
-                            close_by_ts=close_maps.get(result.asset_id, {}),
-                            spec_by_id=spec_by_id,
-                            pit_index=pit_index,
-                            phase_end=phase_end,
+                    for spec in CANDIDATE_SPECS:
+                        results = evaluate_candidate(
+                            candles_by_asset=replay_candles,
+                            asof_ts=asof,
+                            spec=spec,
+                            venue=args.venue,
                         )
-                        write_row(handle, row)
-                        row_count += 1
-                handle.flush()
-                if index % 96 == 0:
-                    emit(
-                        f"HEARTBEAT phase={args.phase} asofs_completed={index} rows_built={row_count} "
-                        f"observed_assets={len(observed_ids)} source_rows_read={query_rows} "
-                        f"elapsed_s={time.perf_counter() - phase_started:.3f}"
-                    )
+                        for result in results:
+                            row = build_validation_row(
+                                result=result,
+                                close_by_ts=close_maps.get(result.asset_id, {}),
+                                spec_by_id=spec_by_id,
+                                pit_index=pit_index,
+                                phase_end=phase_end,
+                            )
+                            write_row(handle, row)
+                            row_count += 1
+                    asofs_completed += 1
+                    if asofs_completed % 96 == 0:
+                        handle.flush()
+                        emit(
+                            f"HEARTBEAT phase={args.phase} asofs_completed={asofs_completed} rows_built={row_count} "
+                            f"observed_assets={len(observed_ids)} source_queries={query_count} "
+                            f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
+                        )
+            handle.flush()
 
         partial_path.replace(artifact_path)
         partial_path = None
@@ -348,7 +395,9 @@ def main(argv: list[str] | None = None) -> int:
             "phase": args.phase,
             "row_count": row_count,
             "asof_count": len(grid),
+            "source_query_count": query_count,
             "source_rows_read": query_rows,
+            "source_batching": "one_bounded_query_per_utc_asof_day",
             "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
             "artifact_write": "streamed_atomic_partial_then_replace",
             "final_holdout_access": "DENY",
@@ -360,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
         emit(
-            f"PHASE_FINISHED name=build_{args.phase}_artifact rows={row_count} "
+            f"PHASE_FINISHED name=build_{args.phase}_artifact rows={row_count} source_queries={query_count} "
             f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
         )
         emit(
