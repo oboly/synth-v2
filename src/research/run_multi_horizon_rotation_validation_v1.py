@@ -9,7 +9,7 @@ final-holdout evaluation is intentionally unavailable in this runner version.
 import argparse
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
 from typing import Any
@@ -29,6 +29,12 @@ from src.research.multi_horizon_rotation_validation_v1 import (
 RUNNER_NAME = "run_multi_horizon_rotation_validation_v1"
 RUNNER_VERSION = "1.0.0"
 ALLOWED_PHASES = ("discovery", "validation")
+FORWARD_HORIZONS = {
+    "forward_15m": timedelta(minutes=15),
+    "forward_1h": timedelta(hours=1),
+    "forward_4h": timedelta(hours=4),
+    "forward_24h": timedelta(hours=24),
+}
 
 
 def emit(message: str) -> None:
@@ -165,6 +171,15 @@ def validate_phase_scoped_rows(rows: list[ValidationRow], manifest: dict[str, An
         raise ValueError(
             f"input artifact is not phase-scoped: {len(outside)} row(s) outside requested {phase} interval"
         )
+    for row in rows:
+        asof = ensure_utc(row.asof_ts)
+        for field, horizon in FORWARD_HORIZONS.items():
+            value = getattr(row, field)
+            if value is not None and asof + horizon >= holdout_start:
+                raise ValueError(
+                    f"{field} outcome boundary reaches final holdout for "
+                    f"asset_id={row.asset_id} candidate_id={row.candidate_id} asof={asof.isoformat()}"
+                )
     return rows
 
 
