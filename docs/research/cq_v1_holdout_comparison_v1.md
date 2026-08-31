@@ -38,7 +38,9 @@ coverage artifact SHA-256 = f09a515535dd72c5422cbfea7ad449163132b298d1759f32701f
 model family version = 1.0.0
 ```
 
-The score summary must report `FINISHED`, the same sample count/last identity, model-family version and pinned coverage artifact. The forward summary must report 1257 rows and 419 observations. The JSONL population must contain every score identity exactly once and exactly one row for each required horizon. A truncated or substituted subset therefore cannot receive a promotion verdict.
+Before any aggregate outcome evaluation, a separate `cq_v1_holdout_input_manifest_v1` must freeze SHA-256 digests for all four immutable input files. The evaluator verifies those file digests before parsing/evaluating them. The manifest is therefore the phase boundary between artifact generation and holdout inspection; it must be preserved as immutable research evidence before the evaluator is run.
+
+The score summary must report `FINISHED`, the same sample count/last identity, model-family version and pinned coverage artifact. The forward summary must report 1257 rows and 419 observations. The JSONL population must contain every score identity exactly once and exactly one row for each required horizon. A truncated, modified, or substituted artifact cannot receive a promotion verdict.
 
 Artifacts are joined by:
 
@@ -97,15 +99,19 @@ The primary question remains ranking usefulness, not probability calibration.
 
 ## Frozen promotion rule
 
-The rule is frozen in `config/research/cq_v1_holdout_comparison_v1.yaml` before this lane opens aggregate outcome results.
+Only the two numeric parameters consumed by the evaluator remain configurable in the frozen protocol:
 
-`RANKING_PROMOTION_CANDIDATE` requires at least 100 identical-sample observations on all three horizons, a material Spearman improvement of at least `0.02` versus both CQ v0 and `selection_score` on every horizon, and non-negative top-bucket mean forward return on every horizon.
+```text
+minimum_candidate_sample = 100
+material_spearman_delta = 0.02
+```
 
-`CQ_V1_SHADOW_ACCEPTED` requires sufficient sample on all horizons and positive Spearman improvement versus CQ v0 on at least two of three horizons.
+The verdict semantics themselves are code-frozen and regression-tested:
 
-`REJECT` requires both frozen candidates to be materially worse than CQ v0 on at least two horizons.
-
-All other mixed, underpowered or inconclusive outcomes return `RESEARCH_FURTHER`.
+- `RANKING_PROMOTION_CANDIDATE`: sufficient identical-sample observations on all three horizons, material Spearman improvement versus both CQ v0 and `selection_score` on every horizon, and non-negative top-bucket mean forward return on every horizon.
+- `CQ_V1_SHADOW_ACCEPTED`: sufficient sample on all horizons and positive Spearman improvement versus CQ v0 on at least two of three horizons.
+- `REJECT`: both frozen candidates materially worse than CQ v0 on at least two horizons.
+- all other mixed, underpowered or inconclusive outcomes: `RESEARCH_FURTHER`.
 
 A `RANKING_PROMOTION_CANDIDATE` verdict is evidence only. It does not alter production ordering. The single-date design is intentionally recorded as a limitation even if that verdict occurs.
 
@@ -113,6 +119,7 @@ A `RANKING_PROMOTION_CANDIDATE` verdict is evidence only. It does not alter prod
 
 ```text
 python3 -m src.research.run_cq_v1_holdout_comparison_v1 \
+  --frozen-manifest-json <frozen-input-manifest.json> \
   --forward-outcomes-jsonl <immutable-forward-outcomes.jsonl> \
   --forward-summary-json <immutable-forward-summary.json> \
   --cq-v1-scores-jsonl <immutable-cq-v1-scores.jsonl> \
@@ -127,7 +134,7 @@ holdout_report.json
 summary.json
 ```
 
-The output directory must be empty/new. Preflight or evaluation failures still emit `summary.json` with `terminal_state=FAILED` and never emit a promotion verdict.
+The output directory must be empty/new. A non-empty output directory is never modified. Other preflight/evaluation failures on a new output directory emit `summary.json` with `terminal_state=FAILED` and never emit a promotion verdict.
 
 ## Safety
 
