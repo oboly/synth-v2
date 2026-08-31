@@ -52,16 +52,8 @@ def run(args: argparse.Namespace) -> int:
     scores_path = Path(args.scores_jsonl)
     outcomes_path = Path(args.outcomes_jsonl)
     output_dir = Path(args.output_dir)
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise SystemExit("output directory is not empty; use a new immutable output directory")
-
-    scores_sha256 = _sha256(scores_path)
-    outcomes_sha256 = _sha256(outcomes_path)
-    scores = _load_jsonl(scores_path)
-    outcomes = _load_jsonl(outcomes_path)
     print(
-        f"STARTED runner={RUNNER_NAME} scores={len(scores)} outcomes={len(outcomes)} "
-        f"scores_sha256={scores_sha256} outcomes_sha256={outcomes_sha256}",
+        f"STARTED runner={RUNNER_NAME} scores_path={scores_path} outcomes_path={outcomes_path} output_dir={output_dir}",
         flush=True,
     )
     print(
@@ -70,40 +62,59 @@ def run(args: argparse.Namespace) -> int:
         "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0",
         flush=True,
     )
+    try:
+        if output_dir.exists() and any(output_dir.iterdir()):
+            raise ValueError("output directory is not empty; use a new immutable output directory")
 
-    paired = pair_rows(scores, outcomes)
-    payload = summarize(paired)
-    payload.update(
-        {
-            "runner": RUNNER_NAME,
-            "terminal_state": "FINISHED",
-            "score_input_sha256": scores_sha256,
-            "outcome_input_sha256": outcomes_sha256,
-            "score_row_count": len(scores),
-            "outcome_row_count": len(outcomes),
-            "paired_row_count": len(paired),
-            "bounded_cross_sectional_only": True,
-            "final_phase2_recommendation": "RESEARCH_FURTHER",
-            "frozen_model_changed": 0,
-            "production_ranking_changed": 0,
-        }
-    )
+        scores_sha256 = _sha256(scores_path)
+        outcomes_sha256 = _sha256(outcomes_path)
+        scores = _load_jsonl(scores_path)
+        outcomes = _load_jsonl(outcomes_path)
+        print(
+            f"INPUTS_LOADED scores={len(scores)} outcomes={len(outcomes)} "
+            f"scores_sha256={scores_sha256} outcomes_sha256={outcomes_sha256}",
+            flush=True,
+        )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    rows_path = output_dir / OUTPUT_ROWS
-    summary_path = output_dir / OUTPUT_SUMMARY
-    with rows_path.open("w", encoding="utf-8") as handle:
-        for row in paired:
-            handle.write(json.dumps(row, sort_keys=True) + "\n")
-    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"WRITE event=paired_rows path={rows_path} rows={len(paired)}", flush=True)
-    print(f"WRITE event=summary path={summary_path}", flush=True)
-    print(
-        f"FINISHED runner={RUNNER_NAME} paired_rows={len(paired)} recommendation=RESEARCH_FURTHER "
-        "frozen_model_changed=0 production_ranking_changed=0",
-        flush=True,
-    )
-    return 0
+        paired = pair_rows(scores, outcomes)
+        payload = summarize(paired)
+        payload.update(
+            {
+                "runner": RUNNER_NAME,
+                "terminal_state": "FINISHED",
+                "score_input_sha256": scores_sha256,
+                "outcome_input_sha256": outcomes_sha256,
+                "score_row_count": len(scores),
+                "outcome_row_count": len(outcomes),
+                "paired_row_count": len(paired),
+                "bounded_cross_sectional_only": True,
+                "final_phase2_recommendation": "RESEARCH_FURTHER",
+                "frozen_model_changed": 0,
+                "production_ranking_changed": 0,
+            }
+        )
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        rows_path = output_dir / OUTPUT_ROWS
+        summary_path = output_dir / OUTPUT_SUMMARY
+        with rows_path.open("w", encoding="utf-8") as handle:
+            for row in paired:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"WRITE event=paired_rows path={rows_path} rows={len(paired)}", flush=True)
+        print(f"WRITE event=summary path={summary_path}", flush=True)
+        print(
+            f"FINISHED runner={RUNNER_NAME} paired_rows={len(paired)} recommendation=RESEARCH_FURTHER "
+            "frozen_model_changed=0 production_ranking_changed=0",
+            flush=True,
+        )
+        return 0
+    except Exception as exc:
+        print(
+            f"FAILED runner={RUNNER_NAME} error_type={type(exc).__name__} error={exc}",
+            flush=True,
+        )
+        raise
 
 
 def main() -> int:
