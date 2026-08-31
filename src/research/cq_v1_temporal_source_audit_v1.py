@@ -16,6 +16,7 @@ class SourceSpec:
     required_for_temporal_cq: bool
     where_sql: str
     where_params: tuple[Any, ...]
+    history_from_sql: str | None = None
 
 
 SOURCE_SPECS: tuple[SourceSpec, ...] = (
@@ -49,11 +50,16 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec(
         source_id="mrp_asset",
         table_name="market_rotation_pressure_observation_v1",
-        timestamp_column="as_of_ts_utc",
+        timestamp_column="o.as_of_ts_utc",
         pit_rule="latest row at or before candidate as-of per asset+model_version; venue bound through snapshot identity",
         required_for_temporal_cq=True,
-        where_sql="model_version=%s",
-        where_params=(MRP_MODEL_VERSION,),
+        where_sql="s.venue=%s AND o.model_version=%s AND s.model_version=%s",
+        where_params=("{venue}", MRP_MODEL_VERSION, MRP_MODEL_VERSION),
+        history_from_sql=(
+            "market_rotation_pressure_observation_v1 o "
+            "JOIN market_rotation_pressure_snapshot_v1 s "
+            "ON s.pressure_snapshot_id=o.pressure_snapshot_id"
+        ),
     ),
     SourceSpec(
         source_id="sector_rotation",
