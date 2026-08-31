@@ -1,0 +1,93 @@
+{
+  "contract_name": "cq_v1_temporal_sampling_v1",
+  "contract_version": "1.0.0",
+  "issue": 646,
+  "parent_issue": 568,
+  "research_only": true,
+  "market_only": true,
+  "outcomes_inspected_before_freeze": false,
+  "source_audit": {
+    "issue": 629,
+    "pr": 630,
+    "audit_asof_ts_utc": "2026-08-31T16:45:55Z",
+    "history_cutoff_ts_utc": "2026-07-17T16:45:55Z",
+    "state": "READY_TO_FREEZE_TEMPORAL_SAMPLING",
+    "sector_context_state": "BLOCKED_SECTOR_CONTEXT_HISTORY",
+    "sector_context_blockers": [
+      "asset_cluster_membership"
+    ]
+  },
+  "frozen_model_family": {
+    "model_family_version": "1.0.0",
+    "coverage_artifact_sha256": "f09a515535dd72c5422cbfea7ad449163132b298d1759f32701f0152c78aff2d",
+    "candidate_ids": [
+      "cq_v1_mrp_balanced_v1",
+      "cq_v1_mrp_anchor_v1"
+    ]
+  },
+  "sampling": {
+    "timezone": "UTC",
+    "cadence": "1d",
+    "cadence_seconds": 86400,
+    "first_asof_ts_utc": "2026-07-18T00:00:00Z",
+    "last_asof_ts_utc": "2026-08-31T00:00:00Z",
+    "expected_unique_asofs": 45
+  },
+  "chronological_split": {
+    "discovery": {
+      "first_asof_ts_utc": "2026-07-18T00:00:00Z",
+      "last_asof_ts_utc": "2026-08-13T00:00:00Z",
+      "expected_unique_asofs": 27
+    },
+    "validation": {
+      "first_asof_ts_utc": "2026-08-14T00:00:00Z",
+      "last_asof_ts_utc": "2026-08-22T00:00:00Z",
+      "expected_unique_asofs": 9
+    },
+    "holdout": {
+      "first_asof_ts_utc": "2026-08-23T00:00:00Z",
+      "last_asof_ts_utc": "2026-08-31T00:00:00Z",
+      "expected_unique_asofs": 9,
+      "untouched_until_final_evaluation": true
+    }
+  },
+  "observation_identity_fields": [
+    "asset_id",
+    "venue",
+    "asof_ts_utc",
+    "evidence_key",
+    "cq_model_version",
+    "model_family_version",
+    "coverage_artifact_sha256"
+  ],
+  "pit_rules": {
+    "historical_feature_lookup": "latest_canonical_row_at_or_before_asof_under_source_identity",
+    "current_latest_fallback": "FORBIDDEN",
+    "future_feature_truth": "FORBIDDEN",
+    "missingness": "PRESERVE_EXPLICITLY",
+    "imputation": "FORBIDDEN",
+    "weight_renormalization_on_missing": "FORBIDDEN",
+    "sector_context": "UNAVAILABLE_HISTORICAL_MEMBERSHIP",
+    "sector_current_membership_substitution": "FORBIDDEN",
+    "ppp_history": "UNAVAILABLE_UNLESS_CANONICAL_PIT_ARTIFACT_SUPPLIED",
+    "later_candles": "LABELS_ONLY"
+  },
+  "artifact_policy": {
+    "preferred_storage": "IMMUTABLE_RESEARCH_FILES",
+    "historical_shadow_backfill": "FORBIDDEN"
+  },
+  "safety": {
+    "account_awareness": 0,
+    "outcomes_read": 0,
+    "model_retuning": 0,
+    "production_ranking_changes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_orders": 0,
+    "runtime_activation": 0
+  }
+}
