@@ -26,7 +26,7 @@ def _coverage(asset_id: int, *, first_hours: int = 0, last_days: int = 100) -> A
     )
 
 
-def test_common_source_span_uses_twentieth_asset_coverage_and_rotation_floor() -> None:
+def test_common_source_span_uses_contiguous_minimum_cohort_and_rotation_floor() -> None:
     coverage = [_coverage(index, first_hours=index) for index in range(1, 26)]
     rotation_first = BASE + timedelta(days=3)
     span = derive_common_source_span(
@@ -35,9 +35,35 @@ def test_common_source_span_uses_twentieth_asset_coverage_and_rotation_floor() -
         minimum_cohort=20,
     )
     assert span.start == BASE + timedelta(days=3)
-    assert span.end == BASE + timedelta(days=100)
+    assert span.end == BASE + timedelta(days=100, minutes=15)
     assert span.minimum_cohort == 20
     assert span.coverage_asset_count == 25
+
+
+def test_common_source_span_does_not_bridge_disconnected_cohort_regions() -> None:
+    first_group = [
+        AssetCoverage(
+            asset_id=index,
+            first_close_ts=BASE,
+            last_close_ts=BASE + timedelta(days=10),
+        )
+        for index in range(1, 21)
+    ]
+    second_group = [
+        AssetCoverage(
+            asset_id=100 + index,
+            first_close_ts=BASE + timedelta(days=20),
+            last_close_ts=BASE + timedelta(days=50),
+        )
+        for index in range(1, 21)
+    ]
+    span = derive_common_source_span(
+        coverage=first_group + second_group,
+        rotation_v1_first_ts=BASE,
+        minimum_cohort=20,
+    )
+    assert span.start == BASE + timedelta(days=21, hours=12)
+    assert span.end == BASE + timedelta(days=50, minutes=15)
 
 
 def test_common_source_span_fails_when_fewer_than_minimum_cohort_assets() -> None:
@@ -75,6 +101,7 @@ def test_split_manifest_is_frozen_sixty_twenty_twenty() -> None:
     assert discovery_steps == int(total_steps * 0.60)
     assert validation_steps == int(total_steps * 0.20)
     assert manifest["final_holdout_inspected"] is False
+    assert manifest["source_span_method"] == "longest_contiguous_minimum_cohort_coverage_plus_rotation_v1_first_pit"
 
 
 def test_rotation_v1_pit_index_never_uses_future_row() -> None:
@@ -92,6 +119,19 @@ def test_rotation_v1_pit_index_never_uses_future_row() -> None:
     assert before is None
     assert middle is not None and middle.score_total == -20.0
     assert after is not None and after.score_total == 10.0
+
+
+def test_rotation_v1_pit_index_uses_last_row_on_same_timestamp_tie() -> None:
+    index = RotationV1PitIndex(
+        {
+            1: [
+                RotationV1Point(BASE, -20.0, "ROTATION_OUT"),
+                RotationV1Point(BASE, -10.0, "MIXED"),
+            ]
+        }
+    )
+    point = index.latest_at_or_before(asset_id=1, asof_ts=BASE)
+    assert point is not None and point.score_total == -10.0
 
 
 def test_comparable_horizon_return_requires_exact_boundary() -> None:
