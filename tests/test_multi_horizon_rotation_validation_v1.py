@@ -9,19 +9,26 @@ from src.research.multi_horizon_rotation_validation_v1 import (
     holm_bonferroni,
     partial_correlation,
     persistence_and_chop,
+    validation_summary,
 )
 
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def _row(index: int, *, score: float | None, asset_id: int = 1) -> ValidationRow:
+def _row(
+    index: int,
+    *,
+    score: float | None,
+    asset_id: int = 1,
+    candidate_id: str = "C1",
+) -> ValidationRow:
     value = None if score is None else score / 100.0
     return ValidationRow(
         venue="bitvavo",
         asset_id=asset_id,
         asof_ts=BASE + timedelta(minutes=15 * index),
-        candidate_id="C1",
+        candidate_id=candidate_id,
         candidate_score=score,
         b0_score=(None if score is None else score * 0.5),
         b0_pressure_state="ROTATION_IN",
@@ -71,6 +78,30 @@ def test_holm_bonferroni_is_step_down_and_deterministic_on_ties() -> None:
     }
 
 
+def test_family_wide_holm_contains_all_twelve_candidate_horizon_tests() -> None:
+    rows: list[ValidationRow] = []
+    for candidate_index, candidate_id in enumerate(("C1", "C2", "C3"), start=1):
+        for index in range(8):
+            score = float((index + 1) * candidate_index)
+            rows.append(
+                _row(
+                    index,
+                    score=score,
+                    asset_id=index + 1,
+                    candidate_id=candidate_id,
+                )
+            )
+    summary = validation_summary(rows)
+    assert summary["holm_family_size"] == 12
+    family = summary["holm_bonferroni_family"]
+    assert isinstance(family, dict)
+    assert set(family) == {
+        f"{candidate_id}:{horizon}"
+        for candidate_id in ("C1", "C2", "C3")
+        for horizon in ("15m", "1h", "4h", "24h")
+    }
+
+
 def test_persistence_counts_flip_reversion_as_chop_within_four_samples() -> None:
     rows = [
         _row(0, score=10),
@@ -109,7 +140,16 @@ def test_chronological_split_is_grid_aligned_and_non_overlapping() -> None:
         assert boundary.second == 0
 
 
-def test_missing_candidate_score_reduces_coverage_not_cohort_truth() -> None:
+def test_too_short_split_fails_closed() -> None:
+    try:
+        derive_chronological_split(start=BASE, end=BASE + timedelta(minutes=60))
+    except ValueError as exc:
+        assert "insufficient replay-safe span" in str(exc)
+    else:
+        raise AssertionError("expected too-short split to fail")
+
+
+def test_missing_candidate_score_reduces_paired_sample_count() -> None:
     rows = [_row(0, score=1), _row(1, score=None), _row(2, score=3), _row(3, score=4)]
     result = correlation_with_fisher_ci(
         [row.candidate_score for row in rows],
