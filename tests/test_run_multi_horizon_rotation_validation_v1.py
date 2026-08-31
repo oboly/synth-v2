@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -129,15 +130,38 @@ def test_phase_scoped_validation_artifact_passes() -> None:
     manifest = _manifest()
     rows = [
         _validation_row(BASE + timedelta(days=6, hours=1), 1),
-        _validation_row(BASE + timedelta(days=7), 2),
+        _validation_row(BASE + timedelta(days=6, hours=12), 2),
     ]
     assert validate_phase_scoped_rows(rows, manifest, "validation") == rows
+
+
+def test_forward_outcome_reaching_holdout_fails_closed() -> None:
+    manifest = _manifest()
+    row = _validation_row(BASE + timedelta(days=7), 1)
+    try:
+        validate_phase_scoped_rows([row], manifest, "validation")
+    except ValueError as exc:
+        assert "forward_24h outcome boundary reaches final holdout" in str(exc)
+    else:
+        raise AssertionError("forward outcome at holdout boundary must fail")
+
+
+def test_missing_forward_outcome_may_remain_near_holdout_boundary() -> None:
+    manifest = _manifest()
+    row = replace(
+        _validation_row(BASE + timedelta(days=7, hours=23), 1),
+        forward_15m=None,
+        forward_1h=None,
+        forward_4h=None,
+        forward_24h=None,
+    )
+    assert validate_phase_scoped_rows([row], manifest, "validation") == [row]
 
 
 def test_mixed_phase_or_holdout_artifact_fails_closed() -> None:
     manifest = _manifest()
     rows = [
-        _validation_row(BASE + timedelta(days=7), 1),
+        _validation_row(BASE + timedelta(days=6, hours=12), 1),
         _validation_row(BASE + timedelta(days=9), 2),
     ]
     try:
