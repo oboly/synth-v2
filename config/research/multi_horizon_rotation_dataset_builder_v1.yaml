@@ -28,7 +28,9 @@ source_span:
   later_phase_manifest_policy: reuse_exact_frozen_manifest
   later_phase_fresh_availability_cutoff: frozen_source_end_exclusive
   frozen_coverage_fingerprint: sha256_asset_first_last_within_frozen_source_end
-  historical_source_drift: fail_closed
+  drift_detection_scope: coverage_envelope_only
+  coverage_envelope_drift: fail_closed
+  interior_candle_or_rotation_content_drift_detection: not_owned_by_dataset_builder_v1
   post_frozen_end_new_candles_change_split: false
 
 asset_universe:
