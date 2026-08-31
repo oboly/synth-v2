@@ -63,7 +63,9 @@ common replay-safe span
 -> 20% final holdout
 ```
 
-All boundaries must be exact 15m-grid timestamps. Exact timestamps are derived from the broadest common replay-safe source span and persisted before validation.
+All boundaries must be exact 15m-grid timestamps. The runner recomputes the expected 60/20/20 boundaries from the manifest's full start/end span and rejects a contiguous manifest whose proportions differ from the frozen contract.
+
+The exact full span must be derived from the broadest common replay-safe source span and persisted before validation.
 
 The validation runner accepts only `discovery` or `validation`. It has no final-holdout phase and requires:
 
@@ -122,7 +124,7 @@ score = 0 -> ZERO
 score < 0 -> NEGATIVE
 ```
 
-Persistence is consecutive 15m sample count within candidate + asset. Missing scores and timestamp gaps break a run and cannot create a synthetic transition.
+Persistence is consecutive 15m sample count within `candidate + venue + asset`. Missing scores and timestamp gaps break a run and cannot create a synthetic transition. Identical asset IDs on different venues are never joined into one temporal sequence.
 
 A chop reversion is a valid consecutive state flip that returns to the previous state within the next four contiguous 15m samples. Missing samples or timestamp gaps terminate the reversion search.
 
@@ -130,7 +132,7 @@ A chop reversion is a valid consecutive state flip that returns to the previous 
 
 The preregistered lead/lag requirement is frozen using observable sign-state changes, with B1 as the price-only reference.
 
-Per asset and candidate:
+Per candidate + venue + asset:
 
 ```text
 turn event = valid state differs from previous valid state on the next exact 15m sample
@@ -171,8 +173,8 @@ B2 remains unavailable until a separately audited replay-safe canonical source e
 
 ## Artifact boundary
 
-- `src/research/multi_horizon_rotation_validation_v1.py`: core paired statistics, persistence/chop, split semantics.
-- `src/research/multi_horizon_rotation_validation_temporal_v1.py`: frozen lead/lag and regime-stability metrics.
+- `src/research/multi_horizon_rotation_validation_v1.py`: core paired statistics, venue-aware persistence/chop, split semantics.
+- `src/research/multi_horizon_rotation_validation_temporal_v1.py`: venue-aware lead/lag and regime-stability metrics.
 - `src/research/run_multi_horizon_rotation_validation_v1.py`: phase-scoped local-artifact evaluator with no DB/network access.
 
 A separate bounded dataset-builder slice must still:
