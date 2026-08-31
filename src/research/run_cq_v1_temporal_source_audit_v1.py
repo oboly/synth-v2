@@ -10,11 +10,13 @@ from src.research.cq_v1_temporal_source_audit_v1 import (
     SOURCE_SPECS,
     bind_params,
     overall_state,
+    sector_context_state,
     source_result,
 )
 
 RUNNER_NAME = "cq_v1_temporal_source_audit_v1"
 DEFAULT_LOOKBACK_DAYS = 45
+RESEARCH_OUTPUT_ROOT = Path("data/research")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -23,6 +25,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lookback-days", type=int, default=DEFAULT_LOOKBACK_DAYS)
     parser.add_argument("--output-json", required=True)
     return parser.parse_args(argv)
+
+
+def _validate_output_path(path: Path) -> None:
+    root = RESEARCH_OUTPUT_ROOT.resolve()
+    candidate = path.resolve()
+    if candidate == root or root not in candidate.parents:
+        raise SystemExit("--output-json must be under data/research/")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -97,6 +106,7 @@ def run(args: argparse.Namespace) -> int:
     if args.lookback_days < 1 or args.lookback_days > 366:
         raise SystemExit("--lookback-days must be within 1..366")
     output_path = Path(args.output_json)
+    _validate_output_path(output_path)
     if output_path.exists():
         raise SystemExit("output artifact already exists; use a new immutable path")
 
@@ -106,8 +116,9 @@ def run(args: argparse.Namespace) -> int:
     )
     print(
         "SAFETY research_only=1 market_only=1 db_reads=1 db_writes=0 outcomes_read=0 "
-        "model_retuning=0 production_ranking_changes=0 broker_private_calls=0 broker_writes=0 "
-        "order_submission=0 live_orders=0 runtime_activation=0",
+        "model_retuning=0 production_ranking_changes=0 decision_gate=none execution_planner=none "
+        "executor=none broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 "
+        "runtime_activation=0",
         flush=True,
     )
 
@@ -152,6 +163,7 @@ def run(args: argparse.Namespace) -> int:
                 )
 
         state, blockers = overall_state(results)
+        sector_state, sector_blockers = sector_context_state(results)
         payload = {
             "runner": RUNNER_NAME,
             "venue": args.venue,
@@ -160,6 +172,8 @@ def run(args: argparse.Namespace) -> int:
             "history_cutoff_ts_utc": str(history_cutoff_ts_utc),
             "state": state,
             "blockers": blockers,
+            "sector_context_state": sector_state,
+            "sector_context_blockers": sector_blockers,
             "sources": results,
             "bounded_shadow_runner_historical_reuse": "DENY_CURRENT_MAX_WITHOUT_ASOF_CUTOFF",
             "ppp_history": "UNAVAILABLE_UNLESS_CANONICAL_HISTORICAL_ARTIFACT_IS_SUPPLIED",
@@ -169,7 +183,11 @@ def run(args: argparse.Namespace) -> int:
             "production_ranking_changed": 0,
         }
         _write_json(output_path, payload)
-        print(f"FINISHED runner={RUNNER_NAME} state={state} blockers={','.join(blockers) or 'none'}", flush=True)
+        print(
+            f"FINISHED runner={RUNNER_NAME} state={state} blockers={','.join(blockers) or 'none'} "
+            f"sector_context_state={sector_state} sector_blockers={','.join(sector_blockers) or 'none'}",
+            flush=True,
+        )
         return 0
     finally:
         conn.close()
