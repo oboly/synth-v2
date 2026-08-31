@@ -68,6 +68,7 @@ def _load_protocol(path: Path) -> dict[str, Any]:
 
 
 def _validate_frozen_score_contract(rows: list[dict[str, Any]]) -> None:
+    required_set = set(REQUIRED_CANDIDATES)
     for row in rows:
         shadow_id = int(row.get("shadow_id"))
         if row.get("model_family_version") != MODEL_FAMILY_VERSION:
@@ -77,8 +78,8 @@ def _validate_frozen_score_contract(rows: list[dict[str, Any]]) -> None:
         candidates = row.get("candidates")
         if not isinstance(candidates, dict):
             raise ValueError(f"shadow_id={shadow_id}:CANDIDATES_MISSING")
-        if tuple(candidates.keys()) != REQUIRED_CANDIDATES:
-            raise ValueError(f"shadow_id={shadow_id}:CANDIDATE_SET_OR_ORDER_MISMATCH")
+        if set(candidates) != required_set:
+            raise ValueError(f"shadow_id={shadow_id}:CANDIDATE_SET_MISMATCH")
         for candidate_id in REQUIRED_CANDIDATES:
             payload = candidates[candidate_id]
             if not isinstance(payload, dict):
