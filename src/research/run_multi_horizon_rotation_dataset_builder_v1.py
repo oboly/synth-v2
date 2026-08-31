@@ -52,6 +52,7 @@ FORWARD_HORIZONS = {
     "forward_24h": timedelta(hours=24),
 }
 ROTATION_V1_MODEL_VERSION = "1.0"
+ROTATION_V1_FETCH_BATCH_SIZE = 5000
 
 
 def emit(message: str) -> None:
@@ -379,7 +380,10 @@ def fetch_rotation_v1_points(
     *,
     venue: str,
     through_ts: datetime,
+    batch_size: int = ROTATION_V1_FETCH_BATCH_SIZE,
 ) -> RotationV1PitIndex:
+    if batch_size < 1:
+        raise ValueError("Rotation V1 fetch batch_size must be >= 1")
     sql = """
     SELECT o.asset_id, o.as_of_ts_utc, o.score_total, o.pressure_state
     FROM market_rotation_pressure_observation_v1 o
@@ -393,18 +397,21 @@ def fetch_rotation_v1_points(
     ORDER BY o.asset_id, o.as_of_ts_utc, o.pressure_obs_id
     """
     cutoff = ensure_utc(through_ts).replace(tzinfo=None)
+    by_asset: dict[int, list[RotationV1Point]] = {}
     with conn.cursor() as cur:
         cur.execute(sql, (venue, ROTATION_V1_MODEL_VERSION, ROTATION_V1_MODEL_VERSION, cutoff, cutoff))
-        rows = cur.fetchall()
-    by_asset: dict[int, list[RotationV1Point]] = {}
-    for row in rows:
-        by_asset.setdefault(int(row["asset_id"]), []).append(
-            RotationV1Point(
-                asof_ts=parse_ts(row["as_of_ts_utc"]),
-                score_total=float(row["score_total"]),
-                pressure_state=str(row["pressure_state"]),
-            )
-        )
+        while True:
+            rows = cur.fetchmany(batch_size)
+            if not rows:
+                break
+            for row in rows:
+                by_asset.setdefault(int(row["asset_id"]), []).append(
+                    RotationV1Point(
+                        asof_ts=parse_ts(row["as_of_ts_utc"]),
+                        score_total=float(row["score_total"]),
+                        pressure_state=str(row["pressure_state"]),
+                    )
+                )
     return RotationV1PitIndex(by_asset)
 
 
