@@ -154,6 +154,17 @@ def validate_resume_checkpoint(
             raise ValueError(f"checkpoint {key} must be non-negative")
 
 
+def _count_newlines(path: Path) -> int:
+    count = 0
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            count += block.count(b"\n")
+    return count
+
+
 def reconcile_partial_to_checkpoint(partial_path: Path, checkpoint: dict[str, Any]) -> None:
     if not partial_path.exists():
         raise ValueError("resume requested but partial artifact is missing")
@@ -167,6 +178,30 @@ def reconcile_partial_to_checkpoint(partial_path: Path, checkpoint: dict[str, An
         handle.truncate(expected_bytes)
         handle.flush()
         os.fsync(handle.fileno())
+    line_count = _count_newlines(partial_path)
+    if line_count != int(checkpoint["row_count"]):
+        raise ValueError(
+            f"partial artifact row count mismatch after reconcile: actual={line_count} "
+            f"expected={checkpoint['row_count']}"
+        )
+
+
+def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
+    checkpoint = load_checkpoint(path)
+    last_raw = checkpoint.get("last_completed_asof")
+    write_checkpoint(
+        path,
+        venue=str(checkpoint["venue"]),
+        phase=str(checkpoint["phase"]),
+        manifest_sha256=str(checkpoint["manifest_sha256"]),
+        last_completed_asof=None if last_raw is None else parse_ts(last_raw),
+        asofs_completed=int(checkpoint["asofs_completed"]),
+        row_count=int(checkpoint["row_count"]),
+        partial_bytes=int(checkpoint["partial_bytes"]),
+        source_query_count=int(checkpoint.get("source_query_count", 0)),
+        source_rows_read=int(checkpoint.get("source_rows_read", 0)),
+        terminal_state=terminal_state,
+    )
 
 
 def fetch_asset_coverage(conn: Any, *, venue: str) -> list[AssetCoverage]:
@@ -435,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_manifest_sha256=manifest_sha256,
             )
             reconcile_partial_to_checkpoint(partial_path, checkpoint)
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             last_raw = checkpoint.get("last_completed_asof")
             last_completed_asof = None if last_raw is None else parse_ts(last_raw)
             asofs_completed = int(checkpoint["asofs_completed"])
@@ -474,6 +510,16 @@ def main(argv: list[str] | None = None) -> int:
         phase_started = time.perf_counter()
         spec_by_id = {spec.candidate_id: spec for spec in CANDIDATE_SPECS}
         full_grid = asof_grid(phase_start, phase_end)
+        if last_completed_asof is not None:
+            if last_completed_asof not in full_grid:
+                raise ValueError("checkpoint last_completed_asof is outside frozen phase grid")
+            expected_completed = full_grid.index(last_completed_asof) + 1
+            if asofs_completed != expected_completed:
+                raise ValueError(
+                    f"checkpoint asofs_completed mismatch: actual={asofs_completed} expected={expected_completed}"
+                )
+        elif asofs_completed != 0:
+            raise ValueError("checkpoint has completed as-of count without last_completed_asof")
         remaining_grid = [
             asof for asof in full_grid
             if last_completed_asof is None or ensure_utc(asof) > ensure_utc(last_completed_asof)
@@ -589,43 +635,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except KeyboardInterrupt:
-        if cp_path is not None and manifest_sha256 is not None and partial_path is not None and partial_path.exists():
-            checkpoint = load_checkpoint(cp_path)
-            write_checkpoint(
-                cp_path,
-                venue=args.venue,
-                phase=args.phase,
-                manifest_sha256=manifest_sha256,
-                last_completed_asof=last_completed_asof,
-                asofs_completed=asofs_completed,
-                row_count=row_count,
-                partial_bytes=int(checkpoint["partial_bytes"]),
-                source_query_count=query_count,
-                source_rows_read=query_rows,
-                terminal_state="INTERRUPTED",
-            )
+        if cp_path is not None and partial_path is not None and partial_path.exists():
+            try:
+                mark_checkpoint_terminal(cp_path, terminal_state="INTERRUPTED")
+            except Exception:
+                pass
         emit(
             f"INTERRUPTED runner={RUNNER_NAME} partial_artifact={partial_path} checkpoint={cp_path} "
             f"final_holdout_access=DENY database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 130
     except Exception as exc:
-        if cp_path is not None and manifest_sha256 is not None and partial_path is not None and partial_path.exists():
+        if cp_path is not None and partial_path is not None and partial_path.exists():
             try:
-                checkpoint = load_checkpoint(cp_path)
-                write_checkpoint(
-                    cp_path,
-                    venue=args.venue,
-                    phase=args.phase,
-                    manifest_sha256=manifest_sha256,
-                    last_completed_asof=last_completed_asof,
-                    asofs_completed=asofs_completed,
-                    row_count=row_count,
-                    partial_bytes=int(checkpoint["partial_bytes"]),
-                    source_query_count=query_count,
-                    source_rows_read=query_rows,
-                    terminal_state="FAILED",
-                )
+                mark_checkpoint_terminal(cp_path, terminal_state="FAILED")
             except Exception:
                 pass
         emit(
