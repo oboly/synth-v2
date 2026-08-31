@@ -100,6 +100,20 @@ def test_manifest_requires_contiguous_phase_boundaries(tmp_path: Path) -> None:
         raise AssertionError("expected discontinuous manifest to fail")
 
 
+def test_manifest_rejects_contiguous_but_wrong_split_proportions(tmp_path: Path) -> None:
+    manifest = _manifest()
+    manifest["splits"]["discovery"]["end"] = (BASE + timedelta(days=5)).isoformat()  # type: ignore[index]
+    manifest["splits"]["validation"]["start"] = (BASE + timedelta(days=5)).isoformat()  # type: ignore[index]
+    path = tmp_path / "split.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        load_split_manifest(path)
+    except ValueError as exc:
+        assert "frozen 60/20/20" in str(exc)
+    else:
+        raise AssertionError("wrong split proportions must fail")
+
+
 def test_manifest_rejects_off_grid_boundary(tmp_path: Path) -> None:
     manifest = _manifest()
     manifest["splits"]["validation"]["end"] = (BASE + timedelta(days=8, minutes=1)).isoformat()  # type: ignore[index]
