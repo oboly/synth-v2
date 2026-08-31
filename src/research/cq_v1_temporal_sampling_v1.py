@@ -52,7 +52,12 @@ def derive_asofs(contract: dict[str, Any]) -> tuple[datetime, ...]:
 
 
 def split_for_asof(asof: datetime, contract: dict[str, Any]) -> str:
+    if asof.tzinfo is None:
+        raise ValueError("as-of must be timezone-aware UTC")
     normalized = asof.astimezone(UTC)
+    if normalized not in derive_asofs(contract):
+        raise ValueError(f"as-of is not a frozen temporal sample: {normalized.isoformat()}")
+
     matches: list[str] = []
     for split_name in ("discovery", "validation", "holdout"):
         split = contract["chronological_split"][split_name]
