@@ -82,6 +82,20 @@ def floor_to_15m(value: datetime) -> datetime:
     return datetime.fromtimestamp(rounded, tz=UTC)
 
 
+def observed_asset_ids_at_asof(coverage: Iterable[AssetCoverage], *, asof_ts: datetime) -> tuple[int, ...]:
+    """Assets first observed by as-of, without future-listing or current-universe backfill."""
+    target = ensure_utc(asof_ts)
+    seen: set[int] = set()
+    out: list[int] = []
+    for row in coverage:
+        if row.asset_id in seen:
+            raise ValueError(f"duplicate coverage row for asset_id={row.asset_id}")
+        seen.add(row.asset_id)
+        if ensure_utc(row.first_close_ts) <= target:
+            out.append(row.asset_id)
+    return tuple(sorted(out))
+
+
 def _longest_minimum_cohort_region(
     *, intervals: Sequence[tuple[datetime, datetime]], minimum_cohort: int
 ) -> tuple[datetime, datetime]:
@@ -149,8 +163,6 @@ def derive_common_source_span(
 
     start, end = _longest_minimum_cohort_region(intervals=intervals, minimum_cohort=minimum_cohort)
 
-    # Freeze the split here as a validation of span sufficiency. The caller may
-    # serialize the returned boundaries, but cannot choose alternate proportions.
     derive_chronological_split(start=start, end=end)
     return SourceSpan(
         start=start,
