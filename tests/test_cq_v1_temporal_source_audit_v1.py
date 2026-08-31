@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from src.research.cq_v1_temporal_source_audit_v1 import (
     SOURCE_SPECS,
     bind_params,
     classify_history,
     overall_state,
+    sector_context_state,
     source_result,
 )
 from src.research.run_cq_v1_temporal_source_audit_v1 import (
     _capture_audit_window,
     _fetch_history_summary,
+    _validate_output_path,
 )
 
 
@@ -20,6 +26,7 @@ def test_source_registry_contains_frozen_cq_dependencies() -> None:
         "signal_engine_state",
         "mrp_aggregate",
         "mrp_asset",
+        "asset_cluster_membership",
         "sector_rotation",
         "canonical_candles_15m",
     } <= ids
@@ -37,6 +44,27 @@ def test_mrp_asset_history_is_venue_scoped_through_snapshot_join() -> None:
     assert "s.pressure_snapshot_id=o.pressure_snapshot_id" in spec.history_from_sql
     assert "s.venue=%s" in spec.where_sql
     assert bind_params(spec, venue="bitvavo") == ("bitvavo", "1.0", "1.0")
+
+
+def test_sector_context_requires_membership_and_rotation_history() -> None:
+    rows = [
+        {
+            "source_id": "asset_cluster_membership",
+            "sector_context_required": True,
+            "history_state": "UNAVAILABLE_NO_ROWS",
+        },
+        {
+            "source_id": "sector_rotation",
+            "sector_context_required": True,
+            "history_state": "REPLAYABLE_HISTORY_PRESENT",
+        },
+    ]
+    assert sector_context_state(rows) == (
+        "BLOCKED_SECTOR_CONTEXT_HISTORY",
+        ["asset_cluster_membership"],
+    )
+    rows[0]["history_state"] = "REPLAYABLE_HISTORY_PRESENT"
+    assert sector_context_state(rows) == ("SECTOR_CONTEXT_REPLAYABLE", [])
 
 
 def test_history_requires_multiple_timestamps() -> None:
@@ -67,6 +95,15 @@ def test_overall_state_fails_only_on_required_source_history() -> None:
     assert overall_state(rows) == ("READY_TO_FREEZE_TEMPORAL_SAMPLING", [])
     rows[0]["history_state"] = "BLOCKED_SINGLE_TIMESTAMP_ONLY"
     assert overall_state(rows) == ("BLOCKED_SOURCE_HISTORY", ["required"])
+
+
+def test_output_path_must_stay_under_data_research(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    _validate_output_path(Path("data/research/cq_v1/audit.json"))
+    with pytest.raises(SystemExit, match="must be under data/research"):
+        _validate_output_path(Path("tmp/audit.json"))
+    with pytest.raises(SystemExit, match="must be under data/research"):
+        _validate_output_path(Path("/tmp/audit.json"))
 
 
 class _FakeCursor:
