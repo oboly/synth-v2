@@ -13,6 +13,11 @@ from src.research.cq_v1_holdout_comparison_v1 import (
     join_artifacts,
     promotion_verdict,
 )
+from src.research.cq_v1_model_candidate_v1 import (
+    CANDIDATES_BY_ID,
+    COVERAGE_ARTIFACT_SHA256,
+    MODEL_FAMILY_VERSION,
+)
 
 RUNNER_NAME = "cq_v1_holdout_comparison_v1"
 DEFAULT_PROTOCOL = "config/research/cq_v1_holdout_comparison_v1.yaml"
@@ -62,6 +67,26 @@ def _load_protocol(path: Path) -> dict[str, Any]:
     return protocol
 
 
+def _validate_frozen_score_contract(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        shadow_id = int(row.get("shadow_id"))
+        if row.get("model_family_version") != MODEL_FAMILY_VERSION:
+            raise ValueError(f"shadow_id={shadow_id}:MODEL_FAMILY_VERSION_MISMATCH")
+        if row.get("coverage_artifact_sha256") != COVERAGE_ARTIFACT_SHA256:
+            raise ValueError(f"shadow_id={shadow_id}:COVERAGE_ARTIFACT_MISMATCH")
+        candidates = row.get("candidates")
+        if not isinstance(candidates, dict):
+            raise ValueError(f"shadow_id={shadow_id}:CANDIDATES_MISSING")
+        if tuple(candidates.keys()) != REQUIRED_CANDIDATES:
+            raise ValueError(f"shadow_id={shadow_id}:CANDIDATE_SET_OR_ORDER_MISMATCH")
+        for candidate_id in REQUIRED_CANDIDATES:
+            payload = candidates[candidate_id]
+            if not isinstance(payload, dict):
+                raise ValueError(f"shadow_id={shadow_id}:{candidate_id}:PAYLOAD_INVALID")
+            if payload.get("version") != CANDIDATES_BY_ID[candidate_id].version:
+                raise ValueError(f"shadow_id={shadow_id}:{candidate_id}:VERSION_MISMATCH")
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -94,6 +119,7 @@ def run(args: argparse.Namespace) -> int:
         print("PHASE_START name=load_artifacts", flush=True)
         outcome_rows = _load_jsonl(outcomes_path)
         score_rows = _load_jsonl(scores_path)
+        _validate_frozen_score_contract(score_rows)
         print(
             f"PHASE_END name=load_artifacts outcome_rows={len(outcome_rows)} score_rows={len(score_rows)}",
             flush=True,
@@ -125,6 +151,8 @@ def run(args: argparse.Namespace) -> int:
             "protocol_version": protocol["protocol_version"],
             "holdout_design": protocol["holdout"]["design"],
             "holdout_asof_ts_utc": protocol["holdout"]["observation_asof_ts_utc"],
+            "model_family_version": MODEL_FAMILY_VERSION,
+            "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
             "verdict": verdict,
             "evaluation": evaluation,
             "verdict_evidence": verdict_evidence,
@@ -139,6 +167,8 @@ def run(args: argparse.Namespace) -> int:
             {
                 "runner": RUNNER_NAME,
                 "protocol_version": protocol["protocol_version"],
+                "model_family_version": MODEL_FAMILY_VERSION,
+                "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
                 "verdict": verdict,
                 "complete_observation_count": evaluation["complete_observation_count"],
                 "horizon_counts": evaluation["horizon_counts"],
