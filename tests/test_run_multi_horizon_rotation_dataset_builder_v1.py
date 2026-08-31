@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from src.research.multi_horizon_rotation_dataset_builder_v1 import (
     RotationV1PitIndex,
@@ -12,8 +13,14 @@ from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
     ALLOWED_PHASES,
     build_validation_row,
     chunk_asof_grid_by_utc_day,
+    load_checkpoint,
+    manifest_fingerprint,
+    mark_checkpoint_terminal,
     parse_args,
+    reconcile_partial_to_checkpoint,
     replay_candles_at_asof,
+    validate_resume_checkpoint,
+    write_checkpoint,
 )
 
 
@@ -22,8 +29,9 @@ BASE = datetime(2026, 1, 1, tzinfo=UTC)
 
 def test_runner_exposes_only_discovery_and_validation_phases() -> None:
     assert ALLOWED_PHASES == ("discovery", "validation")
-    args = parse_args(["--phase", "discovery"])
+    args = parse_args(["--phase", "discovery", "--resume"])
     assert args.phase == "discovery"
+    assert args.resume is True
     try:
         parse_args(["--phase", "final_holdout"])
     except SystemExit as exc:
@@ -61,6 +69,83 @@ def test_replay_slice_never_uses_future_chunk_candles_and_keeps_missing_asset() 
     assert [item.close_ts_utc for item in sliced[1]] == [asof - timedelta(hours=36), asof]
     assert sliced[2] == []
     assert 3 not in sliced
+
+
+def test_interrupt_then_resume_trims_uncheckpointed_bytes_and_preserves_committed_state(tmp_path: Path) -> None:
+    manifest = {
+        "manifest_version": "1.0.0",
+        "final_holdout_inspected": False,
+        "splits": {},
+    }
+    fingerprint = manifest_fingerprint(manifest)
+    committed = b'{"row":1}\n{"row":2}\n'
+    uncheckpointed = b'{"row":3'
+    partial = tmp_path / ".validation_rows_v1.jsonl.partial"
+    partial.write_bytes(committed + uncheckpointed)
+    checkpoint_path = tmp_path / ".validation_checkpoint_v1.json"
+    completed_asof = BASE + timedelta(minutes=15)
+    write_checkpoint(
+        checkpoint_path,
+        venue="bitvavo",
+        phase="validation",
+        manifest_sha256=fingerprint,
+        last_completed_asof=completed_asof,
+        asofs_completed=2,
+        row_count=2,
+        partial_bytes=len(committed),
+        source_query_count=1,
+        source_rows_read=100,
+        terminal_state="RUNNING",
+    )
+
+    mark_checkpoint_terminal(checkpoint_path, terminal_state="INTERRUPTED")
+    interrupted = load_checkpoint(checkpoint_path)
+    assert interrupted["terminal_state"] == "INTERRUPTED"
+    assert interrupted["row_count"] == 2
+    assert interrupted["asofs_completed"] == 2
+    assert interrupted["last_completed_asof"] == completed_asof.isoformat().replace("+00:00", "Z")
+
+    validate_resume_checkpoint(
+        interrupted,
+        venue="bitvavo",
+        phase="validation",
+        expected_manifest_sha256=fingerprint,
+    )
+    reconcile_partial_to_checkpoint(partial, interrupted)
+    assert partial.read_bytes() == committed
+
+    with partial.open("ab") as handle:
+        handle.write(b'{"row":3}\n')
+    assert partial.read_bytes().count(b"\n") == 3
+
+
+def test_resume_rejects_changed_split_or_source_manifest(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / ".discovery_checkpoint_v1.json"
+    write_checkpoint(
+        checkpoint_path,
+        venue="bitvavo",
+        phase="discovery",
+        manifest_sha256="old",
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="INTERRUPTED",
+    )
+    checkpoint = load_checkpoint(checkpoint_path)
+    try:
+        validate_resume_checkpoint(
+            checkpoint,
+            venue="bitvavo",
+            phase="discovery",
+            expected_manifest_sha256="new",
+        )
+    except ValueError as exc:
+        assert "manifest mismatch" in str(exc)
+    else:
+        raise AssertionError("resume must fail when source/split manifest changed")
 
 
 def test_build_validation_row_attaches_pit_b0_b1_and_purged_forwards() -> None:
