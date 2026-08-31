@@ -78,6 +78,18 @@ def test_holm_bonferroni_is_step_down_and_deterministic_on_ties() -> None:
     }
 
 
+def test_holm_missing_test_still_counts_in_frozen_family_size() -> None:
+    result = holm_bonferroni(
+        {
+            "available": 0.02,
+            "missing": None,
+        },
+        alpha=0.05,
+    )
+    assert result["available"] is True
+    assert result["missing"] is None
+
+
 def test_family_wide_holm_contains_all_twelve_candidate_horizon_tests() -> None:
     rows: list[ValidationRow] = []
     for candidate_index, candidate_id in enumerate(("C1", "C2", "C3"), start=1):
@@ -116,6 +128,30 @@ def test_persistence_counts_flip_reversion_as_chop_within_four_samples() -> None
     assert result.chop_rate == 0.5
     assert result.run_count == 3
     assert result.max_run_samples == 2
+
+
+def test_missing_sample_breaks_persistence_and_chop_chain() -> None:
+    rows = [
+        _row(0, score=10),
+        _row(1, score=None),
+        _row(2, score=-10),
+        _row(3, score=10),
+    ]
+    result = persistence_and_chop(rows, reversion_window_samples=4)
+    assert result.run_count == 3
+    assert result.sign_flip_count == 1
+    assert result.chop_reversion_count == 1
+
+
+def test_timestamp_gap_breaks_persistence_without_counting_flip() -> None:
+    rows = [
+        _row(0, score=10),
+        _row(2, score=-10),
+    ]
+    result = persistence_and_chop(rows)
+    assert result.run_count == 2
+    assert result.sign_flip_count == 0
+    assert result.chop_reversion_count == 0
 
 
 def test_zero_is_its_own_frozen_state() -> None:
