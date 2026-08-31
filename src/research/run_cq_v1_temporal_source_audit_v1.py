@@ -122,8 +122,9 @@ def run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    conn = get_db_connection()
+    conn: Any | None = None
     try:
+        conn = get_db_connection()
         results: list[dict[str, Any]] = []
         with conn.cursor() as cursor:
             audit_asof_ts_utc, history_cutoff_ts_utc = _capture_audit_window(
@@ -183,14 +184,25 @@ def run(args: argparse.Namespace) -> int:
             "production_ranking_changed": 0,
         }
         _write_json(output_path, payload)
+        conn.close()
+        conn = None
         print(
             f"FINISHED runner={RUNNER_NAME} state={state} blockers={','.join(blockers) or 'none'} "
             f"sector_context_state={sector_state} sector_blockers={','.join(sector_blockers) or 'none'}",
             flush=True,
         )
         return 0
-    finally:
-        conn.close()
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        print(
+            f"FAILED runner={RUNNER_NAME} error_type={type(exc).__name__}",
+            flush=True,
+        )
+        raise
 
 
 def main() -> int:
