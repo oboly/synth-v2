@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -21,17 +22,28 @@ from src.research.cq_v1_model_candidate_v1 import (
 
 RUNNER_NAME = "cq_v1_holdout_comparison_v1"
 DEFAULT_PROTOCOL = "config/research/cq_v1_holdout_comparison_v1.yaml"
+MANIFEST_NAME = "cq_v1_holdout_input_manifest_v1"
+MANIFEST_VERSION = "1.0.0"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Frozen CQ v1 cross-sectional holdout comparison")
     parser.add_argument("--protocol", default=DEFAULT_PROTOCOL)
+    parser.add_argument("--frozen-manifest-json", required=True)
     parser.add_argument("--forward-outcomes-jsonl", required=True)
     parser.add_argument("--forward-summary-json", required=True)
     parser.add_argument("--cq-v1-scores-jsonl", required=True)
     parser.add_argument("--cq-v1-score-summary-json", required=True)
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args(argv)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -70,7 +82,64 @@ def _load_protocol(path: Path) -> dict[str, Any]:
         raise ValueError("required CQ v1 candidate family mismatch")
     if tuple(protocol.get("holdout", {}).get("required_horizons", [])) != ("1h", "4h", "24h"):
         raise ValueError("required horizon family mismatch")
+    if protocol.get("inputs", {}).get("frozen_manifest_name") != MANIFEST_NAME:
+        raise ValueError("frozen manifest name mismatch")
+    if protocol.get("inputs", {}).get("frozen_manifest_version") != MANIFEST_VERSION:
+        raise ValueError("frozen manifest version mismatch")
+    rule = protocol.get("promotion_rule", {})
+    if set(rule) != {"minimum_candidate_sample", "material_spearman_delta"}:
+        raise ValueError("promotion_rule schema mismatch")
     return protocol
+
+
+def _validate_manifest(
+    protocol: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    outcomes_path: Path,
+    forward_summary_path: Path,
+    scores_path: Path,
+    score_summary_path: Path,
+) -> None:
+    expected_fields = {
+        "manifest_name",
+        "manifest_version",
+        "protocol_version",
+        "observation_asof_ts_utc",
+        "score_row_count",
+        "outcome_row_count",
+        "model_family_version",
+        "coverage_artifact_sha256",
+        "forward_outcomes_jsonl_sha256",
+        "forward_summary_json_sha256",
+        "cq_v1_scores_jsonl_sha256",
+        "cq_v1_score_summary_json_sha256",
+    }
+    if set(manifest) != expected_fields:
+        raise ValueError("FROZEN_MANIFEST_SCHEMA_MISMATCH")
+    frozen = protocol["holdout"]["frozen_population"]
+    expected_values = {
+        "manifest_name": MANIFEST_NAME,
+        "manifest_version": MANIFEST_VERSION,
+        "protocol_version": protocol["protocol_version"],
+        "observation_asof_ts_utc": protocol["holdout"]["observation_asof_ts_utc"],
+        "score_row_count": int(frozen["score_row_count"]),
+        "outcome_row_count": int(frozen["outcome_row_count"]),
+        "model_family_version": MODEL_FAMILY_VERSION,
+        "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+    }
+    for field, expected in expected_values.items():
+        if manifest.get(field) != expected:
+            raise ValueError(f"FROZEN_MANIFEST_{field.upper()}_MISMATCH")
+    actual_hashes = {
+        "forward_outcomes_jsonl_sha256": _sha256_file(outcomes_path),
+        "forward_summary_json_sha256": _sha256_file(forward_summary_path),
+        "cq_v1_scores_jsonl_sha256": _sha256_file(scores_path),
+        "cq_v1_score_summary_json_sha256": _sha256_file(score_summary_path),
+    }
+    for field, actual in actual_hashes.items():
+        if manifest.get(field) != actual:
+            raise ValueError(f"FROZEN_MANIFEST_{field.upper()}_MISMATCH")
 
 
 def _validate_frozen_score_contract(rows: list[dict[str, Any]]) -> None:
@@ -168,6 +237,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def run(args: argparse.Namespace) -> int:
     protocol_path = Path(args.protocol)
+    manifest_path = Path(args.frozen_manifest_json)
     outcomes_path = Path(args.forward_outcomes_jsonl)
     forward_summary_path = Path(args.forward_summary_json)
     scores_path = Path(args.cq_v1_scores_jsonl)
@@ -175,7 +245,7 @@ def run(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
 
     print(
-        f"STARTED runner={RUNNER_NAME} protocol={protocol_path} outcomes={outcomes_path} scores={scores_path}",
+        f"STARTED runner={RUNNER_NAME} protocol={protocol_path} manifest={manifest_path} outcomes={outcomes_path} scores={scores_path}",
         flush=True,
     )
     print(
@@ -185,8 +255,6 @@ def run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    # A non-empty output directory may itself be an immutable input-artifact
-    # directory. Refuse it before entering any path that writes terminal output.
     if output_dir.exists() and any(output_dir.iterdir()):
         print(f"FAILED runner={RUNNER_NAME} reason=OUTPUT_DIRECTORY_NOT_EMPTY writes=0", flush=True)
         raise ValueError("OUTPUT_DIRECTORY_NOT_EMPTY")
@@ -194,6 +262,15 @@ def run(args: argparse.Namespace) -> int:
     terminal_state = "FAILED"
     try:
         protocol = _load_protocol(protocol_path)
+        manifest = _load_json(manifest_path)
+        _validate_manifest(
+            protocol,
+            manifest,
+            outcomes_path=outcomes_path,
+            forward_summary_path=forward_summary_path,
+            scores_path=scores_path,
+            score_summary_path=score_summary_path,
+        )
         print("PHASE_START name=load_artifacts", flush=True)
         outcome_rows = _load_jsonl(outcomes_path)
         score_rows = _load_jsonl(scores_path)
@@ -234,6 +311,7 @@ def run(args: argparse.Namespace) -> int:
             "holdout_asof_ts_utc": protocol["holdout"]["observation_asof_ts_utc"],
             "model_family_version": MODEL_FAMILY_VERSION,
             "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+            "frozen_manifest_sha256": _sha256_file(manifest_path),
             "verdict": verdict,
             "evaluation": evaluation,
             "verdict_evidence": verdict_evidence,
