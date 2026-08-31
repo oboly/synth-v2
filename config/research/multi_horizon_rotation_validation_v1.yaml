@@ -48,6 +48,7 @@ forward_response:
   horizons_minutes: [15, 60, 240, 1440]
   rule: exact_boundary_log_return
   missing_boundary: INSUFFICIENT_DATA
+  phase_boundary_policy: endpoint_strictly_before_requested_phase_end
 
 metrics:
   minimum_paired_sample_count:
