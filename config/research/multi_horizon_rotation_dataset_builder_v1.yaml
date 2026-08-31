@@ -39,6 +39,14 @@ phases:
   forward_label_endpoint_must_be_strictly_before_phase_end: true
   rotation_v1_bulk_read_end: exclusive_phase_end
 
+runtime:
+  source_batching: one_bounded_query_per_utc_asof_day
+  chunk_lookback_hours: 36
+  chunk_forward_hours: 24
+  chunk_forward_cap: last_15m_close_strictly_before_phase_end
+  per_asof_replay_slice: past_only_within_36h
+  artifact_write: streamed_atomic_partial_then_replace
+
 candidate_replay:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
   candidates: [C1, C2, C3]
