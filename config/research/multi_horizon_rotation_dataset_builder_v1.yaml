@@ -25,6 +25,13 @@ source_span:
   contiguous_candle_validation: delegated_to_candidate_replay_per_observation
   split: [0.60, 0.20, 0.20]
 
+asset_universe:
+  rule: first_canonical_15m_close_at_or_before_observation_asof
+  future_listing_backfill: false
+  current_universe_backfill: false
+  previously_observed_but_missing_recent_candles: emit_insufficient_data_row
+  delisting_future_knowledge_used_for_observation_membership: false
+
 phases:
   allowed: [discovery, validation]
   final_holdout_runner_access: DENY
