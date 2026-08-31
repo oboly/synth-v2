@@ -52,10 +52,7 @@ class RotationV1PitIndex:
         self._points: dict[int, tuple[RotationV1Point, ...]] = {}
         for asset_id, raw_points in points_by_asset.items():
             points = tuple(sorted(raw_points, key=lambda item: ensure_utc(item.asof_ts)))
-            timestamps = tuple(ensure_utc(item.asof_ts) for item in points)
-            if len(set(timestamps)) != len(timestamps):
-                raise ValueError(f"duplicate Rotation V1 PIT timestamp for asset_id={asset_id}")
-            self._timestamps[int(asset_id)] = timestamps
+            self._timestamps[int(asset_id)] = tuple(ensure_utc(item.asof_ts) for item in points)
             self._points[int(asset_id)] = points
 
     def latest_at_or_before(self, *, asset_id: int, asof_ts: datetime) -> RotationV1Point | None:
@@ -85,16 +82,42 @@ def floor_to_15m(value: datetime) -> datetime:
     return datetime.fromtimestamp(rounded, tz=UTC)
 
 
-def _nth_smallest(values: Sequence[datetime], n: int) -> datetime:
-    if n < 1 or len(values) < n:
-        raise ValueError("insufficient source coverage for minimum cohort")
-    return sorted(values)[n - 1]
+def _longest_minimum_cohort_region(
+    *, intervals: Sequence[tuple[datetime, datetime]], minimum_cohort: int
+) -> tuple[datetime, datetime]:
+    """Return longest half-open 15m-grid region with >= minimum_cohort intervals active."""
+    events: dict[datetime, int] = {}
+    for start, last_inclusive in intervals:
+        start = ceil_to_15m(start)
+        last_inclusive = floor_to_15m(last_inclusive)
+        if last_inclusive < start:
+            continue
+        end_exclusive = last_inclusive + SAMPLE_INTERVAL
+        events[start] = events.get(start, 0) + 1
+        events[end_exclusive] = events.get(end_exclusive, 0) - 1
+    if not events:
+        raise ValueError("no eligible source coverage intervals")
 
+    times = sorted(events)
+    active = 0
+    region_start: datetime | None = None
+    regions: list[tuple[datetime, datetime]] = []
+    for index, ts in enumerate(times):
+        active += events[ts]
+        next_ts = times[index + 1] if index + 1 < len(times) else None
+        if active >= minimum_cohort and next_ts is not None and next_ts > ts:
+            if region_start is None:
+                region_start = ts
+        elif region_start is not None:
+            regions.append((region_start, ts))
+            region_start = None
+    if region_start is not None:
+        regions.append((region_start, times[-1]))
 
-def _nth_largest(values: Sequence[datetime], n: int) -> datetime:
-    if n < 1 or len(values) < n:
-        raise ValueError("insufficient source coverage for minimum cohort")
-    return sorted(values, reverse=True)[n - 1]
+    valid = [region for region in regions if region[1] > region[0]]
+    if not valid:
+        raise ValueError("no contiguous source span satisfies minimum cohort")
+    return max(valid, key=lambda item: (item[1] - item[0], -item[0].timestamp()))
 
 
 def derive_common_source_span(
@@ -110,8 +133,8 @@ def derive_common_source_span(
     if len(rows) < minimum_cohort:
         raise ValueError("insufficient assets for minimum cohort")
 
-    eligible_starts: list[datetime] = []
-    eligible_ends: list[datetime] = []
+    rotation_floor = ceil_to_15m(rotation_v1_first_ts)
+    intervals: list[tuple[datetime, datetime]] = []
     seen_assets: set[int] = set()
     for row in rows:
         if row.asset_id in seen_assets:
@@ -121,15 +144,10 @@ def derive_common_source_span(
         last = ensure_utc(row.last_close_ts)
         if last < first:
             raise ValueError(f"invalid coverage interval for asset_id={row.asset_id}")
-        eligible_starts.append(first + max_candidate_lookback)
-        eligible_ends.append(last)
+        eligible_start = max(first + max_candidate_lookback, rotation_floor)
+        intervals.append((eligible_start, last))
 
-    candidate_start = _nth_smallest(eligible_starts, minimum_cohort)
-    candidate_end = _nth_largest(eligible_ends, minimum_cohort)
-    start = ceil_to_15m(max(candidate_start, ensure_utc(rotation_v1_first_ts)))
-    end = floor_to_15m(candidate_end)
-    if end <= start:
-        raise ValueError("common source span is empty after coverage constraints")
+    start, end = _longest_minimum_cohort_region(intervals=intervals, minimum_cohort=minimum_cohort)
 
     # Freeze the split here as a validation of span sufficiency. The caller may
     # serialize the returned boundaries, but cannot choose alternate proportions.
@@ -151,7 +169,7 @@ def split_manifest_payload(span: SourceSpan) -> dict[str, object]:
 
     return {
         "manifest_version": "1.0.0",
-        "source_span_method": "minimum_cohort_coverage_envelope_plus_rotation_v1_first_pit",
+        "source_span_method": "longest_contiguous_minimum_cohort_coverage_plus_rotation_v1_first_pit",
         "minimum_cohort": span.minimum_cohort,
         "coverage_asset_count": span.coverage_asset_count,
         "source_span": {"start": iso(span.start), "end": iso(span.end)},
