@@ -73,7 +73,7 @@ metrics:
     negative: score_lt_0
   persistence:
     unit: consecutive_sample_count
-    group_by: [candidate_id, asset_id]
+    group_by: [candidate_id, venue, asset_id]
     break_on_missing_sample: true
     break_on_timestamp_gap: true
   chop:
@@ -82,6 +82,7 @@ metrics:
   lead_lag:
     reference: B1
     event: sign_state_change
+    group_by: [candidate_id, venue, asset_id]
     pair_rule: nearest_unmatched_reference_turn
     max_match_lag_samples: 16
     tie_break: earlier_reference_turn
