@@ -185,10 +185,14 @@ def run(args: argparse.Namespace) -> int:
         flush=True,
     )
 
+    # A non-empty output directory may itself be an immutable input-artifact
+    # directory. Refuse it before entering any path that writes terminal output.
+    if output_dir.exists() and any(output_dir.iterdir()):
+        print(f"FAILED runner={RUNNER_NAME} reason=OUTPUT_DIRECTORY_NOT_EMPTY writes=0", flush=True)
+        raise ValueError("OUTPUT_DIRECTORY_NOT_EMPTY")
+
     terminal_state = "FAILED"
     try:
-        if output_dir.exists() and any(output_dir.iterdir()):
-            raise ValueError("OUTPUT_DIRECTORY_NOT_EMPTY")
         protocol = _load_protocol(protocol_path)
         print("PHASE_START name=load_artifacts", flush=True)
         outcome_rows = _load_jsonl(outcomes_path)
