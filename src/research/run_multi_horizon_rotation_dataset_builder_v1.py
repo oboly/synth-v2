@@ -16,7 +16,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from dotenv import load_dotenv
 
@@ -53,6 +53,7 @@ FORWARD_HORIZONS = {
 }
 ROTATION_V1_MODEL_VERSION = "1.0"
 ROTATION_V1_FETCH_BATCH_SIZE = 5000
+CANDLE_FETCH_BATCH_SIZE = 5000
 
 
 def emit(message: str) -> None:
@@ -421,9 +422,12 @@ def fetch_candles_for_chunk(
     venue: str,
     chunk_asofs: list[datetime],
     phase_end: datetime,
+    batch_size: int = CANDLE_FETCH_BATCH_SIZE,
 ) -> tuple[dict[int, list[Candle]], dict[int, dict[datetime, Decimal]], int]:
     if not chunk_asofs:
         return {}, {}, 0
+    if batch_size < 1:
+        raise ValueError("candle fetch batch_size must be >= 1")
     first_asof = ensure_utc(chunk_asofs[0])
     last_asof = ensure_utc(chunk_asofs[-1])
     start = first_asof - MAX_LOOKBACK
@@ -437,25 +441,29 @@ def fetch_candles_for_chunk(
       AND close_ts_utc <= %s
     ORDER BY asset_id, close_ts_utc
     """
-    with conn.cursor() as cur:
-        cur.execute(sql, (venue, start.replace(tzinfo=None), latest_needed.replace(tzinfo=None)))
-        rows = cur.fetchall()
-
     candles: dict[int, list[Candle]] = {}
     closes: dict[int, dict[datetime, Decimal]] = {}
-    for row in rows:
-        asset_id = int(row["asset_id"])
-        ts = parse_ts(row["close_ts_utc"])
-        close = Decimal(str(row["close_price"]))
-        closes.setdefault(asset_id, {})[ts] = close
-        candles.setdefault(asset_id, []).append(
-            Candle(
-                close_ts_utc=ts,
-                close_price=close,
-                volume_base=Decimal(str(row["volume_base"])),
-            )
-        )
-    return candles, closes, len(rows)
+    row_count = 0
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue, start.replace(tzinfo=None), latest_needed.replace(tzinfo=None)))
+        while True:
+            rows = cur.fetchmany(batch_size)
+            if not rows:
+                break
+            row_count += len(rows)
+            for row in rows:
+                asset_id = int(row["asset_id"])
+                ts = parse_ts(row["close_ts_utc"])
+                close = Decimal(str(row["close_price"]))
+                closes.setdefault(asset_id, {})[ts] = close
+                candles.setdefault(asset_id, []).append(
+                    Candle(
+                        close_ts_utc=ts,
+                        close_price=close,
+                        volume_base=Decimal(str(row["volume_base"])),
+                    )
+                )
+    return candles, closes, row_count
 
 
 def replay_candles_at_asof(
@@ -556,7 +564,7 @@ def finalize_artifact_bundle(
     artifact_path: Path,
     summary_path: Path,
     summary: dict[str, object],
-    persist_finished_checkpoint: Any,
+    persist_finished_checkpoint: Callable[[int], None],
 ) -> int:
     """Publish data, summary and FINISHED checkpoint as one recoverable terminal transition."""
     partial_path.replace(artifact_path)
