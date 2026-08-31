@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ RUNNER_NAME = "cq_v1_holdout_comparison_v1"
 DEFAULT_PROTOCOL = "config/research/cq_v1_holdout_comparison_v1.yaml"
 MANIFEST_NAME = "cq_v1_holdout_input_manifest_v1"
 MANIFEST_VERSION = "1.0.0"
+PENDING_MANIFEST_SHA256 = "PENDING_RUNTIME_FREEZE"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -86,10 +88,25 @@ def _load_protocol(path: Path) -> dict[str, Any]:
         raise ValueError("frozen manifest name mismatch")
     if protocol.get("inputs", {}).get("frozen_manifest_version") != MANIFEST_VERSION:
         raise ValueError("frozen manifest version mismatch")
+    manifest_sha = protocol.get("inputs", {}).get("frozen_manifest_sha256")
+    if manifest_sha != PENDING_MANIFEST_SHA256 and not (
+        isinstance(manifest_sha, str) and re.fullmatch(r"[0-9a-f]{64}", manifest_sha)
+    ):
+        raise ValueError("frozen manifest sha256 invalid")
     rule = protocol.get("promotion_rule", {})
     if set(rule) != {"minimum_candidate_sample", "material_spearman_delta"}:
         raise ValueError("promotion_rule schema mismatch")
     return protocol
+
+
+def _validate_manifest_file_binding(protocol: dict[str, Any], manifest_path: Path) -> str:
+    expected = str(protocol["inputs"]["frozen_manifest_sha256"])
+    if expected == PENDING_MANIFEST_SHA256:
+        raise ValueError("FROZEN_MANIFEST_NOT_YET_PINNED")
+    actual = _sha256_file(manifest_path)
+    if actual != expected:
+        raise ValueError("FROZEN_MANIFEST_FILE_SHA256_MISMATCH")
+    return actual
 
 
 def _validate_manifest(
@@ -262,6 +279,7 @@ def run(args: argparse.Namespace) -> int:
     terminal_state = "FAILED"
     try:
         protocol = _load_protocol(protocol_path)
+        frozen_manifest_sha256 = _validate_manifest_file_binding(protocol, manifest_path)
         manifest = _load_json(manifest_path)
         _validate_manifest(
             protocol,
@@ -311,7 +329,7 @@ def run(args: argparse.Namespace) -> int:
             "holdout_asof_ts_utc": protocol["holdout"]["observation_asof_ts_utc"],
             "model_family_version": MODEL_FAMILY_VERSION,
             "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
-            "frozen_manifest_sha256": _sha256_file(manifest_path),
+            "frozen_manifest_sha256": frozen_manifest_sha256,
             "verdict": verdict,
             "evaluation": evaluation,
             "verdict_evidence": verdict_evidence,
