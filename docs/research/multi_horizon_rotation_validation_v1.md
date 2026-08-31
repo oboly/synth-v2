@@ -73,6 +73,8 @@ final_holdout_inspected = false
 
 Input JSONL is also required to be phase-scoped. Every row must fall inside the requested discovery or validation interval. A mixed artifact containing any row from another phase, including holdout, fails closed before metric evaluation.
 
+Forward labels are purged at every phase boundary: a non-null 15m/1h/4h/24h forward response is allowed only when its exact outcome endpoint is strictly before the requested phase end. Discovery therefore cannot consume validation outcomes, and validation cannot consume final-holdout outcomes.
+
 ## Forward response
 
 Exact-boundary log returns are frozen at:
@@ -180,7 +182,7 @@ A separate bounded dataset-builder slice must still:
 3. attach B0 using the canonical PIT join;
 4. compute exact-boundary B1;
 5. attach exact-boundary 15m/1h/4h/24h forward responses;
-6. emit separate discovery and validation artifacts;
+6. emit separate discovery and validation artifacts with forward labels purged at each phase end;
 7. keep final-holdout rows in a separate inaccessible artifact/path until the final-holdout gate is explicitly opened.
 
 ## Safety
