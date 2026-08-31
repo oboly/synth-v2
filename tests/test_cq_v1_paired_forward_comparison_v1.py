@@ -114,7 +114,7 @@ def test_incomplete_labels_are_excluded_from_metrics() -> None:
     assert summary["horizons"]["1h"]["label_status_counts"] == {"COMPLETE": 1, "INSUFFICIENT_HORIZON_COVERAGE": 1}
 
 
-def test_runner_pins_input_hashes_and_cross_sectional_recommendation(tmp_path: Path) -> None:
+def test_runner_pins_input_hashes_and_cross_sectional_recommendation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     scores = tmp_path / "scores.jsonl"
     outcomes = tmp_path / "outcomes.jsonl"
     scores.write_text(json.dumps(score(1)) + "\n", encoding="utf-8")
@@ -122,6 +122,10 @@ def test_runner_pins_input_hashes_and_cross_sectional_recommendation(tmp_path: P
     out = tmp_path / "out"
     args = runner.parse_args(["--scores-jsonl", str(scores), "--outcomes-jsonl", str(outcomes), "--output-dir", str(out)])
     assert runner.run(args) == 0
+    stdout = capsys.readouterr().out
+    assert "decision_gate=none" in stdout
+    assert "execution_planner=none" in stdout
+    assert "executor=none" in stdout
     summary = json.loads((out / runner.OUTPUT_SUMMARY).read_text(encoding="utf-8"))
     assert len(summary["score_input_sha256"]) == 64
     assert len(summary["outcome_input_sha256"]) == 64
