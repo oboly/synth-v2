@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from src.research.cq_v1_temporal_sampling_v1 import (
     derive_asofs,
@@ -46,6 +48,17 @@ def test_every_asof_belongs_to_exactly_one_chronological_split() -> None:
     assert discovery.isdisjoint(validation)
     assert discovery.isdisjoint(holdout)
     assert validation.isdisjoint(holdout)
+
+
+def test_split_rejects_off_cadence_and_naive_timestamps() -> None:
+    contract = load_contract()
+    off_cadence = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="not a frozen temporal sample"):
+        split_for_asof(off_cadence, contract)
+
+    naive = datetime(2026, 8, 14, 0, 0)
+    with pytest.raises(ValueError, match="timezone-aware UTC"):
+        split_for_asof(naive, contract)
 
 
 def test_contract_preserves_fail_closed_historical_semantics() -> None:
