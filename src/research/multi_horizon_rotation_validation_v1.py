@@ -67,6 +67,11 @@ def ensure_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def is_on_15m_grid(value: datetime) -> bool:
+    value = ensure_utc(value)
+    return value.minute % 15 == 0 and value.second == 0 and value.microsecond == 0
+
+
 def _paired(xs: Iterable[float | None], ys: Iterable[float | None]) -> tuple[list[float], list[float]]:
     left: list[float] = []
     right: list[float] = []
@@ -95,24 +100,42 @@ def pearson(xs: Sequence[float], ys: Sequence[float]) -> float | None:
     return max(-1.0, min(1.0, result))
 
 
-def correlation_with_fisher_ci(
-    xs: Iterable[float | None], ys: Iterable[float | None]
+def _correlation_result(
+    *,
+    sample_count: int,
+    correlation: float | None,
+    controlled_variables: int = 0,
 ) -> CorrelationResult:
-    paired_x, paired_y = _paired(xs, ys)
-    n = len(paired_x)
-    r = pearson(paired_x, paired_y)
-    if r is None:
-        return CorrelationResult(n, None, None, None, None)
-    clipped = max(-0.999999999999, min(0.999999999999, r))
+    if correlation is None or sample_count <= controlled_variables + 3:
+        return CorrelationResult(sample_count, None, None, None, None)
+    clipped = max(-0.999999999999, min(0.999999999999, correlation))
     z = atanh(clipped)
-    se = 1.0 / sqrt(n - 3)
+    effective_n = sample_count - controlled_variables - 3
+    se = 1.0 / sqrt(effective_n)
     lo_z = z - CI_Z * se
     hi_z = z + CI_Z * se
     lo = (exp(2 * lo_z) - 1) / (exp(2 * lo_z) + 1)
     hi = (exp(2 * hi_z) - 1) / (exp(2 * hi_z) + 1)
-    z_null = abs(z) * sqrt(n - 3)
+    z_null = abs(z) * sqrt(effective_n)
     p_approx = 2.0 * (1.0 - 0.5 * (1.0 + erf(z_null / sqrt(2.0))))
-    return CorrelationResult(n, r, lo, hi, max(0.0, min(1.0, p_approx)))
+    return CorrelationResult(
+        sample_count,
+        correlation,
+        lo,
+        hi,
+        max(0.0, min(1.0, p_approx)),
+    )
+
+
+def correlation_with_fisher_ci(
+    xs: Iterable[float | None], ys: Iterable[float | None]
+) -> CorrelationResult:
+    paired_x, paired_y = _paired(xs, ys)
+    return _correlation_result(
+        sample_count=len(paired_x),
+        correlation=pearson(paired_x, paired_y),
+        controlled_variables=0,
+    )
 
 
 def residualize(values: Sequence[float], baseline: Sequence[float]) -> list[float] | None:
@@ -141,16 +164,21 @@ def partial_correlation(
         if not all(isfinite(float(value)) for value in (c, y, b)):
             continue
         triples.append((float(c), float(y), float(b)))
-    if len(triples) < MIN_PAIRED_N:
-        return CorrelationResult(len(triples), None, None, None, None)
+    n = len(triples)
+    if n <= 4:
+        return CorrelationResult(n, None, None, None, None)
     cs = [row[0] for row in triples]
     ys = [row[1] for row in triples]
     bs = [row[2] for row in triples]
     c_resid = residualize(cs, bs)
     y_resid = residualize(ys, bs)
     if c_resid is None or y_resid is None:
-        return CorrelationResult(len(triples), None, None, None, None)
-    return correlation_with_fisher_ci(c_resid, y_resid)
+        return CorrelationResult(n, None, None, None, None)
+    return _correlation_result(
+        sample_count=n,
+        correlation=pearson(c_resid, y_resid),
+        controlled_variables=1,
+    )
 
 
 def holm_bonferroni(p_values: Mapping[str, float | None], *, alpha: float = 0.05) -> dict[str, bool | None]:
@@ -363,21 +391,21 @@ def derive_chronological_split(
 ) -> dict[str, tuple[datetime, datetime]]:
     start_utc = ensure_utc(start)
     end_utc = ensure_utc(end)
+    if not is_on_15m_grid(start_utc) or not is_on_15m_grid(end_utc):
+        raise ValueError("split span boundaries must be on the 15m grid")
     if end_utc <= start_utc:
         raise ValueError("end must be after start")
     if discovery_fraction <= 0 or validation_fraction <= 0 or discovery_fraction + validation_fraction >= 1:
         raise ValueError("invalid split fractions")
-    total_seconds = int((end_utc - start_utc).total_seconds())
-    grid_seconds = 15 * 60
-    total_steps = total_seconds // grid_seconds
+    total_steps = int((end_utc - start_utc).total_seconds()) // int(SAMPLE_INTERVAL.total_seconds())
     if total_steps < 5:
         raise ValueError("insufficient replay-safe span")
     discovery_steps = int(total_steps * discovery_fraction)
     validation_steps = int(total_steps * validation_fraction)
     if discovery_steps <= 0 or validation_steps <= 0 or discovery_steps + validation_steps >= total_steps:
         raise ValueError("split phases must each contain at least one 15m step")
-    discovery_end = start_utc + timedelta(seconds=discovery_steps * grid_seconds)
-    validation_end = discovery_end + timedelta(seconds=validation_steps * grid_seconds)
+    discovery_end = start_utc + SAMPLE_INTERVAL * discovery_steps
+    validation_end = discovery_end + SAMPLE_INTERVAL * validation_steps
     return {
         "discovery": (start_utc, discovery_end),
         "validation": (discovery_end, validation_end),
