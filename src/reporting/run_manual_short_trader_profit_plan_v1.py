@@ -49,6 +49,9 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
 from src.reporting.account_wallet_dashboard_v1 import classify_wallet_freshness
 from src.reporting.dashboard_style_v1 import cockpit_nav
+from src.reporting.execution_capability_reporting_adapter_v1 import (
+    fetch_execution_mode_by_symbol,
+)
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
@@ -1806,6 +1809,31 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
         )
 
 
+def resolve_execution_mode_by_symbol_for_cards(
+    cards: list[ProfitPlanCard],
+) -> dict[str, str]:
+    """Read-only resolution of Issue #642 canonical execution capability.
+
+    Opens a read-only DB connection, resolves ``asset.execution_mode`` for
+    every symbol present in ``cards`` via the #642 reporting adapter, and
+    always closes the connection. A read failure must not fabricate a
+    non-automated mode -- it is reported to stderr and the caller falls back
+    to ``{}``, which leaves every card at its ``ProfitPlanCard`` default of
+    ``AUTOMATED``. Must never encode a symbol-specific branch.
+    """
+    try:
+        conn = get_connection()
+        try:
+            return fetch_execution_mode_by_symbol(
+                conn, symbols={card.symbol for card in cards}
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[warn] execution capability read failed: {exc}", file=sys.stderr)
+        return {}
+
+
 def main() -> int:
     writer_instance_id = str(uuid.uuid4())
     snapshot_render_id = str(uuid.uuid4())
@@ -2020,14 +2048,13 @@ def main() -> int:
         core_sensor_markets=core_sensor_markets,
     )
 
-    # Issue #638: generic, instrument-agnostic execution capability overlay.
-    # execution_mode_by_symbol is intentionally empty here -- this runner does
-    # not yet read the canonical execution-capability source (owned by the
-    # separate #638 core implementation track). Every card therefore stays at
-    # its ProfitPlanCard default of AUTOMATED, so this call is a no-op until a
-    # canonical resolver is wired in; existing automated markets are
-    # unaffected. Do not special-case any symbol here.
-    cards = apply_execution_capability_overlay(cards, execution_mode_by_symbol={})
+    # Issue #642: generic, instrument-agnostic execution capability overlay,
+    # resolved from the canonical asset.execution_mode source via the #642
+    # read-only reporting adapter. Do not special-case any symbol here.
+    execution_mode_by_symbol = resolve_execution_mode_by_symbol_for_cards(cards)
+    cards = apply_execution_capability_overlay(
+        cards, execution_mode_by_symbol=execution_mode_by_symbol
+    )
 
     # Issue #489: truthful per-symbol Fib coverage classification. Read-only
     # composition over the overlay facts apply_portfolio_account_evidence()
