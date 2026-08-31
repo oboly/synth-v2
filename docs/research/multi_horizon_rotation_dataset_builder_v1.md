@@ -30,9 +30,17 @@ For one venue:
 6. represent its end as the exclusive 15m boundary after the last included as-of;
 7. derive exactly 60% discovery, 20% validation and 20% final holdout using the frozen validation contract.
 
-The selected source end is then used as a historical cutoff to recompute first/last candle coverage. The manifest persists a deterministic SHA-256 over that frozen coverage plus the resulting span/splits.
+The selected source end is then used as a historical cutoff to recompute first/last candle coverage. The manifest persists a deterministic SHA-256 over that frozen **coverage envelope** plus the resulting span/splits.
 
-`split_manifest_v1.json` is write-once for the research run. Later discovery/validation invocations must reuse it. They re-read source availability only through the frozen source end and fail closed if the resulting coverage hash, venue, span or split differs. New candles after the frozen source end cannot move the split.
+`split_manifest_v1.json` is write-once for the research run. Later discovery/validation invocations must reuse it. They re-read source availability only through the frozen source end and fail closed if the resulting coverage-envelope hash, venue, span or split differs. New candles after the frozen source end cannot move the split.
+
+### Drift-detection scope
+
+Dataset Builder v1 detects **coverage-envelope drift only**. The frozen hash covers per-asset first/last canonical 15m timestamps within the frozen source end.
+
+It does **not** claim to detect arbitrary content drift inside that envelope. For example, an interior candle correction/removal that leaves first/last timestamps unchanged, or a historical Rotation V1 row correction, is not covered by this manifest hash.
+
+That distinction is intentional and explicit. Full bounded source-content provenance/integrity is a separate research-source concern and must be resolved before any final-holdout execution that requires immutable source-content identity. This builder must not silently claim full historical-source immutability from an envelope hash.
 
 The coverage envelope does not replace per-observation continuity checks. `multi_horizon_rotation_replay_v1.py` still validates exact window boundaries and contiguous candles for every candidate observation.
 
