@@ -8,6 +8,8 @@ source:
   candle_table: obs_market_candle
   candle_interval: 15m
   candle_fields: [asset_id, close_ts_utc, close_price, volume_base]
+  candle_fetch_mode: bounded_fetchmany
+  candle_fetch_batch_size: 5000
   rotation_v1_snapshot_table: market_rotation_pressure_snapshot_v1
   rotation_v1_observation_table: market_rotation_pressure_observation_v1
   rotation_v1_model_version: "1.0"
