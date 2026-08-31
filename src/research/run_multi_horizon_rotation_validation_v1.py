@@ -16,6 +16,7 @@ from typing import Any
 from src.research.multi_horizon_rotation_validation_v1 import (
     ValidationRow,
     ensure_utc,
+    is_on_15m_grid,
     serializable_validation_summary,
 )
 
@@ -54,16 +55,31 @@ def load_split_manifest(path: Path) -> dict[str, Any]:
     splits = raw.get("splits")
     if not isinstance(splits, dict):
         raise ValueError("split manifest requires splits object")
+
+    parsed: dict[str, tuple[datetime, datetime]] = {}
     for phase in ("discovery", "validation", "final_holdout"):
         values = splits.get(phase)
         if not isinstance(values, dict) or "start" not in values or "end" not in values:
             raise ValueError(f"split manifest missing {phase} start/end")
-    discovery_end = parse_ts(splits["discovery"]["end"])
-    validation_start = parse_ts(splits["validation"]["start"])
-    validation_end = parse_ts(splits["validation"]["end"])
-    holdout_start = parse_ts(splits["final_holdout"]["start"])
-    if discovery_end != validation_start or validation_end != holdout_start:
-        raise ValueError("split manifest phases must be contiguous")
+        start = parse_ts(values["start"])
+        end = parse_ts(values["end"])
+        if not is_on_15m_grid(start) or not is_on_15m_grid(end):
+            raise ValueError(f"split manifest {phase} boundaries must be on 15m grid")
+        if end <= start:
+            raise ValueError(f"split manifest {phase} end must be after start")
+        parsed[phase] = (start, end)
+
+    if parsed["discovery"][1] != parsed["validation"][0]:
+        raise ValueError("split manifest discovery/validation must be contiguous")
+    if parsed["validation"][1] != parsed["final_holdout"][0]:
+        raise ValueError("split manifest validation/holdout must be contiguous")
+    if not (
+        parsed["discovery"][0]
+        < parsed["discovery"][1]
+        < parsed["validation"][1]
+        < parsed["final_holdout"][1]
+    ):
+        raise ValueError("split manifest phases must be strictly chronological")
     return raw
 
 
@@ -77,11 +93,14 @@ def load_rows(path: Path) -> list[ValidationRow]:
             raw = json.loads(line)
             if not isinstance(raw, dict):
                 raise ValueError(f"JSONL line {line_number} must be an object")
+            asof_ts = parse_ts(raw["asof_ts"])
+            if not is_on_15m_grid(asof_ts):
+                raise ValueError(f"JSONL line {line_number} asof_ts must be on 15m grid")
             rows.append(
                 ValidationRow(
                     venue=str(raw["venue"]),
                     asset_id=int(raw["asset_id"]),
-                    asof_ts=parse_ts(raw["asof_ts"]),
+                    asof_ts=asof_ts,
                     candidate_id=str(raw["candidate_id"]),
                     candidate_score=(None if raw.get("candidate_score") is None else float(raw["candidate_score"])),
                     b0_score=(None if raw.get("b0_score") is None else float(raw["b0_score"])),
