@@ -1,0 +1,86 @@
+protocol_name: cq_v1_holdout_comparison_v1
+protocol_version: 1.0.0
+parent_issue: 568
+phase_issue: 620
+
+holdout:
+  design: frozen_single_cross_section
+  reason: >-
+    The frozen Phase 2C population is one 2026-08-26T20:15:47Z cross-section,
+    so chronological train/validation/holdout splitting is not identifiable.
+    The entire frozen cross-section is therefore treated as the first untouched
+    cross-sectional holdout because CQ v1 transforms and weights were frozen
+    before forward outcomes were inspected.
+  observation_asof_ts_utc: '2026-08-26T20:15:47Z'
+  required_horizons: [1h, 4h, 24h]
+
+inputs:
+  forward_outcome_runner: entry_quality_forward_validation_v1
+  score_runner: cq_v1_score_materialization_v1
+  required_identity_fields:
+    - shadow_id
+    - asset_id
+    - venue
+    - evidence_key
+    - cq_model_version
+  required_score_candidates:
+    - cq_v1_mrp_balanced_v1
+    - cq_v1_mrp_anchor_v1
+
+metrics:
+  score_families:
+    - ppp_pct
+    - trade_quality_score
+    - selection_score
+    - cq_v0
+    - entry_strength_v0
+    - cq_v1_mrp_balanced_v1
+    - cq_v1_mrp_anchor_v1
+    - entry_strength_cq_v1_mrp_balanced_v1
+    - entry_strength_cq_v1_mrp_anchor_v1
+  outcome_fields:
+    - forward_return_pct
+    - mfe_pct
+    - mae_pct
+  correlation:
+    - pearson
+    - spearman
+  buckets: 5
+
+eligibility:
+  candidate_state_required: AVAILABLE
+  outcome_status_required: AVAILABLE
+  identical_sample_comparison: true
+  ppp_kind_cohorts_separate: true
+  non_finite: reject
+  duplicate_identity: reject
+  target_outcomes: unavailable_no_canonical_target_price
+
+promotion_rule:
+  minimum_candidate_sample: 100
+  material_spearman_delta: 0.02
+  rejection_horizon_count: 2
+  shadow_accept_horizon_count: 2
+  ranking_candidate_requires_all_horizons: true
+  ranking_candidate_requires_positive_delta_vs:
+    - cq_v0
+    - selection_score
+  ranking_candidate_requires_nonnegative_top_bucket_return_all_horizons: true
+  verdict_order:
+    - RANKING_PROMOTION_CANDIDATE
+    - CQ_V1_SHADOW_ACCEPTED
+    - REJECT
+    - RESEARCH_FURTHER
+
+safety:
+  research_only: 1
+  market_only: 1
+  db_writes: 0
+  production_ranking_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
