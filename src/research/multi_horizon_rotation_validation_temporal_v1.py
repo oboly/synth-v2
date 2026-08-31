@@ -98,16 +98,16 @@ def lead_lag_vs_b1(rows: Sequence[ValidationRow]) -> LeadLagResult:
     candidate_ids = {row.candidate_id for row in rows}
     if len(candidate_ids) > 1:
         raise ValueError("lead_lag_vs_b1 requires one candidate_id")
-    by_asset: dict[int, list[ValidationRow]] = {}
+    by_market: dict[tuple[str, int], list[ValidationRow]] = {}
     for row in rows:
-        by_asset.setdefault(row.asset_id, []).append(row)
+        by_market.setdefault((row.venue, row.asset_id), []).append(row)
 
     candidate_turn_count = 0
     reference_turn_count = 0
     deltas: list[int] = []
-    for asset_rows in by_asset.values():
-        candidate_turns = _turns(asset_rows, field="candidate_score")
-        reference_turns = _turns(asset_rows, field="b1_return")
+    for market_rows in by_market.values():
+        candidate_turns = _turns(market_rows, field="candidate_score")
+        reference_turns = _turns(market_rows, field="b1_return")
         candidate_turn_count += len(candidate_turns)
         reference_turn_count += len(reference_turns)
         deltas.extend(_pair_turns(candidate_turns, reference_turns))
