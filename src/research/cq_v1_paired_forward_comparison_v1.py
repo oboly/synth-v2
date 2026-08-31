@@ -138,6 +138,11 @@ def pair_rows(scores: Iterable[Mapping[str, Any]], outcomes: Iterable[Mapping[st
                 "metric_unavailable_reasons": reasons,
             }
         )
+    required = {(shadow_id, horizon) for shadow_id in score_by_shadow for horizon in HORIZONS}
+    missing = sorted(required - seen)
+    if missing:
+        shadow_id, horizon = missing[0]
+        raise ValueError(f"shadow_id={shadow_id}:MISSING_OUTCOME_HORIZON:{horizon}")
     return sorted(paired, key=lambda row: (int(row["shadow_id"]), HORIZONS.index(str(row["horizon"]))))
 
 
