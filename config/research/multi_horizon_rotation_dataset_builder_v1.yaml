@@ -24,6 +24,12 @@ source_span:
   boundary_grid: 15m
   contiguous_candle_validation: delegated_to_candidate_replay_per_observation
   split: [0.60, 0.20, 0.20]
+  manifest_write: once_per_output_run
+  later_phase_manifest_policy: reuse_exact_frozen_manifest
+  later_phase_fresh_availability_cutoff: frozen_source_end_exclusive
+  frozen_coverage_fingerprint: sha256_asset_first_last_within_frozen_source_end
+  historical_source_drift: fail_closed
+  post_frozen_end_new_candles_change_split: false
 
 asset_universe:
   rule: first_canonical_15m_close_at_or_before_observation_asof
