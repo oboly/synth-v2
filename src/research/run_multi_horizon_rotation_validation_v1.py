@@ -10,6 +10,7 @@ import argparse
 import json
 import time
 from datetime import UTC, datetime
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,15 @@ def parse_ts(value: Any) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def parse_optional_finite_float(value: Any, *, field: str, line_number: int) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if not isfinite(parsed):
+        raise ValueError(f"JSONL line {line_number} {field} must be finite when present")
+    return parsed
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -89,6 +99,7 @@ def load_split_manifest(path: Path) -> dict[str, Any]:
 
 def load_rows(path: Path) -> list[ValidationRow]:
     rows: list[ValidationRow] = []
+    identities: set[tuple[str, int, str, datetime]] = set()
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
@@ -100,20 +111,41 @@ def load_rows(path: Path) -> list[ValidationRow]:
             asof_ts = parse_ts(raw["asof_ts"])
             if not is_on_15m_grid(asof_ts):
                 raise ValueError(f"JSONL line {line_number} asof_ts must be on 15m grid")
+            venue = str(raw["venue"])
+            asset_id = int(raw["asset_id"])
+            candidate_id = str(raw["candidate_id"])
+            identity = (venue, asset_id, candidate_id, asof_ts)
+            if identity in identities:
+                raise ValueError(f"JSONL line {line_number} duplicate validation row identity")
+            identities.add(identity)
             rows.append(
                 ValidationRow(
-                    venue=str(raw["venue"]),
-                    asset_id=int(raw["asset_id"]),
+                    venue=venue,
+                    asset_id=asset_id,
                     asof_ts=asof_ts,
-                    candidate_id=str(raw["candidate_id"]),
-                    candidate_score=(None if raw.get("candidate_score") is None else float(raw["candidate_score"])),
-                    b0_score=(None if raw.get("b0_score") is None else float(raw["b0_score"])),
+                    candidate_id=candidate_id,
+                    candidate_score=parse_optional_finite_float(
+                        raw.get("candidate_score"), field="candidate_score", line_number=line_number
+                    ),
+                    b0_score=parse_optional_finite_float(
+                        raw.get("b0_score"), field="b0_score", line_number=line_number
+                    ),
                     b0_pressure_state=(None if raw.get("b0_pressure_state") is None else str(raw["b0_pressure_state"])),
-                    b1_return=(None if raw.get("b1_return") is None else float(raw["b1_return"])),
-                    forward_15m=(None if raw.get("forward_15m") is None else float(raw["forward_15m"])),
-                    forward_1h=(None if raw.get("forward_1h") is None else float(raw["forward_1h"])),
-                    forward_4h=(None if raw.get("forward_4h") is None else float(raw["forward_4h"])),
-                    forward_24h=(None if raw.get("forward_24h") is None else float(raw["forward_24h"])),
+                    b1_return=parse_optional_finite_float(
+                        raw.get("b1_return"), field="b1_return", line_number=line_number
+                    ),
+                    forward_15m=parse_optional_finite_float(
+                        raw.get("forward_15m"), field="forward_15m", line_number=line_number
+                    ),
+                    forward_1h=parse_optional_finite_float(
+                        raw.get("forward_1h"), field="forward_1h", line_number=line_number
+                    ),
+                    forward_4h=parse_optional_finite_float(
+                        raw.get("forward_4h"), field="forward_4h", line_number=line_number
+                    ),
+                    forward_24h=parse_optional_finite_float(
+                        raw.get("forward_24h"), field="forward_24h", line_number=line_number
+                    ),
                 )
             )
     return rows
