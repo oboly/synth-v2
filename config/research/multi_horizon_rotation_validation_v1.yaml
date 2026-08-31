@@ -1,0 +1,101 @@
+registry_name: multi_horizon_rotation_validation_v1
+registry_version: 1.0.0
+issue: 593
+research_only: true
+
+source:
+  candidate_model_id: multi_horizon_rotation_relative_flow
+  candidate_versions:
+    C1: 1.0.0-c1
+    C2: 1.0.0-c2
+    C3: 1.0.0-c3
+  candidate_interval: 15m
+  rotation_v1_model_version: "1.0"
+  rotation_v1_snapshot_table: market_rotation_pressure_snapshot_v1
+  rotation_v1_observation_table: market_rotation_pressure_observation_v1
+  candle_table: obs_market_candle
+  candle_interval: 15m
+  b2_status: UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE
+
+splits:
+  method: chronological_time_fraction
+  discovery_fraction: 0.60
+  validation_fraction: 0.20
+  final_holdout_fraction: 0.20
+  boundary_grid: 15m
+  derive_from_common_replay_safe_span: true
+  inspect_final_holdout: false
+
+sampling:
+  asof_step_minutes: 15
+  max_forward_horizon_minutes: 1440
+
+baselines:
+  B0:
+    name: rotation_pressure_v1
+    pit_rule: latest_same_asset_same_venue_model_at_or_before_asof
+    value_field: score_total
+    state_field: pressure_state
+  B1:
+    name: comparable_horizon_log_return
+    rule: exact_boundary_log_return
+    horizon_matches_candidate: true
+  B2:
+    name: canonical_rsi_or_momentum
+    status: UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE
+
+forward_response:
+  horizons_minutes: [15, 60, 240, 1440]
+  rule: exact_boundary_log_return
+  missing_boundary: INSUFFICIENT_DATA
+
+metrics:
+  minimum_paired_sample_count: 4
+  correlation: pearson
+  forward_information_coefficient: pearson
+  confidence_interval:
+    method: fisher_z
+    level: 0.95
+  incremental_utility:
+    method: partial_correlation_residualized_on_baseline
+    baselines: [B0, B1]
+  multiple_comparison:
+    method: holm_bonferroni
+    alpha: 0.05
+    family: candidate_x_forward_horizon_information_coefficients
+  state_definition:
+    positive: score_gt_0
+    zero: score_eq_0
+    negative: score_lt_0
+  persistence:
+    unit: consecutive_sample_count
+    group_by: [candidate_id, asset_id]
+  chop:
+    definition: sign_flip_reverting_within_4_samples
+    reversion_window_samples: 4
+  cross_horizon_correlation:
+    paired_on: [venue, asset_id, asof_ts]
+  regime_stability:
+    group_by_b0_pressure_state: true
+    minimum_group_sample_count: 30
+
+final_holdout_gate:
+  require_frozen_candidate_formulas: true
+  require_frozen_baselines: true
+  require_frozen_eligibility: true
+  require_frozen_metrics: true
+  require_frozen_multiple_comparison: true
+  default_runner_access: DENY
+
+safety:
+  account_awareness: 0
+  selection_engine_production_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  database_writes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  production_runtime_activation: 0
