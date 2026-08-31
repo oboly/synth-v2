@@ -120,6 +120,7 @@ REASON_EVIDENCE_STALE: Final[str] = "EVIDENCE_STALE"
 REASON_EVIDENCE_INSUFFICIENT_DATA: Final[str] = "EVIDENCE_INSUFFICIENT_DATA"
 REASON_EVIDENCE_FRESHNESS_UNKNOWN: Final[str] = "EVIDENCE_FRESHNESS_UNKNOWN"
 REASON_EVIDENCE_STATE_UNRECOGNIZED: Final[str] = "EVIDENCE_STATE_UNRECOGNIZED"
+REASON_EVIDENCE_ASOF_MISSING: Final[str] = "EVIDENCE_ASOF_MISSING"
 
 # --- Derived, horizon-scoped advisory semantics -----------------------------
 #
@@ -254,9 +255,9 @@ def evaluate_horizon_conviction_v1(
 
     Fails closed to ``CONVICTION_INSUFFICIENT_DATA`` on: missing evidence,
     evidence bound to the wrong horizon, research-only/not-replay-safe
-    evidence, non-``FRESH`` freshness, or an unrecognized evidence state.
-    Never raises, never recomputes an indicator, never reads any other
-    horizon's evidence.
+    evidence, a missing ``asof_ts``, non-``FRESH`` freshness, or an
+    unrecognized evidence state. Never raises, never recomputes an
+    indicator, never reads any other horizon's evidence.
     """
     if horizon not in _CANONICAL_HORIZONS:
         raise ValueError(f"UNKNOWN_HORIZON:{horizon}")
@@ -267,6 +268,11 @@ def evaluate_horizon_conviction_v1(
         return _insufficient(horizon, REASON_EVIDENCE_HORIZON_MISMATCH, evidence)
     if not evidence.replay_safe:
         return _insufficient(horizon, REASON_EVIDENCE_NOT_REPLAY_SAFE, evidence)
+    if evidence.asof_ts is None:
+        # A FRESH claim with no as-of timestamp is not replayable and must
+        # not be classified as healthy evidence (docs/architecture/
+        # multi_horizon_signal_contract_v1.md section 3.5).
+        return _insufficient(horizon, REASON_EVIDENCE_ASOF_MISSING, evidence)
 
     if evidence.freshness == FRESHNESS_STALE:
         return _insufficient(horizon, REASON_EVIDENCE_STALE, evidence)

@@ -207,6 +207,16 @@ def test_research_only_evidence_fails_closed() -> None:
     assert result.reason_code == mtc.REASON_EVIDENCE_NOT_REPLAY_SAFE
 
 
+def test_missing_asof_ts_fails_closed_even_when_freshness_claims_fresh() -> None:
+    result = mtc.evaluate_horizon_conviction_v1(
+        mtc.HORIZON_LONG,
+        _evidence(mtc.HORIZON_LONG, freshness=mtc.FRESHNESS_FRESH, asof_ts=None),
+    )
+    assert result.conviction_state == mtc.CONVICTION_INSUFFICIENT_DATA
+    assert result.reason_code == mtc.REASON_EVIDENCE_ASOF_MISSING
+    assert result.derived_state == mtc.CAPITAL_FLOOR_UNKNOWN
+
+
 def test_horizon_mismatched_evidence_fails_closed() -> None:
     wrong_slot_evidence = _evidence(mtc.HORIZON_SHORT, state=mtc.EVIDENCE_STATE_STRONG_POSITIVE)
     result = mtc.evaluate_horizon_conviction_v1(mtc.HORIZON_LONG, wrong_slot_evidence)

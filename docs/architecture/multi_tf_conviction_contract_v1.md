@@ -165,10 +165,11 @@ before a real conviction state is ever derived:
 1. missing evidence (`EVIDENCE_MISSING`);
 2. evidence bound to the wrong horizon slot (`EVIDENCE_HORIZON_MISMATCH`);
 3. `replay_safe=False`, i.e. research-only / not yet accepted (`EVIDENCE_NOT_REPLAY_SAFE`);
-4. `freshness=STALE` (`EVIDENCE_STALE`);
-5. `freshness=INSUFFICIENT_DATA` (`EVIDENCE_INSUFFICIENT_DATA`);
-6. any other non-`FRESH` freshness, including `UNKNOWN` (`EVIDENCE_FRESHNESS_UNKNOWN`);
-7. an evidence `state` outside the known vocabulary (`EVIDENCE_STATE_UNRECOGNIZED`).
+4. `asof_ts=None`, i.e. no as-of timestamp regardless of claimed freshness (`EVIDENCE_ASOF_MISSING`);
+5. `freshness=STALE` (`EVIDENCE_STALE`);
+6. `freshness=INSUFFICIENT_DATA` (`EVIDENCE_INSUFFICIENT_DATA`);
+7. any other non-`FRESH` freshness, including `UNKNOWN` (`EVIDENCE_FRESHNESS_UNKNOWN`);
+8. an evidence `state` outside the known vocabulary (`EVIDENCE_STATE_UNRECOGNIZED`).
 
 ## 5. Non-goals of this slice
 
@@ -197,6 +198,7 @@ before a real conviction state is ever derived:
 | Conflicting horizon evidence stays visible | `test_conflicting_horizon_evidence_remains_visible_not_forced_to_consensus` |
 | No opaque cross-horizon average | `test_output_has_no_aggregate_or_average_field` |
 | Research-only upstream fails closed | `test_research_only_evidence_fails_closed` |
+| Missing `asof_ts` fails closed despite `freshness=FRESH` | `test_missing_asof_ts_fails_closed_even_when_freshness_claims_fresh` |
 | Deterministic reason codes / provenance survive output | `test_healthy_evidence_carries_deterministic_provenance`, `test_composition_is_deterministic_across_repeated_calls` |
 
 ## 7. Safety
