@@ -24,11 +24,14 @@ For one venue:
 
 1. read each asset's first and last persisted canonical `15m` candle;
 2. add the maximum frozen candidate lookback, 36h, to each first-candle timestamp;
-3. candidate start is the 20th-smallest resulting timestamp, enforcing the preregistered minimum cohort of 20 at the coverage-envelope level;
-4. candidate end is the 20th-largest asset last-candle timestamp;
-5. source start is additionally floored by the first canonical Rotation Pressure V1 PIT timestamp for `model_version=1.0`;
-6. start is rounded up and end down to the exact 15m grid;
-7. the existing frozen `derive_chronological_split()` produces exactly 60% discovery, 20% validation, 20% final holdout on the discrete 15m grid.
+3. floor every asset interval start by the first canonical Rotation Pressure V1 PIT timestamp for `model_version=1.0`;
+4. treat each asset as potentially replayable on the exact 15m grid from that eligible start through its last persisted candle;
+5. sweep those intervals and identify contiguous regions where at least 20 assets are simultaneously eligible at the coverage-envelope level;
+6. choose the longest such contiguous region, with the earliest region as deterministic tie-break;
+7. represent the selected end as the exclusive 15m boundary immediately after the last included as-of;
+8. the existing frozen `derive_chronological_split()` produces exactly 60% discovery, 20% validation, 20% final holdout on that discrete 15m grid.
+
+This prevents two disconnected asset groups from being combined into a synthetic common span.
 
 The coverage envelope is intentionally not a substitute for candle continuity. Exact window boundaries and contiguous candles remain validated independently by `multi_horizon_rotation_replay_v1.py` for every candidate observation. Missing evidence remains missing.
 
@@ -43,7 +46,9 @@ validation
 
 There is no `final_holdout` mode.
 
-One invocation writes one phase artifact. Validation reads canonical candles only through the validation phase end. It never requests candles beyond the holdout start.
+One invocation writes one phase artifact. Validation reads canonical candles only through the last 15m boundary strictly before the validation phase end. It never requests candles at or beyond holdout start.
+
+The bulk Rotation V1 read is also phase-scoped and uses an exclusive phase-end cutoff. PIT lookup then selects only source rows at or before each candidate as-of.
 
 Forward labels are purged at every phase boundary:
 
@@ -86,6 +91,8 @@ Fields:
 score_total
 pressure_state
 ```
+
+If multiple canonical observations share the same timestamp, the bulk query order preserves `pressure_obs_id` ordering and the PIT index deterministically selects the last row at that timestamp, matching the canonical latest-row tie principle.
 
 No duplicate Rotation V1 history is created.
 
