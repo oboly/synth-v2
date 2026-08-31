@@ -15,6 +15,7 @@ from typing import Iterable, Mapping, Sequence
 
 MIN_PAIRED_N = 4
 CI_Z = 1.959963984540054
+SAMPLE_INTERVAL = timedelta(minutes=15)
 FORWARD_FIELDS = {
     "15m": "forward_15m",
     "1h": "forward_1h",
@@ -153,15 +154,20 @@ def partial_correlation(
 
 
 def holm_bonferroni(p_values: Mapping[str, float | None], *, alpha: float = 0.05) -> dict[str, bool | None]:
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be between 0 and 1")
+    for value in p_values.values():
+        if value is not None and not 0 <= float(value) <= 1:
+            raise ValueError("p-values must be in [0,1]")
     valid = sorted(
         ((key, value) for key, value in p_values.items() if value is not None),
         key=lambda item: (float(item[1]), item[0]),
     )
     out: dict[str, bool | None] = {key: None for key in p_values}
-    m = len(valid)
+    family_size = len(p_values)
     reject_chain = True
     for index, (key, p_value) in enumerate(valid):
-        threshold = alpha / (m - index)
+        threshold = alpha / (family_size - index)
         reject = reject_chain and float(p_value) <= threshold
         out[key] = reject
         if not reject:
@@ -190,6 +196,8 @@ def _median_numeric(values: Sequence[int]) -> float | None:
 
 
 def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samples: int = 4) -> PersistenceResult:
+    if reversion_window_samples < 1:
+        raise ValueError("reversion_window_samples must be positive")
     by_asset: dict[int, list[ValidationRow]] = {}
     for row in sorted(rows, key=lambda item: (item.asset_id, ensure_utc(item.asof_ts))):
         by_asset.setdefault(row.asset_id, []).append(row)
@@ -198,30 +206,53 @@ def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samp
     flips = 0
     chop_reversions = 0
     for asset_rows in by_asset.values():
-        states = [_state(row.candidate_score) for row in asset_rows]
-        states = [state for state in states if state is not None]
-        if not states:
-            continue
-        current = states[0]
-        run = 1
-        for state in states[1:]:
-            if state == current:
-                run += 1
-            else:
-                run_lengths.append(run)
-                flips += 1
-                current = state
-                run = 1
-        run_lengths.append(run)
+        current_state: int | None = None
+        run = 0
+        previous_ts: datetime | None = None
+        for row in asset_rows:
+            ts = ensure_utc(row.asof_ts)
+            state = _state(row.candidate_score)
+            contiguous = previous_ts is None or ts - previous_ts == SAMPLE_INTERVAL
+            if state is None or not contiguous:
+                if run:
+                    run_lengths.append(run)
+                current_state = None
+                run = 0
+            if state is not None:
+                if current_state is None:
+                    current_state = state
+                    run = 1
+                elif state == current_state:
+                    run += 1
+                else:
+                    run_lengths.append(run)
+                    flips += 1
+                    current_state = state
+                    run = 1
+            previous_ts = ts
+        if run:
+            run_lengths.append(run)
 
-        for idx in range(1, len(states)):
-            previous = states[idx - 1]
-            changed = states[idx]
-            if changed == previous:
+        for idx in range(1, len(asset_rows)):
+            previous_row = asset_rows[idx - 1]
+            changed_row = asset_rows[idx]
+            previous_state = _state(previous_row.candidate_score)
+            changed_state = _state(changed_row.candidate_score)
+            if previous_state is None or changed_state is None or changed_state == previous_state:
                 continue
-            end = min(len(states), idx + reversion_window_samples + 1)
-            if any(states[future_idx] == previous for future_idx in range(idx + 1, end)):
-                chop_reversions += 1
+            if ensure_utc(changed_row.asof_ts) - ensure_utc(previous_row.asof_ts) != SAMPLE_INTERVAL:
+                continue
+            for future_idx in range(idx + 1, min(len(asset_rows), idx + reversion_window_samples + 1)):
+                prior = asset_rows[future_idx - 1]
+                future = asset_rows[future_idx]
+                if ensure_utc(future.asof_ts) - ensure_utc(prior.asof_ts) != SAMPLE_INTERVAL:
+                    break
+                future_state = _state(future.candidate_score)
+                if future_state is None:
+                    break
+                if future_state == previous_state:
+                    chop_reversions += 1
+                    break
 
     return PersistenceResult(
         run_count=len(run_lengths),
