@@ -13,6 +13,11 @@ holdout:
     before forward outcomes were inspected.
   observation_asof_ts_utc: '2026-08-26T20:15:47Z'
   required_horizons: [1h, 4h, 24h]
+  frozen_population:
+    score_row_count: 419
+    last_shadow_id: 619
+    outcome_row_count: 1257
+    outcome_rows_per_horizon: 419
 
 inputs:
   forward_outcome_runner: entry_quality_forward_validation_v1
