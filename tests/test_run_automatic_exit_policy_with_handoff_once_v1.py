@@ -25,8 +25,11 @@ from src.exit_policy.run_automatic_exit_policy_with_handoff_once_v1 import (
 from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
+    insert_asset,
+    insert_balance,
     insert_live_permission,
     insert_market_price,
+    insert_position,
     seed_happy_path,
 )
 from tests.test_automatic_exit_execution_handoff_application_v1 import (
@@ -298,4 +301,140 @@ def test_12_credential_authority_kill_switch_ownership_and_no_broker_calls_uncha
     assert summary.items_staged == 1
     assert summary.items_handoff_denied == 1
     assert summary.items_handed_off == 0
+    assert database.rows == {}
+
+
+# --- Issue #656: MANUAL_RFQ/MANUAL/NONE positions never reach handoff -----
+
+
+def test_mixed_automated_and_manual_rfq_account_never_calls_handoff_for_manual_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A MANUAL_RFQ position (e.g. MDT) alongside an AUTOMATED position must
+    be counted as items_manual_action_required and must never trigger
+    submit_automatic_exit_plan_to_execution_handoff_v1; the AUTOMATED
+    position is staged and handed off unaffected."""
+    import src.exit_policy.run_automatic_exit_policy_with_handoff_once_v1 as runner_module
+
+    conn, now = _seeded_conn()
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL_RFQ")
+    insert_position(
+        conn, account_id=7, asset_id=1372, symbol="MDT",
+        quantity_base=Decimal("40"), available_quantity_base=Decimal("40"),
+    )
+    insert_balance(conn, account_id=7, currency_code="MDT", available_amount=Decimal("40"))
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE account_state_snapshot_run_v1 SET position_snapshot_count = %s WHERE trading_account_id = %s",
+            (2, 7),
+        )
+
+    handoff_calls: list[object] = []
+    real_submit = runner_module.submit_automatic_exit_plan_to_execution_handoff_v1
+
+    def spy_submit(*args, **kwargs):
+        handoff_calls.append((args, kwargs))
+        return real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "submit_automatic_exit_plan_to_execution_handoff_v1", spy_submit)
+
+    database = MemoryDatabase()
+    summary = run_cycle_with_handoff(
+        conn, venue="bitvavo", now=now, executor_identity="shared-executor-v1", runtime_owner="devlap",
+        handoff_repository=_handoff_repository(database),
+    )
+
+    assert summary.items_considered == 2
+    assert summary.items_failed == 0
+    assert not any("POSITION_MARKET_IDENTITY_MISSING" in failure for failure in summary.failures)
+    assert summary.items_manual_action_required == 1
+    assert summary.items_not_executable == 0
+    assert summary.items_staged == 1
+    assert summary.items_handed_off == 1
+    assert any(
+        "MANUAL_ACTION_REQUIRED" in line and "symbol=MDT" in line and "held_quantity_base=40" in line
+        for line in summary.manual_actions
+    )
+    # Exactly one handoff call, for the AUTOMATED BTC item only.
+    assert len(handoff_calls) == 1
+    assert len(database.rows) == 1
+
+
+def test_none_execution_mode_is_not_executable_and_never_calls_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.exit_policy.run_automatic_exit_policy_with_handoff_once_v1 as runner_module
+
+    conn, now = _seeded_conn()
+    insert_asset(conn, asset_id=301, symbol="DELISTED", execution_mode="NONE")
+    insert_position(
+        conn, account_id=7, asset_id=301, symbol="DELISTED",
+        quantity_base=Decimal("5"), available_quantity_base=Decimal("5"),
+    )
+    insert_balance(conn, account_id=7, currency_code="DELISTED", available_amount=Decimal("5"))
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE account_state_snapshot_run_v1 SET position_snapshot_count = %s WHERE trading_account_id = %s",
+            (2, 7),
+        )
+
+    handoff_calls: list[object] = []
+    monkeypatch.setattr(
+        runner_module,
+        "submit_automatic_exit_plan_to_execution_handoff_v1",
+        lambda *args, **kwargs: handoff_calls.append((args, kwargs)),
+    )
+
+    database = MemoryDatabase()
+    summary = run_cycle_with_handoff(
+        conn, venue="bitvavo", now=now, executor_identity="shared-executor-v1", runtime_owner="devlap",
+        handoff_repository=_handoff_repository(database),
+    )
+
+    assert summary.items_failed == 0
+    assert summary.items_not_executable == 1
+    assert summary.items_manual_action_required == 0
+    assert any("NOT_EXECUTABLE" in line and "symbol=DELISTED" in line for line in summary.manual_actions)
+    # The AUTOMATED BTC item still stages and hands off normally.
+    assert summary.items_staged == 1
+    assert summary.items_handed_off == 1
+    assert len(handoff_calls) == 1
+
+
+def test_manual_only_account_makes_zero_handoff_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An account holding only a MANUAL_RFQ position must make zero calls to
+    submit_automatic_exit_plan_to_execution_handoff_v1 and zero handoff
+    repository writes."""
+    import src.exit_policy.run_automatic_exit_policy_with_handoff_once_v1 as runner_module
+
+    now = TS + timedelta(minutes=5)
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM account_position_snapshot WHERE trading_account_id = %s", (7,))
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL_RFQ")
+    insert_position(
+        conn, account_id=7, asset_id=1372, symbol="MDT",
+        quantity_base=Decimal("40"), available_quantity_base=Decimal("40"),
+    )
+    insert_balance(conn, account_id=7, currency_code="MDT", available_amount=Decimal("40"))
+
+    handoff_calls: list[object] = []
+    monkeypatch.setattr(
+        runner_module,
+        "submit_automatic_exit_plan_to_execution_handoff_v1",
+        lambda *args, **kwargs: handoff_calls.append((args, kwargs)),
+    )
+
+    database = MemoryDatabase()
+    summary = run_cycle_with_handoff(
+        conn, venue="bitvavo", now=now, executor_identity="shared-executor-v1", runtime_owner="devlap",
+        handoff_repository=_handoff_repository(database),
+    )
+
+    assert summary.items_considered == 1
+    assert summary.items_manual_action_required == 1
+    assert summary.items_staged == 0
+    assert summary.items_handed_off == 0
+    assert handoff_calls == []
     assert database.rows == {}
