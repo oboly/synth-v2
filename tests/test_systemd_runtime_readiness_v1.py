@@ -1,13 +1,20 @@
 """Issue #585: tests for the read-only systemd runtime readiness contract.
 
-Every test injects a fake probe. None of them ever shell out to real
-systemd.
+Every test injects a fake probe (and, where the local-host check is reached,
+a fake hostname_resolver). None of them ever shell out to real systemd or
+read the real local hostname.
 """
 from __future__ import annotations
+
+import pytest
 
 from src.ops import systemd_runtime_readiness_v1 as readiness
 
 _CONTRACT = readiness.CAPABILITY_UNIT_CONTRACTS["AUTOMATIC_EXIT_POLICY_RUNTIME"]
+
+
+def _on_owner_host() -> str:
+    return _CONTRACT.owner_host
 
 
 def _healthy_state(unit: str) -> readiness.SystemdUnitStateV1:
@@ -41,7 +48,10 @@ def _probe(overrides: dict[str, readiness.SystemdUnitStateV1] | None = None):
 
 def test_healthy_oneshot_service_and_enabled_active_timer_is_ready() -> None:
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe()
+        "AUTOMATIC_EXIT_POLICY_RUNTIME",
+        registry_owner_host="gurkdb",
+        probe=_probe(),
+        hostname_resolver=_on_owner_host,
     )
     assert result.status == readiness.STATUS_READY
     assert result.reason_code == "OK"
@@ -63,6 +73,67 @@ def test_registry_owner_mismatch_blocks() -> None:
     assert result.reason_code == "REGISTRY_OWNER_MISMATCH"
 
 
+def test_wrong_local_host_blocks_without_probing_even_with_identically_named_healthy_units() -> None:
+    """Issue #585 BLOCK fix: a non-owner host must never reach STATUS_READY.
+
+    Registry ownership correctly says ``gurkdb`` and the injected local
+    units are fully healthy -- but this process is (per the injected
+    ``hostname_resolver``) actually running on ``some-other-laptop``. That
+    must fail closed before the local probe is ever consulted, exactly like
+    ``test_registry_owner_mismatch_blocks`` does for registry mismatch.
+    """
+    probed_units: list[str] = []
+
+    def probe(unit: str) -> readiness.SystemdUnitStateV1:
+        probed_units.append(unit)
+        return _healthy_state(unit)
+
+    result = readiness.evaluate_capability_runtime_readiness_v1(
+        "AUTOMATIC_EXIT_POLICY_RUNTIME",
+        registry_owner_host="gurkdb",
+        probe=probe,
+        hostname_resolver=lambda: "some-other-laptop",
+    )
+    assert result.status == readiness.STATUS_NOT_READY
+    assert result.reason_code == "RUNTIME_PROBE_NOT_ON_OWNER_HOST"
+    assert result.detail["expected_owner_host"] == "gurkdb"
+    assert result.detail["observed_local_host"] == "some-other-laptop"
+    assert probed_units == []
+
+
+def test_hostname_resolver_exception_blocks_without_probing() -> None:
+    """A raising ``hostname_resolver`` must fail closed, not propagate.
+
+    Fails with ``HOSTNAME_RESOLUTION_FAILED`` before the local probe is ever
+    consulted, and records only the exception's type -- never its message,
+    which could leak host/environment detail into the artifact.
+    """
+    probed_units: list[str] = []
+
+    def probe(unit: str) -> readiness.SystemdUnitStateV1:
+        probed_units.append(unit)
+        return _healthy_state(unit)
+
+    def _raising_resolver() -> str:
+        raise OSError("some sensitive local network detail")
+
+    result = readiness.evaluate_capability_runtime_readiness_v1(
+        "AUTOMATIC_EXIT_POLICY_RUNTIME",
+        registry_owner_host="gurkdb",
+        probe=probe,
+        hostname_resolver=_raising_resolver,
+    )
+    assert result.status == readiness.STATUS_NOT_READY
+    assert result.reason_code == "HOSTNAME_RESOLUTION_FAILED"
+    assert result.detail == {"exception_type": "OSError"}
+    assert probed_units == []
+
+
+def test_default_hostname_resolver_reads_real_socket_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(readiness.socket, "gethostname", lambda: "fake-real-host")
+    assert readiness.default_hostname_resolver_v1() == "fake-real-host"
+
+
 def test_service_unit_not_found_blocks() -> None:
     overrides = {
         _CONTRACT.service_unit: readiness.SystemdUnitStateV1(
@@ -70,7 +141,7 @@ def test_service_unit_not_found_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "SERVICE_UNIT_NOT_FOUND"
@@ -83,7 +154,7 @@ def test_timer_unit_not_found_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "TIMER_UNIT_NOT_FOUND"
@@ -100,7 +171,7 @@ def test_disabled_timer_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "TIMER_NOT_ENABLED"
@@ -117,7 +188,7 @@ def test_inactive_timer_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "TIMER_NOT_ACTIVE"
@@ -134,7 +205,7 @@ def test_wrong_fragment_path_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "SERVICE_UNIT_WRONG_FRAGMENT_PATH"
@@ -147,7 +218,7 @@ def test_service_probe_error_blocks() -> None:
         return _healthy_state(unit)
 
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=probe
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=probe, hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "SERVICE_PROBE_FAILED"
@@ -160,7 +231,7 @@ def test_timer_probe_error_blocks() -> None:
         return _healthy_state(unit)
 
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=probe
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=probe, hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "TIMER_PROBE_FAILED"
@@ -173,7 +244,7 @@ def test_probe_reported_error_string_blocks() -> None:
         )
     }
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides)
+        "AUTOMATIC_EXIT_POLICY_RUNTIME", registry_owner_host="gurkdb", probe=_probe(overrides), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "SERVICE_PROBE_FAILED"
@@ -181,7 +252,7 @@ def test_probe_reported_error_string_blocks() -> None:
 
 def test_unknown_capability_blocks() -> None:
     result = readiness.evaluate_capability_runtime_readiness_v1(
-        "UNKNOWN_CAPABILITY_ID", registry_owner_host="gurkdb", probe=_probe()
+        "UNKNOWN_CAPABILITY_ID", registry_owner_host="gurkdb", probe=_probe(), hostname_resolver=_on_owner_host
     )
     assert result.status == readiness.STATUS_NOT_READY
     assert result.reason_code == "UNKNOWN_CAPABILITY"
