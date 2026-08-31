@@ -28,7 +28,7 @@ cq_model_version
 cq_v0 equality
 ```
 
-A missing score row, duplicate `(shadow_id,horizon)`, identity mismatch or CQ v0 mismatch fails the comparison.
+A duplicate score `shadow_id`, missing score row, duplicate `(shadow_id,horizon)`, identity mismatch or CQ v0 mismatch fails the comparison.
 
 ## Metrics
 
@@ -92,6 +92,9 @@ db_reads=0
 db_writes=0
 frozen_model_changed=0
 production_ranking_changes=0
+decision_gate=none
+execution_planner=none
+executor=none
 broker_private_calls=0
 broker_writes=0
 order_submission=0
