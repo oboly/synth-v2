@@ -17,6 +17,7 @@ class SourceSpec:
     where_sql: str
     where_params: tuple[Any, ...]
     history_from_sql: str | None = None
+    sector_context_required: bool = False
 
 
 SOURCE_SPECS: tuple[SourceSpec, ...] = (
@@ -62,6 +63,16 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
     ),
     SourceSpec(
+        source_id="asset_cluster_membership",
+        table_name="asset_cluster_membership",
+        timestamp_column="valid_from_ts_utc",
+        pit_rule="PRIMARY membership valid at candidate as-of: valid_from <= as-of < valid_to, or open-ended valid_to",
+        required_for_temporal_cq=False,
+        where_sql="membership_type='PRIMARY'",
+        where_params=(),
+        sector_context_required=True,
+    ),
+    SourceSpec(
         source_id="sector_rotation",
         table_name="sector_rotation_snapshot",
         timestamp_column="asof_ts_utc",
@@ -69,6 +80,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         required_for_temporal_cq=False,
         where_sql="venue=%s AND window_code='4h' AND model_version=%s",
         where_params=("{venue}", SECTOR_MODEL_VERSION),
+        sector_context_required=True,
     ),
     SourceSpec(
         source_id="canonical_candles_15m",
@@ -111,6 +123,7 @@ def source_result(
         "timestamp_column": spec.timestamp_column,
         "pit_rule": spec.pit_rule,
         "required_for_temporal_cq": spec.required_for_temporal_cq,
+        "sector_context_required": spec.sector_context_required,
         "row_count": int(row_count),
         "distinct_timestamp_count": int(distinct_ts_count),
         "first_ts_utc": None if first_ts is None else str(first_ts),
@@ -130,3 +143,15 @@ def overall_state(results: Iterable[Mapping[str, Any]]) -> tuple[str, list[str]]
     if blockers:
         return "BLOCKED_SOURCE_HISTORY", blockers
     return "READY_TO_FREEZE_TEMPORAL_SAMPLING", []
+
+
+def sector_context_state(results: Iterable[Mapping[str, Any]]) -> tuple[str, list[str]]:
+    blockers = [
+        str(row["source_id"])
+        for row in results
+        if bool(row.get("sector_context_required"))
+        and row.get("history_state") != "REPLAYABLE_HISTORY_PRESENT"
+    ]
+    if blockers:
+        return "BLOCKED_SECTOR_CONTEXT_HISTORY", blockers
+    return "SECTOR_CONTEXT_REPLAYABLE", []
