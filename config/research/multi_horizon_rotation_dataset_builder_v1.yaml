@@ -45,7 +45,15 @@ runtime:
   chunk_forward_hours: 24
   chunk_forward_cap: last_15m_close_strictly_before_phase_end
   per_asof_replay_slice: past_only_within_36h
-  artifact_write: streamed_atomic_partial_then_replace
+  artifact_write: streamed_checkpointed_atomic_partial_then_replace
+  resume_flag: --resume
+  checkpoint_frequency: every_completed_asof
+  checkpoint_compatibility: [runner_version, venue, phase, manifest_sha256]
+  checkpoint_committed_state: [last_completed_asof, asofs_completed, row_count, partial_bytes]
+  checkpoint_write: atomic_tmp_then_replace
+  partial_reconcile_on_resume: truncate_to_checkpoint_bytes_and_verify_row_count
+  mid_asof_interrupt_policy: discard_uncheckpointed_bytes
+  terminal_checkpoint_state_preserves_last_committed_counts: true
 
 candidate_replay:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
@@ -72,6 +80,8 @@ forward_response:
 artifacts:
   split_manifest: split_manifest_v1.json
   phase_rows: "{phase}_rows_v1.jsonl"
+  phase_partial: ".{phase}_rows_v1.jsonl.partial"
+  phase_checkpoint: ".{phase}_checkpoint_v1.json"
   phase_summary: "{phase}_summary_v1.json"
   production_truth: false
 
