@@ -102,12 +102,18 @@ def test_repository_does_not_choose_reduce_or_exit_action() -> None:
 
 def test_repository_delegates_free_quantity_to_decision_gate() -> None:
     text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
-    start = text.index("def build_runtime_item_v1(")
-    body = text[start:]
-    assert "resolve_free_base_quantity_core_v1(" in body
-    assert "free_quantity_base=free_quantity_result.free_base_quantity" in body
-    assert "free_quantity_base=balance.available_amount" not in body
-    assert "available_quantity_base -" not in body
+    # Free-quantity resolution is shared by the automated and manual-action
+    # builders (Issue #653) via _resolve_position_sizing_evidence_v1.
+    start = text.index("def _resolve_position_sizing_evidence_v1(")
+    end = text.index("def build_manual_action_runtime_item_v1(")
+    helper_body = text[start:end]
+    assert "resolve_free_base_quantity_core_v1(" in helper_body
+    assert "return balance, free_quantity_result.free_base_quantity" in helper_body
+    build_start = text.index("def build_runtime_item_v1(")
+    build_body = text[build_start:]
+    assert "_resolve_position_sizing_evidence_v1(" in build_body
+    assert "free_quantity_base=balance.available_amount" not in text
+    assert "available_quantity_base -" not in text
 
 
 def test_repository_uses_no_hardcoded_quote_or_selection_dependency() -> None:

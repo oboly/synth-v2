@@ -25,6 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from src.common.db import get_db_connection
+from src.execution_capability.execution_capability_v1 import (
+    DISPOSITION_AUTOMATED_ELIGIBLE,
+    DISPOSITION_MANUAL_ACTION_REQUIRED,
+)
 from src.exit_policy.automatic_exit_runtime_contract_v1 import AutomaticExitRuntimeContractError
 from src.exit_policy.automatic_exit_runtime_orchestrator_v1 import (
     RUNTIME_VERSION,
@@ -33,7 +37,9 @@ from src.exit_policy.automatic_exit_runtime_orchestrator_v1 import (
 from src.exit_policy.automatic_exit_runtime_audit_writer_v1 import IdempotencyPayloadConflictError
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     AutomaticExitRuntimeRepositoryError,
+    build_manual_action_runtime_item_v1,
     build_runtime_item_v1,
+    load_asset_execution_capability_v1,
     load_eligible_trading_accounts,
     load_latest_complete_account_state_bundle,
     load_positive_positions,
@@ -110,9 +116,12 @@ class CycleSummaryV1:
     items_planner_rejected: int = 0
     items_staged: int = 0
     items_failed: int = 0
+    items_manual_action_required: int = 0
+    items_not_executable: int = 0
     audit_rows_inserted: int = 0
     audit_rows_idempotent: int = 0
     failures: list[str] = field(default_factory=list)
+    manual_actions: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +134,8 @@ class CycleSummaryV1:
             "items_planner_rejected": self.items_planner_rejected,
             "items_staged": self.items_staged,
             "items_failed": self.items_failed,
+            "items_manual_action_required": self.items_manual_action_required,
+            "items_not_executable": self.items_not_executable,
             "audit_rows_inserted": self.audit_rows_inserted,
             "audit_rows_idempotent": self.audit_rows_idempotent,
         }
@@ -152,15 +163,43 @@ def run_cycle(conn: Any, *, venue: str, now: datetime) -> CycleSummaryV1:
         for position in positions:
             summary.items_considered += 1
             try:
-                item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=now)
-                outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=now)
-                conn.commit()
+                capability = load_asset_execution_capability_v1(conn, asset_id=position.asset_id)
+                if capability.execution_disposition == DISPOSITION_AUTOMATED_ELIGIBLE:
+                    item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=now)
+                    outcome = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=now)
+                    conn.commit()
+                else:
+                    manual_item = build_manual_action_runtime_item_v1(
+                        conn, account=account, bundle=bundle, position=position, now=now,
+                        execution_capability=capability,
+                    )
+                    conn.commit()
+                    outcome = None
             except (AutomaticExitRuntimeRepositoryError, AutomaticExitRuntimeContractError, IdempotencyPayloadConflictError) as exc:
                 conn.rollback()
                 summary.items_failed += 1
                 summary.failures.append(
                     f"ITEM_FAILED trading_account_id={account.trading_account_id} venue={venue} "
                     f"asset_id={position.asset_id} symbol={position.symbol} reason={exc.args[0] if exc.args else exc}"
+                )
+                continue
+
+            if outcome is None:
+                # Non-automated disposition (Issue #653): MANUAL_RFQ/MANUAL
+                # positions surface SELL/REDUCE/EXIT sizing evidence for a
+                # human reviewer without automated market resolution, gate,
+                # planner, or executor involvement. NONE fails closed as
+                # not-executable, distinct from an evidence-assembly failure.
+                if capability.execution_disposition == DISPOSITION_MANUAL_ACTION_REQUIRED:
+                    summary.items_manual_action_required += 1
+                else:
+                    summary.items_not_executable += 1
+                summary.manual_actions.append(
+                    f"{capability.execution_disposition} trading_account_id={manual_item.trading_account_id} "
+                    f"venue={manual_item.venue} asset_id={manual_item.asset_id} symbol={manual_item.symbol} "
+                    f"execution_mode={manual_item.execution_mode} "
+                    f"held_quantity_base={manual_item.held_quantity_base} "
+                    f"free_quantity_base={manual_item.free_quantity_base}"
                 )
                 continue
 
@@ -233,6 +272,9 @@ def run(args: argparse.Namespace) -> int:
 
             for failure in summary.failures:
                 print(failure, file=sys.stderr, flush=True)
+
+            for manual_action in summary.manual_actions:
+                print(manual_action, flush=True)
 
             finished_ts = datetime.now(UTC)
             print(

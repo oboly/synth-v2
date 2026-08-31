@@ -21,6 +21,7 @@ from src.exit_policy.run_automatic_exit_policy_once_v1 import (
 from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
+    insert_asset,
     insert_balance,
     bind_account_market,
     insert_complete_bundle,
@@ -66,6 +67,7 @@ def test_item_local_failure_does_not_abort_unrelated_item() -> None:
     seed_happy_path(conn, account_id=7)  # healthy BTC item
     insert_trading_account(conn, account_id=9)
     insert_complete_bundle(conn, account_id=9)
+    insert_asset(conn, asset_id=102, symbol="ETH")
     insert_position(conn, account_id=9, asset_id=102, symbol="ETH")
     # deliberately no balance row for account 9's ETH -> BALANCE_ROW_MISSING
 
@@ -105,9 +107,69 @@ def test_deterministic_cycle_summary_shape() -> None:
         "items_planner_rejected": 0,
         "items_staged": 0,
         "items_failed": 0,
+        "items_manual_action_required": 0,
+        "items_not_executable": 0,
         "audit_rows_inserted": 1,
         "audit_rows_idempotent": 0,
     }
+
+
+def test_mixed_automated_and_manual_account_snapshot_does_not_fail_manual_item() -> None:
+    """Issue #653: a MANUAL_RFQ position (e.g. MDT) must not be ITEM_FAILED for
+    missing automated market identity, while the automated position alongside
+    it is unaffected."""
+    conn = FakeConnection()
+    seed_happy_path(conn, account_id=7)  # AUTOMATED BTC position, unchanged behavior
+    insert_asset(conn, asset_id=1372, symbol="MDT", execution_mode="MANUAL_RFQ")
+    insert_position(
+        conn, account_id=7, asset_id=1372, symbol="MDT",
+        quantity_base=Decimal("40"), available_quantity_base=Decimal("40"),
+    )
+    insert_balance(conn, account_id=7, currency_code="MDT", available_amount=Decimal("40"))
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE account_state_snapshot_run_v1 SET position_snapshot_count = %s WHERE trading_account_id = %s",
+            (2, 7),
+        )
+
+    summary = run_cycle(conn, venue="bitvavo", now=NOW)
+
+    assert summary.items_considered == 2
+    assert summary.items_failed == 0
+    assert not any("POSITION_MARKET_IDENTITY_MISSING" in failure for failure in summary.failures)
+    assert summary.items_manual_action_required == 1
+    assert summary.items_not_executable == 0
+    assert any(
+        "MANUAL_ACTION_REQUIRED" in line and "symbol=MDT" in line and "held_quantity_base=40" in line
+        for line in summary.manual_actions
+    )
+    # The automated BTC position still reaches the audit table unchanged.
+    with conn.cursor() as cur:
+        cur.execute("SELECT asset_id FROM automatic_exit_evaluation_audit_v1")
+        rows = cur.fetchall()
+    assert [row["asset_id"] for row in rows] == [101]
+
+
+def test_none_execution_mode_is_not_counted_as_item_failed() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn, account_id=7)
+    insert_asset(conn, asset_id=301, symbol="DELISTED", execution_mode="NONE")
+    insert_position(
+        conn, account_id=7, asset_id=301, symbol="DELISTED",
+        quantity_base=Decimal("5"), available_quantity_base=Decimal("5"),
+    )
+    insert_balance(conn, account_id=7, currency_code="DELISTED", available_amount=Decimal("5"))
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE account_state_snapshot_run_v1 SET position_snapshot_count = %s WHERE trading_account_id = %s",
+            (2, 7),
+        )
+
+    summary = run_cycle(conn, venue="bitvavo", now=NOW)
+
+    assert summary.items_failed == 0
+    assert summary.items_not_executable == 1
+    assert any("NOT_EXECUTABLE" in line and "symbol=DELISTED" in line for line in summary.manual_actions)
 
 
 def test_verify_runtime_ownership_passes_for_matching_registry(tmp_path: Path) -> None:
