@@ -141,12 +141,23 @@ def test_forward_outcome_reaching_holdout_fails_closed() -> None:
     try:
         validate_phase_scoped_rows([row], manifest, "validation")
     except ValueError as exc:
-        assert "forward_24h outcome boundary reaches final holdout" in str(exc)
+        assert "forward_24h outcome boundary reaches next phase" in str(exc)
     else:
         raise AssertionError("forward outcome at holdout boundary must fail")
 
 
-def test_missing_forward_outcome_may_remain_near_holdout_boundary() -> None:
+def test_discovery_forward_outcome_reaching_validation_fails_closed() -> None:
+    manifest = _manifest()
+    row = _validation_row(BASE + timedelta(days=5), 1)
+    try:
+        validate_phase_scoped_rows([row], manifest, "discovery")
+    except ValueError as exc:
+        assert "forward_24h outcome boundary reaches next phase" in str(exc)
+    else:
+        raise AssertionError("discovery outcome at validation boundary must fail")
+
+
+def test_missing_forward_outcome_may_remain_near_phase_boundary() -> None:
     manifest = _manifest()
     row = replace(
         _validation_row(BASE + timedelta(days=7, hours=23), 1),
