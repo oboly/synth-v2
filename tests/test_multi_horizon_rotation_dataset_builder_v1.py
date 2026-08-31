@@ -10,6 +10,7 @@ from src.research.multi_horizon_rotation_dataset_builder_v1 import (
     comparable_horizon_return,
     derive_common_source_span,
     forward_response,
+    observed_asset_ids_at_asof,
     split_manifest_payload,
 )
 from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS
@@ -78,6 +79,17 @@ def test_common_source_span_fails_when_fewer_than_minimum_cohort_assets() -> Non
         assert "insufficient assets" in str(exc)
     else:
         raise AssertionError("minimum cohort coverage must fail closed")
+
+
+def test_observed_asset_universe_never_backfills_future_listing() -> None:
+    coverage = [
+        _coverage(1, first_hours=0),
+        _coverage(2, first_hours=1),
+        _coverage(3, first_hours=2),
+    ]
+    assert observed_asset_ids_at_asof(coverage, asof_ts=BASE + timedelta(minutes=30)) == (1,)
+    assert observed_asset_ids_at_asof(coverage, asof_ts=BASE + timedelta(hours=1)) == (1, 2)
+    assert observed_asset_ids_at_asof(coverage, asof_ts=BASE + timedelta(hours=3)) == (1, 2, 3)
 
 
 def test_split_manifest_is_frozen_sixty_twenty_twenty() -> None:
