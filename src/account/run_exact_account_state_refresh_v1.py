@@ -24,11 +24,10 @@ canonical contract includes `allowed_private_read=1` and
 `BitvavoClient.for_private_read(...)`; execution/write capability is not
 exposed to this runner. No legacy profile/global env credential fallback.
 
-Persistence reuses the same canonical snapshot machinery as
-`run_account_wallet_refresh_v1.py`: balance snapshot rows, derived position
-rows, the open-order snapshot header, and the single-transaction
-`account_state_snapshot_run_v1` COMPLETE bundle. No persistence logic is
-duplicated here.
+Persistence uses the dedicated exact-account persistence seam. The legacy
+profile/read-only position-writer account guard remains unchanged; the exact
+seam resolves the same explicit account id + venue and performs local DB
+snapshot derivation/writes only inside the caller transaction.
 
 Safety:
   broker_private_calls=2 (get_balance + get_open_orders)
@@ -45,6 +44,9 @@ import argparse
 import sys
 
 from src.account.account_snapshot_models_v1 import ExactAccountStateRefreshResult
+from src.account.exact_account_state_persistence_v1 import (
+    write_exact_aligned_account_state_snapshot,
+)
 from src.account.private_read_capability_compatible_resolver_v1 import (
     resolve_private_read_capable_bitvavo_client_from_env,
 )
@@ -56,12 +58,11 @@ from src.account.run_account_wallet_refresh_v1 import (
     normalize_balance_rows,
     normalize_order_rows,
     utc_now_naive,
-    write_aligned_account_state_snapshot,
 )
 from src.common.db import get_db_connection
 
 RUNNER_NAME = "exact_account_state_refresh_v1"
-RUNNER_VERSION = "0.2"
+RUNNER_VERSION = "0.3"
 DEFAULT_VENUE = "bitvavo"
 
 
@@ -166,7 +167,7 @@ def main() -> int:
                     balances=balances,
                     orders=orders,
                 )
-                account_state_run = write_aligned_account_state_snapshot(
+                account_state_run = write_exact_aligned_account_state_snapshot(
                     conn,
                     trading_account_id=trading_account_id,
                     account_code=account_code,
