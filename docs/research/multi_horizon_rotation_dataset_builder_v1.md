@@ -35,6 +35,16 @@ This prevents two disconnected asset groups from being combined into a synthetic
 
 The coverage envelope is intentionally not a substitute for candle continuity. Exact window boundaries and contiguous candles remain validated independently by `multi_horizon_rotation_replay_v1.py` for every candidate observation. Missing evidence remains missing.
 
+## Point-in-time asset universe
+
+Artifact missingness must not improve merely because an asset has no candle in the current 36h source window.
+
+For each observation as-of, the builder therefore passes to the candidate replay owner every asset whose first canonical 15m candle is at or before that as-of. Assets not yet observed are excluded, so there is no future-listing or current-universe backfill.
+
+A previously observed asset with missing recent candles remains in the observation universe with an empty replay window. The replay owner then emits `INSUFFICIENT_DATA` for that asset instead of silently dropping it from the coverage denominator.
+
+The observation-universe rule does not use an asset's eventual last candle to decide whether it belongs at a historical as-of. Future delisting knowledge therefore does not remove historical rows.
+
 ## Holdout isolation
 
 The runner CLI exposes only:
@@ -170,7 +180,7 @@ Artifacts are research evidence, not production truth.
 
 The v1 runner favors explicitness over query cleverness. It processes one as-of grid point at a time and queries only the bounded lookback/forward window required for that observation.
 
-This is deliberately simple for the first full validation run. Performance optimization may later batch source reads, but must preserve identical PIT and phase-isolation semantics.
+This is deliberately simple for the first full validation run. Performance optimization may later batch source reads, but must preserve identical PIT, missingness and phase-isolation semantics.
 
 ## Safety
 
