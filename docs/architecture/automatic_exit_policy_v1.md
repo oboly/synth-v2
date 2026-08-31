@@ -122,6 +122,37 @@ permission, profile, and venue-constraint identities. Runtime version is audit
 provenance only and never changes a logical evidence identity. Those
 captured identifiers make a later replay independent of mutable latest state.
 
+### Known production gap: `automatic_exit_profile_v1` has no producer (#654)
+
+Production evidence (2026-08-31, issue #654) proved that after account-state
+and market-price freshness were both restored, a fresh automatic-exit cycle
+still failed essentially every automated held position (81/81 items) with
+`MISSING_OR_CONFLICTING_AUTOMATIC_EXIT_PROFILE`. Read-only investigation
+found the cause: `automatic_exit_profile_v1` has **zero rows in production**
+and **no writer exists anywhere in this repository** -- only the migration
+(`db/migrations/20260814_automatic_exit_runtime_contract_v1.sql`), the pure
+resolver (`resolve_automatic_exit_profile` in
+`automatic_exit_runtime_contract_v1.py`), and the DB-read loader
+(`load_exit_profiles` in `automatic_exit_runtime_repository_v1.py`).
+
+The resolver's fail-closed behavior on empty input is correct per this
+document's own Phase 4A contract text above (`automatic_exit_profile_v1` is
+"an append-only market-level V1 policy input shared across accounts";
+"exactly one effective profile must provide a profile ID/version..."). The
+gap is that Phase 4B's runtime orchestrator was built, tested, and now runs
+against production evidence ahead of the one producer it structurally
+depends on. That producer was never scoped: the intended upstream design
+(research fib/target maps -> `asset_exit_profile` -> validated promotion)
+is explicitly recorded as unvalidated, non-actionable, future-review-only
+work with no filed Issue (`docs/todo/fibo_zones.md`,
+`docs/development/docs_todo_issue_migration_batch_6b_v1.md`). Per this
+repository's research-promotion rules, fabricating generic/default target or
+invalidation prices to satisfy the resolver would be exactly the kind of
+unvalidated promotion those rules forbid, so #654 intentionally stops at
+root-cause documentation rather than inventing profile data. Designing and
+building a validated `automatic_exit_profile_v1` producer is separately
+scoped, separately reviewed work with its own Issue.
+
 Phase 4B must consume only a fresh `COMPLETE` `account_state_snapshot_run_v1`
 bundle. The bundle binds exact same-refresh position and balance evidence to a
 matching `account_open_order_snapshot_run_v1` COMPLETE header; the latter is
