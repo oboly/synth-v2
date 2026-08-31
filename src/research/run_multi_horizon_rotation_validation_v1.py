@@ -13,6 +13,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.research.multi_horizon_rotation_validation_temporal_v1 import (
+    all_candidate_lead_lag,
+    regime_stability,
+)
 from src.research.multi_horizon_rotation_validation_v1 import (
     ValidationRow,
     ensure_utc,
@@ -159,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         eval_started = time.perf_counter()
         emit("PHASE_STARTED name=evaluate_validation_metrics")
         summary = serializable_validation_summary(rows)
+        summary["lead_lag_vs_b1"] = all_candidate_lead_lag(rows)
+        summary["regime_stability"] = regime_stability(rows)
         emit(
             f"PHASE_FINISHED name=evaluate_validation_metrics rows={len(rows)} "
             f"elapsed_s={time.perf_counter() - eval_started:.3f}"
@@ -169,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             "runner_version": RUNNER_VERSION,
             "phase": args.phase,
             "final_holdout_access": "DENY",
+            "input_artifact_scope": "REQUESTED_PHASE_ONLY",
             "split_manifest": manifest,
             "summary": summary,
             "safety": {
