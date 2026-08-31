@@ -22,10 +22,11 @@ def _row(
     score: float | None,
     asset_id: int = 1,
     candidate_id: str = "C1",
+    venue: str = "bitvavo",
 ) -> ValidationRow:
     value = None if score is None else score / 100.0
     return ValidationRow(
-        venue="bitvavo",
+        venue=venue,
         asset_id=asset_id,
         asof_ts=BASE + timedelta(minutes=15 * index),
         candidate_id=candidate_id,
@@ -152,6 +153,20 @@ def test_timestamp_gap_breaks_persistence_without_counting_flip() -> None:
     assert result.run_count == 2
     assert result.sign_flip_count == 0
     assert result.chop_reversion_count == 0
+
+
+def test_persistence_does_not_mix_same_asset_across_venues() -> None:
+    rows = [
+        _row(0, score=10, asset_id=1, venue="bitvavo"),
+        _row(1, score=10, asset_id=1, venue="bitvavo"),
+        _row(0, score=-10, asset_id=1, venue="other"),
+        _row(1, score=-10, asset_id=1, venue="other"),
+    ]
+    result = persistence_and_chop(rows)
+    assert result.run_count == 2
+    assert result.sign_flip_count == 0
+    assert result.chop_reversion_count == 0
+    assert result.max_run_samples == 2
 
 
 def test_zero_is_its_own_frozen_state() -> None:
