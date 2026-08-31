@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import tempfile
 import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -127,26 +128,35 @@ def _validate_frozen_manifest_candidate(
 
 
 def persist_or_reuse_manifest(path: Path, candidate: dict[str, object]) -> tuple[dict[str, object], str]:
-    """Create the frozen manifest exactly once; concurrent losers validate and reuse it."""
+    """Publish a complete frozen manifest exactly once, then validate/reuse it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(candidate, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp_name: str | None = None
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        return _validate_frozen_manifest_candidate(path=path, candidate=candidate)
-
-    try:
-        with os.fdopen(fd, "wb") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-    except BaseException:
+
+        temp_path = Path(temp_name)
         try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    return candidate, "CREATED"
+            os.link(temp_path, path)
+        except FileExistsError:
+            return _validate_frozen_manifest_candidate(path=path, candidate=candidate)
+        return candidate, "CREATED"
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
 
 
 def checkpoint_path(output_dir: Path, phase: str) -> Path:
