@@ -16,8 +16,11 @@ source_span:
   outcome_independent: true
   minimum_cohort: 20
   candidate_max_lookback_hours: 36
-  start_rule: max(twentieth_smallest_asset_first_close_plus_36h, rotation_v1_first_pit_ts)
-  end_rule: twentieth_largest_asset_last_close
+  asset_interval_start: max(first_close_plus_36h, rotation_v1_first_pit_ts)
+  asset_interval_end: last_close_inclusive
+  selection_rule: longest_contiguous_region_with_at_least_20_active_asset_intervals
+  tie_break: earliest_region
+  returned_end_semantics: exclusive_15m_boundary_after_last_included_asof
   boundary_grid: 15m
   contiguous_candle_validation: delegated_to_candidate_replay_per_observation
   split: [0.60, 0.20, 0.20]
@@ -27,6 +30,7 @@ phases:
   final_holdout_runner_access: DENY
   artifact_scope: one_phase_per_file
   forward_label_endpoint_must_be_strictly_before_phase_end: true
+  rotation_v1_bulk_read_end: exclusive_phase_end
 
 candidate_replay:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
