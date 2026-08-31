@@ -16,7 +16,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 
 from dotenv import load_dotenv
 
@@ -550,18 +550,25 @@ def write_row(handle: BinaryIO, row: dict[str, Any]) -> None:
     handle.write(payload)
 
 
-def finalize_artifact_with_checkpoint(
+def finalize_artifact_bundle(
     *,
     partial_path: Path,
     artifact_path: Path,
-    persist_finished_checkpoint: Callable[[int], None],
+    summary_path: Path,
+    summary: dict[str, object],
+    persist_finished_checkpoint: Any,
 ) -> int:
-    """Rename to final only while preserving rollback if FINISHED checkpoint persistence fails."""
+    """Publish data, summary and FINISHED checkpoint as one recoverable terminal transition."""
     partial_path.replace(artifact_path)
     final_bytes = artifact_path.stat().st_size
     try:
+        write_json_atomic(summary_path, summary)
         persist_finished_checkpoint(final_bytes)
     except BaseException:
+        try:
+            summary_path.unlink()
+        except FileNotFoundError:
+            pass
         artifact_path.replace(partial_path)
         raise
     return final_bytes
@@ -744,6 +751,27 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 f"as-of completion mismatch: completed={asofs_completed} expected={len(full_grid)}"
             )
+
+        summary: dict[str, object] = {
+            "runner": RUNNER_NAME,
+            "runner_version": RUNNER_VERSION,
+            "venue": args.venue,
+            "phase": args.phase,
+            "manifest_sha256": manifest_sha256,
+            "manifest_state": manifest_state,
+            "row_count": row_count,
+            "asof_count": len(full_grid),
+            "source_query_count": query_count,
+            "source_rows_read": query_rows,
+            "source_batching": "one_bounded_query_per_utc_asof_day",
+            "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
+            "artifact_write": "streamed_checkpointed_transactional_finalize",
+            "resume_supported": True,
+            "final_holdout_access": "DENY",
+            "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
+            "database_writes": 0,
+        }
+
         def persist_finished_checkpoint(final_bytes: int) -> None:
             write_checkpoint(
                 cp_path,
@@ -759,35 +787,14 @@ def main(argv: list[str] | None = None) -> int:
                 terminal_state="FINISHED",
             )
 
-        final_bytes = finalize_artifact_with_checkpoint(
+        finalize_artifact_bundle(
             partial_path=partial_path,
             artifact_path=artifact_path,
+            summary_path=summary_path,
+            summary=summary,
             persist_finished_checkpoint=persist_finished_checkpoint,
         )
         partial_path = None
-        summary = {
-            "runner": RUNNER_NAME,
-            "runner_version": RUNNER_VERSION,
-            "venue": args.venue,
-            "phase": args.phase,
-            "manifest_sha256": manifest_sha256,
-            "manifest_state": manifest_state,
-            "row_count": row_count,
-            "asof_count": len(full_grid),
-            "source_query_count": query_count,
-            "source_rows_read": query_rows,
-            "source_batching": "one_bounded_query_per_utc_asof_day",
-            "asset_universe_rule": "first_canonical_15m_close_at_or_before_asof",
-            "artifact_write": "streamed_checkpointed_atomic_partial_then_replace",
-            "resume_supported": True,
-            "final_holdout_access": "DENY",
-            "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
-            "database_writes": 0,
-        }
-        summary_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
         emit(
             f"PHASE_FINISHED name=build_{args.phase}_artifact rows={row_count} source_queries={query_count} "
             f"source_rows_read={query_rows} elapsed_s={time.perf_counter() - phase_started:.3f}"
