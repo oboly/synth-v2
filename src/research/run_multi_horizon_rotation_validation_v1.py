@@ -20,6 +20,7 @@ from src.research.multi_horizon_rotation_validation_temporal_v1 import (
 )
 from src.research.multi_horizon_rotation_validation_v1 import (
     ValidationRow,
+    derive_chronological_split,
     ensure_utc,
     is_on_15m_grid,
     serializable_validation_summary,
@@ -100,6 +101,13 @@ def load_split_manifest(path: Path) -> dict[str, Any]:
         < parsed["final_holdout"][1]
     ):
         raise ValueError("split manifest phases must be strictly chronological")
+
+    expected = derive_chronological_split(
+        start=parsed["discovery"][0],
+        end=parsed["final_holdout"][1],
+    )
+    if parsed != expected:
+        raise ValueError("split manifest does not match frozen 60/20/20 15m-grid contract")
     return raw
 
 
