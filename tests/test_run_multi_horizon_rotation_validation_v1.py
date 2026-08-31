@@ -61,6 +61,32 @@ def test_manifest_requires_contiguous_phase_boundaries(tmp_path: Path) -> None:
         raise AssertionError("expected discontinuous manifest to fail")
 
 
+def test_manifest_rejects_off_grid_boundary(tmp_path: Path) -> None:
+    manifest = _manifest()
+    manifest["splits"]["validation"]["end"] = (BASE + timedelta(days=8, minutes=1)).isoformat()  # type: ignore[index]
+    path = tmp_path / "split.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        load_split_manifest(path)
+    except ValueError as exc:
+        assert "15m grid" in str(exc)
+    else:
+        raise AssertionError("expected off-grid manifest to fail")
+
+
+def test_manifest_rejects_inverted_phase(tmp_path: Path) -> None:
+    manifest = _manifest()
+    manifest["splits"]["discovery"]["end"] = (BASE - timedelta(days=1)).isoformat()  # type: ignore[index]
+    path = tmp_path / "split.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    try:
+        load_split_manifest(path)
+    except ValueError as exc:
+        assert "end must be after start" in str(exc)
+    else:
+        raise AssertionError("expected inverted manifest to fail")
+
+
 def test_select_phase_rows_never_exposes_holdout() -> None:
     manifest = _manifest()
     rows_path_values = [
