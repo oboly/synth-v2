@@ -11,6 +11,8 @@ source:
   rotation_v1_snapshot_table: market_rotation_pressure_snapshot_v1
   rotation_v1_observation_table: market_rotation_pressure_observation_v1
   rotation_v1_model_version: "1.0"
+  rotation_v1_fetch_mode: bounded_fetchmany
+  rotation_v1_fetch_batch_size: 5000
 
 source_span:
   outcome_independent: true
@@ -53,7 +55,7 @@ runtime:
   chunk_forward_hours: 24
   chunk_forward_cap: last_15m_close_strictly_before_phase_end
   per_asof_replay_slice: past_only_within_36h
-  artifact_write: streamed_checkpointed_atomic_partial_then_replace
+  artifact_write: streamed_checkpointed_transactional_finalize
   resume_flag: --resume
   checkpoint_frequency: every_completed_asof
   checkpoint_compatibility: [runner_version, venue, phase, manifest_sha256]
@@ -62,6 +64,9 @@ runtime:
   partial_reconcile_on_resume: truncate_to_checkpoint_bytes_and_verify_row_count
   mid_asof_interrupt_policy: discard_uncheckpointed_bytes
   terminal_checkpoint_state_preserves_last_committed_counts: true
+  finalization_order: [rename_partial_to_final_data, persist_summary_atomic, persist_finished_checkpoint_atomic]
+  finalization_failure_policy: remove_final_summary_and_rollback_final_data_to_partial
+  partial_path_cleared_only_after_complete_finalization: true
 
 candidate_replay:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
