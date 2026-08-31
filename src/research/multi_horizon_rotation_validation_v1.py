@@ -6,7 +6,7 @@ Consumes already replayed, point-in-time-safe rows. It does not fetch market dat
 write database state, alter production ranking, or emit trading permission.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from math import atanh, erf, exp, isfinite, sqrt
 from statistics import mean
@@ -15,6 +15,13 @@ from typing import Iterable, Mapping, Sequence
 
 MIN_PAIRED_N = 4
 CI_Z = 1.959963984540054
+FORWARD_FIELDS = {
+    "15m": "forward_15m",
+    "1h": "forward_1h",
+    "4h": "forward_4h",
+    "24h": "forward_24h",
+}
+CANDIDATE_IDS = ("C1", "C2", "C3")
 
 
 @dataclass(frozen=True)
@@ -183,9 +190,8 @@ def _median_numeric(values: Sequence[int]) -> float | None:
 
 
 def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samples: int = 4) -> PersistenceResult:
-    ordered = sorted(rows, key=lambda row: (ensure_utc(row.asof_ts), row.asset_id))
     by_asset: dict[int, list[ValidationRow]] = {}
-    for row in ordered:
+    for row in sorted(rows, key=lambda item: (item.asset_id, ensure_utc(item.asof_ts))):
         by_asset.setdefault(row.asset_id, []).append(row)
 
     run_lengths: list[int] = []
@@ -229,26 +235,22 @@ def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samp
 
 
 def candidate_summary(rows: Sequence[ValidationRow]) -> dict[str, object]:
+    candidate_ids = {row.candidate_id for row in rows}
+    if len(candidate_ids) > 1:
+        raise ValueError("candidate_summary requires exactly one candidate_id")
     sample_count = len(rows)
     complete_count = sum(row.candidate_score is not None for row in rows)
     coverage = complete_count / sample_count if sample_count else 0.0
-    forward_fields = {
-        "15m": "forward_15m",
-        "1h": "forward_1h",
-        "4h": "forward_4h",
-        "24h": "forward_24h",
-    }
     forward_ic: dict[str, CorrelationResult] = {}
     incremental_b0: dict[str, CorrelationResult] = {}
     incremental_b1: dict[str, CorrelationResult] = {}
-    for label, field in forward_fields.items():
+    for label, field in FORWARD_FIELDS.items():
         outcomes = [getattr(row, field) for row in rows]
         candidate = [row.candidate_score for row in rows]
         forward_ic[label] = correlation_with_fisher_ci(candidate, outcomes)
         incremental_b0[label] = partial_correlation(candidate, outcomes, [row.b0_score for row in rows])
         incremental_b1[label] = partial_correlation(candidate, outcomes, [row.b1_return for row in rows])
 
-    p_values = {label: result.p_value_approx for label, result in forward_ic.items()}
     return {
         "sample_count": sample_count,
         "complete_count": complete_count,
@@ -262,7 +264,6 @@ def candidate_summary(rows: Sequence[ValidationRow]) -> dict[str, object]:
         "forward_ic": forward_ic,
         "incremental_vs_b0": incremental_b0,
         "incremental_vs_b1": incremental_b1,
-        "holm_reject_forward_ic": holm_bonferroni(p_values),
         "persistence": persistence_and_chop(rows),
         "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
     }
@@ -283,6 +284,49 @@ def cross_horizon_correlations(rows: Sequence[ValidationRow]) -> dict[str, Corre
     return out
 
 
+def validation_summary(rows: Sequence[ValidationRow]) -> dict[str, object]:
+    unknown = sorted({row.candidate_id for row in rows} - set(CANDIDATE_IDS))
+    if unknown:
+        raise ValueError(f"unknown candidate ids: {','.join(unknown)}")
+    by_candidate = {
+        candidate_id: [row for row in rows if row.candidate_id == candidate_id]
+        for candidate_id in CANDIDATE_IDS
+    }
+    summaries = {
+        candidate_id: candidate_summary(candidate_rows)
+        for candidate_id, candidate_rows in by_candidate.items()
+    }
+    family_p_values: dict[str, float | None] = {}
+    for candidate_id, summary in summaries.items():
+        forward_ic = summary["forward_ic"]
+        assert isinstance(forward_ic, dict)
+        for horizon, result in forward_ic.items():
+            assert isinstance(result, CorrelationResult)
+            family_p_values[f"{candidate_id}:{horizon}"] = result.p_value_approx
+    return {
+        "candidate_summaries": summaries,
+        "cross_horizon_correlation": cross_horizon_correlations(rows),
+        "holm_bonferroni_family": holm_bonferroni(family_p_values),
+        "holm_family_size": len(family_p_values),
+        "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
+    }
+
+
+def serializable_validation_summary(rows: Sequence[ValidationRow]) -> dict[str, object]:
+    def convert(value: object) -> object:
+        if hasattr(value, "__dataclass_fields__"):
+            return {key: convert(item) for key, item in asdict(value).items()}
+        if isinstance(value, dict):
+            return {str(key): convert(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [convert(item) for item in value]
+        return value
+
+    converted = convert(validation_summary(rows))
+    assert isinstance(converted, dict)
+    return converted
+
+
 def derive_chronological_split(
     *, start: datetime, end: datetime, discovery_fraction: float = 0.60, validation_fraction: float = 0.20
 ) -> dict[str, tuple[datetime, datetime]]:
@@ -299,6 +343,8 @@ def derive_chronological_split(
         raise ValueError("insufficient replay-safe span")
     discovery_steps = int(total_steps * discovery_fraction)
     validation_steps = int(total_steps * validation_fraction)
+    if discovery_steps <= 0 or validation_steps <= 0 or discovery_steps + validation_steps >= total_steps:
+        raise ValueError("split phases must each contain at least one 15m step")
     discovery_end = start_utc + timedelta(seconds=discovery_steps * grid_seconds)
     validation_end = discovery_end + timedelta(seconds=validation_steps * grid_seconds)
     return {
