@@ -21,9 +21,10 @@ def _row(
     candidate_id: str = "C1",
     asset_id: int = 1,
     regime: str = "ROTATION_IN",
+    venue: str = "bitvavo",
 ) -> ValidationRow:
     return ValidationRow(
-        venue="bitvavo",
+        venue=venue,
         asset_id=asset_id,
         asof_ts=BASE + timedelta(minutes=15 * index),
         candidate_id=candidate_id,
@@ -62,6 +63,20 @@ def test_lead_lag_missing_sample_breaks_turn_chain() -> None:
     result = lead_lag_vs_b1(rows)
     assert result.candidate_turn_count == 0
     assert result.paired_turn_count == 0
+
+
+def test_lead_lag_does_not_mix_same_asset_across_venues() -> None:
+    rows = [
+        _row(0, candidate=-1, b1=-1, venue="bitvavo"),
+        _row(1, candidate=1, b1=1, venue="bitvavo"),
+        _row(0, candidate=1, b1=1, venue="other"),
+        _row(1, candidate=-1, b1=-1, venue="other"),
+    ]
+    result = lead_lag_vs_b1(rows)
+    assert result.candidate_turn_count == 2
+    assert result.reference_turn_count == 2
+    assert result.paired_turn_count == 2
+    assert result.mean_delta_samples == 0.0
 
 
 def test_lead_lag_does_not_pair_turns_beyond_frozen_four_hour_window() -> None:
