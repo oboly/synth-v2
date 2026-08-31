@@ -226,18 +226,18 @@ def _median_numeric(values: Sequence[int]) -> float | None:
 def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samples: int = 4) -> PersistenceResult:
     if reversion_window_samples < 1:
         raise ValueError("reversion_window_samples must be positive")
-    by_asset: dict[int, list[ValidationRow]] = {}
-    for row in sorted(rows, key=lambda item: (item.asset_id, ensure_utc(item.asof_ts))):
-        by_asset.setdefault(row.asset_id, []).append(row)
+    by_market: dict[tuple[str, int], list[ValidationRow]] = {}
+    for row in sorted(rows, key=lambda item: (item.venue, item.asset_id, ensure_utc(item.asof_ts))):
+        by_market.setdefault((row.venue, row.asset_id), []).append(row)
 
     run_lengths: list[int] = []
     flips = 0
     chop_reversions = 0
-    for asset_rows in by_asset.values():
+    for market_rows in by_market.values():
         current_state: int | None = None
         run = 0
         previous_ts: datetime | None = None
-        for row in asset_rows:
+        for row in market_rows:
             ts = ensure_utc(row.asof_ts)
             state = _state(row.candidate_score)
             contiguous = previous_ts is None or ts - previous_ts == SAMPLE_INTERVAL
@@ -261,18 +261,18 @@ def persistence_and_chop(rows: Sequence[ValidationRow], *, reversion_window_samp
         if run:
             run_lengths.append(run)
 
-        for idx in range(1, len(asset_rows)):
-            previous_row = asset_rows[idx - 1]
-            changed_row = asset_rows[idx]
+        for idx in range(1, len(market_rows)):
+            previous_row = market_rows[idx - 1]
+            changed_row = market_rows[idx]
             previous_state = _state(previous_row.candidate_score)
             changed_state = _state(changed_row.candidate_score)
             if previous_state is None or changed_state is None or changed_state == previous_state:
                 continue
             if ensure_utc(changed_row.asof_ts) - ensure_utc(previous_row.asof_ts) != SAMPLE_INTERVAL:
                 continue
-            for future_idx in range(idx + 1, min(len(asset_rows), idx + reversion_window_samples + 1)):
-                prior = asset_rows[future_idx - 1]
-                future = asset_rows[future_idx]
+            for future_idx in range(idx + 1, min(len(market_rows), idx + reversion_window_samples + 1)):
+                prior = market_rows[future_idx - 1]
+                future = market_rows[future_idx]
                 if ensure_utc(future.asof_ts) - ensure_utc(prior.asof_ts) != SAMPLE_INTERVAL:
                     break
                 future_state = _state(future.candidate_score)
@@ -298,7 +298,10 @@ def candidate_summary(rows: Sequence[ValidationRow]) -> dict[str, object]:
     if len(candidate_ids) > 1:
         raise ValueError("candidate_summary requires exactly one candidate_id")
     sample_count = len(rows)
-    complete_count = sum(row.candidate_score is not None for row in rows)
+    complete_count = sum(
+        row.candidate_score is not None and isfinite(row.candidate_score)
+        for row in rows
+    )
     coverage = complete_count / sample_count if sample_count else 0.0
     forward_ic: dict[str, CorrelationResult] = {}
     incremental_b0: dict[str, CorrelationResult] = {}
