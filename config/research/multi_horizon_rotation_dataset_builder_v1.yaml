@@ -1,0 +1,115 @@
+registry_name: multi_horizon_rotation_dataset_builder_v1
+registry_version: 1.0.0
+issue: 593
+research_only: true
+
+source:
+  venue_scope: one_venue_per_run
+  candle_table: obs_market_candle
+  candle_interval: 15m
+  candle_fields: [asset_id, close_ts_utc, close_price, volume_base]
+  candle_fetch_mode: bounded_fetchmany
+  candle_fetch_batch_size: 5000
+  rotation_v1_snapshot_table: market_rotation_pressure_snapshot_v1
+  rotation_v1_observation_table: market_rotation_pressure_observation_v1
+  rotation_v1_model_version: "1.0"
+  rotation_v1_fetch_mode: bounded_fetchmany
+  rotation_v1_fetch_batch_size: 5000
+
+source_span:
+  outcome_independent: true
+  minimum_cohort: 20
+  candidate_max_lookback_hours: 36
+  asset_interval_start: max(first_close_plus_36h, rotation_v1_first_pit_ts)
+  asset_interval_end: last_close_inclusive
+  selection_rule: longest_contiguous_region_with_at_least_20_active_asset_intervals
+  tie_break: earliest_region
+  returned_end_semantics: exclusive_15m_boundary_after_last_included_asof
+  boundary_grid: 15m
+  contiguous_candle_validation: delegated_to_candidate_replay_per_observation
+  split: [0.60, 0.20, 0.20]
+  manifest_write: once_per_output_run
+  later_phase_manifest_policy: reuse_exact_frozen_manifest
+  later_phase_fresh_availability_cutoff: frozen_source_end_exclusive
+  frozen_coverage_fingerprint: sha256_asset_first_last_within_frozen_source_end
+  drift_detection_scope: coverage_envelope_only
+  coverage_envelope_drift: fail_closed
+  interior_candle_or_rotation_content_drift_detection: not_owned_by_dataset_builder_v1
+  post_frozen_end_new_candles_change_split: false
+
+asset_universe:
+  rule: first_canonical_15m_close_at_or_before_observation_asof
+  future_listing_backfill: false
+  current_universe_backfill: false
+  previously_observed_but_missing_recent_candles: emit_insufficient_data_row
+  delisting_future_knowledge_used_for_observation_membership: false
+
+phases:
+  allowed: [discovery, validation]
+  final_holdout_runner_access: DENY
+  artifact_scope: one_phase_per_file
+  forward_label_endpoint_must_be_strictly_before_phase_end: true
+  rotation_v1_bulk_read_end: exclusive_phase_end
+
+runtime:
+  source_batching: one_bounded_query_per_utc_asof_day
+  chunk_lookback_hours: 36
+  chunk_forward_hours: 24
+  chunk_forward_cap: last_15m_close_strictly_before_phase_end
+  per_asof_replay_slice: past_only_within_36h
+  artifact_write: streamed_checkpointed_transactional_finalize
+  resume_flag: --resume
+  checkpoint_frequency: every_completed_asof
+  checkpoint_compatibility: [runner_version, venue, phase, manifest_sha256]
+  checkpoint_committed_state: [last_completed_asof, asofs_completed, row_count, partial_bytes]
+  checkpoint_write: atomic_tmp_then_replace
+  partial_reconcile_on_resume: truncate_to_checkpoint_bytes_and_verify_row_count
+  mid_asof_interrupt_policy: discard_uncheckpointed_bytes
+  terminal_checkpoint_state_preserves_last_committed_counts: true
+  finalization_order: [rename_partial_to_final_data, persist_summary_atomic, persist_finished_checkpoint_atomic]
+  finalization_failure_policy: remove_final_summary_and_rollback_final_data_to_partial
+  partial_path_cleared_only_after_complete_finalization: true
+
+candidate_replay:
+  implementation: src/research/multi_horizon_rotation_replay_v1.py
+  candidates: [C1, C2, C3]
+  minimum_cohort: 20
+
+baselines:
+  B0:
+    source: canonical_rotation_pressure_v1
+    pit_rule: latest_same_asset_same_venue_model_at_or_before_asof
+    value_field: score_total
+    state_field: pressure_state
+  B1:
+    source: canonical_15m_candles
+    rule: exact_boundary_log_return_matching_candidate_horizon
+  B2:
+    status: UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE
+
+forward_response:
+  horizons_minutes: [15, 60, 240, 1440]
+  rule: exact_boundary_log_return
+  phase_boundary_policy: purge_if_endpoint_gte_phase_end
+
+artifacts:
+  split_manifest: split_manifest_v1.json
+  phase_rows: "{phase}_rows_v1.jsonl"
+  phase_partial: ".{phase}_rows_v1.jsonl.partial"
+  phase_checkpoint: ".{phase}_checkpoint_v1.json"
+  phase_summary: "{phase}_summary_v1.json"
+  production_truth: false
+
+safety:
+  database_reads: 1
+  database_writes: 0
+  account_awareness: 0
+  selection_engine_production_changes: 0
+  decision_gate_changes: 0
+  execution_planner_changes: 0
+  executor_changes: 0
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
+  production_runtime_activation: 0
