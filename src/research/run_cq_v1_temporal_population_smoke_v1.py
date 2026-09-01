@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only one-asof CQ v1 temporal population smoke")
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--asof-index", type=int, default=1, help="1-based frozen as-of index")
-    parser.add_argument("--asset-id", type=int, default=None, help="optional single output asset")
+    parser.add_argument("--asset-id", type=int, default=None, help="optional single query/build asset")
     parser.add_argument("--selection-config", default=DEFAULT_SELECTION_CONFIG)
     return parser.parse_args(argv)
 
@@ -99,6 +99,7 @@ def run(args: argparse.Namespace) -> int:
             asof_ts_utc=asof,
             venue=args.venue,
             selection_config=config,
+            asset_id=args.asset_id,
         )
         _bind_selection_config_provenance(rows, config_sha)
         query_elapsed = time.monotonic() - query_started
@@ -107,19 +108,17 @@ def run(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-        selected = rows
         if args.asset_id is not None:
-            selected = [row for row in rows if int(row["asset_id"]) == args.asset_id]
-            if not selected:
+            if not rows:
                 raise ValueError(f"asset_id={args.asset_id} produced no row at frozen asof {asof.isoformat()}")
-            if len(selected) != 1:
-                raise ValueError(f"asset_id={args.asset_id} produced duplicate smoke rows")
+            if len(rows) != 1 or int(rows[0]["asset_id"]) != args.asset_id:
+                raise ValueError(f"asset_id={args.asset_id} did not remain single-asset bounded")
 
-        for row in selected:
+        for row in rows:
             print(json.dumps(row, sort_keys=True, default=_json_default), flush=True)
         print(
             f"FINISHED runner={RUNNER_NAME} asof={asof.isoformat()} source_rows={len(rows)} "
-            f"output_rows={len(selected)} outcomes_read=0 db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
+            f"output_rows={len(rows)} outcomes_read=0 db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
             flush=True,
         )
         return 0
