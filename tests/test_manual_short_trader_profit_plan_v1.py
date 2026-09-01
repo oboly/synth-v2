@@ -7177,6 +7177,8 @@ def test_selector_label_js_reuses_canonical_actionable_ppp_not_raw_sort_value() 
     html = render_full_html([_fresh_canonical_card()], rendered_at="now", broker_mode="test")
     assert "card.dataset.sortPpp + '%'" not in html
     assert "card.dataset.actionablePpp" in html
+    assert "var ppp = card.dataset.actionablePpp || '';" in html
+    assert "card.dataset.planningPpp || ''" not in html
 
 
 def test_json_snapshot_preserves_raw_ppp_and_adds_display_companions() -> None:
