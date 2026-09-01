@@ -282,10 +282,8 @@ def artifact_paths(output_dir: Path) -> tuple[Path, Path, Path]:
 
 
 def ensure_output_paths_clear(output_dir: Path) -> None:
-    existing = [path for path in artifact_paths(output_dir) if path.exists()]
-    if existing:
-        joined = ",".join(str(path) for path in existing)
-        raise ValueError(f"immutable outcome artifacts already exist: {joined}")
+    if output_dir.exists():
+        raise ValueError(f"immutable outcome output directory already exists: {output_dir}")
 
 
 def write_artifacts(output_dir: Path, rows: list[dict[str, Any]], *, observation_count: int) -> None:
