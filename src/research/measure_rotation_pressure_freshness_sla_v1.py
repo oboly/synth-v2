@@ -392,6 +392,65 @@ def summarize(label: str, values: list[float]) -> dict[str, object]:
     }
 
 
+PUBLISHER_GAP_THRESHOLD_HOURS = 2.0
+
+
+def max_publisher_attempt_gap_hours(
+    successes: list[PublisherCycle], failures: list[PublisherCycle]
+) -> float:
+    """Largest gap between consecutive publisher attempts (success or
+    failure), in hours. An unobserved gap this large inside the journal's
+    nominal [coverage_start, coverage_end] span means the journal itself is
+    missing entries there (e.g. journal rotation truncation), not that the
+    publisher was merely retrying during a real outage -- during the
+    observed 2026-09-01 outage, failed attempts were still logged roughly
+    every 15-30 minutes. Returns 0.0 for fewer than two attempts.
+    """
+    ts = sorted(
+        [c.start_ts for c in successes if c.start_ts is not None]
+        + [c.start_ts for c in failures if c.start_ts is not None]
+    )
+    if len(ts) < 2:
+        return 0.0
+    return max((b - a).total_seconds() for a, b in zip(ts, ts[1:])) / 3600
+
+
+def evaluate_publisher_sufficiency(
+    *,
+    publisher_journal_supplied: bool,
+    coverage_start: datetime | None,
+    coverage_end: datetime | None,
+    earliest_writer_asof: datetime | None,
+    latest_writer_asof: datetime | None,
+    max_gap_hours: float,
+    gap_threshold_hours: float = PUBLISHER_GAP_THRESHOLD_HOURS,
+) -> tuple[str, float | None]:
+    """Publisher-leg sufficiency verdict against the #547 task contract:
+    the journal must cover the FULL writer sample span (start through end,
+    not just start) with no unobserved gap, or extrapolation is forbidden
+    and MEASUREMENT_INSUFFICIENT must be returned with the exact shortfall.
+
+    Returns (status, shortfall_hours_or_none).
+    """
+    if not publisher_journal_supplied:
+        return "NOT_ATTEMPTED_NO_PUBLISHER_JOURNAL", None
+    if coverage_start is None:
+        return "MEASUREMENT_INSUFFICIENT_EMPTY_JOURNAL", None
+    if earliest_writer_asof is not None and coverage_start > earliest_writer_asof:
+        missing = round((coverage_start - earliest_writer_asof).total_seconds() / 3600, 1)
+        return "MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE", missing
+    if (
+        latest_writer_asof is not None
+        and coverage_end is not None
+        and coverage_end < latest_writer_asof
+    ):
+        missing = round((latest_writer_asof - coverage_end).total_seconds() / 3600, 1)
+        return "MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE", missing
+    if max_gap_hours > gap_threshold_hours:
+        return "MEASUREMENT_INSUFFICIENT_UNOBSERVED_GAP", round(max_gap_hours, 1)
+    return "MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION", None
+
+
 def build_report(
     since: str,
     publisher_journal_path: str | None,
@@ -649,18 +708,15 @@ def build_report(
     earliest_writer_asof = min(by_asof) if by_asof else None
     latest_writer_asof = max(by_asof) if by_asof else None
 
-    publisher_leg_sufficiency = "NOT_ATTEMPTED_NO_PUBLISHER_JOURNAL"
-    missing_publisher_history_hours: float | None = None
-    if publisher_journal_path:
-        if publisher_coverage_start is None:
-            publisher_leg_sufficiency = "MEASUREMENT_INSUFFICIENT_EMPTY_JOURNAL"
-        elif earliest_writer_asof is not None and publisher_coverage_start > earliest_writer_asof:
-            missing_publisher_history_hours = round(
-                (publisher_coverage_start - earliest_writer_asof).total_seconds() / 3600, 1
-            )
-            publisher_leg_sufficiency = "MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE"
-        else:
-            publisher_leg_sufficiency = "MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION"
+    max_gap_hours = max_publisher_attempt_gap_hours(publisher_successes, publisher_failures)
+    publisher_leg_sufficiency, missing_publisher_history_hours = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=bool(publisher_journal_path),
+        coverage_start=publisher_coverage_start,
+        coverage_end=publisher_coverage_end,
+        earliest_writer_asof=earliest_writer_asof,
+        latest_writer_asof=latest_writer_asof,
+        max_gap_hours=max_gap_hours,
+    )
 
     report = {
         "runner": RUNNER_NAME,
@@ -734,6 +790,7 @@ def build_report(
                 latest_writer_asof.isoformat() if latest_writer_asof else None
             ),
             "missing_publisher_history_hours_needed": missing_publisher_history_hours,
+            "max_publisher_attempt_gap_hours": round(max_gap_hours, 1),
         },
         "publisher_failed_cycles": [
             {

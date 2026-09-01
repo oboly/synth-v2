@@ -1,6 +1,6 @@
 {
   "runner": "measure_rotation_pressure_freshness_sla_v1",
-  "generated_at_utc": "2026-09-01T16:58:46.838227+00:00",
+  "generated_at_utc": "2026-09-01T17:08:11.998292+00:00",
   "observation_window_since_utc": "2026-08-08T12:00:00+00:00",
   "sample_count": 417,
   "off_schedule_writer_invocation_count": 3,
@@ -170,7 +170,8 @@
     "publisher_journal_coverage_end_utc": "2026-09-01T15:36:39+00:00",
     "writer_sample_earliest_asof_utc": "2026-08-08T12:00:00+00:00",
     "writer_sample_latest_asof_utc": "2026-09-01T16:00:00+00:00",
-    "missing_publisher_history_hours_needed": 546.6
+    "missing_publisher_history_hours_needed": 546.6,
+    "max_publisher_attempt_gap_hours": 1.0
   },
   "publisher_failed_cycles": [
     {

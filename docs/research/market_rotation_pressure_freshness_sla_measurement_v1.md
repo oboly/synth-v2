@@ -264,13 +264,33 @@ outage lasted, not as a candidate SLA input.
 
 ### 5.3 Coverage is insufficient to match the full 417-hour writer sample
 
-The publisher journal export covers only `2026-08-31T06:36Z` onward. The
-writer sample runs from `2026-08-08T12:00Z`. Per the harness's own
-sufficiency check:
+`evaluate_publisher_sufficiency()` requires all three of: (1) journal
+coverage starting at or before the writer sample's earliest asof, (2)
+journal coverage extending at or past the writer sample's latest asof, and
+(3) no unobserved gap between consecutive publisher attempts (success or
+failure) larger than `PUBLISHER_GAP_THRESHOLD_HOURS = 2.0` inside that
+span -- a gap that large would mean the journal itself is missing entries
+there (e.g. rotation truncation), not that the publisher was merely
+retrying during a real outage (during the observed 2026-09-01 outage,
+failed attempts were still logged roughly every 15-30 minutes, i.e. well
+under the threshold). A GitHub Codex review of this PR correctly flagged
+an earlier version of this check that only tested the start bound, which
+could have reported `MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION` for
+coverage that started early enough but ended before the writer sample's
+latest asof, or that had an unobserved internal gap -- both are now
+covered by focused regression tests
+(`test_evaluate_publisher_sufficiency_truncated_end_is_insufficient`,
+`test_evaluate_publisher_sufficiency_internal_gap_is_insufficient`).
+
+The publisher journal export covers only `2026-08-31T06:36Z` through
+`2026-09-01T15:36Z` (no internal gap larger than 1.0h). The writer sample
+runs from `2026-08-08T12:00Z` through `2026-09-01T16:00Z`. Per the
+harness's own sufficiency check:
 
 ```text
 publisher_leg_sufficiency = MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE
-missing_publisher_history_hours_needed = 546.6   (~22.8 days)
+missing_publisher_history_hours_needed = 546.6   (~22.8 days, start-bound shortfall)
+max_publisher_attempt_gap_hours = 1.0            (no internal gap, well under threshold)
 ```
 
 Per the #547 task contract ("If this raw tail does not cover enough

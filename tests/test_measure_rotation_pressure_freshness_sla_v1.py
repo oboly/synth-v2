@@ -6,10 +6,13 @@ from src.research.measure_rotation_pressure_freshness_sla_v1 import (
     ASOF_RE,
     FINISHED_RE,
     STARTED_RE,
+    PublisherCycle,
     WriterCycle,
     _parse_ts,
     _pctile,
     earliest_finish_per_asof,
+    evaluate_publisher_sufficiency,
+    max_publisher_attempt_gap_hours,
     parse_publisher_journal_export,
     source_completion_for_asof,
     summarize,
@@ -150,3 +153,103 @@ def test_earliest_finish_per_asof_skips_cycles_missing_finish_ts() -> None:
     result = earliest_finish_per_asof(by_asof)
 
     assert asof not in result
+
+
+def _pub_cycle(start_ts: datetime) -> PublisherCycle:
+    return PublisherCycle(start_ts=start_ts)
+
+
+def test_max_publisher_attempt_gap_hours_no_gap() -> None:
+    events = [
+        _pub_cycle(datetime(2026, 9, 1, h, 35, 0, tzinfo=UTC)) for h in range(10, 14)
+    ]
+    assert max_publisher_attempt_gap_hours(events, []) == 1.0
+
+
+def test_max_publisher_attempt_gap_hours_detects_large_gap() -> None:
+    successes = [
+        _pub_cycle(datetime(2026, 9, 1, 10, 35, 0, tzinfo=UTC)),
+        _pub_cycle(datetime(2026, 9, 1, 20, 35, 0, tzinfo=UTC)),
+    ]
+    assert max_publisher_attempt_gap_hours(successes, []) == 10.0
+
+
+def test_max_publisher_attempt_gap_hours_fewer_than_two_events() -> None:
+    assert max_publisher_attempt_gap_hours([], []) == 0.0
+    assert max_publisher_attempt_gap_hours(
+        [_pub_cycle(datetime(2026, 9, 1, 10, 0, 0, tzinfo=UTC))], []
+    ) == 0.0
+
+
+def test_evaluate_publisher_sufficiency_no_journal_supplied() -> None:
+    status, missing = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=False,
+        coverage_start=None,
+        coverage_end=None,
+        earliest_writer_asof=None,
+        latest_writer_asof=None,
+        max_gap_hours=0.0,
+    )
+    assert status == "NOT_ATTEMPTED_NO_PUBLISHER_JOURNAL"
+    assert missing is None
+
+
+def test_evaluate_publisher_sufficiency_truncated_start_is_insufficient() -> None:
+    # Regression test for a Codex review finding: coverage starting AFTER
+    # the writer sample's earliest asof must be flagged insufficient even
+    # if it extends all the way to the writer sample's latest asof.
+    status, missing = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=True,
+        coverage_start=datetime(2026, 8, 31, 6, 0, 0, tzinfo=UTC),
+        coverage_end=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        earliest_writer_asof=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        latest_writer_asof=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        max_gap_hours=0.5,
+    )
+    assert status == "MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE"
+    assert missing is not None and missing > 0
+
+
+def test_evaluate_publisher_sufficiency_truncated_end_is_insufficient() -> None:
+    # Regression test for a Codex review finding: coverage starting before
+    # the writer sample but ENDING early (not reaching the latest writer
+    # asof) must also be flagged insufficient, not just a late start.
+    status, missing = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=True,
+        coverage_start=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        coverage_end=datetime(2026, 8, 20, 0, 0, 0, tzinfo=UTC),
+        earliest_writer_asof=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        latest_writer_asof=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        max_gap_hours=0.5,
+    )
+    assert status == "MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE"
+    assert missing is not None and missing > 0
+
+
+def test_evaluate_publisher_sufficiency_internal_gap_is_insufficient() -> None:
+    # Regression test for a Codex review finding: full start-to-end span
+    # coverage with an unobserved gap inside it (e.g. journal rotation
+    # truncation) must not be reported as sufficient.
+    status, missing = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=True,
+        coverage_start=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        coverage_end=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        earliest_writer_asof=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        latest_writer_asof=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        max_gap_hours=48.0,
+    )
+    assert status == "MEASUREMENT_INSUFFICIENT_UNOBSERVED_GAP"
+    assert missing == 48.0
+
+
+def test_evaluate_publisher_sufficiency_full_coverage_no_gap_is_sufficient() -> None:
+    status, missing = evaluate_publisher_sufficiency(
+        publisher_journal_supplied=True,
+        coverage_start=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        coverage_end=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        earliest_writer_asof=datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC),
+        latest_writer_asof=datetime(2026, 9, 1, 16, 0, 0, tzinfo=UTC),
+        max_gap_hours=1.0,
+    )
+    assert status == "MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION"
+    assert missing is None
