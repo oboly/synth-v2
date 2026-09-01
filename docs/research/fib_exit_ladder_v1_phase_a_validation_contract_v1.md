@@ -64,7 +64,7 @@ VALIDATION_WINDOW_1 (extension):     2022-01-01 00:00:00  ->  2024-01-01 00:00:0
 VALIDATION_WINDOW_2 (recent/live):   2024-01-01 00:00:00  ->  2026-09-01 00:00:00   (today)
 ```
 
-Each window is run independently (its own anchor search over only that window's candles — no anchor may be detected using candles outside the window it is scored in, which is also the project's no-look-ahead requirement for this contract). A combined `2020-01-01 -> 2026-09-01` run is permitted only as a descriptive cross-check, never as a substitute for the disjoint per-window runs the disposition is based on.
+Each window is run independently (its own anchor search over only that window's candles — no anchor may be detected using candles outside the window it is scored in). This bounds which *window* a result is attributed to; it is a separate concern from whether the detector is point-in-time-safe *within* a window, which it is not — see "Look-ahead / promotion-grade classification" below. A combined `2020-01-01 -> 2026-09-01` run is permitted only as a descriptive cross-check, never as a substitute for the disjoint per-window runs the disposition is based on.
 
 ## 5. Asset universe handling
 
@@ -88,6 +88,70 @@ EXIT_PROFILE_EXPLOSIVE_MOONBAG    (target_family=EXPLOSIVE_SUPERCYCLE)  HOT
 `HBAR` and `SUI` have no original bucket assignment; if they now produce a usable anchor, they are reported as unassigned/descriptive only (§ Missing-data handling: `INSUFFICIENT_DATA` at the per-symbol-original-window level, since no 2021 bucket exists for them to validate).
 
 Ladder parameters held at original defaults for every run: `max_ladder_sell_fraction=0.80`, `rungs_per_target=5`, `distribution=front_loaded`, `target_zone_low_pct=0.04`, `target_zone_high_pct=0.04`, `front_run_pct=0.08`, `end_pct_of_zone_high=0.98`. `TARGET_FAMILIES` multiplier/fraction tuples are used exactly as defined in the module (no retuning — see § Non-negotiable constraints).
+
+## Look-ahead / promotion-grade classification
+
+Code audit of `find_anchor_set` in `run_fib_exit_ladder_backtest_v1.py`
+(unchanged, per § Provenance): for each candidate `(anchor_low, wave1_high,
+wave2_low)` triple, the detector computes
+
+```python
+future_high = max(candle.high_price for candle in candles[wave2_idx + 1 :])
+if future_high <= wave1_high:
+    continue
+expansion = (future_high - wave2_low) / wave1_range
+score = expansion
+```
+
+and selects the candidate triple with the highest `score`. `wave2_low`
+becomes `entry_ts`/`entry_price` in `evaluate_symbol`. `future_high` is the
+maximum high of every candle **strictly after** the candidate entry point,
+and a candidate is not even eligible (`continue`) unless that future data
+exceeds `wave1_high`. The entry decision is therefore not confirmable, let
+alone selectable among competitors, using only data available at the entry
+point itself.
+
+**This methodology is `FUTURE_AWARE_RESEARCH`, not point-in-time-safe.**
+Any earlier or later document in this repository (including this contract's
+own § New validation window(s), before this revision) that describes the
+detector or its window-scoping as "no-look-ahead" is describing only the
+separate, weaker property that a *window boundary* is respected (§ New
+validation window(s)) — it is not a point-in-time-safety claim about
+entry selection within a window, and must not be read as one.
+
+Consequences, binding on this contract and any findings report built on it:
+
+```text
+methodology_promotion_grade = 0
+reason                      = FUTURE_AWARE_RESEARCH
+```
+
+- A result from this methodology alone — `VALIDATED`, `REVISED`, or
+  otherwise — is retrospective bucket-stability evidence only. It answers
+  "did the originally-published buckets remain the best-scoring choice when
+  the same in-hindsight selection rule is re-applied to later data", not
+  "would this bucket have been selectable in real time".
+- Per `docs/architecture/automatic_exit_profile_promotion_v1.md` § 2
+  (evidence eligibility), promotion requires "point-in-time replay
+  validation with no look-ahead leakage". This methodology's output
+  therefore **must not**, by itself, satisfy `#657` Phase B's promotion
+  evidence requirement, regardless of the disposition reached in
+  § Acceptance thresholds.
+- A true point-in-time replay (entry confirmed only from data available at
+  or before `entry_ts`, with a separate, no-look-ahead re-detection or
+  confirmation rule) is a distinct research slice, not implemented by this
+  contract or by the frozen runners it wraps. It is out of scope for Phase A
+  per this task's "do not invent replacement bucket values merely to obtain
+  a usable result" and "do not retune after holdout inspection" constraints
+  — building it would be a new methodology, not a re-run of the frozen one.
+  It is recorded here as a dependency for whichever future Issue seeks
+  promotion-grade evidence for `#657`, not fabricated in this document.
+- Retrospective bucket-stability research remains legitimate under
+  `AGENTS.md` Research Rules (future-aware data is permitted inside
+  `src/research/`) and is exactly what § Acceptance thresholds evaluates.
+  The distinction is only about what the *output* may be used for
+  downstream: bucket-stability review, yes; `#657` production promotion
+  evidence, no.
 
 ## 7. Metrics
 
@@ -122,37 +186,57 @@ top_capture_stability     = |top_capture_ratio(window) - top_capture_ratio(origi
 
 ## 8. Acceptance thresholds
 
-Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), across the two validation windows plus the reproduced original window:
+Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), across the two validation windows plus the reproduced original window. The rules below are evaluated in the fixed order given (first match wins), so every reachable combination of baseline/validation outcomes maps to exactly one disposition — no combination is left undefined. A reference implementation of this exact ordering is `classify_asset_disposition` in `src/research/fib_exit_ladder_v1_phase_a_disposition_v1.py`; a findings report must use it (or reproduce its logic verbatim) rather than deriving the disposition ad hoc.
 
 ```text
-VALIDATED for an asset  requires ALL:
-  - original window reproduces status=OK with total_return_pct_with_remaining and hold_return_pct
-    matching the historical findings doc within rounding (sanity check that logic is unchanged).
+0. BASELINE NOT EVALUABLE
+   If the original (2020-01-01 -> 2022-01-01) window does not reach status=OK with a detected
+   anchor for this asset under the frozen methodology (contrary to the published 2021 findings,
+   which recorded a result for every one of LINK/SOL/XRP/HOT/XLM): INSUFFICIENT_DATA. There is no
+   baseline to validate against.
+
+1. BASELINE REPRODUCTION FAILURE  (fail-closed; must precede every other rule below)
+   If the original window IS evaluable (status=OK, anchor detected) but its
+   total_return_pct_with_remaining / hold_return_pct / anchor timestamps do not match the
+   historical findings doc within rounding tolerance under the unmodified, frozen methodology:
+   REJECTED, reason=BASELINE_REPRODUCTION_FAILED.
+   This never resolves to VALIDATED or REVISED regardless of how the validation windows score,
+   because Phase A cannot state confidently that the frozen methodology was actually reproduced,
+   and an unreproducible baseline must not be presented as promotion evidence in either direction.
+   This is distinct from a REJECTED verdict reached by successfully reproducing the baseline and
+   then finding the ladder does not beat holding (rule 4 below) — a findings report must state
+   which of the two applies.
+
+2. VALIDATION WINDOWS ALL NON-OK
+   If baseline reproduction succeeded (rule 1 did not fire) but both validation windows return a
+   non-OK status: INSUFFICIENT_DATA. The original claim reproduces, but cannot be re-tested outside
+   the original window at all.
+
+3. VALIDATED  requires ALL:
+  - rule 1 did not fire (baseline reproduced).
   - at least 1 of the 2 validation windows yields status=OK with a detected anchor.
   - in every validation window with status=OK: alpha_vs_hold_pct > 0 (ladder beats hold) AND
     the originally-assigned target family remains the best-total_return family among the 3 families
     for that asset in that window (bucket_rank_agreement holds).
 
-REVISED for an asset  requires:
-  - at least 1 validation window yields status=OK, AND
+4. REVISED  requires:
+  - rules 0-2 did not fire (baseline reproduced, >=1 validation window OK), AND
   - bucket_sign_agreement holds (ladder beats hold in at least 2 of the 3 windows including original) but
     bucket_rank_agreement fails in >=1 validation window (a different family scores better), so the
     asset->family mapping itself is not defensible unchanged, though "use a ladder over holding" still is.
 
-REJECTED for an asset  requires:
-  - at least 1 validation window yields status=OK, AND
+5. REJECTED (reproduction succeeded)  requires:
+  - rules 0-2 did not fire (baseline reproduced, >=1 validation window OK), AND
   - alpha_vs_hold_pct <= 0 in every validation window with status=OK (ladder never beats hold
     out of the original window).
-
-INSUFFICIENT_DATA for an asset  requires:
-  - both validation windows return a non-OK status (ASSET_NOT_FOUND / INSUFFICIENT_CANDLES /
-    NO_ANCHOR_SET_FOUND / NO_FUTURE_CANDLES), i.e. the deterministic detector never finds a
-    qualifying structure outside the original window, so the original claim cannot be re-tested
-    at all (this is distinct from REJECTED: it is inability to reproduce the methodology, not a
-    negative result from reproducing it).
+  This is a negative result from successfully reproducing the methodology, and must be reported
+  with a different (or absent) reason string than rule 1's `BASELINE_REPRODUCTION_FAILED` so the
+  two REJECTED causes are never conflated.
 ```
 
-The overall Phase A disposition is the least favorable of the five per-asset dispositions, using the ordering `REJECTED < REVISED < VALIDATED` for defensibility and treating any `INSUFFICIENT_DATA` asset as forcing an overall `INSUFFICIENT_DATA` unless the findings report explicitly narrows the claim to the subset of assets that did produce a result (allowed, but the narrowing itself must be stated, not silent).
+Rules 0-5 are exhaustive and mutually exclusive over every reachable combination of baseline/validation outcomes: rule 0 covers a non-evaluable baseline, rule 1 covers an evaluable-but-unreproduced baseline (fail-closed, always REJECTED), rule 2 covers a reproduced baseline with no usable validation window, and rules 3-5 partition every remaining case (>=1 OK validation window with a reproduced baseline) by sign/rank agreement. No combination of baseline/validation outcomes is left without a defined disposition.
+
+The overall Phase A disposition is the least favorable of the five per-asset dispositions, using the ordering `REJECTED < REVISED < VALIDATED` for defensibility and treating any `INSUFFICIENT_DATA` asset as forcing an overall `INSUFFICIENT_DATA` unless the findings report explicitly narrows the claim to the subset of assets that did produce a result (allowed, but the narrowing itself must be stated, not silent). Any asset reaching rule 1 (`BASELINE_REPRODUCTION_FAILED`) forces the overall disposition to at least `REJECTED`, with the reason carried through explicitly, regardless of how other assets score.
 
 If Phase A cannot execute the runners against real data at all (no DB access, no equivalent dataset), the disposition is `BLOCKED`, a distinct state from `INSUFFICIENT_DATA` (inability to run vs. the detector legitimately finding nothing).
 
@@ -177,6 +261,21 @@ BLOCKED              Phase A cannot execute the runners against real historical 
                      environment (e.g. no DB access, no substitute dataset) — distinct from INSUFFICIENT_DATA
 ```
 
+A `REJECTED` outcome additionally carries a `reason` when it was reached via
+Acceptance-thresholds rule 1: `reason=BASELINE_REPRODUCTION_FAILED`. This
+reason is informational metadata on a `REJECTED` disposition, not a sixth
+outcome category — the five-way enum above stays exhaustive and unchanged;
+see § Acceptance thresholds rule 1 for when it applies and why it is
+fail-closed (never `VALIDATED`/`REVISED`).
+
+Independently of which of the five outcomes above is reached, § Look-ahead /
+promotion-grade classification fixes `methodology_promotion_grade=0`,
+`reason=FUTURE_AWARE_RESEARCH` for every disposition produced under this
+contract's frozen anchor detector. A `VALIDATED` outcome answers "do the
+original buckets remain the best in-hindsight choice", not "is this
+promotion-grade evidence for `#657`" — the two questions are orthogonal and
+both must be reported.
+
 ## Non-negotiable constraints
 
 - No bucket definition, multiplier, fraction, or threshold in `TARGET_FAMILIES` or the anchor detector may change after any query result is seen. A finding that the current buckets look wrong is reported as `REVISED`/`REJECTED`, not silently retuned.
@@ -184,3 +283,4 @@ BLOCKED              Phase A cannot execute the runners against real historical 
 - No production write path (`automatic_exit_profile_v1`, `selection_engine`, `decision_gate`, `execution_planner`, `executor`) is touched by Phase A.
 - No account-aware, balance-aware, or order-aware data may enter this evaluation.
 - Phase A produces research artifacts under `docs/research/` and, if a run executes, `data/research/` only.
+- No result produced under this contract's frozen anchor detector may be cited as satisfying `#657` Phase B's point-in-time promotion evidence requirement; see § Look-ahead / promotion-grade classification.

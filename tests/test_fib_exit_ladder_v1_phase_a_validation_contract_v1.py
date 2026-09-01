@@ -1,10 +1,13 @@
 """Tests for Issue #270 Phase A frozen validation contract.
 
 Covers: frozen bucket/target-family definitions, deterministic and
-repeatable core logic against synthetic (non-DB) candle input, no-look-ahead
-in the anchor detector, no account-awareness, no production-layer imports,
-and rejection of non-read SQL. Does not require DB access; the actual
-Phase A run against real historical data is BLOCKED per
+repeatable core logic against synthetic (non-DB) candle input, the anchor
+detector's actual (future-aware) look-ahead semantics, the contract/findings
+docs labeling that correctly, promotion-eligibility gating for future-aware
+evidence, deterministic fail-closed baseline-reproduction-failure
+disposition, no account-awareness, no production-layer imports, and
+rejection of non-read SQL. Does not require DB access; the actual Phase A
+run against real historical data is BLOCKED per
 docs/research/fib_exit_ladder_v1_phase_a_validation_findings_v1.md.
 """
 from __future__ import annotations
@@ -17,12 +20,15 @@ from pathlib import Path
 
 import pytest
 
+from src.research import fib_exit_ladder_v1_phase_a_disposition_v1 as disposition
 from src.research import run_fib_exit_ladder_backtest_v1 as ladder_bt
 from src.research import run_fib_exit_ladder_scoreboard_v1 as ladder_sb
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKTEST_MODULE_PATH = REPO_ROOT / "src/research/run_fib_exit_ladder_backtest_v1.py"
 SCOREBOARD_MODULE_PATH = REPO_ROOT / "src/research/run_fib_exit_ladder_scoreboard_v1.py"
+CONTRACT_DOC_PATH = REPO_ROOT / "docs/research/fib_exit_ladder_v1_phase_a_validation_contract_v1.md"
+FINDINGS_DOC_PATH = REPO_ROOT / "docs/research/fib_exit_ladder_v1_phase_a_validation_findings_v1.md"
 
 FORBIDDEN_IMPORT_PREFIXES = (
     "src.decision_gate",
@@ -123,9 +129,14 @@ def test_evaluate_symbol_is_deterministic_and_repeatable() -> None:
     assert [f.limit_price for f in first.fills] == [f.limit_price for f in second.fills]
 
 
-def test_anchor_detector_does_not_use_candles_before_its_own_window() -> None:
-    """No-look-ahead: restricting the candle series to a window must not pull
-    in an anchor whose defining candles fall outside that window."""
+def test_anchor_detector_requires_future_data_after_its_own_entry_point() -> None:
+    """The frozen anchor detector is FUTURE_AWARE_RESEARCH, not
+    point-in-time-safe: `find_anchor_set` scores/admits a candidate entry
+    (wave2_low) only if `future_high` — the max high of candles strictly
+    *after* that entry — exceeds wave1_high. Truncating the series to end
+    exactly at the entry point (no data after it) must therefore make the
+    same anchor undetectable, proving the entry decision depends on data
+    unavailable at the entry point itself."""
     full = _synthetic_candles()
 
     anchor_full = ladder_bt.find_anchor_set(
@@ -139,10 +150,10 @@ def test_anchor_detector_does_not_use_candles_before_its_own_window() -> None:
     )
     assert anchor_full is not None
 
-    # A window that ends before the wave1 high must not find that same anchor.
-    truncated = [c for c in full if c.open_ts_utc < anchor_full.wave1_high_ts]
+    entry_ts = anchor_full.wave2_low_ts
+    truncated_at_entry = [c for c in full if c.open_ts_utc <= entry_ts]
     anchor_truncated = ladder_bt.find_anchor_set(
-        candles=truncated,
+        candles=truncated_at_entry,
         pivot_threshold_pct=Decimal("0.25"),
         min_wave1_gain_pct=Decimal("1.00"),
         min_wave1_days=14,
@@ -150,7 +161,117 @@ def test_anchor_detector_does_not_use_candles_before_its_own_window() -> None:
         wave2_min_retrace=Decimal("0.236"),
         wave2_max_retrace=Decimal("0.886"),
     )
-    assert anchor_truncated is None or anchor_truncated.wave1_high_ts < anchor_full.wave1_high_ts
+    assert anchor_truncated is None, (
+        "find_anchor_set found an anchor using only data up to and including "
+        "the entry point; the frozen detector is documented as future-aware "
+        "specifically because it cannot do this, so this would mean the "
+        "FUTURE_AWARE_RESEARCH classification no longer matches the code."
+    )
+
+
+def test_contract_and_findings_label_methodology_future_aware() -> None:
+    contract_text = CONTRACT_DOC_PATH.read_text(encoding="utf-8")
+    findings_text = FINDINGS_DOC_PATH.read_text(encoding="utf-8")
+
+    for text in (contract_text, findings_text):
+        assert "FUTURE_AWARE_RESEARCH" in text
+        assert "methodology_promotion_grade=0" in text or "methodology_promotion_grade = 0" in text
+
+    assert "point-in-time-safe" in contract_text
+    assert "#657" in contract_text and "promotion" in contract_text.lower()
+
+
+def test_future_aware_evidence_is_never_promotion_eligible() -> None:
+    for outcome in (
+        disposition.OUTCOME_VALIDATED,
+        disposition.OUTCOME_REVISED,
+        disposition.OUTCOME_REJECTED,
+        disposition.OUTCOME_INSUFFICIENT_DATA,
+        disposition.OUTCOME_BLOCKED,
+    ):
+        assert disposition.is_promotion_eligible(
+            disposition_outcome=outcome, methodology_future_aware=True
+        ) is False
+
+    # Sanity check: the gate is specifically about future-awareness, not a
+    # blanket False — a hypothetical point-in-time-safe VALIDATED result
+    # would be eligible, confirming the False above is caused by the
+    # future-aware flag and not by the gate always returning False.
+    assert disposition.is_promotion_eligible(
+        disposition_outcome=disposition.OUTCOME_VALIDATED, methodology_future_aware=False
+    ) is True
+
+    # The module-level default must itself reflect the current frozen
+    # methodology's actual (future-aware) classification.
+    assert disposition.METHODOLOGY_FUTURE_AWARE is True
+    assert disposition.is_promotion_eligible(disposition_outcome=disposition.OUTCOME_VALIDATED) is False
+
+
+def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> None:
+    result = disposition.classify_asset_disposition(
+        symbol="LINK",
+        baseline_evaluable=True,
+        baseline_reproduced=False,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert result.outcome == disposition.OUTCOME_REJECTED
+    assert result.reason == disposition.REASON_BASELINE_REPRODUCTION_FAILED
+
+    # Repeatable: identical inputs must yield an identical disposition.
+    repeat = disposition.classify_asset_disposition(
+        symbol="LINK",
+        baseline_evaluable=True,
+        baseline_reproduced=False,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert repeat == result
+
+    # Fail-closed: even validation windows that would otherwise score
+    # VALIDATED (sign + rank agreement both hold) must not override a
+    # baseline-reproduction failure.
+    assert result.outcome != disposition.OUTCOME_VALIDATED
+    assert result.outcome != disposition.OUTCOME_REVISED
+
+    overall = disposition.overall_disposition([result])
+    assert overall == disposition.OUTCOME_REJECTED
+
+
+def test_baseline_not_evaluable_is_insufficient_data_not_rejected() -> None:
+    """A non-evaluable baseline (rule 0) is a distinct disposition path from
+    an evaluable-but-unreproduced baseline (rule 1): there is no baseline to
+    compare against at all, so this must not be reported as REJECTED."""
+    result = disposition.classify_asset_disposition(
+        symbol="HOT",
+        baseline_evaluable=False,
+        baseline_reproduced=None,
+        has_original_bucket=True,
+        validation_windows_ok=0,
+        validation_windows_total=2,
+        bucket_sign_agreement=None,
+        bucket_rank_agreement_all_ok_windows=None,
+    )
+    assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert result.reason is None
+
+
+def test_overall_disposition_is_least_favorable() -> None:
+    validated = disposition.AssetDisposition("LINK", disposition.OUTCOME_VALIDATED, None)
+    revised = disposition.AssetDisposition("SOL", disposition.OUTCOME_REVISED, None)
+    rejected = disposition.AssetDisposition(
+        "HOT", disposition.OUTCOME_REJECTED, disposition.REASON_BASELINE_REPRODUCTION_FAILED
+    )
+
+    assert disposition.overall_disposition([validated]) == disposition.OUTCOME_VALIDATED
+    assert disposition.overall_disposition([validated, revised]) == disposition.OUTCOME_REVISED
+    assert disposition.overall_disposition([validated, revised, rejected]) == disposition.OUTCOME_REJECTED
 
 
 def test_read_only_guard_rejects_non_select_sql() -> None:

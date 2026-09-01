@@ -20,6 +20,11 @@ contract is frozen and unaffected by this outcome, so no re-run under this
 same contract is invalidated — it can be executed as soon as the blocker
 below is resolved.
 
+`BLOCKED` here is about data/environment access only. Separately, and
+independent of data access, the frozen methodology itself is classified
+`FUTURE_AWARE_RESEARCH` (see below) — even once unblocked, no disposition
+reached under it may be cited as `#657` Phase B promotion evidence.
+
 ## What was audited
 
 - `docs/research/fib_exit_ladder_v1_findings.md` — original 2021-window
@@ -78,6 +83,34 @@ substitute candle history to work around the gap (explicitly forbidden by
 this task's instructions and by the frozen contract's non-negotiable
 constraints).
 
+## Methodology look-ahead classification (independent of the DB blocker)
+
+This does not require DB access and was established by code audit alone
+(see the contract's "Look-ahead / promotion-grade classification" section
+for the full derivation): the frozen anchor detector
+(`find_anchor_set` in `run_fib_exit_ladder_backtest_v1.py`) selects an
+entry point using `future_high`, the maximum high of every candle strictly
+*after* that candidate entry point, and rejects any candidate whose
+future data does not exceed `wave1_high`. The entry decision is therefore
+not confirmable using only data available at the entry point itself.
+
+```text
+methodology_classification   = FUTURE_AWARE_RESEARCH
+methodology_promotion_grade  = 0
+reason                       = FUTURE_AWARE_RESEARCH
+```
+
+This is recorded now, ahead of the DB blocker being resolved, so that a
+future re-run under the same frozen contract cannot be misread as
+point-in-time promotion evidence regardless of what disposition it reaches.
+Retrospective bucket-stability research under this methodology remains
+legitimate per `AGENTS.md` Research Rules; it simply cannot, by itself,
+satisfy `#657` Phase B's point-in-time evidence requirement
+(`docs/architecture/automatic_exit_profile_promotion_v1.md` § 2). A true
+point-in-time replay is a separate, not-yet-scoped research dependency — see
+the contract's § Look-ahead / promotion-grade classification — and is not
+fabricated here.
+
 ## What is needed to unblock
 
 Exactly one of:
@@ -115,6 +148,7 @@ account_awareness=0
 decision_permission=0
 execution_intent=0
 order_submission=0
+live_orders=0
 broker_private_calls=0
 broker_writes=0
 db_writes=0
@@ -125,4 +159,7 @@ execution_planner_changes=0
 executor_changes=0
 automatic_exit_profile_v1_writes=0
 production_promotion=0
+runtime_activation=0
+methodology_promotion_grade=0
+reason=FUTURE_AWARE_RESEARCH
 ```
