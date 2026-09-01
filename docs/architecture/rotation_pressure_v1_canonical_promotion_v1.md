@@ -153,30 +153,38 @@ staleness rule.** The candidate derivation considered was:
 
 ```text
 input_interval (60 min, INPUT_INTERVAL, reviewed producer fact)
-+ writer's documented worst-case persist lag (25 min: gurkDB
++ writer's expected worst-case persist lag (~25 min: gurkDB
   synth-market-rotation-pressure-writer.timer OnCalendar=*:20:00 UTC,
-  RandomizedDelaySec=180 -> worst-case start :23:00; three real
-  per-invocation-verified cycles all completing within that window with
-  historical ~1-2 min runtime, per
-  docs/ops/market_rotation_pressure_runtime_owners_v1.md)
+  RandomizedDelaySec=180 -> configured worst-case latest start :23:00, a
+  deterministic schedule fact; plus a historically observed, not rigorously
+  measured, ~1-2 min runtime across three real per-invocation-verified
+  cycles -> estimated persist-by :24-:25, per
+  docs/ops/market_rotation_pressure_runtime_owners_v1.md "Expected
+  worst-case candle-to-visibility lag")
 + operational safety margin for runtime variance beyond the observed
   ~1-2 min figure
 = candidate ROTATION_STALE_AFTER
 ```
 
-The first two components have a concrete, reviewed evidentiary basis: the
-60-minute cadence is an explicit, reviewed owner decision (see "Cadence
+Only the first component has a fully concrete, reviewed evidentiary basis:
+the 60-minute cadence is an explicit, reviewed owner decision (see "Cadence
 decision" in `docs/ops/market_rotation_pressure_runtime_owners_v1.md`, not
-timer cadence alone treated as freshness semantics), and the 25-minute
-persist-lag figure is directly measured from three real,
-per-invocation-verified writer cycles. The third component — the
-operational safety margin — is **not** defensible: no p95/p99 (or any)
-measured distribution of writer invocation duration exists beyond the
-three-cycle "historically ~1-2 min" observation, no incident/postmortem
-record establishes a needed buffer, and no owner decision in #547 records a
-reviewed margin value. Any specific minute figure for this component would
-be invented slack, not evidence — so per the #547 task contract ("do not
-invent a threshold"), no `ROTATION_STALE_AFTER` is adopted.
+timer cadence alone treated as freshness semantics). The second component
+is **partially** defensible: the `:23:00` worst-case start is a genuine
+deterministic fact of the configured schedule (`OnCalendar`/
+`RandomizedDelaySec`), but the runtime addition on top of it ("historically
+~1-2 min") is an anecdotal observation from three cycles, not a measured
+worst-case bound (no p95/p99, no stress case, no documented runtime-outlier
+review) — three data points cannot establish a worst-case runtime, only a
+typical one. Presenting "~25 min" as directly measured evidence overstates
+what is actually known. The third component — the operational safety
+margin — is **not** defensible at all: no measured distribution of writer
+invocation duration exists beyond the same three-cycle anecdote, no
+incident/postmortem record establishes a needed buffer, and no owner
+decision in #547 records a reviewed margin value. Any specific minute
+figure for either the runtime addition or the safety margin would be
+invented, not evidence — so per the #547 task contract ("do not invent a
+threshold"), no `ROTATION_STALE_AFTER` is adopted.
 
 The dashboard's `classify_freshness()` /
 `DEFAULT_STALE_AFTER = timedelta(hours=2, minutes=30)` in
@@ -192,15 +200,20 @@ future-dated `asof_ts` or for `status`. What #547 Phase B needs before a
 producer-owned rule can be adopted:
 
 ```text
-1. Measured writer invocation-duration distribution (not just 3 cycles):
-   capture ExecMainStartTimestamp/ExecMainExitTimestamp across a materially
-   larger, continuous sample (e.g. one full week of real hourly cycles) and
-   record p50/p95/p99 runtime, not only the historical "~1-2 min" anecdote.
+1. Measured end-to-end persist lag (asof_ts_utc/candle close -> row
+   committed/queryable), not just writer runtime duration, across a
+   materially larger, continuous sample (e.g. one full week of real hourly
+   cycles) -- capture ExecMainStartTimestamp/ExecMainExitTimestamp plus the
+   actual DB commit time, and record p50/p95/p99, not only the historical
+   "~1-2 min" three-cycle anecdote.
 2. An explicit owner decision recording the reviewed safety-margin value
    (or a documented policy for deriving it from the measured distribution,
    e.g. "p99 + fixed constant"), attached to #547 as evidence -- not
    invented ad hoc in this contract module.
-3. Re-run this Phase A derivation with that measurement in hand; only then
+3. Re-run this Phase A derivation with that measurement in hand, describing
+   any worst-case component precisely as either a deterministic configured
+   fact (e.g. `OnCalendar`/`RandomizedDelaySec`) or a measured statistic --
+   never as "directly measured" when it is actually an estimate. Only then
    may `rotation_evidence_contract_v1` gain a `ROTATION_STALE_AFTER`
    constant and pass it into `compute_freshness`.
 ```
