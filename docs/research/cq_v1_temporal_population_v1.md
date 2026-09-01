@@ -11,9 +11,9 @@ The builder never substitutes current/latest truth. Missing quality/signal evide
 
 No CQ v1 candidate scores or forward outcomes are calculated here. `obs_market_candle` is not directly consumed by frozen CQ v1 feature reconstruction in this slice; later candles remain reserved for the forward-label slice.
 
-Each observation identity includes `asset_id`, `venue`, frozen `asof_ts_utc`, evidence-key hash, CQ model version, frozen model-family version and frozen coverage-artifact hash. The runner additionally emits a deterministic `observation_id` SHA-256 and rejects duplicate identity.
+The Selection Engine v2 config is frozen by both path and SHA-256. A run fails closed if the configured path or file contents differ from the pinned contract. The selection-config SHA-256 is recorded in checkpoint, summary, manifest, every observation, and the deterministic `observation_id` identity alongside `asset_id`, `venue`, frozen `asof_ts_utc`, evidence-key hash, CQ model version, frozen model-family version and frozen coverage-artifact hash.
 
-Output is restricted to `data/research/` and consists of `population.jsonl`, `summary.json`, and `manifest.json`. The manifest records the frozen contract SHA-256 and population SHA-256. The runner performs database reads only and never writes reconstructed history into `research_entry_quality_shadow`.
+Output is restricted to `data/research/` and consists of `population.jsonl`, `summary.json`, `manifest.json`, plus `checkpoint.json` while the run is active or resumable. A clean SIGINT/SIGTERM writes `terminal_state=INTERRUPTED`, preserves the last committed per-as-of checkpoint, records a resumable summary, and exits 130. Resume requires the same frozen contract/config identity and truncates any uncheckpointed JSONL tail before continuing. Final `FINISHED` artifacts carry the population SHA-256. The runner performs database reads only and never writes reconstructed history into `research_entry_quality_shadow`.
 
 Safety boundary:
 
@@ -45,4 +45,4 @@ python3 -m src.research.run_cq_v1_temporal_population_v1 \
   --output-dir data/research/cq_v1_temporal_population_v1/20260831T180000Z
 ```
 
-The run is acceptable only if `summary.json` reports `unique_asof_count=45` and the terminal exits with `FINISHED`. Outcome statistics must not be opened in this slice.
+After interruption, resume the same output directory with `--resume`. The run is acceptable only if `summary.json` reports `terminal_state=FINISHED` and `unique_asof_count=45`. Outcome statistics must not be opened in this slice.
