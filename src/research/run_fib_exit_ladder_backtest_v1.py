@@ -367,6 +367,13 @@ def find_anchor_set(
     best: Optional[AnchorSet] = None
     best_score: Optional[Decimal] = None
 
+    suffix_max_high: list[Decimal] = [Decimal("0")] * len(candles)
+    running_max_high: Optional[Decimal] = None
+    for idx in range(len(candles) - 1, -1, -1):
+        candle_high = candles[idx].high_price
+        running_max_high = candle_high if running_max_high is None else max(running_max_high, candle_high)
+        suffix_max_high[idx] = running_max_high
+
     for low_idx in range(0, max(1, len(candles) - 10)):
         anchor_low = candles[low_idx].low_price
         if anchor_low <= 0:
@@ -406,7 +413,7 @@ def find_anchor_set(
                 if retrace < wave2_min_retrace or retrace > wave2_max_retrace:
                     continue
 
-                future_high = max(candle.high_price for candle in candles[wave2_idx + 1 :])
+                future_high = suffix_max_high[wave2_idx + 1]
                 if future_high <= wave1_high:
                     continue
 
