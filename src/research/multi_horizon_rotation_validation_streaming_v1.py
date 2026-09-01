@@ -4,16 +4,15 @@ from __future__ import annotations
 
 This module preserves the frozen validation semantics while consuming the
 canonical dataset-builder JSONL in nondecreasing as-of order. Memory is bounded
-by per-market temporal state, lead/lag turn indexes, regime aggregates, and one
-as-of cohort rather than total row count.
+by per-market temporal state, bounded lead/lag pairing windows, regime
+aggregates, and one as-of cohort rather than total row count.
 """
 
-from collections import Counter, defaultdict
+from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from math import atanh, erf, exp, isfinite, sqrt
-from statistics import mean
-from typing import Any, Iterable
+from typing import Any
 
 from src.research.multi_horizon_rotation_validation_temporal_v1 import (
     MAX_TURN_MATCH_LAG_SAMPLES,
@@ -123,7 +122,12 @@ class TripleStats:
         return max(-1.0, min(1.0, value))
 
 
-def correlation_result(sample_count: int, correlation: float | None, *, controlled_variables: int = 0) -> CorrelationResult:
+def correlation_result(
+    sample_count: int,
+    correlation: float | None,
+    *,
+    controlled_variables: int = 0,
+) -> CorrelationResult:
     if correlation is None or sample_count <= controlled_variables + 3:
         return CorrelationResult(sample_count, None, None, None, None)
     clipped = max(-0.999999999999, min(0.999999999999, correlation))
@@ -136,7 +140,13 @@ def correlation_result(sample_count: int, correlation: float | None, *, controll
     hi = (exp(2 * hi_z) - 1) / (exp(2 * hi_z) + 1)
     z_null = abs(z) * sqrt(effective_n)
     p_approx = 2.0 * (1.0 - 0.5 * (1.0 + erf(z_null / sqrt(2.0))))
-    return CorrelationResult(sample_count, correlation, lo, hi, max(0.0, min(1.0, p_approx)))
+    return CorrelationResult(
+        sample_count,
+        correlation,
+        lo,
+        hi,
+        max(0.0, min(1.0, p_approx)),
+    )
 
 
 def pair_result(stats: PairStats) -> CorrelationResult:
@@ -144,7 +154,11 @@ def pair_result(stats: PairStats) -> CorrelationResult:
 
 
 def triple_result(stats: TripleStats) -> CorrelationResult:
-    return correlation_result(stats.n, stats.partial_correlation(), controlled_variables=1)
+    return correlation_result(
+        stats.n,
+        stats.partial_correlation(),
+        controlled_variables=1,
+    )
 
 
 def _state(value: float | None) -> int | None:
@@ -155,6 +169,11 @@ def _state(value: float | None) -> int | None:
     if value < 0:
         return -1
     return 0
+
+
+def _sample_index(value: datetime) -> int:
+    seconds = SAMPLE_INTERVAL.total_seconds()
+    return int(value.timestamp() // seconds)
 
 
 @dataclass
@@ -175,6 +194,108 @@ class MarketTemporalState:
     def __post_init__(self) -> None:
         if self.pending_flips is None:
             self.pending_flips = []
+
+
+@dataclass
+class LeadLagPairState:
+    candidate_turn_count: int = 0
+    reference_turn_count: int = 0
+    paired_turn_count: int = 0
+    delta_sum: int = 0
+    delta_counts: Counter[int] | None = None
+    pending_candidates: deque[int] | None = None
+    references: deque[int] | None = None
+
+    def __post_init__(self) -> None:
+        if self.delta_counts is None:
+            self.delta_counts = Counter()
+        if self.pending_candidates is None:
+            self.pending_candidates = deque()
+        if self.references is None:
+            self.references = deque()
+
+    def add_candidate(self, sample_index: int) -> None:
+        self.candidate_turn_count += 1
+        self.pending_candidates.append(sample_index)
+
+    def add_reference(self, sample_index: int) -> None:
+        self.reference_turn_count += 1
+        self.references.append(sample_index)
+
+    def _pair_candidate(self, candidate_index: int) -> None:
+        eligible = [
+            reference
+            for reference in self.references
+            if abs(reference - candidate_index) <= MAX_TURN_MATCH_LAG_SAMPLES
+        ]
+        if not eligible:
+            return
+        best = min(
+            eligible,
+            key=lambda reference: (
+                abs(reference - candidate_index),
+                reference,
+            ),
+        )
+        self.references.remove(best)
+        delta = candidate_index - best
+        self.paired_turn_count += 1
+        self.delta_sum += delta
+        self.delta_counts[delta] += 1
+
+    def advance(self, current_index: int, *, final: bool = False) -> None:
+        while self.pending_candidates:
+            candidate_index = self.pending_candidates[0]
+            if not final and candidate_index + MAX_TURN_MATCH_LAG_SAMPLES > current_index:
+                break
+            self.pending_candidates.popleft()
+            self._pair_candidate(candidate_index)
+
+        if final:
+            self.references.clear()
+            return
+
+        if self.pending_candidates:
+            oldest_useful_reference = (
+                self.pending_candidates[0] - MAX_TURN_MATCH_LAG_SAMPLES
+            )
+        else:
+            oldest_useful_reference = (
+                current_index + 1 - MAX_TURN_MATCH_LAG_SAMPLES
+            )
+        while self.references and self.references[0] < oldest_useful_reference:
+            self.references.popleft()
+
+    def summary(self) -> dict[str, object]:
+        paired = self.paired_turn_count
+        median: float | None = None
+        if paired:
+            left_rank = (paired - 1) // 2
+            right_rank = paired // 2
+            seen = 0
+            left: int | None = None
+            right: int | None = None
+            for delta in sorted(self.delta_counts):
+                next_seen = seen + self.delta_counts[delta]
+                if left is None and left_rank < next_seen:
+                    left = delta
+                if right is None and right_rank < next_seen:
+                    right = delta
+                    break
+                seen = next_seen
+            assert left is not None and right is not None
+            median = (float(left) + float(right)) / 2.0
+        return {
+            "candidate_turn_count": self.candidate_turn_count,
+            "reference_turn_count": self.reference_turn_count,
+            "paired_turn_count": paired,
+            "unmatched_candidate_turn_count": self.candidate_turn_count - paired,
+            "unmatched_reference_turn_count": self.reference_turn_count - paired,
+            "mean_delta_samples": self.delta_sum / paired if paired else None,
+            "median_delta_samples": median,
+            "min_delta_samples": min(self.delta_counts) if self.delta_counts else None,
+            "max_delta_samples": max(self.delta_counts) if self.delta_counts else None,
+        }
 
 
 class StreamingValidationAccumulator:
@@ -209,18 +330,21 @@ class StreamingValidationAccumulator:
         }
         self.sign_flips = Counter({candidate: 0 for candidate in CANDIDATE_IDS})
         self.chop_reversions = Counter({candidate: 0 for candidate in CANDIDATE_IDS})
-        self.candidate_turns: dict[tuple[str, int, str], list[int]] = defaultdict(list)
-        self.reference_turns: dict[tuple[str, int, str], list[int]] = defaultdict(list)
+        self.lead_lag: dict[tuple[str, int, str], LeadLagPairState] = {}
         self.current_asof: datetime | None = None
         self.current_cross: dict[tuple[str, int], dict[str, float | None]] = {}
-        self.asof_index = -1
 
-    def _flush_cross(self) -> None:
+    def _finish_current_asof(self) -> None:
+        if self.current_asof is None:
+            return
         for values in self.current_cross.values():
             self.cross["C1:C2"].add(values.get("C1"), values.get("C2"))
             self.cross["C1:C3"].add(values.get("C1"), values.get("C3"))
             self.cross["C2:C3"].add(values.get("C2"), values.get("C3"))
         self.current_cross.clear()
+        current_index = _sample_index(self.current_asof)
+        for pairer in self.lead_lag.values():
+            pairer.advance(current_index)
 
     def add(self, row: Any) -> None:
         candidate = row.candidate_id
@@ -229,13 +353,13 @@ class StreamingValidationAccumulator:
         ts = row.asof_ts
         if self.current_asof is None:
             self.current_asof = ts
-            self.asof_index = 0
         elif ts < self.current_asof:
-            raise ValueError("streaming evaluator requires nondecreasing canonical asof ordering")
+            raise ValueError(
+                "streaming evaluator requires nondecreasing canonical asof ordering"
+            )
         elif ts != self.current_asof:
-            self._flush_cross()
+            self._finish_current_asof()
             self.current_asof = ts
-            self.asof_index += 1
 
         market = (row.venue, row.asset_id)
         candidate_values = self.current_cross.setdefault(market, {})
@@ -251,13 +375,21 @@ class StreamingValidationAccumulator:
         for label, field in FORWARD_FIELDS.items():
             outcome = getattr(row, field)
             self.forward[candidate][label].add(row.candidate_score, outcome)
-            self.partial_b0[candidate][label].add(row.candidate_score, outcome, row.b0_score)
-            self.partial_b1[candidate][label].add(row.candidate_score, outcome, row.b1_return)
+            self.partial_b0[candidate][label].add(
+                row.candidate_score,
+                outcome,
+                row.b0_score,
+            )
+            self.partial_b1[candidate][label].add(
+                row.candidate_score,
+                outcome,
+                row.b1_return,
+            )
 
         if row.b0_pressure_state is not None:
-            state = str(row.b0_pressure_state)
+            state_name = str(row.b0_pressure_state)
             bucket = self.regimes[candidate].setdefault(
-                state,
+                state_name,
                 {
                     "sample_count": 0,
                     "complete_count": 0,
@@ -268,11 +400,18 @@ class StreamingValidationAccumulator:
             if row.candidate_score is not None and isfinite(row.candidate_score):
                 bucket["complete_count"] += 1
             for label, field in FORWARD_FIELDS.items():
-                bucket["forward"][label].add(row.candidate_score, getattr(row, field))
+                bucket["forward"][label].add(
+                    row.candidate_score,
+                    getattr(row, field),
+                )
 
         key = (row.venue, row.asset_id, candidate)
         tracker = self.temporal.setdefault(key, MarketTemporalState())
-        contiguous = tracker.previous_ts is not None and ts - tracker.previous_ts == SAMPLE_INTERVAL
+        pairer = self.lead_lag.setdefault(key, LeadLagPairState())
+        contiguous = (
+            tracker.previous_ts is not None
+            and ts - tracker.previous_ts == SAMPLE_INTERVAL
+        )
         state = _state(row.candidate_score)
         b1_state = _state(row.b1_return)
 
@@ -313,19 +452,31 @@ class StreamingValidationAccumulator:
                 tracker.current_state = state
                 tracker.run_length = 1
 
-        if contiguous and state is not None and tracker.previous_candidate_state is not None and state != tracker.previous_candidate_state:
-            self.candidate_turns[key].append(self.asof_index)
-        if contiguous and b1_state is not None and tracker.previous_b1_state is not None and b1_state != tracker.previous_b1_state:
-            self.reference_turns[key].append(self.asof_index)
+        sample_index = _sample_index(ts)
+        if (
+            contiguous
+            and state is not None
+            and tracker.previous_candidate_state is not None
+            and state != tracker.previous_candidate_state
+        ):
+            pairer.add_candidate(sample_index)
+        if (
+            contiguous
+            and b1_state is not None
+            and tracker.previous_b1_state is not None
+            and b1_state != tracker.previous_b1_state
+        ):
+            pairer.add_reference(sample_index)
 
         tracker.previous_candidate_state = state
         tracker.previous_b1_state = b1_state
         tracker.previous_ts = ts
 
     def finish(self) -> dict[str, object]:
-        self._flush_cross()
-        for (venue, asset_id, candidate), tracker in self.temporal.items():
-            _ = venue, asset_id
+        self._finish_current_asof()
+        for pairer in self.lead_lag.values():
+            pairer.advance(0, final=True)
+        for (_, _, candidate), tracker in self.temporal.items():
             if tracker.run_length:
                 self.run_length_counts[candidate][tracker.run_length] += 1
                 tracker.run_length = 0
@@ -335,9 +486,18 @@ class StreamingValidationAccumulator:
         for candidate in CANDIDATE_IDS:
             sample_count = self.sample_count[candidate]
             complete_count = self.complete_count[candidate]
-            forward_ic = {label: pair_result(stats) for label, stats in self.forward[candidate].items()}
-            incremental_b0 = {label: triple_result(stats) for label, stats in self.partial_b0[candidate].items()}
-            incremental_b1 = {label: triple_result(stats) for label, stats in self.partial_b1[candidate].items()}
+            forward_ic = {
+                label: pair_result(stats)
+                for label, stats in self.forward[candidate].items()
+            }
+            incremental_b0 = {
+                label: triple_result(stats)
+                for label, stats in self.partial_b0[candidate].items()
+            }
+            incremental_b1 = {
+                label: triple_result(stats)
+                for label, stats in self.partial_b1[candidate].items()
+            }
             for label, result in forward_ic.items():
                 family_p_values[f"{candidate}:{label}"] = result.p_value_approx
             candidate_summaries[candidate] = {
@@ -355,7 +515,9 @@ class StreamingValidationAccumulator:
 
         return {
             "candidate_summaries": candidate_summaries,
-            "cross_horizon_correlation": {key: pair_result(stats) for key, stats in self.cross.items()},
+            "cross_horizon_correlation": {
+                key: pair_result(stats) for key, stats in self.cross.items()
+            },
             "holm_bonferroni_family": holm_bonferroni(family_p_values),
             "holm_family_size": len(family_p_values),
             "b2_status": "UNAVAILABLE_NO_REPLAY_SAFE_CANONICAL_SOURCE",
@@ -381,6 +543,7 @@ class StreamingValidationAccumulator:
                     right = length
                     break
                 seen = next_seen
+            assert left is not None and right is not None
             median = (float(left) + float(right)) / 2.0
         flips = self.sign_flips[candidate]
         chop = self.chop_reversions[candidate]
@@ -394,58 +557,19 @@ class StreamingValidationAccumulator:
             "chop_rate": chop / flips if flips else None,
         }
 
-    @staticmethod
-    def _pair_turns(candidate_turns: list[int], reference_turns: list[int]) -> list[int]:
-        unused = set(range(len(reference_turns)))
-        deltas: list[int] = []
-        for candidate_index in candidate_turns:
-            eligible = [
-                index for index in unused
-                if abs(reference_turns[index] - candidate_index) <= MAX_TURN_MATCH_LAG_SAMPLES
-            ]
-            if not eligible:
-                continue
-            best = min(
-                eligible,
-                key=lambda index: (
-                    abs(reference_turns[index] - candidate_index),
-                    reference_turns[index],
-                ),
-            )
-            unused.remove(best)
-            deltas.append(candidate_index - reference_turns[best])
-        return deltas
-
     def _lead_lag(self) -> dict[str, dict[str, object]]:
         output: dict[str, dict[str, object]] = {}
         for candidate in CANDIDATE_IDS:
-            candidate_count = 0
-            reference_count = 0
-            deltas: list[int] = []
-            keys = {key for key in self.temporal if key[2] == candidate}
-            for key in keys:
-                candidate_turns = self.candidate_turns.get(key, [])
-                reference_turns = self.reference_turns.get(key, [])
-                candidate_count += len(candidate_turns)
-                reference_count += len(reference_turns)
-                deltas.extend(self._pair_turns(candidate_turns, reference_turns))
-            paired = len(deltas)
-            ordered = sorted(deltas)
-            median = None
-            if ordered:
-                mid = len(ordered) // 2
-                median = float(ordered[mid]) if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
-            output[candidate] = {
-                "candidate_turn_count": candidate_count,
-                "reference_turn_count": reference_count,
-                "paired_turn_count": paired,
-                "unmatched_candidate_turn_count": candidate_count - paired,
-                "unmatched_reference_turn_count": reference_count - paired,
-                "mean_delta_samples": mean(deltas) if deltas else None,
-                "median_delta_samples": median,
-                "min_delta_samples": min(deltas) if deltas else None,
-                "max_delta_samples": max(deltas) if deltas else None,
-            }
+            aggregate = LeadLagPairState()
+            for key, pairer in self.lead_lag.items():
+                if key[2] != candidate:
+                    continue
+                aggregate.candidate_turn_count += pairer.candidate_turn_count
+                aggregate.reference_turn_count += pairer.reference_turn_count
+                aggregate.paired_turn_count += pairer.paired_turn_count
+                aggregate.delta_sum += pairer.delta_sum
+                aggregate.delta_counts.update(pairer.delta_counts)
+            output[candidate] = aggregate.summary()
         return output
 
     def _regime_stability(self) -> dict[str, dict[str, object]]:
@@ -480,7 +604,9 @@ class StreamingValidationAccumulator:
         return output
 
 
-def serializable_streaming_summary(accumulator: StreamingValidationAccumulator) -> dict[str, object]:
+def serializable_streaming_summary(
+    accumulator: StreamingValidationAccumulator,
+) -> dict[str, object]:
     def convert(value: object) -> object:
         if hasattr(value, "__dataclass_fields__"):
             return {key: convert(item) for key, item in asdict(value).items()}
