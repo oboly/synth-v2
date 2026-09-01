@@ -86,14 +86,17 @@ def fetch_selection_candidates_asof(
     *,
     venue: str,
     asof_ts_utc: datetime,
+    asset_id: int | None = None,
 ) -> tuple[list[SelectionCandidate], dict[int, dict[str, str | None]]]:
-    sql = """
+    asset_filter_q = "" if asset_id is None else " AND asset_id=%s"
+    asset_filter_a = "" if asset_id is None else " AND a.asset_id=%s"
+    sql = f"""
     WITH quality_latest AS (
         SELECT q.* FROM asset_interval_quality q
         JOIN (
             SELECT asset_id, venue, interval_code, MAX(asof_ts_utc) max_ts
             FROM asset_interval_quality
-            WHERE venue=%s AND interval_code IN ('1d','4h','1h') AND asof_ts_utc <= %s
+            WHERE venue=%s AND interval_code IN ('1d','4h','1h') AND asof_ts_utc <= %s{asset_filter_q}
             GROUP BY asset_id, venue, interval_code
         ) x ON x.asset_id=q.asset_id AND x.venue=q.venue AND x.interval_code=q.interval_code AND x.max_ts=q.asof_ts_utc
         WHERE q.venue=%s
@@ -102,7 +105,7 @@ def fetch_selection_candidates_asof(
         JOIN (
             SELECT asset_id, venue, interval_code, MAX(signal_ts_utc) max_ts
             FROM signal_engine_state
-            WHERE venue=%s AND interval_code IN ('1d','4h','1h') AND signal_ts_utc <= %s
+            WHERE venue=%s AND interval_code IN ('1d','4h','1h') AND signal_ts_utc <= %s{asset_filter_q}
             GROUP BY asset_id, venue, interval_code
         ) x ON x.asset_id=s.asset_id AND x.venue=s.venue AND x.interval_code=s.interval_code AND x.max_ts=s.signal_ts_utc
         WHERE s.venue=%s
@@ -129,32 +132,43 @@ def fetch_selection_candidates_asof(
     LEFT JOIN signal_latest s1d ON s1d.asset_id=a.asset_id AND s1d.interval_code='1d'
     LEFT JOIN signal_latest s4h ON s4h.asset_id=a.asset_id AND s4h.interval_code='4h'
     LEFT JOIN signal_latest s1h ON s1h.asset_id=a.asset_id AND s1h.interval_code='1h'
-    WHERE q1d.asset_id IS NOT NULL
+    WHERE (
+       q1d.asset_id IS NOT NULL
        OR q4h.asset_id IS NOT NULL
        OR q1h.asset_id IS NOT NULL
        OR s1d.asset_id IS NOT NULL
        OR s4h.asset_id IS NOT NULL
        OR s1h.asset_id IS NOT NULL
+    ){asset_filter_a}
     ORDER BY a.asset_id
     """
-    params = (venue, asof_ts_utc, venue, venue, asof_ts_utc, venue, venue)
+    params: list[Any] = [venue, asof_ts_utc]
+    if asset_id is not None:
+        params.append(asset_id)
+    params.append(venue)
+    params.extend([venue, asof_ts_utc])
+    if asset_id is not None:
+        params.append(asset_id)
+    params.extend([venue, venue])
+    if asset_id is not None:
+        params.append(asset_id)
     with conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, tuple(params))
         rows = cur.fetchall()
 
     candidates: list[SelectionCandidate] = []
     evidence: dict[int, dict[str, str | None]] = {}
     seen: set[int] = set()
     for row in rows:
-        asset_id = int(row["asset_id"])
-        if asset_id in seen:
-            raise ValueError(f"duplicate PIT selection source row asset_id={asset_id}")
-        seen.add(asset_id)
+        row_asset_id = int(row["asset_id"])
+        if row_asset_id in seen:
+            raise ValueError(f"duplicate PIT selection source row asset_id={row_asset_id}")
+        seen.add(row_asset_id)
         ev = {field: _iso(row.get(field)) for field in EVIDENCE_TS_FIELDS}
-        evidence[asset_id] = ev
+        evidence[row_asset_id] = ev
         candidates.append(
             SelectionCandidate(
-                asset_id=asset_id,
+                asset_id=row_asset_id,
                 symbol=str(row["symbol"]),
                 venue=str(row["venue"]),
                 quality_status_1d=str(row["quality_status_1d"]),
@@ -193,8 +207,16 @@ def fetch_mrp_aggregate_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) ->
         return cur.fetchone() or None
 
 
-def fetch_mrp_assets_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) -> dict[int, Mapping[str, Any]]:
-    sql = """
+def fetch_mrp_assets_asof(
+    conn: Any,
+    *,
+    venue: str,
+    asof_ts_utc: datetime,
+    asset_id: int | None = None,
+) -> dict[int, Mapping[str, Any]]:
+    asset_filter_inner = "" if asset_id is None else " AND o2.asset_id=%s"
+    asset_filter_outer = "" if asset_id is None else " AND o.asset_id=%s"
+    sql = f"""
     SELECT o.pressure_obs_id,o.pressure_snapshot_id,o.asset_id,o.as_of_ts_utc,o.model_version,o.score_total,o.pressure_state,o.phase_state,o.raw_market_relative_pct
     FROM market_rotation_pressure_observation_v1 o
     JOIN market_rotation_pressure_snapshot_v1 s ON s.pressure_snapshot_id=o.pressure_snapshot_id
@@ -202,31 +224,37 @@ def fetch_mrp_assets_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) -> di
       SELECT o2.asset_id,MAX(o2.as_of_ts_utc) max_ts
       FROM market_rotation_pressure_observation_v1 o2
       JOIN market_rotation_pressure_snapshot_v1 s2 ON s2.pressure_snapshot_id=o2.pressure_snapshot_id
-      WHERE s2.venue=%s AND o2.model_version=%s AND s2.model_version=%s AND o2.as_of_ts_utc <= %s AND s2.as_of_ts_utc <= %s
+      WHERE s2.venue=%s AND o2.model_version=%s AND s2.model_version=%s AND o2.as_of_ts_utc <= %s AND s2.as_of_ts_utc <= %s{asset_filter_inner}
       GROUP BY o2.asset_id
     ) x ON x.asset_id=o.asset_id AND x.max_ts=o.as_of_ts_utc
-    WHERE s.venue=%s AND o.model_version=%s AND s.model_version=%s AND o.as_of_ts_utc <= %s AND s.as_of_ts_utc <= %s
+    WHERE s.venue=%s AND o.model_version=%s AND s.model_version=%s AND o.as_of_ts_utc <= %s AND s.as_of_ts_utc <= %s{asset_filter_outer}
     ORDER BY o.asset_id,o.pressure_obs_id DESC
     """
-    params = (
+    params: list[Any] = [
         venue,
         MRP_MODEL_VERSION,
         MRP_MODEL_VERSION,
         asof_ts_utc,
         asof_ts_utc,
+    ]
+    if asset_id is not None:
+        params.append(asset_id)
+    params.extend([
         venue,
         MRP_MODEL_VERSION,
         MRP_MODEL_VERSION,
         asof_ts_utc,
         asof_ts_utc,
-    )
+    ])
+    if asset_id is not None:
+        params.append(asset_id)
     with conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, tuple(params))
         rows = cur.fetchall()
     out: dict[int, Mapping[str, Any]] = {}
     for row in rows:
-        asset_id = int(row["asset_id"])
-        out.setdefault(asset_id, row)
+        row_asset_id = int(row["asset_id"])
+        out.setdefault(row_asset_id, row)
     return out
 
 
@@ -237,14 +265,17 @@ def build_asof_population(
     asof_ts_utc: datetime,
     venue: str,
     selection_config: dict[str, Any],
+    asset_id: int | None = None,
 ) -> list[dict[str, Any]]:
     split = split_for_asof(asof_ts_utc, contract)
     candidates, evidence_by_asset = fetch_selection_candidates_asof(
-        conn, venue=venue, asof_ts_utc=asof_ts_utc
+        conn, venue=venue, asof_ts_utc=asof_ts_utc, asset_id=asset_id
     )
     selection_rows = rank_candidates(candidates, selection_config)
     aggregate = fetch_mrp_aggregate_asof(conn, venue=venue, asof_ts_utc=asof_ts_utc)
-    mrp_assets = fetch_mrp_assets_asof(conn, venue=venue, asof_ts_utc=asof_ts_utc)
+    mrp_assets = fetch_mrp_assets_asof(
+        conn, venue=venue, asof_ts_utc=asof_ts_utc, asset_id=asset_id
+    )
     rows: list[dict[str, Any]] = []
     for selection in selection_rows:
         evidence = evidence_by_asset[selection.asset_id]
