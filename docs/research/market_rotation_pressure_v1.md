@@ -2,7 +2,17 @@
 
 ## Status
 
-Implementation-ready research lane. The score engine, persistence contract, aggregate market state, storage schema, console projection, and focused tests are included in the same slice.
+Implementation-ready. The score engine, persistence contract, aggregate market state, storage schema, console projection, and focused tests are included in the same slice.
+
+Per the #676 owner decision (see
+`docs/architecture/rotation_pressure_v1_canonical_promotion_v1.md`), this
+broad/regime V1 lane is promoted as the canonical `family=ROTATION`
+production-safe market-evidence owner (evidence/reporting authority only —
+no selection/decision/execution authority). It is no longer accurately
+described as "research/shadow"; that label is retained below only as
+historical creation-time context, not current status. #593's faster
+C1/C2/C3 multi-horizon Rotation variants remain research-only and are not
+affected by this promotion.
 
 The top-screen light bar is a reporting follow-up. It reads this lane; it does not recompute or write pressure state.
 
@@ -34,7 +44,8 @@ The lane is:
 
 - market-only;
 - account-agnostic;
-- research/shadow;
+- canonical production evidence for `family=ROTATION` as of the #676 owner
+  decision (originally created as research/shadow — see Status above);
 - deterministic and versioned;
 - append-only at the observation level.
 
