@@ -100,7 +100,7 @@ def test_build_outcomes_batches_once_per_asof_and_is_deterministic(monkeypatch) 
     assert all(row["target_outcome_status"] == "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE" for row in rows1)
 
 
-def test_population_venue_mismatch_fails_closed(monkeypatch) -> None:
+def test_population_venue_mismatch_fails_closed() -> None:
     observation = _observation(1, "2026-07-18T00:00:00+00:00", "obs-1")
     observation["venue"] = "other"
     _, horizons = mod.load_contract()
@@ -129,24 +129,27 @@ def test_single_horizon_remains_one_label_per_observation(monkeypatch) -> None:
     assert rows[0]["forward_return_pct"] == Decimal("1.000000")
 
 
-def test_existing_output_artifact_fails_closed(tmp_path) -> None:
-    existing = tmp_path / mod.OUTPUT_ROWS
-    existing.write_text("already frozen\n")
-    with pytest.raises(ValueError, match="immutable outcome artifacts already exist"):
-        mod.ensure_output_paths_clear(tmp_path)
+def test_existing_output_directory_fails_closed(tmp_path) -> None:
+    existing = tmp_path / "existing-run"
+    existing.mkdir()
+    with pytest.raises(ValueError, match="immutable outcome output directory already exists"):
+        mod.ensure_output_paths_clear(existing)
 
 
-def test_write_artifacts_contains_only_technical_summary(tmp_path) -> None:
+def test_write_artifacts_requires_new_directory_and_has_technical_summary(tmp_path) -> None:
     row = {
         "outcome_id": "o1",
         "horizon": "1h",
         "status": "COMPLETE",
         "forward_return_pct": Decimal("1.0"),
     }
-    mod.write_artifacts(tmp_path, [row], observation_count=1)
-    summary = json.loads((tmp_path / mod.OUTPUT_SUMMARY).read_text())
+    output_dir = tmp_path / "new-run"
+    mod.write_artifacts(output_dir, [row], observation_count=1)
+    summary = json.loads((output_dir / mod.OUTPUT_SUMMARY).read_text())
     assert summary["observation_count"] == 1
     assert summary["outcome_row_count"] == 1
     assert summary["db_writes"] == 0
     assert "average_forward_return" not in summary
     assert "holdout" not in summary
+    with pytest.raises(ValueError, match="immutable outcome output directory already exists"):
+        mod.write_artifacts(output_dir, [row], observation_count=1)
