@@ -385,6 +385,61 @@ def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> Non
     assert overall == disposition.OUTCOME_REJECTED
 
 
+def _kwargs_with_baseline_reproduced(baseline_reproduced: object) -> dict[str, object]:
+    return dict(
+        symbol="LINK",
+        baseline_evaluable=True,
+        baseline_reproduced=baseline_reproduced,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=2,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "malformed_baseline_reproduced",
+    [0, 1, "True", "False", "", [], {}, 0.0, 1.0],
+)
+def test_non_bool_baseline_reproduced_fails_closed(malformed_baseline_reproduced: object) -> None:
+    """`bool` is a subclass of `int` in Python, so a naive `is False` check
+    lets a falsy-but-non-bool value like the int `0` slip past the
+    reproduction-failure branch and reach the VALIDATED/REVISED logic as if
+    reproduction had succeeded. Every non-bool, non-None value here — 0,
+    1, strings, and other falsy/truthy-but-wrong-type values — must raise
+    rather than silently resolving to any disposition."""
+    with pytest.raises(TypeError):
+        disposition.classify_asset_disposition(
+            **_kwargs_with_baseline_reproduced(malformed_baseline_reproduced)
+        )
+
+
+def test_baseline_reproduced_zero_specifically_fails_closed_not_validated() -> None:
+    """Regression for the exact reported case: `baseline_reproduced=0` must
+    never be accepted as a successful reproduction and must never reach
+    VALIDATED, even though every other input here is set up to otherwise
+    score VALIDATED if reproduction were (incorrectly) treated as True."""
+    with pytest.raises(TypeError):
+        disposition.classify_asset_disposition(**_kwargs_with_baseline_reproduced(0))
+
+
+@pytest.mark.parametrize("valid_baseline_reproduced", [True, False, None])
+def test_actual_bool_or_none_baseline_reproduced_does_not_raise_type_error(
+    valid_baseline_reproduced: object,
+) -> None:
+    """`True`, `False`, and `None` remain the only accepted values and must
+    not raise `TypeError` (the `None` case still requires
+    `baseline_evaluable=False` to avoid the separate "ambiguity is not
+    permitted" `ValueError`)."""
+    kwargs = _kwargs_with_baseline_reproduced(valid_baseline_reproduced)
+    if valid_baseline_reproduced is None:
+        kwargs["baseline_evaluable"] = False
+    result = disposition.classify_asset_disposition(**kwargs)
+    assert isinstance(result, disposition.AssetDisposition)
+
+
 def test_baseline_not_evaluable_is_insufficient_data_not_rejected() -> None:
     """A non-evaluable baseline (rule 0) is a distinct disposition path from
     an evaluable-but-unreproduced baseline (rule 1): there is no baseline to

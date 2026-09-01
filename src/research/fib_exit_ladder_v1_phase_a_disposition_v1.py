@@ -166,6 +166,12 @@ def classify_asset_disposition(
     validation windows, so any other total means the caller itself violated
     the contract, and this must never be papered over by returning
     VALIDATED (or any other outcome) from bad input.
+
+    `baseline_reproduced` must be an actual `bool` (`True`/`False`) or
+    `None` — any other value (`0`, `1`, a string, etc.) raises `TypeError`
+    rather than being coerced by truthiness, since `bool` is an `int`
+    subclass and an int/string could otherwise slip past the `is False`
+    check and be treated as a successful reproduction.
     """
     if validation_windows_total != 2:
         raise ValueError(
@@ -179,6 +185,19 @@ def classify_asset_disposition(
             "validation_windows_ok must be between 0 and "
             "validation_windows_total inclusive; got "
             f"{validation_windows_ok} of {validation_windows_total}."
+        )
+
+    if baseline_reproduced is not None and not isinstance(baseline_reproduced, bool):
+        # `bool` is a subclass of `int` in Python, so `baseline_reproduced is
+        # False` below only matches the literal singleton `False` — an int
+        # `0` (or `1`, or a truthy/falsy string, or any other non-bool
+        # value) is neither `is False` nor `is None`, so it would otherwise
+        # silently fall through past the reproduction-failure check below
+        # and reach the VALIDATED/REVISED logic as if reproduction had
+        # succeeded. Reject any non-bool, non-None value outright instead.
+        raise TypeError(
+            "baseline_reproduced must be True, False, or None; got "
+            f"{baseline_reproduced!r} of type {type(baseline_reproduced).__name__}."
         )
 
     if not has_original_bucket:
