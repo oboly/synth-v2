@@ -180,6 +180,31 @@ def test_checkpoint_reconcile_discards_uncheckpointed_tail(tmp_path) -> None:
     assert len(rows_path.read_text().splitlines()) == 1
 
 
+def test_preflight_signal_interrupt_does_not_create_output_or_connect(monkeypatch, tmp_path, capsys) -> None:
+    output_dir = tmp_path / "not-created"
+    _, horizons = mod.load_contract()
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(mod, "load_contract", lambda path=mod.DEFAULT_CONTRACT: ({}, horizons))
+
+    def interrupt_population(path, contract):
+        handler = signal.getsignal(signal.SIGINT)
+        handler(signal.SIGINT, None)
+        raise AssertionError("installed SIGINT handler did not interrupt population loading")
+
+    monkeypatch.setattr(mod, "load_population", interrupt_population)
+    monkeypatch.setattr(mod, "get_db_connection", lambda: pytest.fail("DB connection attempted during preflight"))
+
+    assert mod.run(_args(output_dir=str(output_dir))) == 130
+    output = capsys.readouterr().out
+    assert output.count("INTERRUPTED runner=") == 1
+    assert "resumable=0" in output
+    assert "asofs_completed=0" in output
+    assert "outcome_rows=0" in output
+    assert "db_writes=0" in output
+    assert not output_dir.exists()
+    assert signal.getsignal(signal.SIGINT) is previous_sigint_handler
+
+
 def test_interrupt_then_resume_finishes_same_output(monkeypatch, tmp_path, capsys) -> None:
     observations = [
         _observation(1, "2026-07-18T00:00:00+00:00", "obs-1"),
@@ -201,7 +226,8 @@ def test_interrupt_then_resume_finishes_same_output(monkeypatch, tmp_path, capsy
     def interrupt_second(conn, *, observations, venue, horizons):
         calls["n"] += 1
         if calls["n"] == 2:
-            raise mod._Interrupted(signal.SIGINT)
+            handler = signal.getsignal(signal.SIGINT)
+            handler(signal.SIGINT, None)
         return [_outcome_row(observations[0])]
 
     monkeypatch.setattr(mod, "build_outcome_rows", interrupt_second)
@@ -214,6 +240,8 @@ def test_interrupt_then_resume_finishes_same_output(monkeypatch, tmp_path, capsy
     assert checkpoint["outcome_rows_written"] == 1
     first_output = capsys.readouterr().out
     assert first_output.count("INTERRUPTED runner=") == 1
+    assert "resumable=1" in first_output
+    assert "db_writes=0" in first_output
     assert "FINISHED runner=" not in first_output
 
     monkeypatch.setattr(
@@ -229,7 +257,10 @@ def test_interrupt_then_resume_finishes_same_output(monkeypatch, tmp_path, capsy
     assert checkpoint["asofs_completed"] == 2
     assert checkpoint["outcome_rows_written"] == 2
     assert summary["outcome_row_count"] == 2
-    assert len((output_dir / mod.OUTPUT_ROWS).read_text().splitlines()) == 2
+    outcome_rows = [json.loads(line) for line in (output_dir / mod.OUTPUT_ROWS).read_text().splitlines()]
+    assert len(outcome_rows) == 2
+    assert [row["outcome_id"] for row in outcome_rows] == ["obs-1:1h", "obs-2:1h"]
+    assert len({row["outcome_id"] for row in outcome_rows}) == 2
     second_output = capsys.readouterr().out
     assert second_output.count("FINISHED runner=") == 1
     assert "FAILED runner=" not in second_output
