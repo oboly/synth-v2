@@ -42,7 +42,42 @@ jobs:
           PY
       - name: Focused validation
         run: |
-          python -m pytest tests/test_profit_plan_compact_fib_labels_v1.py -q
+          python - <<'PY'
+          from decimal import Decimal
+          from types import SimpleNamespace
+          from src.reporting.manual_short_trader_profit_plan_v1 import (
+              CARD_ACTIONABILITY_ACTIVE,
+              CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
+              CARD_ACTIONABILITY_HISTORICAL_REFERENCE,
+              CARD_ACTIONABILITY_INVALIDATED,
+              CARD_ACTIONABILITY_NAVIGATION_ONLY,
+              CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+              CARD_MODE_POSITION_HELD,
+              _actionability_display_bundle,
+          )
+
+          def card(state):
+              return SimpleNamespace(
+                  reload_reentry_zone=(Decimal('1'), Decimal('2')),
+                  target_exit_zone=(Decimal('3'), Decimal('4')),
+                  sell_zone=(Decimal('3'), Decimal('4')),
+                  current_price=Decimal('2.5'),
+                  presentation_mode=CARD_MODE_POSITION_HELD,
+                  actionability_state=state,
+              )
+
+          assert _actionability_display_bundle(card(CARD_ACTIONABILITY_ACTIVE))[:2] == ('Re-entry', 'Target')
+          for state in (
+              CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
+              CARD_ACTIONABILITY_NAVIGATION_ONLY,
+              CARD_ACTIONABILITY_HISTORICAL_REFERENCE,
+              CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+              CARD_ACTIONABILITY_INVALIDATED,
+          ):
+              reentry_label, target_label = _actionability_display_bundle(card(state))[:2]
+              assert 'zone' not in reentry_label.lower()
+              assert 'zone' not in target_label.lower()
+          PY
           git diff --check
       - name: Commit bounded patch
         run: |
