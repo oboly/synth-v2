@@ -1,0 +1,600 @@
+2026-08-31T05:36:06+00:00 odroid synth-market-rotation-pressure-publisher[431518]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T05:36:06+00:00 odroid synth-market-rotation-pressure-publisher[431518]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T05:36:06+00:00 odroid synth-market-rotation-pressure-publisher[431518]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T05:36:06+00:00 odroid synth-market-rotation-pressure-publisher[431518]: market_data_writes=0 pressure_writes=0
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431526]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T05:36:06.989678+00:00
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431526]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431526]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431526]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431526]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T05:36:07+00:00 odroid synth-market-rotation-pressure-publisher[431518]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T05:36:07Z
+2026-08-31T06:36:33+00:00 odroid synth-market-rotation-pressure-publisher[432958]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T06:36:33Z
+2026-08-31T06:36:33+00:00 odroid synth-market-rotation-pressure-publisher[432958]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T06:36:33+00:00 odroid synth-market-rotation-pressure-publisher[432958]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T06:36:33+00:00 odroid synth-market-rotation-pressure-publisher[432958]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T06:36:33+00:00 odroid synth-market-rotation-pressure-publisher[432958]: market_data_writes=0 pressure_writes=0
+2026-08-31T06:36:34+00:00 odroid synth-market-rotation-pressure-publisher[432971]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T06:36:34.548869+00:00
+2026-08-31T06:36:34+00:00 odroid synth-market-rotation-pressure-publisher[432971]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T06:36:34+00:00 odroid synth-market-rotation-pressure-publisher[432971]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T06:36:34+00:00 odroid synth-market-rotation-pressure-publisher[432971]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T06:36:34+00:00 odroid synth-market-rotation-pressure-publisher[432971]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T06:36:35+00:00 odroid synth-market-rotation-pressure-publisher[432958]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=2 ts=2026-08-31T06:36:35Z
+2026-08-31T07:37:40+00:00 odroid synth-market-rotation-pressure-publisher[434305]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T07:37:40Z
+2026-08-31T07:37:40+00:00 odroid synth-market-rotation-pressure-publisher[434305]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T07:37:40+00:00 odroid synth-market-rotation-pressure-publisher[434305]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T07:37:40+00:00 odroid synth-market-rotation-pressure-publisher[434305]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T07:37:40+00:00 odroid synth-market-rotation-pressure-publisher[434305]: market_data_writes=0 pressure_writes=0
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434313]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T07:37:40.860669+00:00
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434313]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434313]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434313]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434313]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T07:37:41+00:00 odroid synth-market-rotation-pressure-publisher[434305]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T07:37:41Z
+2026-08-31T08:36:40+00:00 odroid synth-market-rotation-pressure-publisher[435678]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T08:36:40Z
+2026-08-31T08:36:40+00:00 odroid synth-market-rotation-pressure-publisher[435678]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T08:36:40+00:00 odroid synth-market-rotation-pressure-publisher[435678]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T08:36:40+00:00 odroid synth-market-rotation-pressure-publisher[435678]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T08:36:40+00:00 odroid synth-market-rotation-pressure-publisher[435678]: market_data_writes=0 pressure_writes=0
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435686]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T08:36:40.841708+00:00
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435686]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435686]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435686]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435686]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T08:36:41+00:00 odroid synth-market-rotation-pressure-publisher[435678]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T08:36:41Z
+2026-08-31T09:37:03+00:00 odroid synth-market-rotation-pressure-publisher[436982]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T09:37:03Z
+2026-08-31T09:37:03+00:00 odroid synth-market-rotation-pressure-publisher[436982]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T09:37:03+00:00 odroid synth-market-rotation-pressure-publisher[436982]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T09:37:03+00:00 odroid synth-market-rotation-pressure-publisher[436982]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T09:37:03+00:00 odroid synth-market-rotation-pressure-publisher[436982]: market_data_writes=0 pressure_writes=0
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436990]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T09:37:04.436790+00:00
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436990]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436990]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436990]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436990]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T09:37:04+00:00 odroid synth-market-rotation-pressure-publisher[436982]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T09:37:04Z
+2026-08-31T10:37:23+00:00 odroid synth-market-rotation-pressure-publisher[438287]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T10:37:23Z
+2026-08-31T10:37:23+00:00 odroid synth-market-rotation-pressure-publisher[438287]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T10:37:23+00:00 odroid synth-market-rotation-pressure-publisher[438287]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T10:37:23+00:00 odroid synth-market-rotation-pressure-publisher[438287]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T10:37:23+00:00 odroid synth-market-rotation-pressure-publisher[438287]: market_data_writes=0 pressure_writes=0
+2026-08-31T10:37:24+00:00 odroid synth-market-rotation-pressure-publisher[438304]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T10:37:24.514521+00:00
+2026-08-31T10:37:24+00:00 odroid synth-market-rotation-pressure-publisher[438304]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T10:37:24+00:00 odroid synth-market-rotation-pressure-publisher[438304]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T10:37:24+00:00 odroid synth-market-rotation-pressure-publisher[438304]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T10:37:24+00:00 odroid synth-market-rotation-pressure-publisher[438304]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T10:37:25+00:00 odroid synth-market-rotation-pressure-publisher[438287]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=2 ts=2026-08-31T10:37:25Z
+2026-08-31T11:36:53+00:00 odroid synth-market-rotation-pressure-publisher[439583]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T11:36:53Z
+2026-08-31T11:36:53+00:00 odroid synth-market-rotation-pressure-publisher[439583]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T11:36:53+00:00 odroid synth-market-rotation-pressure-publisher[439583]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T11:36:53+00:00 odroid synth-market-rotation-pressure-publisher[439583]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T11:36:53+00:00 odroid synth-market-rotation-pressure-publisher[439583]: market_data_writes=0 pressure_writes=0
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439591]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T11:36:54.436923+00:00
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439591]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439591]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439591]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439591]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T11:36:54+00:00 odroid synth-market-rotation-pressure-publisher[439583]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T11:36:54Z
+2026-08-31T12:38:03+00:00 odroid synth-market-rotation-pressure-publisher[440975]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T12:38:03Z
+2026-08-31T12:38:03+00:00 odroid synth-market-rotation-pressure-publisher[440975]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T12:38:03+00:00 odroid synth-market-rotation-pressure-publisher[440975]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T12:38:03+00:00 odroid synth-market-rotation-pressure-publisher[440975]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T12:38:03+00:00 odroid synth-market-rotation-pressure-publisher[440975]: market_data_writes=0 pressure_writes=0
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440983]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T12:38:04.432932+00:00
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440983]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440983]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440983]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440983]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T12:38:04+00:00 odroid synth-market-rotation-pressure-publisher[440975]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T12:38:04Z
+2026-08-31T13:36:40+00:00 odroid synth-market-rotation-pressure-publisher[442267]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T13:36:40Z
+2026-08-31T13:36:40+00:00 odroid synth-market-rotation-pressure-publisher[442267]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T13:36:40+00:00 odroid synth-market-rotation-pressure-publisher[442267]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T13:36:40+00:00 odroid synth-market-rotation-pressure-publisher[442267]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T13:36:40+00:00 odroid synth-market-rotation-pressure-publisher[442267]: market_data_writes=0 pressure_writes=0
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442275]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T13:36:40.855127+00:00
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442275]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442275]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442275]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442275]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T13:36:41+00:00 odroid synth-market-rotation-pressure-publisher[442267]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T13:36:41Z
+2026-08-31T14:36:23+00:00 odroid synth-market-rotation-pressure-publisher[443551]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T14:36:23Z
+2026-08-31T14:36:23+00:00 odroid synth-market-rotation-pressure-publisher[443551]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T14:36:23+00:00 odroid synth-market-rotation-pressure-publisher[443551]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T14:36:23+00:00 odroid synth-market-rotation-pressure-publisher[443551]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T14:36:23+00:00 odroid synth-market-rotation-pressure-publisher[443551]: market_data_writes=0 pressure_writes=0
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443559]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T14:36:24.444621+00:00
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443559]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443559]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443559]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=DEGRADED freshness=STALE direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443559]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T14:36:24+00:00 odroid synth-market-rotation-pressure-publisher[443551]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T14:36:24Z
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445012]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T15:37:01Z
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445012]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445012]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445012]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445012]: market_data_writes=0 pressure_writes=0
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445020]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T15:37:01.543615+00:00
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445020]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445020]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445020]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T15:37:01+00:00 odroid synth-market-rotation-pressure-publisher[445020]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T15:37:02+00:00 odroid synth-market-rotation-pressure-publisher[445012]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T15:37:02Z
+2026-08-31T16:35:23+00:00 odroid synth-market-rotation-pressure-publisher[446393]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T16:35:23Z
+2026-08-31T16:35:23+00:00 odroid synth-market-rotation-pressure-publisher[446393]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T16:35:23+00:00 odroid synth-market-rotation-pressure-publisher[446393]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T16:35:23+00:00 odroid synth-market-rotation-pressure-publisher[446393]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T16:35:23+00:00 odroid synth-market-rotation-pressure-publisher[446393]: market_data_writes=0 pressure_writes=0
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446401]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T16:35:24.433354+00:00
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446401]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446401]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446401]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446401]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T16:35:24+00:00 odroid synth-market-rotation-pressure-publisher[446393]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T16:35:24Z
+2026-08-31T17:35:13+00:00 odroid synth-market-rotation-pressure-publisher[447676]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T17:35:13Z
+2026-08-31T17:35:13+00:00 odroid synth-market-rotation-pressure-publisher[447676]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T17:35:13+00:00 odroid synth-market-rotation-pressure-publisher[447676]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T17:35:13+00:00 odroid synth-market-rotation-pressure-publisher[447676]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T17:35:13+00:00 odroid synth-market-rotation-pressure-publisher[447676]: market_data_writes=0 pressure_writes=0
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447684]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T17:35:14.436256+00:00
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447684]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447684]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447684]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447684]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T17:35:14+00:00 odroid synth-market-rotation-pressure-publisher[447676]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T17:35:14Z
+2026-08-31T18:35:23+00:00 odroid synth-market-rotation-pressure-publisher[449081]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T18:35:23Z
+2026-08-31T18:35:23+00:00 odroid synth-market-rotation-pressure-publisher[449081]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T18:35:23+00:00 odroid synth-market-rotation-pressure-publisher[449081]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T18:35:23+00:00 odroid synth-market-rotation-pressure-publisher[449081]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T18:35:23+00:00 odroid synth-market-rotation-pressure-publisher[449081]: market_data_writes=0 pressure_writes=0
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449089]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T18:35:24.436865+00:00
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449089]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449089]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449089]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449089]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T18:35:24+00:00 odroid synth-market-rotation-pressure-publisher[449081]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T18:35:24Z
+2026-08-31T19:37:03+00:00 odroid synth-market-rotation-pressure-publisher[450827]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T19:37:03Z
+2026-08-31T19:37:03+00:00 odroid synth-market-rotation-pressure-publisher[450827]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T19:37:03+00:00 odroid synth-market-rotation-pressure-publisher[450827]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T19:37:03+00:00 odroid synth-market-rotation-pressure-publisher[450827]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T19:37:03+00:00 odroid synth-market-rotation-pressure-publisher[450827]: market_data_writes=0 pressure_writes=0
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450835]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T19:37:04.447198+00:00
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450835]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450835]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450835]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450835]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T19:37:04+00:00 odroid synth-market-rotation-pressure-publisher[450827]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T19:37:04Z
+2026-08-31T20:37:03+00:00 odroid synth-market-rotation-pressure-publisher[452138]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T20:37:03Z
+2026-08-31T20:37:03+00:00 odroid synth-market-rotation-pressure-publisher[452138]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T20:37:03+00:00 odroid synth-market-rotation-pressure-publisher[452138]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T20:37:03+00:00 odroid synth-market-rotation-pressure-publisher[452138]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T20:37:03+00:00 odroid synth-market-rotation-pressure-publisher[452138]: market_data_writes=0 pressure_writes=0
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452146]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T20:37:04.447847+00:00
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452146]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452146]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452146]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452146]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T20:37:04+00:00 odroid synth-market-rotation-pressure-publisher[452138]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T20:37:04Z
+2026-08-31T21:37:26+00:00 odroid synth-market-rotation-pressure-publisher[453537]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T21:37:26Z
+2026-08-31T21:37:26+00:00 odroid synth-market-rotation-pressure-publisher[453537]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T21:37:26+00:00 odroid synth-market-rotation-pressure-publisher[453537]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T21:37:26+00:00 odroid synth-market-rotation-pressure-publisher[453537]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T21:37:26+00:00 odroid synth-market-rotation-pressure-publisher[453537]: market_data_writes=0 pressure_writes=0
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453545]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T21:37:26.985060+00:00
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453545]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453545]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453545]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+16.96 lights=5/5 eligible=135
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453545]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T21:37:27+00:00 odroid synth-market-rotation-pressure-publisher[453537]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T21:37:27Z
+2026-08-31T22:36:36+00:00 odroid synth-market-rotation-pressure-publisher[455959]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T22:36:36Z
+2026-08-31T22:36:36+00:00 odroid synth-market-rotation-pressure-publisher[455959]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T22:36:36+00:00 odroid synth-market-rotation-pressure-publisher[455959]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T22:36:36+00:00 odroid synth-market-rotation-pressure-publisher[455959]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T22:36:36+00:00 odroid synth-market-rotation-pressure-publisher[455959]: market_data_writes=0 pressure_writes=0
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455971]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T22:36:37.475094+00:00
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455971]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455971]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455971]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_OUT score=-34.33 lights=5/5 eligible=146
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455971]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T22:36:37+00:00 odroid synth-market-rotation-pressure-publisher[455959]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T22:36:37Z
+2026-08-31T23:36:40+00:00 odroid synth-market-rotation-pressure-publisher[458382]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-08-31T23:36:40Z
+2026-08-31T23:36:40+00:00 odroid synth-market-rotation-pressure-publisher[458382]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-08-31T23:36:40+00:00 odroid synth-market-rotation-pressure-publisher[458382]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T23:36:40+00:00 odroid synth-market-rotation-pressure-publisher[458382]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T23:36:40+00:00 odroid synth-market-rotation-pressure-publisher[458382]: market_data_writes=0 pressure_writes=0
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458390]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-08-31T23:36:40.852068+00:00
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458390]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458390]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458390]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_OUT score=-24.77 lights=4/5 eligible=149
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458390]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-08-31T23:36:41+00:00 odroid synth-market-rotation-pressure-publisher[458382]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-08-31T23:36:41Z
+2026-09-01T00:35:22+00:00 odroid synth-market-rotation-pressure-publisher[460824]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T00:35:22Z
+2026-09-01T00:35:22+00:00 odroid synth-market-rotation-pressure-publisher[460824]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T00:35:22+00:00 odroid synth-market-rotation-pressure-publisher[460824]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T00:35:22+00:00 odroid synth-market-rotation-pressure-publisher[460824]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T00:35:22+00:00 odroid synth-market-rotation-pressure-publisher[460824]: market_data_writes=0 pressure_writes=0
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460832]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T00:35:22.744314+00:00
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460832]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460832]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460832]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+22.82 lights=4/5 eligible=153
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460832]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T00:35:23+00:00 odroid synth-market-rotation-pressure-publisher[460824]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T00:35:23Z
+2026-09-01T01:35:33+00:00 odroid synth-market-rotation-pressure-publisher[463056]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T01:35:33Z
+2026-09-01T01:35:33+00:00 odroid synth-market-rotation-pressure-publisher[463056]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T01:35:33+00:00 odroid synth-market-rotation-pressure-publisher[463056]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T01:35:33+00:00 odroid synth-market-rotation-pressure-publisher[463056]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T01:35:33+00:00 odroid synth-market-rotation-pressure-publisher[463056]: market_data_writes=0 pressure_writes=0
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463064]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T01:35:34.447660+00:00
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463064]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463064]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463064]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+22.82 lights=4/5 eligible=153
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463064]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T01:35:34+00:00 odroid synth-market-rotation-pressure-publisher[463056]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T01:35:34Z
+2026-09-01T02:36:43+00:00 odroid synth-market-rotation-pressure-publisher[465184]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T02:36:43Z
+2026-09-01T02:36:43+00:00 odroid synth-market-rotation-pressure-publisher[465184]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T02:36:43+00:00 odroid synth-market-rotation-pressure-publisher[465184]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T02:36:43+00:00 odroid synth-market-rotation-pressure-publisher[465184]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T02:36:43+00:00 odroid synth-market-rotation-pressure-publisher[465184]: market_data_writes=0 pressure_writes=0
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465192]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T02:36:44.439145+00:00
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465192]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465192]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465192]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+22.61 lights=4/5 eligible=157
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465192]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T02:36:44+00:00 odroid synth-market-rotation-pressure-publisher[465184]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T02:36:44Z
+2026-09-01T03:35:43+00:00 odroid synth-market-rotation-pressure-publisher[467584]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T03:35:43Z
+2026-09-01T03:35:43+00:00 odroid synth-market-rotation-pressure-publisher[467584]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T03:35:43+00:00 odroid synth-market-rotation-pressure-publisher[467584]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T03:35:43+00:00 odroid synth-market-rotation-pressure-publisher[467584]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T03:35:43+00:00 odroid synth-market-rotation-pressure-publisher[467584]: market_data_writes=0 pressure_writes=0
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467592]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T03:35:44.433235+00:00
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467592]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467592]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467592]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+22.24 lights=4/5 eligible=166
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467592]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T03:35:44+00:00 odroid synth-market-rotation-pressure-publisher[467584]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T03:35:44Z
+2026-09-01T04:35:40+00:00 odroid synth-market-rotation-pressure-publisher[470031]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T04:35:40Z
+2026-09-01T04:35:40+00:00 odroid synth-market-rotation-pressure-publisher[470031]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T04:35:40+00:00 odroid synth-market-rotation-pressure-publisher[470031]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T04:35:40+00:00 odroid synth-market-rotation-pressure-publisher[470031]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T04:35:40+00:00 odroid synth-market-rotation-pressure-publisher[470031]: market_data_writes=0 pressure_writes=0
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470039]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T04:35:40.843462+00:00
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470039]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470039]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470039]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+21.03 lights=4/5 eligible=170
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470039]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T04:35:41+00:00 odroid synth-market-rotation-pressure-publisher[470031]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T04:35:41Z
+2026-09-01T05:37:05+00:00 odroid synth-market-rotation-pressure-publisher[472611]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T05:37:05Z
+2026-09-01T05:37:05+00:00 odroid synth-market-rotation-pressure-publisher[472611]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T05:37:05+00:00 odroid synth-market-rotation-pressure-publisher[472611]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T05:37:05+00:00 odroid synth-market-rotation-pressure-publisher[472611]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T05:37:05+00:00 odroid synth-market-rotation-pressure-publisher[472611]: market_data_writes=0 pressure_writes=0
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472619]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T05:37:06.050306+00:00
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472619]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472619]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472619]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+22.31 lights=4/5 eligible=169
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472619]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T05:37:06+00:00 odroid synth-market-rotation-pressure-publisher[472611]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T05:37:06Z
+2026-09-01T06:36:53+00:00 odroid synth-market-rotation-pressure-publisher[475050]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T06:36:53Z
+2026-09-01T06:36:53+00:00 odroid synth-market-rotation-pressure-publisher[475050]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T06:36:53+00:00 odroid synth-market-rotation-pressure-publisher[475050]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T06:36:53+00:00 odroid synth-market-rotation-pressure-publisher[475050]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T06:36:53+00:00 odroid synth-market-rotation-pressure-publisher[475050]: market_data_writes=0 pressure_writes=0
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475058]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T06:36:54.442270+00:00
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475058]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475058]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475058]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+20.63 lights=4/5 eligible=170
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475058]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T06:36:54+00:00 odroid synth-market-rotation-pressure-publisher[475050]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T06:36:54Z
+2026-09-01T07:36:40+00:00 odroid synth-market-rotation-pressure-publisher[477631]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T07:36:40Z
+2026-09-01T07:36:40+00:00 odroid synth-market-rotation-pressure-publisher[477631]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T07:36:40+00:00 odroid synth-market-rotation-pressure-publisher[477631]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T07:36:40+00:00 odroid synth-market-rotation-pressure-publisher[477631]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T07:36:40+00:00 odroid synth-market-rotation-pressure-publisher[477631]: market_data_writes=0 pressure_writes=0
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477639]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T07:36:40.842795+00:00
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477639]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477639]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477639]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=MIXED score=+14.60 lights=0/5 eligible=171
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477639]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T07:36:41+00:00 odroid synth-market-rotation-pressure-publisher[477631]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T07:36:41Z
+-- Boot 3a864b6ed5a848bdb28d4066e1804401 --
+2026-09-01T07:47:38+00:00 odroid synth-market-rotation-pressure-publisher[588]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T07:47:38Z
+2026-09-01T07:47:38+00:00 odroid synth-market-rotation-pressure-publisher[588]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T07:47:38+00:00 odroid synth-market-rotation-pressure-publisher[588]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T07:47:38+00:00 odroid synth-market-rotation-pressure-publisher[588]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T07:47:38+00:00 odroid synth-market-rotation-pressure-publisher[588]: market_data_writes=0 pressure_writes=0
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: Traceback (most recent call last):
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     sock = socket.create_connection(
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     raise exceptions[0]
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     sock.connect(sa)
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: OSError: [Errno 101] Network is unreachable
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: During handling of the above exception, another exception occurred:
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: Traceback (most recent call last):
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     raise SystemExit(main())
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:                      ^^^^^^
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     conn = get_connection()
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:            ^^^^^^^^^^^^^^^^
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     return pymysql.connect(
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:            ^^^^^^^^^^^^^^^^
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     self.connect()
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]:     raise exc
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T07:47:41.456338+00:00
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T07:47:42+00:00 odroid synth-market-rotation-pressure-publisher[636]: selection_engine=none decision_gate=none execution_planner=none executor=none
+-- Boot dd9fd0eb376243618809cf8a1f2f3df1 --
+2026-09-01T08:17:01+00:00 odroid synth-market-rotation-pressure-publisher[567]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T08:17:01Z
+2026-09-01T08:17:01+00:00 odroid synth-market-rotation-pressure-publisher[567]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T08:17:01+00:00 odroid synth-market-rotation-pressure-publisher[567]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:17:01+00:00 odroid synth-market-rotation-pressure-publisher[567]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:17:01+00:00 odroid synth-market-rotation-pressure-publisher[567]: market_data_writes=0 pressure_writes=0
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: Traceback (most recent call last):
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     sock = socket.create_connection(
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     raise exceptions[0]
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     sock.connect(sa)
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: OSError: [Errno 101] Network is unreachable
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: During handling of the above exception, another exception occurred:
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: Traceback (most recent call last):
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     raise SystemExit(main())
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:                      ^^^^^^
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     conn = get_connection()
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     return pymysql.connect(
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     self.connect()
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]:     raise exc
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T08:17:04.791760+00:00
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:17:05+00:00 odroid synth-market-rotation-pressure-publisher[605]: selection_engine=none decision_gate=none execution_planner=none executor=none
+-- Boot 3d99595e6f99479595121b9567716507 --
+2026-09-01T08:33:28+00:00 odroid synth-market-rotation-pressure-publisher[556]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T08:33:28Z
+2026-09-01T08:33:28+00:00 odroid synth-market-rotation-pressure-publisher[556]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T08:33:28+00:00 odroid synth-market-rotation-pressure-publisher[556]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:33:28+00:00 odroid synth-market-rotation-pressure-publisher[556]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:33:28+00:00 odroid synth-market-rotation-pressure-publisher[556]: market_data_writes=0 pressure_writes=0
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: Traceback (most recent call last):
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     sock = socket.create_connection(
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     raise exceptions[0]
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     sock.connect(sa)
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: OSError: [Errno 101] Network is unreachable
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: During handling of the above exception, another exception occurred:
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: Traceback (most recent call last):
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     raise SystemExit(main())
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:                      ^^^^^^
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     conn = get_connection()
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     return pymysql.connect(
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:     self.connect()
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: raise exc
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T08:33:31.785500+00:00
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:33:32+00:00 odroid synth-market-rotation-pressure-publisher[593]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:42:38+00:00 odroid synth-market-rotation-pressure-publisher[1259]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T08:42:38Z
+2026-09-01T08:42:38+00:00 odroid synth-market-rotation-pressure-publisher[1259]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T08:42:38+00:00 odroid synth-market-rotation-pressure-publisher[1259]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:42:38+00:00 odroid synth-market-rotation-pressure-publisher[1259]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:42:38+00:00 odroid synth-market-rotation-pressure-publisher[1259]: market_data_writes=0 pressure_writes=0
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1267]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T08:42:39.114431+00:00
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1267]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1267]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1267]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+11.16 lights=3/5 eligible=159
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1267]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T08:42:39+00:00 odroid synth-market-rotation-pressure-publisher[1259]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T08:42:39Z
+-- Boot 7ebe10ae18ca48258608954d6d253c5c --
+2026-09-01T08:50:46+00:00 odroid synth-market-rotation-pressure-publisher[561]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T08:50:46Z
+2026-09-01T08:50:46+00:00 odroid synth-market-rotation-pressure-publisher[561]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T08:50:46+00:00 odroid synth-market-rotation-pressure-publisher[561]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:50:46+00:00 odroid synth-market-rotation-pressure-publisher[561]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T08:50:46+00:00 odroid synth-market-rotation-pressure-publisher[561]: market_data_writes=0 pressure_writes=0
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: Traceback (most recent call last):
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     sock = socket.create_connection(
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     raise exceptions[0]
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     sock.connect(sa)
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: OSError: [Errno 101] Network is unreachable
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: During handling of the above exception, another exception occurred:
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: Traceback (most recent call last):
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     raise SystemExit(main())
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:                      ^^^^^^
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     conn = get_connection()
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     return pymysql.connect(
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:            ^^^^^^^^^^^^^^^^
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     self.connect()
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]:     raise exc
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T08:50:49.487063+00:00
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T08:50:50+00:00 odroid synth-market-rotation-pressure-publisher[596]: selection_engine=none decision_gate=none execution_planner=none executor=none
+-- Boot 7999a540f5874bed9ab13da4e113c1d5 --
+2026-09-01T09:06:50+00:00 odroid synth-market-rotation-pressure-publisher[557]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T09:06:50Z
+2026-09-01T09:06:50+00:00 odroid synth-market-rotation-pressure-publisher[557]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T09:06:50+00:00 odroid synth-market-rotation-pressure-publisher[557]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T09:06:50+00:00 odroid synth-market-rotation-pressure-publisher[557]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T09:06:50+00:00 odroid synth-market-rotation-pressure-publisher[557]: market_data_writes=0 pressure_writes=0
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: Traceback (most recent call last):
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     sock = socket.create_connection(
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     raise exceptions[0]
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     sock.connect(sa)
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: OSError: [Errno 101] Network is unreachable
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: During handling of the above exception, another exception occurred:
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: Traceback (most recent call last):
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     raise SystemExit(main())
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:                      ^^^^^^
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     conn = get_connection()
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:            ^^^^^^^^^^^^^^^^
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     return pymysql.connect(
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:            ^^^^^^^^^^^^^^^^
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     self.connect()
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]:     raise exc
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T09:06:53.753597+00:00
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T09:06:54+00:00 odroid synth-market-rotation-pressure-publisher[595]: selection_engine=none decision_gate=none execution_planner=none executor=none
+-- Boot d5ef63a90c724d43827f91e1ad7e6dda --
+2026-09-01T09:27:09+00:00 odroid synth-market-rotation-pressure-publisher[588]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T09:27:09Z
+2026-09-01T09:27:09+00:00 odroid synth-market-rotation-pressure-publisher[588]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T09:27:09+00:00 odroid synth-market-rotation-pressure-publisher[588]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T09:27:09+00:00 odroid synth-market-rotation-pressure-publisher[588]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T09:27:09+00:00 odroid synth-market-rotation-pressure-publisher[588]: market_data_writes=0 pressure_writes=0
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: Traceback (most recent call last):
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 682, in connect
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     sock = socket.create_connection(
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     raise exceptions[0]
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     sock.connect(sa)
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: OSError: [Errno 101] Network is unreachable
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: During handling of the above exception, another exception occurred:
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: Traceback (most recent call last):
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "<frozen runpy>", line 198, in _run_module_as_main
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "<frozen runpy>", line 88, in _run_code
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 231, in <module>
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     raise SystemExit(main())
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:                      ^^^^^^
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/src/reporting/run_market_rotation_pressure_dashboard_v1.py", line 180, in main
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     conn = get_connection()
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:            ^^^^^^^^^^^^^^^^
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/src/common/db_core_v1.py", line 83, in get_connection
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     return pymysql.connect(
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:            ^^^^^^^^^^^^^^^^
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 372, in __init__
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     self.connect()
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:   File "/home/theone/projects/synth-v2/venv/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]:     raise exc
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '192.168.1.221' ([Errno 101] Network is unreachable)")
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T09:27:12.705481+00:00
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T09:27:12+00:00 odroid synth-market-rotation-pressure-publisher[629]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T10:07:16+00:00 odroid synth-market-rotation-pressure-publisher[1105]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T10:07:16Z
+2026-09-01T10:07:16+00:00 odroid synth-market-rotation-pressure-publisher[1105]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T10:07:16+00:00 odroid synth-market-rotation-pressure-publisher[1105]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T10:07:16+00:00 odroid synth-market-rotation-pressure-publisher[1105]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T10:07:16+00:00 odroid synth-market-rotation-pressure-publisher[1105]: market_data_writes=0 pressure_writes=0
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1113]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T10:07:17.193448+00:00
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1113]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1113]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1113]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_OUT score=-16.82 lights=5/5 eligible=172
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1113]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T10:07:17+00:00 odroid synth-market-rotation-pressure-publisher[1105]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T10:07:17Z
+2026-09-01T10:37:50+00:00 odroid synth-market-rotation-pressure-publisher[2062]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T10:37:50Z
+2026-09-01T10:37:50+00:00 odroid synth-market-rotation-pressure-publisher[2062]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T10:37:50+00:00 odroid synth-market-rotation-pressure-publisher[2062]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T10:37:50+00:00 odroid synth-market-rotation-pressure-publisher[2062]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T10:37:50+00:00 odroid synth-market-rotation-pressure-publisher[2062]: market_data_writes=0 pressure_writes=0
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2070]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T10:37:51.394021+00:00
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2070]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2070]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2070]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=MIXED score=-7.51 lights=0/5 eligible=173
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2070]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T10:37:51+00:00 odroid synth-market-rotation-pressure-publisher[2062]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T10:37:51Z
+2026-09-01T11:37:08+00:00 odroid synth-market-rotation-pressure-publisher[3963]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T11:37:08Z
+2026-09-01T11:37:08+00:00 odroid synth-market-rotation-pressure-publisher[3963]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T11:37:08+00:00 odroid synth-market-rotation-pressure-publisher[3963]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T11:37:08+00:00 odroid synth-market-rotation-pressure-publisher[3963]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T11:37:08+00:00 odroid synth-market-rotation-pressure-publisher[3963]: market_data_writes=0 pressure_writes=0
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3971]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T11:37:08.700380+00:00
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3971]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3971]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3971]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=MIXED score=+0.74 lights=0/5 eligible=173
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3971]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T11:37:09+00:00 odroid synth-market-rotation-pressure-publisher[3963]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T11:37:09Z
+2026-09-01T12:35:50+00:00 odroid synth-market-rotation-pressure-publisher[5818]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T12:35:50Z
+2026-09-01T12:35:50+00:00 odroid synth-market-rotation-pressure-publisher[5818]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T12:35:50+00:00 odroid synth-market-rotation-pressure-publisher[5818]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T12:35:50+00:00 odroid synth-market-rotation-pressure-publisher[5818]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T12:35:50+00:00 odroid synth-market-rotation-pressure-publisher[5818]: market_data_writes=0 pressure_writes=0
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5826]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T12:35:50.908701+00:00
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5826]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5826]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5826]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+12.23 lights=3/5 eligible=173
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5826]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T12:35:51+00:00 odroid synth-market-rotation-pressure-publisher[5818]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T12:35:51Z
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7835]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T13:36:09Z
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7835]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7835]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7835]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7835]: market_data_writes=0 pressure_writes=0
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7843]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T13:36:09.643062+00:00
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7843]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7843]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7843]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+15.30 lights=4/5 eligible=173
+2026-09-01T13:36:09+00:00 odroid synth-market-rotation-pressure-publisher[7843]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T13:36:10+00:00 odroid synth-market-rotation-pressure-publisher[7835]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T13:36:10Z
+2026-09-01T14:37:09+00:00 odroid synth-market-rotation-pressure-publisher[10144]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T14:37:09Z
+2026-09-01T14:37:09+00:00 odroid synth-market-rotation-pressure-publisher[10144]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T14:37:09+00:00 odroid synth-market-rotation-pressure-publisher[10144]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T14:37:09+00:00 odroid synth-market-rotation-pressure-publisher[10144]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T14:37:09+00:00 odroid synth-market-rotation-pressure-publisher[10144]: market_data_writes=0 pressure_writes=0
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10152]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T14:37:09.931608+00:00
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10152]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10152]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10152]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+21.15 lights=4/5 eligible=173
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10152]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T14:37:10+00:00 odroid synth-market-rotation-pressure-publisher[10144]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T14:37:10Z
+2026-09-01T15:36:39+00:00 odroid synth-market-rotation-pressure-publisher[12384]: STARTED runner=run_market_rotation_pressure_dashboard_render_once mode=read_only ts=2026-09-01T15:36:39Z
+2026-09-01T15:36:39+00:00 odroid synth-market-rotation-pressure-publisher[12384]: venue=bitvavo output_root=/var/www/html/synth lock_file=/tmp/synth-market-rotation-pressure-dashboard-v1.lock
+2026-09-01T15:36:39+00:00 odroid synth-market-rotation-pressure-publisher[12384]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T15:36:39+00:00 odroid synth-market-rotation-pressure-publisher[12384]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T15:36:39+00:00 odroid synth-market-rotation-pressure-publisher[12384]: market_data_writes=0 pressure_writes=0
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12392]: STARTED runner=run_market_rotation_pressure_dashboard_v1 mode=read_only venue=bitvavo model_version=1.0 ts=2026-09-01T15:36:40.175873+00:00
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12392]: broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12392]: selection_engine=none decision_gate=none execution_planner=none executor=none
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12392]: PUBLISHED html=/var/www/html/synth/rotation-pressure.html json=/var/www/html/synth/rotation-pressure.json status=AVAILABLE freshness=FRESH direction=ROTATION_IN score=+18.34 lights=4/5 eligible=172
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12392]: FINISHED runner=run_market_rotation_pressure_dashboard_v1 exit_status=0
+2026-09-01T15:36:40+00:00 odroid synth-market-rotation-pressure-publisher[12384]: FINISHED runner=run_market_rotation_pressure_dashboard_render_once exit_status=0 elapsed_sec=1 ts=2026-09-01T15:36:40Z
