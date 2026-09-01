@@ -79,10 +79,19 @@ def classify_asset_disposition(
     has_original_bucket: bool,
     validation_windows_ok: int,
     validation_windows_total: int,
+    alpha_positive_ok_window_count: int,
     bucket_sign_agreement: Optional[bool],
     bucket_rank_agreement_all_ok_windows: Optional[bool],
 ) -> AssetDisposition:
     """Deterministic per-asset disposition per the frozen Phase A contract.
+
+    `alpha_positive_ok_window_count` is how many of the `validation_windows_ok`
+    status=OK validation windows have `alpha_vs_hold_pct > 0`. It must satisfy
+    `0 <= alpha_positive_ok_window_count <= validation_windows_ok`. Per
+    contract § Acceptance thresholds rule 3, VALIDATED requires
+    `alpha_vs_hold_pct > 0` in *every* OK window, not merely a majority — a
+    mixed OK-window set (some windows positive, some not) must never resolve
+    to VALIDATED even if `bucket_rank_agreement_all_ok_windows` is True.
 
     Fail-closed: any ambiguous or unreproducible input maps to
     INSUFFICIENT_DATA or REJECTED, never to VALIDATED/REVISED.
@@ -115,11 +124,35 @@ def classify_asset_disposition(
     if validation_windows_ok == 0:
         return AssetDisposition(symbol, OUTCOME_INSUFFICIENT_DATA, None)
 
-    if bucket_sign_agreement is False:
+    if not (0 <= alpha_positive_ok_window_count <= validation_windows_ok):
+        raise ValueError(
+            "alpha_positive_ok_window_count must be between 0 and "
+            "validation_windows_ok inclusive; got "
+            f"{alpha_positive_ok_window_count} of {validation_windows_ok}."
+        )
+
+    all_ok_windows_alpha_positive = alpha_positive_ok_window_count == validation_windows_ok
+    no_ok_windows_alpha_positive = alpha_positive_ok_window_count == 0
+
+    if all_ok_windows_alpha_positive and bucket_rank_agreement_all_ok_windows is True:
+        return AssetDisposition(symbol, OUTCOME_VALIDATED, None)
+
+    if no_ok_windows_alpha_positive:
+        # alpha_vs_hold_pct <= 0 in every OK validation window: the ladder
+        # never beat holding outside the original window. Reproduction
+        # succeeded (rules 0/1 above did not fire), so this is a REJECTED
+        # verdict from the methodology itself, distinct from
+        # BASELINE_REPRODUCTION_FAILED.
         return AssetDisposition(symbol, OUTCOME_REJECTED, None)
 
-    if bucket_rank_agreement_all_ok_windows is True:
-        return AssetDisposition(symbol, OUTCOME_VALIDATED, None)
+    # Mixed OK-window set (>=1 window positive and >=1 window non-positive),
+    # or every OK window positive but rank agreement fails in >=1 of them:
+    # not defensible as-is (cannot be VALIDATED), but the ladder still beats
+    # hold often enough that it is not a clean REJECTED either. Route on
+    # majority sign agreement across the three windows (original + both
+    # validation windows), per contract rule 4.
+    if bucket_sign_agreement is False:
+        return AssetDisposition(symbol, OUTCOME_REJECTED, None)
 
     return AssetDisposition(symbol, OUTCOME_REVISED, None)
 

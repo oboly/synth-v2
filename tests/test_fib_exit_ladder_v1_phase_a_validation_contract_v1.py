@@ -215,6 +215,7 @@ def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> Non
         has_original_bucket=True,
         validation_windows_ok=2,
         validation_windows_total=2,
+        alpha_positive_ok_window_count=2,
         bucket_sign_agreement=True,
         bucket_rank_agreement_all_ok_windows=True,
     )
@@ -229,6 +230,7 @@ def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> Non
         has_original_bucket=True,
         validation_windows_ok=2,
         validation_windows_total=2,
+        alpha_positive_ok_window_count=2,
         bucket_sign_agreement=True,
         bucket_rank_agreement_all_ok_windows=True,
     )
@@ -255,10 +257,87 @@ def test_baseline_not_evaluable_is_insufficient_data_not_rejected() -> None:
         has_original_bucket=True,
         validation_windows_ok=0,
         validation_windows_total=2,
+        alpha_positive_ok_window_count=0,
         bucket_sign_agreement=None,
         bucket_rank_agreement_all_ok_windows=None,
     )
     assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert result.reason is None
+
+
+def test_mixed_validation_window_alpha_is_not_validated() -> None:
+    """One OK window with alpha_vs_hold_pct > 0 and another OK window with
+    alpha_vs_hold_pct <= 0 must NOT resolve to VALIDATED, even when
+    bucket_rank_agreement_all_ok_windows is True (rank agreement in the
+    positive window alone is not sufficient — contract rule 3 requires
+    alpha > 0 in *every* OK window)."""
+    mixed = disposition.classify_asset_disposition(
+        symbol="XLM",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=1,  # one window positive, one non-positive
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert mixed.outcome != disposition.OUTCOME_VALIDATED
+    # Existing frozen categories only: routed to REVISED per rule 4 because
+    # majority sign agreement still holds across the 3 windows.
+    assert mixed.outcome == disposition.OUTCOME_REVISED
+    assert mixed.reason is None
+
+    # Same mixed alpha split, but majority sign agreement does NOT hold:
+    # must be REJECTED (reproduction succeeded), not REVISED and not
+    # VALIDATED, and distinguishable from a BASELINE_REPRODUCTION_FAILED
+    # REJECTED by its absent reason.
+    mixed_sign_disagreement = disposition.classify_asset_disposition(
+        symbol="XLM",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=1,
+        bucket_sign_agreement=False,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert mixed_sign_disagreement.outcome == disposition.OUTCOME_REJECTED
+    assert mixed_sign_disagreement.reason is None
+    assert mixed_sign_disagreement.reason != disposition.REASON_BASELINE_REPRODUCTION_FAILED
+
+    # Repeatable: identical mixed input yields an identical disposition.
+    repeat = disposition.classify_asset_disposition(
+        symbol="XLM",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=1,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert repeat == mixed
+
+
+def test_all_ok_windows_non_positive_is_rejected_without_reason() -> None:
+    """Every OK validation window alpha <= 0: REJECTED from a successful
+    reproduction, regardless of bucket_sign_agreement/rank_agreement, and
+    distinct from BASELINE_REPRODUCTION_FAILED."""
+    result = disposition.classify_asset_disposition(
+        symbol="SOL",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=0,
+        bucket_sign_agreement=False,
+        bucket_rank_agreement_all_ok_windows=False,
+    )
+    assert result.outcome == disposition.OUTCOME_REJECTED
     assert result.reason is None
 
 

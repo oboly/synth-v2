@@ -221,14 +221,20 @@ Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), acro
 
 4. REVISED  requires:
   - rules 0-2 did not fire (baseline reproduced, >=1 validation window OK), AND
-  - bucket_sign_agreement holds (ladder beats hold in at least 2 of the 3 windows including original) but
-    bucket_rank_agreement fails in >=1 validation window (a different family scores better), so the
-    asset->family mapping itself is not defensible unchanged, though "use a ladder over holding" still is.
+  - rule 3 (VALIDATED) did not match, i.e. either >=1 OK validation window has alpha_vs_hold_pct <= 0
+    while >=1 other OK validation window has alpha_vs_hold_pct > 0 (a MIXED positive/negative
+    OK-window set — this must never be reported as VALIDATED even if bucket_rank_agreement holds
+    in the positive window(s)), or every OK validation window has alpha_vs_hold_pct > 0 but
+    bucket_rank_agreement fails in >=1 of them (a different family scores better), AND
+  - bucket_sign_agreement holds (ladder beats hold in at least 2 of the 3 windows including
+    original), so the asset->family mapping itself is not defensible unchanged, though "use a
+    ladder over holding" still is.
 
 5. REJECTED (reproduction succeeded)  requires:
   - rules 0-2 did not fire (baseline reproduced, >=1 validation window OK), AND
-  - alpha_vs_hold_pct <= 0 in every validation window with status=OK (ladder never beats hold
-    out of the original window).
+  - EITHER alpha_vs_hold_pct <= 0 in every validation window with status=OK (ladder never beats
+    hold out of the original window), OR the mixed/rank-disagreement condition in rule 4 holds but
+    bucket_sign_agreement does not (majority sign disagreement across the 3 windows).
   This is a negative result from successfully reproducing the methodology, and must be reported
   with a different (or absent) reason string than rule 1's `BASELINE_REPRODUCTION_FAILED` so the
   two REJECTED causes are never conflated.
