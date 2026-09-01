@@ -18,17 +18,17 @@ from src.research.cq_v1_temporal_population_v1 import (
     summarize_population,
 )
 from src.research.cq_v1_temporal_sampling_v1 import derive_asofs
+from src.selection.run_selection_engine_v2 import DEFAULT_CONFIG_PATH
 from src.selection.selection_engine_v2 import load_selection_config
 
 RUNNER_NAME = "cq_v1_temporal_population_v1"
 DEFAULT_OUTPUT_DIR = "data/research/cq_v1_temporal_population_v1"
-DEFAULT_SELECTION_CONFIG = "configs/selection_engine_v2.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build frozen 45-date PIT CQ v1 temporal population")
     p.add_argument("--venue", default="bitvavo")
-    p.add_argument("--selection-config", default=DEFAULT_SELECTION_CONFIG)
+    p.add_argument("--selection-config", default=DEFAULT_CONFIG_PATH)
     p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     return p.parse_args(argv)
 
