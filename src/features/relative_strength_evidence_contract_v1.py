@@ -53,6 +53,12 @@ INPUT_INTERVAL = "1d"
 _MARKET = "asset"
 
 
+def _is_blank(identifier: str | None) -> bool:
+    """None, empty, or whitespace-only. A non-blank identifier is never
+    trimmed/altered -- it is either accepted exactly as given or rejected."""
+    return identifier is None or identifier.strip() == ""
+
+
 def build_cross_sectional_rank_evidence(
     row: Mapping[str, Any],
     *,
@@ -69,8 +75,10 @@ def build_cross_sectional_rank_evidence(
 
     `model_id`/`model_version` are not persisted by the producer today, so
     they must be supplied explicitly by a caller that owns a reviewed
-    identity for the run; omitting them fails the evidence closed rather
-    than fabricating provenance.
+    identity for the run; omitting them, or supplying an empty/whitespace-only
+    value, fails the evidence closed rather than fabricating or silently
+    trimming provenance. A non-blank identifier is preserved exactly as
+    given.
     """
     raw_asof_ts = row.get("snapshot_ts_utc")
     lookback_days = row.get("lookback_days")
@@ -81,8 +89,13 @@ def build_cross_sectional_rank_evidence(
         evaluated_at=evaluated_at,
     )
 
+    model_id_blank = _is_blank(model_id)
+    model_version_blank = _is_blank(model_version)
+    resolved_model_id = None if model_id_blank else model_id
+    resolved_model_version = None if model_version_blank else model_version
+
     extra_reason_codes = freshness_reason_codes
-    if model_id is None or model_version is None:
+    if model_id_blank or model_version_blank:
         extra_reason_codes += (ReasonCode.MISSING_PROVENANCE,)
     # effective_horizon is not declared by this producer; fail closed rather
     # than infer REGIME/MID/etc. from lookback_days.
@@ -98,8 +111,8 @@ def build_cross_sectional_rank_evidence(
         component=COMPONENT_CROSS_SECTIONAL_RANK,
         market=_MARKET,
         status=status,
-        model_id=model_id,
-        model_version=model_version,
+        model_id=resolved_model_id,
+        model_version=resolved_model_version,
         input_interval=INPUT_INTERVAL,
         lookback_horizon=lookback_horizon,
         effective_horizon=EffectiveHorizon.UNKNOWN,

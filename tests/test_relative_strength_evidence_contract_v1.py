@@ -102,6 +102,88 @@ def test_explicit_provenance_removes_missing_provenance_reason():
     assert evidence.status == EvidenceStatus.INSUFFICIENT_DATA
 
 
+def test_blank_model_id_none_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(), evaluated_at=ASOF_AWARE, model_id=None, model_version="1.0"
+    )
+    assert evidence.model_id is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_blank_model_version_none_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE,
+        model_id="relative_strength_snapshot",
+        model_version=None,
+    )
+    assert evidence.model_version is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_blank_model_id_empty_string_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(), evaluated_at=ASOF_AWARE, model_id="", model_version="1.0"
+    )
+    assert evidence.model_id is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_blank_model_version_empty_string_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE,
+        model_id="relative_strength_snapshot",
+        model_version="",
+    )
+    assert evidence.model_version is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_blank_model_id_whitespace_only_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(), evaluated_at=ASOF_AWARE, model_id="   ", model_version="1.0"
+    )
+    assert evidence.model_id is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_blank_model_version_whitespace_only_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE,
+        model_id="relative_strength_snapshot",
+        model_version="   ",
+    )
+    assert evidence.model_version is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+
+
+def test_one_blank_one_valid_still_fails_closed():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE,
+        model_id="relative_strength_snapshot",
+        model_version="   ",
+    )
+    assert evidence.model_id == "relative_strength_snapshot"
+    assert evidence.model_version is None
+    assert ReasonCode.MISSING_PROVENANCE in evidence.reason_codes
+    assert evidence.status == EvidenceStatus.INSUFFICIENT_DATA
+
+
+def test_valid_non_blank_provenance_is_preserved_exactly():
+    evidence = build_cross_sectional_rank_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE,
+        model_id="relative_strength_snapshot",
+        model_version="1.0",
+    )
+    assert evidence.model_id == "relative_strength_snapshot"
+    assert evidence.model_version == "1.0"
+    assert ReasonCode.MISSING_PROVENANCE not in evidence.reason_codes
+
+
 def test_lookback_horizon_maps_persisted_lookback_days():
     evidence = build_cross_sectional_rank_evidence(
         _row(lookback_days=14), evaluated_at=ASOF_AWARE
