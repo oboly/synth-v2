@@ -9,7 +9,9 @@ production timing evidence for the canonical hourly chain
     source candle close (obs_market_candle, 1h)
     -> market_rotation_history_v1 availability (24h + 168h source snapshots)
     -> Rotation Pressure writer scheduled/start/end (gurkDB, local journal)
-    -> market_rotation_pressure_snapshot_v1 persistence (DB created_at)
+    -> market_rotation_pressure_snapshot_v1 commit/queryable (earliest
+       post-commit writer FINISHED marker per asof, not raw DB created_at
+       -- see earliest_finish_per_asof())
     -> publisher start/end (Odroid; optional, from an externally supplied
        journal export -- this host has no network path to Odroid)
     -> operator-visible publication (optional, same as above)
@@ -306,9 +308,18 @@ def source_completion_for_asof(asof: datetime, completions: list[datetime]) -> d
 
 
 def collect_persist_events(since_utc: datetime) -> dict[datetime, datetime]:
-    """as_of_ts_utc -> DB created_at (real commit time) for
-    market_rotation_pressure_snapshot_v1. This is the authoritative
-    asof->persist evidence, independent of writer-log elapsed_sec.
+    """as_of_ts_utc -> DB `created_at` for market_rotation_pressure_snapshot_v1.
+
+    NOT the commit/queryable timestamp: `created_at` is a DATETIME(6)
+    DEFAULT CURRENT_TIMESTAMP(6) column stamped by the header row's own
+    `INSERT IGNORE` in `write_pressure_snapshot()`
+    (src/research/run_market_rotation_pressure_v1.py), which runs BEFORE
+    the ~150-190 per-asset observation-row inserts, the header `UPDATE`,
+    and the caller's `conn.commit()`
+    (src/research/run_market_rotation_pressure_v1.py `main()`). It is kept
+    here only as an insert-order diagnostic (`header_insert_at_utc` in the
+    report); `asof_to_persist_lag` is computed from `earliest_finish_per_asof`
+    below instead, which is provably post-commit.
     """
     with db_cursor() as (conn, cur):
         cur.execute(
@@ -327,6 +338,30 @@ def collect_persist_events(since_utc: datetime) -> dict[datetime, datetime]:
         created = row["created_at"].replace(tzinfo=UTC)
         out[asof] = created
     return out
+
+
+def earliest_finish_per_asof(
+    by_asof: dict[datetime, list["WriterCycle"]],
+) -> dict[datetime, datetime]:
+    """The authoritative, provably post-commit "queryable" timestamp per asof.
+
+    `write_pressure_snapshot()` always executes its full INSERT/UPDATE path
+    (idempotently, via `INSERT IGNORE`) even on a NOOP_ALREADY_COMPLETE
+    rerun, and the caller commits before the runner's own FINISHED marker is
+    emitted (`conn.commit()` precedes `print_report()` precedes process
+    exit precedes the shell wrapper's `FINISHED ... ts=` log line). So for
+    any writer invocation that reached this asof, that invocation's
+    `finish_ts` is a valid upper bound on when the row became committed and
+    queryable. Taking the MINIMUM `finish_ts` across all invocations for an
+    asof (not just the "regular" OnCalendar-window one) correctly picks up
+    an earlier off-schedule/manual/catch-up invocation when one actually
+    persisted the data first.
+    """
+    return {
+        asof: min(c.finish_ts for c in cycles if c.finish_ts is not None)
+        for asof, cycles in by_asof.items()
+        if any(c.finish_ts is not None for c in cycles)
+    }
 
 
 def _pctile(values: list[float], p: float) -> float:
@@ -448,7 +483,7 @@ def build_report(
 
     # Multiple writer invocations can share one asof hour (manual/catch-up
     # re-runs alongside the regular OnCalendar-triggered cycle; NOOP reruns
-    # do not change persisted_at). For writer_scheduling_lag/writer_runtime
+    # do not change committed_at). For writer_scheduling_lag/writer_runtime
     # -- properties of ONE specific invocation -- keep only the invocation
     # whose start falls inside the configured worst-case window
     # [OnCalendar, OnCalendar + RandomizedDelaySec] + a small dispatch-jitter
@@ -464,13 +499,20 @@ def build_report(
             continue
         by_asof.setdefault(cycle.asof, []).append(cycle)
 
+    # Authoritative, provably post-commit persist timestamp per asof -- see
+    # earliest_finish_per_asof() docstring. Supersedes raw DB `created_at`
+    # (kept only as a diagnostic field, `header_insert_at_utc`, since it is
+    # stamped at header-row INSERT time, before the observation-row inserts
+    # and conn.commit()).
+    committed_events = earliest_finish_per_asof(by_asof)
+
     # Pre-match each persisted asof to at most one successful publisher
     # cycle, and each publisher cycle to at most one asof. A publish call
     # always serves whatever row is currently latest in the DB, so if two
     # hours were persisted before the next publish fired (e.g. during the
     # 2026-09-01 outage), that one publish reflects only the LATER hour --
     # the earlier hour was genuinely never independently published. Process
-    # asofs in descending persisted_at order so the later hour claims the
+    # asofs in descending committed_at order so the later hour claims the
     # earliest eligible publish first; this prevents an earlier hour from
     # wrongly "claiming" a publish that actually served a later hour's data
     # (which briefly produced a negative persist->publish lag before this
@@ -478,13 +520,13 @@ def build_report(
     matched_pub_for_asof: dict[datetime, PublisherCycle] = {}
     if publisher_successes:
         claimed_pub_ids: set[int] = set()
-        asofs_by_persisted_at_desc = sorted(
-            (a for a in by_asof if a in persist_events),
-            key=lambda a: persist_events[a],
+        asofs_by_committed_at_desc = sorted(
+            (a for a in by_asof if a in committed_events),
+            key=lambda a: committed_events[a],
             reverse=True,
         )
-        for asof in asofs_by_persisted_at_desc:
-            persisted_at = persist_events[asof]
+        for asof in asofs_by_committed_at_desc:
+            committed_at = committed_events[asof]
             candidates = [
                 p
                 for p in publisher_successes
@@ -492,7 +534,7 @@ def build_report(
                 and p.start_ts is not None
                 and p.finish_ts is not None
                 and p.published_ts is not None
-                and 0 <= (p.start_ts - persisted_at).total_seconds() <= 90 * 60
+                and 0 <= (p.start_ts - committed_at).total_seconds() <= 90 * 60
             ]
             if candidates:
                 pub = min(candidates, key=lambda p: p.start_ts)
@@ -531,14 +573,18 @@ def build_report(
         writer_runtime.append(runtime)
         record["writer_runtime_sec"] = round(runtime, 1)
 
-        persisted_at = persist_events.get(asof)
-        if persisted_at is not None:
-            persist_lag = (persisted_at - asof).total_seconds()
+        header_insert_at = persist_events.get(asof)
+        if header_insert_at is not None:
+            record["header_insert_at_utc"] = header_insert_at.isoformat()
+
+        committed_at = committed_events.get(asof)
+        if committed_at is not None:
+            persist_lag = (committed_at - asof).total_seconds()
             asof_to_persist_lag.append(persist_lag)
             record["asof_to_persist_lag_sec"] = round(persist_lag, 1)
-            record["persisted_at_utc"] = persisted_at.isoformat()
-            if persisted_at < cycle.start_ts:
-                # This asof was already persisted before the regular
+            record["committed_at_utc"] = committed_at.isoformat()
+            if committed_at < cycle.start_ts:
+                # This asof was already committed before the regular
                 # OnCalendar-window cycle even started -- an earlier
                 # off-schedule/manual/catch-up invocation must have written
                 # it (the regular cycle then observed NOOP_ALREADY_COMPLETE).
@@ -548,7 +594,7 @@ def build_report(
                 asof_to_persist_lag_steady_state.append(persist_lag)
 
             # Use the pre-matched (claimed, one-to-one) publisher cycle for
-            # this asof, if any -- see the descending-persisted_at matching
+            # this asof, if any -- see the descending-committed_at matching
             # pass above. Failed publisher cycles are never matched here --
             # they cannot contribute a latency observation (no PUBLISHED
             # event exists).
@@ -557,8 +603,8 @@ def build_report(
                 if pub is not None:
                     matched_success_count += 1
 
-                    pub_start_lag = (pub.start_ts - persisted_at).total_seconds()
-                    pub_published_lag = (pub.published_ts - persisted_at).total_seconds()
+                    pub_start_lag = (pub.start_ts - committed_at).total_seconds()
+                    pub_published_lag = (pub.published_ts - committed_at).total_seconds()
                     pub_runtime = (pub.finish_ts - pub.start_ts).total_seconds()
                     total = (pub.published_ts - asof).total_seconds()
 

@@ -223,8 +223,8 @@ producer-owned rule can be adopted:
 Item 1 above is now satisfied for the producer-owned leg:
 `docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md`
 records a 417-real-cycle, continuous, OBSERVED `asof_to_persist_lag`
-distribution (gurkDB, `2026-08-08`..`2026-09-01`; steady-state p50=1298.3s,
-p95=1383.2s, p99=1416.8s, max=1418.2s), replacing the three-cycle anecdote,
+distribution (gurkDB, `2026-08-08`..`2026-09-01`; steady-state p50=1298.0s,
+p95=1383.0s, p99=1416.2s, max=1418.0s), replacing the three-cycle anecdote,
 plus `writer_scheduling_lag` and `writer_runtime` distributions confirming
 runtime is trivial (p99=6s) and persist lag is dominated by the deliberate
 `:20:00` schedule offset.

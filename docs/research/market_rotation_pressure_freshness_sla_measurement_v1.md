@@ -40,14 +40,18 @@ directly on gurkDB (the canonical production writer host, per
 - the local systemd journal for `synth-market-rotation-pressure-writer.service`
   (per-invocation `STARTED`/`FINISHED` markers with `ts=`, `elapsed_sec=`,
   and the persisted `MARKET ROTATION as_of=` value -- all emitted by
-  `scripts/run_market_rotation_pressure_once.sh`, unchanged by this task);
+  `scripts/run_market_rotation_pressure_once.sh`, unchanged by this task).
+  The `asof -> persist` metric uses the **earliest post-commit `FINISHED`
+  marker per asof** across all invocations (`earliest_finish_per_asof()`),
+  not the raw DB `created_at` column -- see §2.2 for why;
 - the local systemd journal for `synth-market-candle-freshness-writer.service`
   (the rolling 1h-interval refresh's own `PHASE_FINISHED ... interval=1h`
   marker -- the deterministic "this refresh of the closed-1h candle universe
   is done" event);
 - `market_rotation_pressure_snapshot_v1.created_at` (a `DATETIME(6)
-  DEFAULT CURRENT_TIMESTAMP(6)` column -- the real DB commit time, not a
-  log-derived estimate) via direct DB query.
+  DEFAULT CURRENT_TIMESTAMP(6)` column, retained only as an informational
+  `header_insert_at_utc` diagnostic, not the SLA-authoritative persist
+  timestamp -- see §2.2) via direct DB query.
 
 For the publisher leg (§5), the measuring session had no network path to
 Odroid; a read-only `journalctl -u
@@ -84,6 +88,42 @@ which is unambiguous and unaffected by later backfills. This correction is
 recorded here so the method is auditable, per the same rigor Phase A applied
 to the "directly measured" wording issue.
 
+### 2.2 A measurement-accuracy correction: `created_at` is not commit time
+
+An earlier version of this measurement used
+`market_rotation_pressure_snapshot_v1.created_at` (`DATETIME(6) DEFAULT
+CURRENT_TIMESTAMP(6)`) directly as "the persist timestamp." A GitHub Codex
+review of this PR correctly flagged that `created_at` is stamped by the
+header row's own `INSERT IGNORE` in `write_pressure_snapshot()`
+(`src/research/run_market_rotation_pressure_v1.py`), which runs **before**
+the ~150-190 per-asset observation-row inserts, the header `UPDATE`, and
+the caller's `conn.commit()` (`main()`, same file) -- i.e. it is an
+insert-order timestamp, not the DB commit/queryable timestamp §4 requires,
+and using it could understate true persist lag.
+
+The harness (`earliest_finish_per_asof()`) now instead uses the **earliest
+writer-log `FINISHED ... ts=` marker** across all invocations for a given
+asof. This is provably post-commit: `write_pressure_snapshot()` always
+executes its full idempotent `INSERT IGNORE`/`UPDATE` path even on a
+`NOOP_ALREADY_COMPLETE` rerun, and `conn.commit()` (in `main()`) runs
+before `print_report()`, before process exit, and before the shell
+wrapper's own `FINISHED ... ts=` log line -- so that marker is a valid
+upper bound on commit time for whichever invocation actually wrote the
+row. Taking the *earliest* `FINISHED` across all invocations for an asof
+(not just the "regular" OnCalendar-window one) correctly picks up an
+earlier off-schedule/manual/catch-up invocation when one actually
+persisted the data first (§4.2). The raw DB `created_at` is retained in
+the report only as an informational `header_insert_at_utc` diagnostic
+field, never as the SLA-authoritative value.
+
+In practice the correction changed every percentile in §4 by well under
+1 second (writer total runtime is only 4-9s, so the gap between
+header-insert and commit+process-exit is trivial) -- the qualitative
+conclusion is unchanged, but the metric is now accurately described. A
+focused regression test
+(`test_earliest_finish_per_asof_uses_min_finish_not_regular_cycle`) locks
+in the off-schedule-invocation behavior.
+
 ## 3. Configured schedule facts (verified, not measured)
 
 ```text
@@ -106,8 +146,8 @@ All values in seconds unless noted. Full precision in the raw JSON artifact
 | source_completion_lag (candle-freshness 1h cycle finish - asof) | 417 | 218.0 | 258.0 | 273.0 | 281.6 | 1174.2 | 39874.0 |
 | writer_scheduling_lag (writer start - `:20:00`) | 417 | 0.0 | 93.0 | 178.0 | 178.0 | 212.0 | 213.0 |
 | writer_runtime (writer start -> finish) | 417 | 4.0 | 5.0 | 5.0 | 6.0 | 6.0 | 9.0 |
-| asof_to_persist_lag (DB `created_at` - asof), raw | 417 | 263.8 | 1297.9 | 1382.8 | 1383.2 | 1416.7 | 1418.2 |
-| asof_to_persist_lag_steady_state (raw minus 3 off-schedule completions, §4.2) | 414 | 1205.6 | 1298.3 | 1382.8 | 1383.2 | 1416.8 | 1418.2 |
+| asof_to_persist_lag (earliest post-commit `FINISHED` - asof, §2.2), raw | 417 | 263.0 | 1298.0 | 1382.0 | 1383.0 | 1416.0 | 1418.0 |
+| asof_to_persist_lag_steady_state (raw minus 3 off-schedule completions, §4.2) | 414 | 1205.0 | 1298.0 | 1382.0 | 1383.0 | 1416.2 | 1418.0 |
 
 ### 4.1 Reading these numbers
 
@@ -116,8 +156,8 @@ All values in seconds unless noted. Full precision in the raw JSON artifact
   417 real cycles; actual runtime is an order of magnitude smaller and very
   tight. Runtime variance is not a meaningful driver of persist lag.
 - **`asof_to_persist_lag` is dominated by the deliberate `:20:00` schedule
-  offset**, not by runtime or upstream contention: p50=1297.9s (~21.6 min),
-  p99=1416.7s (~23.6 min), max=1418.2s (~23.6 min). The distribution is
+  offset**, not by runtime or upstream contention: p50=1298.0s (~21.6 min),
+  p99=1416.0s (~23.6 min), max=1418.0s (~23.6 min). The distribution is
   tight (p50 to max spans only ~2 minutes), consistent with
   `scheduled_start (:20:00) + writer_scheduling_lag (0-213s, itself bounded
   by RandomizedDelaySec=180 + ~30s dispatch jitter) + writer_runtime
@@ -139,17 +179,20 @@ All values in seconds unless noted. Full precision in the raw JSON artifact
 
 3 of 417 hours (`2026-08-08T13:00Z`, `2026-08-15T06:00Z`,
 `2026-08-23T17:00Z`) show `asof_to_persist_lag` well below the ~21.6-minute
-median (824.7s / 263.8s / 434.0s respectively) because the DB row's
-`created_at` predates that hour's regular `:20:00`-window writer invocation
--- an earlier off-schedule/manual/catch-up run already persisted the data,
-and the regular cycle then observed `NOOP_ALREADY_COMPLETE`
+median (824.0s / 263.0s / 434.0s respectively) because the earliest
+post-commit `FINISHED` marker for that hour comes from an invocation that
+started before the regular `:20:00`-window cycle -- an earlier
+off-schedule/manual/catch-up run already persisted the data, and the
+regular cycle then observed `NOOP_ALREADY_COMPLETE`
 (`scripts/run_market_rotation_pressure_once.sh`'s existing idempotency
-behavior, unchanged). These are real, correctly-measured events (the data
+behavior, unchanged; still executes the full idempotent write path and
+commits, so its own `FINISHED` marker remains valid evidence too, just not
+the earliest one). These are real, correctly-measured events (the data
 genuinely was available that early on those 3 hours), not measurement
 error; they are called out and excluded only from the `_steady_state` row
 because they do not represent the unattended, timer-only cadence a
 freshness rule would need to bound. The raw row already includes them and
-is barely different (p99 1416.7s vs. 1416.8s), so this exclusion does not
+is barely different (p99 1416.0s vs. 1416.2s), so this exclusion does not
 change the practical conclusion.
 
 ## 5. Publisher leg — partially observed (34h window only)
@@ -200,15 +243,15 @@ independently published and is correctly left unmatched, not force-matched.
 
 | metric (steady_state, n=15) | min | p50 | p90 | p95 | p99 | max |
 |---|---|---|---|---|---|---|
-| persist_to_publisher_start_lag_sec | 748.7 | 914.3 | 990.9 | 1011.4 | 1038.9 | 1045.8 |
-| persist_to_published_lag_sec | 749.7 | 915.3 | 991.9 | 1012.4 | 1039.9 | 1046.8 |
+| persist_to_publisher_start_lag_sec | 749.0 | 915.0 | 991.4 | 1011.7 | 1039.1 | 1046.0 |
+| persist_to_published_lag_sec | 750.0 | 916.0 | 992.4 | 1012.7 | 1040.1 | 1047.0 |
 | publisher_runtime_sec | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 | 1.0 |
 | total_asof_to_published_lag_sec | 2123.0 | 2201.0 | 2229.6 | 2242.3 | 2265.3 | 2271.0 |
 
 | metric (recovery, n=2 -- outage-affected hours only) | min | p50 | max |
 |---|---|---|---|
-| persist_to_publisher_start_lag_sec | 1300.6 | 2049.0 | 2797.5 |
-| persist_to_published_lag_sec | 1301.6 | 2050.0 | 2798.5 |
+| persist_to_publisher_start_lag_sec | 1301.0 | 2049.5 | 2798.0 |
+| persist_to_published_lag_sec | 1302.0 | 2050.5 | 2799.0 |
 | publisher_runtime_sec | 1.0 | 1.0 | 1.0 |
 | total_asof_to_published_lag_sec | 2559.0 | 3298.0 | 4037.0 |
 
@@ -253,12 +296,12 @@ future explicit owner decision; it does not adopt a threshold.
 ```text
 producer-owned, fully OBSERVED and MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION
 (n=417, gurkDB, continuous, 2026-08-08..2026-09-01):
-  asof_to_persist_lag_steady_state:  p50=1298.3s  p95=1383.2s  p99=1416.8s  max=1418.2s
+  asof_to_persist_lag_steady_state:  p50=1298.0s  p95=1383.0s  p99=1416.2s  max=1418.0s
 
 publisher leg, OBSERVED but MEASUREMENT_INSUFFICIENT (n=15 steady-state /
 n=2 recovery, ~33h window only -- see §5.3, not directly comparable to the
 417-sample writer leg):
-  persist_to_published_lag_steady_state:      p50=915.3s   p99=1039.9s  max=1046.8s
+  persist_to_published_lag_steady_state:      p50=916.0s   p99=1040.1s  max=1047.0s
   total_asof_to_published_lag_steady_state:   p50=2201.0s  p99=2265.3s  max=2271.0s
 
 CONFIGURED-only facts (schedule, not a distribution):

@@ -6,8 +6,10 @@ from src.research.measure_rotation_pressure_freshness_sla_v1 import (
     ASOF_RE,
     FINISHED_RE,
     STARTED_RE,
+    WriterCycle,
     _parse_ts,
     _pctile,
+    earliest_finish_per_asof,
     parse_publisher_journal_export,
     source_completion_for_asof,
     summarize,
@@ -112,3 +114,39 @@ def test_parse_publisher_journal_export_detects_network_outage_failure() -> None
     assert len(boots) == 1
     assert all(f.error_reason for f in failures)
     assert failures[0].start_ts == datetime(2026, 9, 1, 7, 47, 38, tzinfo=UTC)
+
+
+def test_earliest_finish_per_asof_uses_min_finish_not_regular_cycle() -> None:
+    # Regression test for a Codex review finding: DB created_at is stamped
+    # at header-row INSERT time, before the observation-row inserts and
+    # conn.commit(), so it understates true persist lag. The authoritative
+    # metric must instead be the earliest post-commit writer FINISHED
+    # marker across ALL invocations for that asof -- including an earlier
+    # off-schedule/manual/catch-up invocation that actually wrote the row
+    # first, not just the regular OnCalendar-window cycle.
+    asof = datetime(2026, 9, 1, 14, 0, 0, tzinfo=UTC)
+    off_schedule_cycle = WriterCycle(
+        asof=asof,
+        start_ts=datetime(2026, 9, 1, 14, 5, 0, tzinfo=UTC),
+        finish_ts=datetime(2026, 9, 1, 14, 5, 5, tzinfo=UTC),
+    )
+    regular_cycle = WriterCycle(
+        asof=asof,
+        start_ts=datetime(2026, 9, 1, 14, 20, 30, tzinfo=UTC),
+        finish_ts=datetime(2026, 9, 1, 14, 20, 35, tzinfo=UTC),
+    )
+    by_asof = {asof: [regular_cycle, off_schedule_cycle]}
+
+    result = earliest_finish_per_asof(by_asof)
+
+    assert result[asof] == datetime(2026, 9, 1, 14, 5, 5, tzinfo=UTC)
+
+
+def test_earliest_finish_per_asof_skips_cycles_missing_finish_ts() -> None:
+    asof = datetime(2026, 9, 1, 14, 0, 0, tzinfo=UTC)
+    incomplete = WriterCycle(asof=asof, start_ts=datetime(2026, 9, 1, 14, 20, 0, tzinfo=UTC))
+    by_asof = {asof: [incomplete]}
+
+    result = earliest_finish_per_asof(by_asof)
+
+    assert asof not in result
