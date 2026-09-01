@@ -56,12 +56,23 @@ copying the manifest/integrity pair to another directory resolves to the
 exact same registry entry and is denied.
 
 Immediately after integrity verification succeeds and immediately before the
-first holdout replay, the runner writes a `RUNNING` registry entry (the
-authoritative marker) and then the matching local `RUNNING` checkpoint. Once
-those exist, a fresh (non-`--resume`) invocation always fails closed for
-**any** registry state -- `RUNNING`, `INTERRUPTED`, `FAILED`, or `FINISHED` --
-including from a different directory holding a copy of the same manifest and
-integrity artifact. The local checkpoint schema binds:
+first holdout replay, the runner creates the `RUNNING` registry entry (the
+authoritative marker) with a single **atomic exclusive create** -- write a
+temp file, fsync it durable, then `os.link()` it into place at the fingerprint
+path. `os.link()` either creates the target or raises `FileExistsError`
+atomically at the filesystem level, so there is no check-then-write window: of
+any number of fresh runners racing on the same fingerprint (a concurrent
+invocation, or two runners started against a copied manifest/integrity pair),
+exactly one call ever creates the entry. Every other caller gets told it lost
+and creates or mutates nothing at all -- no local checkpoint, no partial file,
+no replay. Only the winner goes on to create the matching local `RUNNING`
+checkpoint and begin replay. This is the same exclusive-create idiom already
+used by `persist_or_reuse_manifest` for the frozen split manifest.
+
+Once a registry entry exists, a fresh (non-`--resume`) invocation always fails
+closed for **any** registry state -- `RUNNING`, `INTERRUPTED`, `FAILED`, or
+`FINISHED` -- including from a different directory holding a copy of the same
+manifest and integrity artifact. The local checkpoint schema binds:
 
 ```text
 runner, runner_version, venue, candidate_id, manifest_sha256,

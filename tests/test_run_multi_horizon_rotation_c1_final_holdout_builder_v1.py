@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import signal
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +18,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     RunnerInterrupted,
     canonical_run_dir,
     checkpoint_path,
+    create_registry_entry_exclusive,
     load_checkpoint,
     load_manifest,
     load_registry_entry,
@@ -216,6 +219,32 @@ def test_registry_entry_round_trip_and_terminal_marking(tmp_path: Path) -> None:
 
 def registry_entry_path_for_test(root: Path, key: str) -> Path:
     return root / f"{key}.json"
+
+
+def test_create_registry_entry_exclusive_is_atomic_under_concurrency(tmp_path: Path) -> None:
+    """Low-level proof that the primitive itself -- not just main()'s use of it --
+    has no check-then-create race window: many threads racing to create the same
+    fingerprint entry must have exactly one winner."""
+    path = tmp_path / "race.json"
+    identity = dict(
+        venue="bitvavo",
+        manifest_sha256="m",
+        source_integrity_composite_sha256="i",
+        terminal_state="RUNNING",
+        opened_run_dir="/race",
+    )
+
+    def attempt(_: int) -> bool:
+        return create_registry_entry_exclusive(path, **identity)
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        results = list(executor.map(attempt, range(16)))
+
+    assert results.count(True) == 1
+    assert results.count(False) == 15
+    entry = load_registry_entry(path)
+    assert entry is not None
+    assert entry["terminal_state"] == "RUNNING"
 
 
 # --- Fresh-run one-shot denial (local checkpoint layer) ------------------
@@ -574,6 +603,79 @@ def test_byte_identical_manifest_copied_to_second_directory_cannot_reopen_holdou
     assert not (dir_b / "final_holdout_c1_rows_v1.jsonl").exists()
     assert not checkpoint_path(dir_b).exists()
     assert not (dir_b / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+
+
+def test_concurrent_fresh_runs_against_copied_manifest_exactly_one_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: registry creation was a check-then-write
+    sequence, so two concurrent fresh runs against byte-identical copied manifest
+    and source-integrity inputs could both pass the absence check and both open
+    the holdout. Two real threads are raced through a synchronization barrier
+    placed right before the exclusive-create call so both reach it together;
+    exactly one may win, the other must perform zero replay/outcome construction
+    and create zero local state."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path_a, integrity_path_a = _write_run_files(tmp_path, manifest=manifest, subdir="dir_a")
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_b.mkdir()
+    manifest_path_b = dir_b / "split_manifest_v1.json"
+    integrity_path_b = dir_b / "source_integrity_v1.json"
+    manifest_path_b.write_bytes(manifest_path_a.read_bytes())
+    integrity_path_b.write_bytes(integrity_path_a.read_bytes())
+
+    registry_root = tmp_path / "_shared_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    barrier = threading.Barrier(2, timeout=5)
+    real_build_integrity_payload = module.build_integrity_payload
+
+    def synced_build_integrity_payload(conn, *, venue, split_manifest):
+        result = real_build_integrity_payload(conn, venue=venue, split_manifest=split_manifest)
+        barrier.wait()  # both threads reach the exclusive-create call together
+        return result
+
+    monkeypatch.setattr(module, "build_integrity_payload", synced_build_integrity_payload)
+    # signal.signal() only works on the main thread; main() is driven from two
+    # worker threads here, so its (unrelated to this race) handler installation
+    # is stubbed out for this test only.
+    monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})
+
+    def run(manifest_path: Path, integrity_path: Path) -> int:
+        return module.main(
+            ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(run, manifest_path_a, integrity_path_a)
+        future_b = executor.submit(run, manifest_path_b, integrity_path_b)
+        exit_a = future_a.result()
+        exit_b = future_b.result()
+
+    assert {exit_a, exit_b} == {0, 1}, f"expected exactly one winner: exit_a={exit_a} exit_b={exit_b}"
+
+    winner_dir, loser_dir = (dir_a, dir_b) if exit_a == 0 else (dir_b, dir_a)
+
+    # Exactly one authoritative registry entry, and it is FINISHED (the winner
+    # ran replay to completion; the loser never touched it).
+    entries = list(registry_root.iterdir())
+    assert len(entries) == 1
+    assert json.loads(entries[0].read_text(encoding="utf-8"))["terminal_state"] == "FINISHED"
+
+    # Winner performed the full replay and published exactly one canonical artifact.
+    assert (winner_dir / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert (winner_dir / "final_holdout_c1_summary_v1.json").exists()
+    assert load_checkpoint(checkpoint_path(winner_dir))["terminal_state"] == "FINISHED"
+
+    # Loser performed zero holdout replay/outcome construction: no local checkpoint,
+    # no partial, no artifact, no summary were ever created for it.
+    assert not (loser_dir / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not (loser_dir / "final_holdout_c1_summary_v1.json").exists()
+    assert not checkpoint_path(loser_dir).exists()
+    assert not (loser_dir / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
 
 
 def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

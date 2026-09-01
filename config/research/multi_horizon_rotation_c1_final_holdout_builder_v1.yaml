@@ -25,6 +25,9 @@ authoritative_opened_state_registry:
   key_is_path_independent: true
   created_after: integrity_verification_success
   created_before: first_holdout_replay
+  creation_primitive: atomic_exclusive_create_tempfile_fsync_then_os_link
+  check_then_write_sequence: false
+  concurrent_fresh_run_winner_count: 1
   fresh_run_denied_registry_states: [RUNNING, INTERRUPTED, FAILED, FINISHED]
   resume_allowed_registry_states: [RUNNING, INTERRUPTED]
   resume_denied_registry_states: [FAILED, FINISHED]

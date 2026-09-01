@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import signal
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,7 +67,6 @@ PHASE = "final_holdout"
 MANIFEST_BASENAME = "split_manifest_v1.json"
 INTEGRITY_BASENAME = "source_integrity_v1.json"
 RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
-TERMINAL_STATES_DENYING_FRESH = ("RUNNING", "INTERRUPTED", "FAILED", "FINISHED")
 
 # Trusted, non-caller-selectable authoritative opened-state registry. This is
 # NOT the canonical run directory (which is caller-supplied via --split-manifest)
@@ -274,16 +274,15 @@ def load_registry_entry(path: Path) -> dict[str, Any] | None:
     return raw
 
 
-def write_registry_entry(
-    path: Path,
+def _registry_payload(
     *,
     venue: str,
     manifest_sha256: str,
     source_integrity_composite_sha256: str,
     terminal_state: str,
     opened_run_dir: str,
-) -> None:
-    payload = {
+) -> dict[str, object]:
+    return {
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
         "venue": venue,
@@ -297,7 +296,84 @@ def write_registry_entry(
         "opened_run_dir": opened_run_dir,
         "updated_ts_utc": json_default(datetime.now(UTC)),
     }
-    write_json_atomic(path, payload)
+
+
+def write_registry_entry(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+) -> None:
+    """Create-or-overwrite. Only safe for transitions on an entry this process
+    already knows it owns (terminal-state updates); never used for the initial
+    fresh-run open, which must use ``create_registry_entry_exclusive`` instead."""
+    write_json_atomic(
+        path,
+        _registry_payload(
+            venue=venue,
+            manifest_sha256=manifest_sha256,
+            source_integrity_composite_sha256=source_integrity_composite_sha256,
+            terminal_state=terminal_state,
+            opened_run_dir=opened_run_dir,
+        ),
+    )
+
+
+def create_registry_entry_exclusive(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+) -> bool:
+    """Atomic exclusive-create: write a temp file, fsync it durable, then link it
+    into place. ``os.link`` either creates the target or raises ``FileExistsError``
+    atomically at the filesystem level -- there is no check-then-create window, so
+    two concurrent callers racing on the same fingerprint can never both "win".
+
+    Returns True if this call created the entry, False if another entry (from any
+    concurrent or prior caller) already occupies this exact fingerprint -- in which
+    case nothing is written or mutated here at all.
+    """
+    payload = _registry_payload(
+        venue=venue,
+        manifest_sha256=manifest_sha256,
+        source_integrity_composite_sha256=source_integrity_composite_sha256,
+        terminal_state=terminal_state,
+        opened_run_dir=opened_run_dir,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path = Path(temp_name)
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
 
 
 def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[str, str]) -> None:
@@ -477,7 +553,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"asofs_completed={asofs_completed} rows={row_count} partial_bytes={checkpoint['partial_bytes']}"
             )
         else:
-            # Authoritative fingerprint-keyed check: identical manifest + source
+            # Authoritative fingerprint-keyed gate: identical manifest + source
             # integrity content resolves to the same registry entry no matter what
             # directory the caller supplied it from, so a byte-identical copy in a
             # second directory cannot open a second checkpoint namespace.
@@ -496,20 +572,15 @@ def main(argv: list[str] | None = None) -> int:
                 phase=PHASE,
             )
             registry_path = registry_entry_path(registry_key)
-            existing_registry_entry = load_registry_entry(registry_path)
-            if existing_registry_entry is not None and existing_registry_entry.get("terminal_state") in TERMINAL_STATES_DENYING_FRESH:
-                raise ValueError(
-                    "final holdout is already opened for this frozen manifest/source-integrity "
-                    "fingerprint (registry entry exists); runner is one-shot and refuses to reopen "
-                    "it, including from a different directory holding a copy of the same manifest "
-                    "and integrity artifact"
-                )
 
             # Freeze the one-shot holdout-open state -- registry first (authoritative),
             # then the local checkpoint -- immediately after integrity verification
-            # succeeds and immediately before the first holdout replay. From here any
-            # ordinary failure must permanently lock this fingerprint as FAILED.
-            write_registry_entry(
+            # succeeds and immediately before the first holdout replay. This is a
+            # single atomic exclusive-create, not a check-then-write sequence: two
+            # concurrent fresh runners racing on the same fingerprint (e.g. a copied
+            # manifest/integrity pair) can never both win. The loser gets False back
+            # and creates or mutates nothing -- no local checkpoint, no replay.
+            won_registry_creation = create_registry_entry_exclusive(
                 registry_path,
                 venue=args.venue,
                 manifest_sha256=manifest_sha,
@@ -517,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
                 terminal_state="RUNNING",
                 opened_run_dir=str(canonical_dir),
             )
+            if not won_registry_creation:
+                raise ValueError(
+                    "final holdout is already opened for this frozen manifest/source-integrity "
+                    "fingerprint (registry entry exists); runner is one-shot and refuses to reopen "
+                    "it, including from a different directory holding a copy of the same manifest "
+                    "and integrity artifact, and including a concurrent fresh invocation racing on "
+                    "the same fingerprint"
+                )
+
+            # From here the run is "opened": any ordinary failure must permanently
+            # lock this fingerprint as FAILED. A lost race above never reaches here.
             partial_path.touch(exist_ok=False)
             write_checkpoint(
                 cp_path,
