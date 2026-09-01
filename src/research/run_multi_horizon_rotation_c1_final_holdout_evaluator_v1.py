@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,10 @@ RUNNER_NAME = "run_multi_horizon_rotation_c1_final_holdout_evaluator_v1"
 RUNNER_VERSION = "1.0.0"
 CANDIDATE_ID = "C1"
 INPUT_BASENAME = "final_holdout_c1_rows_v1.jsonl"
+
+class RunnerInterrupted(Exception):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
 
 
 def emit(message: str) -> None:
@@ -87,9 +93,21 @@ def evaluate_streaming(path: Path) -> tuple[dict[str, object], int]:
     return c1_holdout_summary(accumulator), row_count
 
 
+def install_interrupt_handlers() -> dict[int, Any]:
+    def handle_interrupt(signum: int, _frame: Any) -> None:
+        raise RunnerInterrupted(signum)
+
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    for signum in previous:
+        signal.signal(signum, handle_interrupt)
+    return previous
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.perf_counter()
+    previous_handlers = install_interrupt_handlers()
+    temporary_output_path: Path | None = None
     emit(
         f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} phase=final_holdout "
         "candidate=C1 workers=1"
@@ -124,19 +142,36 @@ def main(argv: list[str] | None = None) -> int:
         }
         output_path = Path(args.output_json)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary_output_path = output_path.with_suffix(output_path.suffix + ".partial")
+        with temporary_output_path.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(output, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_output_path.replace(output_path)
+        temporary_output_path = None
         emit(f"OUTPUT_WRITTEN path={output_path} rows={row_count}")
         emit(
             f"FINISHED runner={RUNNER_NAME} result=PASS phase=final_holdout candidate=C1 "
             f"rows={row_count} elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 0
+    except RunnerInterrupted as exc:
+        if temporary_output_path is not None:
+            temporary_output_path.unlink(missing_ok=True)
+        emit(
+            f"INTERRUPTED runner={RUNNER_NAME} signal={signal.Signals(exc.signum).name} "
+            f"elapsed_s={time.perf_counter() - started:.3f}"
+        )
+        return 128 + exc.signum
     except Exception as exc:
         emit(
             f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
             f"elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 1
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":

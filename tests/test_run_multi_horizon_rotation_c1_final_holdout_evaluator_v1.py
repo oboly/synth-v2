@@ -1,10 +1,12 @@
 import json
+import signal
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from src.research.multi_horizon_rotation_validation_streaming_v1 import StreamingValidationAccumulator
 from src.research.multi_horizon_rotation_validation_v1 import ValidationRow
+import src.research.run_multi_horizon_rotation_c1_final_holdout_evaluator_v1 as runner
 from src.research.run_multi_horizon_rotation_c1_final_holdout_evaluator_v1 import INPUT_BASENAME, evaluate_streaming, main
 
 
@@ -54,3 +56,21 @@ def test_runner_safety_output(tmp_path):
     assert main(["--input-jsonl", str(path), "--output-json", str(output)]) == 0
     assert json.loads(output.read_text())["safety"]["database_reads"] == 0
     assert json.loads(output.read_text())["summary"]["candidate_id"] == "C1"
+
+
+@pytest.mark.parametrize(("signum", "expected_exit"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
+def test_runner_handles_interrupt_without_completed_output(tmp_path, capsys, monkeypatch, signum, expected_exit):
+    path = tmp_path / INPUT_BASENAME
+    output = tmp_path / "out.json"
+    write(path, [row(0)])
+    previous = signal.getsignal(signum)
+    monkeypatch.setattr(runner, "evaluate_streaming", lambda _path: signal.raise_signal(signum))
+    assert main(["--input-jsonl", str(path), "--output-json", str(output)]) == expected_exit
+    stdout = capsys.readouterr().out
+    terminal = [line for line in stdout.splitlines() if line.startswith("INTERRUPTED ")]
+    assert len(terminal) == 1
+    assert signal.Signals(signum).name in terminal[0]
+    assert "FINISHED runner=" not in stdout
+    assert not output.exists()
+    assert not output.with_suffix(output.suffix + ".partial").exists()
+    assert signal.getsignal(signum) is previous
