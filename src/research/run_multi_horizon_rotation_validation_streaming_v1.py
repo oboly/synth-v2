@@ -133,6 +133,11 @@ def main(argv: list[str] | None = None) -> int:
         f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} mode=research-artifact-streaming "
         f"workers=1 phase={args.phase} final_holdout_access=DENY"
     )
+    emit(
+        "SAFETY research_only=1 market_only=1 database_reads=0 database_writes=0 account_awareness=0 "
+        "decision_gate=none execution_planner=none executor=none broker_private_calls=0 broker_writes=0 "
+        "order_submission=0 live_orders=0 final_holdout_access=DENY"
+    )
     try:
         manifest_started = time.perf_counter()
         emit("PHASE_STARTED name=load_split_manifest")
@@ -161,17 +166,24 @@ def main(argv: list[str] | None = None) -> int:
             "split_manifest": manifest,
             "summary": summary,
             "safety": {
+                "research_only": 1,
+                "market_only": 1,
                 "database_reads": 0,
                 "database_writes": 0,
                 "account_awareness": 0,
+                "decision_gate": "none",
+                "execution_planner": "none",
+                "executor": "none",
                 "broker_private_calls": 0,
                 "broker_writes": 0,
                 "order_submission": 0,
+                "live_orders": 0,
             },
         }
         output_path = Path(args.output_json)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        emit(f"OUTPUT_WRITTEN path={output_path} rows={row_count}")
         emit(
             f"FINISHED runner={RUNNER_NAME} result=PASS phase={args.phase} rows={row_count} "
             f"final_holdout_access=DENY elapsed_s={time.perf_counter() - started:.3f}"
