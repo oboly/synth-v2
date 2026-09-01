@@ -18,7 +18,9 @@ market-only producer / selection
 -> shared execution handoff / reconciliation
 -> BUY fill / position truth
 -> canonical automatic-exit policy/profile resolution
--> immutable SELL plan
+-> automatic-exit candidate
+-> decision_gate exit permission
+-> execution_planner immutable SELL plan
 -> shared execution handoff / reconciliation
 -> SELL fill
 -> refreshed COMPLETE account-state bundle
