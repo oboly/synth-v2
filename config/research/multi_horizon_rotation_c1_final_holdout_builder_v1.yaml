@@ -1,0 +1,44 @@
+registry_name: multi_horizon_rotation_c1_final_holdout_builder_v1
+registry_version: 1.0.0
+issue: 593
+research_only: true
+
+phase:
+  name: final_holdout
+  split_source: split_manifest_v1.json
+  candidate_allowlist: [C1]
+  c2_access: DENY
+  c3_access: DENY
+
+integrity_gate:
+  required: true
+  artifact: source_integrity_v1.json
+  mode: recompute_then_verify_existing
+  verification_must_complete_before_candidate_replay: true
+  drift_policy: fail_closed
+  refreeze_on_drift: false
+
+candidate:
+  implementation: src/research/multi_horizon_rotation_replay_v1.py
+  candidate_id: C1
+  formula_changes: false
+  sign_flip: false
+  threshold_changes: false
+
+output:
+  rows: final_holdout_c1_rows_v1.jsonl
+  summary: final_holdout_c1_summary_v1.json
+  overwrite: DENY
+  non_c1_rows: DENY
+
+safety:
+  database_reads: 1
+  database_writes: 0
+  account_awareness: 0
+  decision_gate: none
+  execution_planner: none
+  executor: none
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0
