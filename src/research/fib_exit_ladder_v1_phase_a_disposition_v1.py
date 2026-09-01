@@ -30,6 +30,7 @@ promotion evidence requirement
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
@@ -48,6 +49,14 @@ OUTCOME_ORDER = (
 )
 
 REASON_BASELINE_REPRODUCTION_FAILED = "BASELINE_REPRODUCTION_FAILED"
+
+# The five assets the frozen 2021 Fib Exit Ladder V1 findings actually
+# bucketed (docs/research/fib_exit_ladder_v1_findings.md). HBAR/SUI have no
+# original bucket and are out of scope for an overall Phase A disposition
+# per the contract's § 5/§ 9 (Asset universe handling / Missing-data
+# handling); an overall disposition may only be computed once every one of
+# these five is represented exactly once.
+REQUIRED_ASSET_UNIVERSE = ("LINK", "XLM", "SOL", "XRP", "HOT")
 
 # The frozen Fib Exit Ladder V1 anchor detector (`find_anchor_set` in
 # run_fib_exit_ladder_backtest_v1.py) selects among candidate anchors using
@@ -155,36 +164,87 @@ def classify_asset_disposition(
     all_ok_windows_alpha_positive = alpha_positive_ok_window_count == validation_windows_ok
     no_ok_windows_alpha_positive = alpha_positive_ok_window_count == 0
 
-    if all_ok_windows_alpha_positive and bucket_rank_agreement_all_ok_windows is True:
-        return AssetDisposition(symbol, OUTCOME_VALIDATED, None)
+    if all_ok_windows_alpha_positive:
+        if bucket_rank_agreement_all_ok_windows is True:
+            return AssetDisposition(symbol, OUTCOME_VALIDATED, None)
+        if bucket_rank_agreement_all_ok_windows is None:
+            # Every OK window is alpha-positive, but whether the originally
+            # assigned family remains the best-scoring one was never
+            # evaluated. This is missing evidence, not a known disagreement
+            # (that would be explicit False) — it must never be inferred as
+            # REVISED, and INSUFFICIENT_DATA (missing/unevaluable evidence)
+            # is preferred over REJECTED (a contradictory finding) here.
+            return AssetDisposition(symbol, OUTCOME_INSUFFICIENT_DATA, None)
+        # bucket_rank_agreement_all_ok_windows is False here: falls through
+        # to the sign-agreement routing below, same as the mixed-alpha case.
 
-    if no_ok_windows_alpha_positive:
+    elif no_ok_windows_alpha_positive:
         # alpha_vs_hold_pct <= 0 in every OK validation window: the ladder
         # never beat holding outside the original window. Reproduction
         # succeeded (rules 0/1 above did not fire), so this is a REJECTED
         # verdict from the methodology itself, distinct from
-        # BASELINE_REPRODUCTION_FAILED.
+        # BASELINE_REPRODUCTION_FAILED. This does not depend on rank/sign
+        # agreement, so it is unaffected by either being None.
         return AssetDisposition(symbol, OUTCOME_REJECTED, None)
 
     # Mixed OK-window set (>=1 window positive and >=1 window non-positive),
-    # or every OK window positive but rank agreement fails in >=1 of them:
-    # not defensible as-is (cannot be VALIDATED), but the ladder still beats
-    # hold often enough that it is not a clean REJECTED either. Route on
-    # majority sign agreement across the three windows (original + both
-    # validation windows), per contract rule 4.
+    # or every OK window positive but rank agreement is known to fail in
+    # >=1 of them: not defensible as-is (cannot be VALIDATED), but the
+    # ladder still beats hold often enough that it is not automatically a
+    # clean REJECTED either. Route on majority sign agreement across the
+    # three windows (original + both validation windows), per contract
+    # rule 4/5. `bucket_sign_agreement is None` is missing evidence, not a
+    # known disagreement, and must never be inferred as REVISED (True) or
+    # silently treated as REJECTED (False) — it fails closed to
+    # INSUFFICIENT_DATA instead.
+    if bucket_sign_agreement is True:
+        return AssetDisposition(symbol, OUTCOME_REVISED, None)
     if bucket_sign_agreement is False:
         return AssetDisposition(symbol, OUTCOME_REJECTED, None)
-
-    return AssetDisposition(symbol, OUTCOME_REVISED, None)
+    return AssetDisposition(symbol, OUTCOME_INSUFFICIENT_DATA, None)
 
 
 def overall_disposition(asset_dispositions: list[AssetDisposition]) -> str:
-    """Overall Phase A outcome is the least favorable per-asset outcome."""
-    if not asset_dispositions:
-        return OUTCOME_INSUFFICIENT_DATA
+    """Overall Phase A outcome is the least favorable outcome across the
+    complete frozen five-asset universe (`REQUIRED_ASSET_UNIVERSE`:
+    LINK, XLM, SOL, XRP, HOT).
+
+    Fails closed:
+    - A duplicate symbol, or any asset outside the required five, raises
+      `ValueError` — an ambiguous or unexpected identity must never be
+      silently included in (or excluded from) the outcome, in either
+      direction, since that could make an otherwise-unfavorable result look
+      more favorable (e.g. dropping a REJECTED duplicate) or vice versa.
+    - A missing required asset is treated exactly as if that asset had
+      independently returned INSUFFICIENT_DATA: it can never be omitted to
+      obtain a more favorable overall result than the evidence actually
+      supports, so an incomplete universe can never yield VALIDATED (or
+      anything more favorable than INSUFFICIENT_DATA).
+    """
+    symbols = [disposition.symbol for disposition in asset_dispositions]
+
+    counts = Counter(symbols)
+    duplicated = sorted(symbol for symbol, count in counts.items() if count > 1)
+    if duplicated:
+        raise ValueError(
+            f"overall_disposition received duplicate asset entries: {duplicated}; "
+            "each asset must appear at most once."
+        )
+
+    unexpected = sorted(set(symbols) - set(REQUIRED_ASSET_UNIVERSE))
+    if unexpected:
+        raise ValueError(
+            "overall_disposition received asset(s) outside the frozen "
+            f"five-asset universe {REQUIRED_ASSET_UNIVERSE}: {unexpected}."
+        )
+
+    missing = sorted(set(REQUIRED_ASSET_UNIVERSE) - set(symbols))
+    effective_dispositions = list(asset_dispositions) + [
+        AssetDisposition(symbol, OUTCOME_INSUFFICIENT_DATA, None) for symbol in missing
+    ]
 
     worst_index = min(
-        OUTCOME_ORDER.index(disposition.outcome) for disposition in asset_dispositions
+        OUTCOME_ORDER.index(disposition.outcome) for disposition in effective_dispositions
     )
     return OUTCOME_ORDER[worst_index]
 

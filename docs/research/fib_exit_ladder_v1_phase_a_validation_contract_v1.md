@@ -217,7 +217,8 @@ Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), acro
   - at least 1 of the 2 validation windows yields status=OK with a detected anchor.
   - in every validation window with status=OK: alpha_vs_hold_pct > 0 (ladder beats hold) AND
     the originally-assigned target family remains the best-total_return family among the 3 families
-    for that asset in that window (bucket_rank_agreement holds).
+    for that asset in that window (bucket_rank_agreement holds, i.e. is explicitly `True` — an
+    unevaluated/unknown rank-agreement input is not "holds").
 
 4. REVISED  requires:
   - rules 0-2 did not fire (baseline reproduced, >=1 validation window OK), AND
@@ -242,7 +243,15 @@ Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), acro
 
 Rules 0-5 are exhaustive and mutually exclusive over every reachable combination of baseline/validation outcomes: rule 0 covers a non-evaluable baseline, rule 1 covers an evaluable-but-unreproduced baseline (fail-closed, always REJECTED), rule 2 covers a reproduced baseline with no usable validation window, and rules 3-5 partition every remaining case (>=1 OK validation window with a reproduced baseline) by sign/rank agreement. No combination of baseline/validation outcomes is left without a defined disposition.
 
-The overall Phase A disposition is the least favorable of the five per-asset dispositions, using the ordering `REJECTED < REVISED < VALIDATED` for defensibility and treating any `INSUFFICIENT_DATA` asset as forcing an overall `INSUFFICIENT_DATA` unless the findings report explicitly narrows the claim to the subset of assets that did produce a result (allowed, but the narrowing itself must be stated, not silent). Any asset reaching rule 1 (`BASELINE_REPRODUCTION_FAILED`) forces the overall disposition to at least `REJECTED`, with the reason carried through explicitly, regardless of how other assets score.
+`bucket_rank_agreement_all_ok_windows` and `bucket_sign_agreement` are each tri-state (`True` / `False` / unknown). An unknown value at the point rule 3 or rule 4/5 needs it is missing/unevaluable evidence, not a known disagreement — it must never be inferred as satisfying rule 3 or rule 4 (i.e. never silently treated as `True`), and must not be silently treated as `False` either (which would produce a REJECTED that overstates confidence in a negative finding). Both cases fail closed to `INSUFFICIENT_DATA` instead: preferred over `REJECTED` because the defect is missing evidence, not a contradictory result.
+
+The overall Phase A disposition is the least favorable outcome across the complete, exact frozen five-asset universe (`LINK`, `XLM`, `SOL`, `XRP`, `HOT` — see § 5 Asset universe handling), using the ordering `REJECTED < REVISED < VALIDATED` for defensibility. `overall_disposition` may only be computed once every one of these five assets is represented exactly once:
+
+- A duplicate entry for the same asset, or an asset outside this five-asset universe (including `HBAR`/`SUI`, which have no original bucket per § 5/§ 9), is a malformed input and must not be silently included or excluded — a findings report or its tooling must fail closed (reject the input) rather than compute an overall result from it.
+- A missing required asset is treated exactly as if that asset had independently returned `INSUFFICIENT_DATA`: an incomplete universe can never yield an overall result more favorable than `INSUFFICIENT_DATA`, regardless of how favorably the present assets scored. This is the same principle already stated for an explicit per-asset `INSUFFICIENT_DATA`, extended to an asset that was never evaluated at all — omission must not be a way to obtain a better overall result than actually running the missing asset would.
+- Any asset reaching rule 1 (`BASELINE_REPRODUCTION_FAILED`) forces the overall disposition to at least `REJECTED`, with the reason carried through explicitly, regardless of how other assets score.
+
+`overall_disposition` in `src/research/fib_exit_ladder_v1_phase_a_disposition_v1.py` is the reference implementation of this exact universe check.
 
 If Phase A cannot execute the runners against real data at all (no DB access, no equivalent dataset), the disposition is `BLOCKED`, a distinct state from `INSUFFICIENT_DATA` (inability to run vs. the detector legitimately finding nothing).
 

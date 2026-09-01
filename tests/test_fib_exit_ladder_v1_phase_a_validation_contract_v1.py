@@ -242,7 +242,16 @@ def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> Non
     assert result.outcome != disposition.OUTCOME_VALIDATED
     assert result.outcome != disposition.OUTCOME_REVISED
 
-    overall = disposition.overall_disposition([result])
+    # overall_disposition requires the complete five-asset universe; pair
+    # this one REJECTED/BASELINE_REPRODUCTION_FAILED asset with the other
+    # four as VALIDATED to prove the failure forces overall REJECTED
+    # regardless of how favorably the rest score.
+    others = [
+        disposition.AssetDisposition(symbol, disposition.OUTCOME_VALIDATED, None)
+        for symbol in disposition.REQUIRED_ASSET_UNIVERSE
+        if symbol != result.symbol
+    ]
+    overall = disposition.overall_disposition([result] + others)
     assert overall == disposition.OUTCOME_REJECTED
 
 
@@ -322,6 +331,66 @@ def test_mixed_validation_window_alpha_is_not_validated() -> None:
     assert repeat == mixed
 
 
+def test_ambiguous_rank_agreement_never_yields_validated_or_revised() -> None:
+    """Every OK window alpha-positive, but bucket_rank_agreement_all_ok_windows
+    is None (unevaluated, not a known False disagreement): this is missing
+    evidence, so it must fail closed to INSUFFICIENT_DATA, never VALIDATED
+    (rank agreement was never confirmed True) and never REVISED (an
+    unevaluated rank check must not be silently treated as a known
+    disagreement, since that's a different, stronger claim than 'unknown')."""
+    result = disposition.classify_asset_disposition(
+        symbol="XRP",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=2,  # every OK window positive
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=None,  # ambiguous
+    )
+    assert result.outcome not in (disposition.OUTCOME_VALIDATED, disposition.OUTCOME_REVISED)
+    assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert result.reason is None
+
+
+def test_ambiguous_sign_agreement_never_yields_validated_or_revised() -> None:
+    """Mixed OK-window alpha set with bucket_sign_agreement None (unevaluated):
+    must fail closed to INSUFFICIENT_DATA, never VALIDATED and never
+    REVISED, since REVISED specifically requires sign agreement to be known
+    True."""
+    result = disposition.classify_asset_disposition(
+        symbol="XRP",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=1,  # mixed
+        bucket_sign_agreement=None,  # ambiguous
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert result.outcome not in (disposition.OUTCOME_VALIDATED, disposition.OUTCOME_REVISED)
+    assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert result.reason is None
+
+    # Also ambiguous when every OK window is positive but rank agreement is
+    # known False (falls through to the same sign-agreement routing).
+    result_rank_false = disposition.classify_asset_disposition(
+        symbol="XRP",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=2,
+        bucket_sign_agreement=None,  # ambiguous
+        bucket_rank_agreement_all_ok_windows=False,
+    )
+    assert result_rank_false.outcome not in (disposition.OUTCOME_VALIDATED, disposition.OUTCOME_REVISED)
+    assert result_rank_false.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+
+
 def test_all_ok_windows_non_positive_is_rejected_without_reason() -> None:
     """Every OK validation window alpha <= 0: REJECTED from a successful
     reproduction, regardless of bucket_sign_agreement/rank_agreement, and
@@ -393,16 +462,64 @@ def test_validation_windows_ok_within_bounds_does_not_raise(validation_windows_o
         assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
 
 
-def test_overall_disposition_is_least_favorable() -> None:
-    validated = disposition.AssetDisposition("LINK", disposition.OUTCOME_VALIDATED, None)
-    revised = disposition.AssetDisposition("SOL", disposition.OUTCOME_REVISED, None)
-    rejected = disposition.AssetDisposition(
-        "HOT", disposition.OUTCOME_REJECTED, disposition.REASON_BASELINE_REPRODUCTION_FAILED
-    )
+def _all_validated() -> list[disposition.AssetDisposition]:
+    return [
+        disposition.AssetDisposition(symbol, disposition.OUTCOME_VALIDATED, None)
+        for symbol in disposition.REQUIRED_ASSET_UNIVERSE
+    ]
 
-    assert disposition.overall_disposition([validated]) == disposition.OUTCOME_VALIDATED
-    assert disposition.overall_disposition([validated, revised]) == disposition.OUTCOME_REVISED
-    assert disposition.overall_disposition([validated, revised, rejected]) == disposition.OUTCOME_REJECTED
+
+def test_overall_disposition_complete_universe_all_validated() -> None:
+    assert disposition.overall_disposition(_all_validated()) == disposition.OUTCOME_VALIDATED
+
+
+def test_overall_disposition_complete_universe_one_non_validated_asset() -> None:
+    entries = _all_validated()
+    entries[0] = disposition.AssetDisposition("LINK", disposition.OUTCOME_REVISED, None)
+    assert disposition.overall_disposition(entries) == disposition.OUTCOME_REVISED
+
+    entries[1] = disposition.AssetDisposition(
+        "XLM", disposition.OUTCOME_REJECTED, disposition.REASON_BASELINE_REPRODUCTION_FAILED
+    )
+    assert disposition.overall_disposition(entries) == disposition.OUTCOME_REJECTED
+
+
+def test_overall_disposition_one_asset_missing_is_never_validated() -> None:
+    entries = _all_validated()[:-1]  # drop HOT
+    assert disposition.overall_disposition(entries) == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert disposition.overall_disposition(entries) != disposition.OUTCOME_VALIDATED
+
+
+def test_overall_disposition_multiple_assets_missing_is_never_validated() -> None:
+    entries = _all_validated()[:2]  # only LINK, XLM present
+    assert disposition.overall_disposition(entries) == disposition.OUTCOME_INSUFFICIENT_DATA
+    assert disposition.overall_disposition(entries) != disposition.OUTCOME_VALIDATED
+
+    assert disposition.overall_disposition([]) == disposition.OUTCOME_INSUFFICIENT_DATA
+
+
+def test_overall_disposition_duplicate_asset_fails_closed() -> None:
+    entries = _all_validated() + [
+        disposition.AssetDisposition("LINK", disposition.OUTCOME_VALIDATED, None)
+    ]
+    with pytest.raises(ValueError):
+        disposition.overall_disposition(entries)
+
+
+def test_overall_disposition_unexpected_asset_fails_closed() -> None:
+    entries = _all_validated()[:-1] + [
+        disposition.AssetDisposition("SUI", disposition.OUTCOME_VALIDATED, None)
+    ]
+    with pytest.raises(ValueError):
+        disposition.overall_disposition(entries)
+
+    # A substitute that overlaps neither the five required assets nor a
+    # legitimate research symbol must fail the same way, never VALIDATED.
+    substitute_entries = _all_validated()[:-1] + [
+        disposition.AssetDisposition("DOGE", disposition.OUTCOME_VALIDATED, None)
+    ]
+    with pytest.raises(ValueError):
+        disposition.overall_disposition(substitute_entries)
 
 
 def test_read_only_guard_rejects_non_select_sql() -> None:
