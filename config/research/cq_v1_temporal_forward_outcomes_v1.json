@@ -1,0 +1,64 @@
+{
+  "contract_name": "cq_v1_temporal_forward_outcomes_v1",
+  "contract_version": "1.0.0",
+  "issue": 684,
+  "parent_issue": 568,
+  "predecessor_issue": 661,
+  "research_only": true,
+  "market_only": true,
+  "frozen_population": {
+    "population_sha256": "61bab264b2921b93a25a22ec0d12cbc031ad0ef234fa989b2ea43c894bc263b4",
+    "row_count": 19520,
+    "unique_observation_ids": 19520,
+    "unique_asofs": 45,
+    "unique_assets": 445,
+    "first_asof_ts_utc": "2026-07-18T00:00:00Z",
+    "last_asof_ts_utc": "2026-08-31T00:00:00Z",
+    "contract_sha256": "db3cac1381c346821e7c1333f52d3e966e7d5030b7fe892ab82decc0fd2be526",
+    "selection_config_sha256": "08cec05f70cb8b2ff43b24a90dc4b8fb1f09d3535f9a791f05af3ddf57dff65b"
+  },
+  "source": {
+    "candle_table": "obs_market_candle",
+    "candle_interval": "15m"
+  },
+  "observation": {
+    "identity_field": "observation_id",
+    "asof_field": "asof_ts_utc",
+    "base_price_rule": "latest_canonical_candle_close_at_or_before_observation_asof"
+  },
+  "horizons": [
+    {"label": "1h", "minutes": 60},
+    {"label": "4h", "minutes": 240},
+    {"label": "24h", "minutes": 1440}
+  ],
+  "outcomes": {
+    "forward_return_pct": "((last_future_close_at_or_before_horizon / base_close) - 1) * 100",
+    "mfe_pct": "((max_future_high / base_close) - 1) * 100",
+    "mae_pct": "((min_future_low / base_close) - 1) * 100",
+    "future_candles_rule": "strictly_after_observation_asof_and_at_or_before_horizon_end",
+    "horizon_coverage_rule": "canonical_candle_stream_must_reach_or_pass_horizon_end",
+    "minimum_future_candles": 1,
+    "statuses": ["COMPLETE", "INSUFFICIENT_BASE_PRICE", "INSUFFICIENT_HORIZON_COVERAGE", "INSUFFICIENT_FUTURE_CANDLES"],
+    "target_outcome_status": "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE"
+  },
+  "anti_leakage": {
+    "frozen_population_is_immutable": true,
+    "future_candles_are_labels_only": true,
+    "future_market_context_as_feature": "forbidden",
+    "retuning_from_outcomes": "forbidden",
+    "holdout_for_model_selection": "forbidden",
+    "preserve_split_identity": true
+  },
+  "safety": {
+    "db_writes": 0,
+    "production_ranking_changes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_orders": 0,
+    "runtime_activation": 0
+  }
+}
