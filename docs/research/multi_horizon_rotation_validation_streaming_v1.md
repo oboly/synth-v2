@@ -18,11 +18,11 @@ The streaming runner consumes canonical dataset-builder JSONL in nondecreasing `
 
 - sufficient statistics for pair/partial correlations;
 - per `venue + asset_id + candidate_id` temporal state;
-- turn indexes required for the frozen lead/lag pairing rule;
+- bounded lead/lag pairing windows plus exact aggregate delta counts over the fixed `-16..+16` sample domain;
 - regime aggregates;
 - one as-of cohort for exact cross-horizon pairing.
 
-It does not retain all `ValidationRow` objects or all row identities.
+It does not retain all `ValidationRow` objects, all row identities, or unbounded turn histories.
 
 Canonical ordering is part of this execution path. An as-of reversal fails closed. Duplicate identities inside an as-of cohort fail closed.
 
@@ -38,6 +38,7 @@ Canonical ordering is part of this execution path. An as-of reversal fails close
 - cross-horizon correlation;
 - Holm-Bonferroni family;
 - lead/lag versus B1;
+- sparse global as-of gaps using absolute UTC 15-minute sample distance;
 - B0 regime stability.
 
 Tiny floating-point differences from online sufficient-statistic accumulation are accepted only within strict numerical tolerance; metric definitions are unchanged.
@@ -54,6 +55,8 @@ python -m src.research.run_multi_horizon_rotation_validation_streaming_v1 \
 
 There is deliberately no `final_holdout` CLI option.
 
+The runner emits explicit safety state before evaluation, periodic `HEARTBEAT` progress, and `OUTPUT_WRITTEN` after the JSON artifact is persisted.
+
 ## Safety
 
 ```text
@@ -62,6 +65,9 @@ market_only=1
 database_reads=0
 database_writes=0
 account_awareness=0
+decision_gate=none
+execution_planner=none
+executor=none
 broker_private_calls=0
 broker_writes=0
 order_submission=0
