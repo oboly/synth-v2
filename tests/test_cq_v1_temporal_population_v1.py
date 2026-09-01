@@ -109,6 +109,25 @@ def test_checkpointed_rows_truncate_uncommitted_tail(tmp_path) -> None:
     assert persisted == rows[:2]
 
 
+def test_checkpointed_rows_atomic_replace_preserves_original_on_interrupt(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "population.jsonl"
+    rows = [
+        {"observation_id": "one", "asset_id": 1},
+        {"observation_id": "two", "asset_id": 2},
+        {"observation_id": "uncheckpointed", "asset_id": 3},
+    ]
+    original = "".join(json.dumps(row) + "\n" for row in rows)
+    path.write_text(original, encoding="utf-8")
+
+    def interrupt_replace(_src, _dst):
+        raise runner._Interrupted(15)
+
+    monkeypatch.setattr(runner.os, "replace", interrupt_replace)
+    with pytest.raises(runner._Interrupted):
+        runner._load_checkpointed_rows(path, rows_written=2)
+    assert path.read_text(encoding="utf-8") == original
+
+
 def test_interrupted_state_is_explicit_and_resumable(tmp_path) -> None:
     checkpoint_path = tmp_path / "checkpoint.json"
     summary_path = tmp_path / "summary.json"
