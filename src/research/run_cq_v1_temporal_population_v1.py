@@ -190,6 +190,8 @@ def _write_interrupted_state(
     asofs_completed = int(checkpoint.get("asofs_completed", 0))
     rows_written = int(checkpoint.get("rows_written", 0))
     last_asof = checkpoint.get("last_asof_ts_utc")
+    # Interrupted state intentionally omits population_sha256: the file may contain an
+    # uncheckpointed tail that resume will atomically discard.
     interrupted = {
         **identity,
         "terminal_state": "INTERRUPTED",
