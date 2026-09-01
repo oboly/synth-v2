@@ -18,7 +18,7 @@ def _args(*, asof_index: int = 1, asset_id: int | None = None) -> SimpleNamespac
     )
 
 
-def _prepare(monkeypatch, rows):
+def _prepare(monkeypatch, rows, captured=None):
     asof = datetime(2026, 7, 18, tzinfo=UTC)
     monkeypatch.setattr(smoke, "load_temporal_contract", lambda: {"x": 1})
     monkeypatch.setattr(smoke, "derive_asofs", lambda _contract: [asof] * 45)
@@ -34,7 +34,13 @@ def _prepare(monkeypatch, rows):
             pass
 
     monkeypatch.setattr(smoke, "get_db_connection", lambda: Conn())
-    monkeypatch.setattr(smoke, "build_asof_population", lambda *_a, **_k: rows)
+
+    def fake_build(*_a, **kwargs):
+        if captured is not None:
+            captured.update(kwargs)
+        return rows
+
+    monkeypatch.setattr(smoke, "build_asof_population", fake_build)
     monkeypatch.setattr(smoke, "_bind_selection_config_provenance", lambda values, _sha: values)
     return asof
 
@@ -55,21 +61,21 @@ def test_smoke_rejects_asof_outside_frozen_contract(monkeypatch, capsys) -> None
     assert "FAILED runner=cq_v1_temporal_population_smoke_v1" in capsys.readouterr().out
 
 
-def test_single_asset_smoke_emits_complete_safety_and_terminal_output(monkeypatch, capsys) -> None:
+def test_single_asset_smoke_pushes_bound_into_canonical_build(monkeypatch, capsys) -> None:
     asof = datetime(2026, 7, 18, tzinfo=UTC)
     rows = [
-        {"asset_id": 7, "venue": "bitvavo", "asof_ts_utc": asof.isoformat(), "evidence_key": "a", "cq_model_version": "cq_shadow_v1", "model_family_version": "1.0.0", "coverage_artifact_sha256": "coverage"},
         {"asset_id": 9, "venue": "bitvavo", "asof_ts_utc": asof.isoformat(), "evidence_key": "b", "cq_model_version": "cq_shadow_v1", "model_family_version": "1.0.0", "coverage_artifact_sha256": "coverage"},
     ]
-    _prepare(monkeypatch, rows)
+    captured = {}
+    _prepare(monkeypatch, rows, captured)
     assert smoke.run(_args(asset_id=9)) == 0
     out = capsys.readouterr().out
+    assert captured["asset_id"] == 9
     assert '"asset_id": 9' in out
-    assert '"asset_id": 7' not in out
     assert "decision_gate=none execution_planner=none executor=none" in out
     assert "live_orders=0 runtime_activation=0" in out
     assert "FINISHED runner=cq_v1_temporal_population_smoke_v1" in out
-    assert "source_rows=2 output_rows=1 outcomes_read=0 db_writes=0" in out
+    assert "source_rows=1 output_rows=1 outcomes_read=0 db_writes=0" in out
 
 
 def test_signal_interrupt_emits_single_interrupted_terminal(monkeypatch, capsys) -> None:
