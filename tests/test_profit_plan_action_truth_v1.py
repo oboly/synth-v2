@@ -23,6 +23,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
     ReentryContext,
     TargetHistoryCandle,
+    build_json_snapshot,
     build_profit_plan_card,
     make_planning_provenance,
     render_plan_card,
@@ -92,7 +93,7 @@ _COMPLETED_MAP_CANDLES = (
 
 
 # ---------------------------------------------------------------------------
-# PR1 — AERO-like: planning PPP present, actionable PPP unavailable
+# PR1 — AAVE-like: valid waiting setup retains Actionable PPP
 # ---------------------------------------------------------------------------
 
 def _aero_card() -> pp.ProfitPlanCard:
@@ -115,20 +116,45 @@ def _aero_card() -> pp.ProfitPlanCard:
     )
 
 
-def test_aero_planning_ppp_present_but_actionable_ppp_unavailable() -> None:
-    card = _aero_card()
+def test_aave_like_valid_wait_for_entry_keeps_numeric_actionable_ppp() -> None:
+    card = replace(_aero_card(), symbol="AAVE", market="AAVE-EUR")
     assert card.actionability_state == pp.CARD_ACTIONABILITY_ACTIVE
     assert pp._planning_ppp(card) is not None
-    assert pp._actionable_ppp(card) is None
+    assert pp._entry_activation_proof(card) is False
+    assert pp._actionable_ppp(card) is not None
 
 
-def test_aero_actionable_display_says_wait_for_reclaim() -> None:
+def test_aero_wait_for_entry_timing_is_preserved_while_ppp_is_numeric() -> None:
     card = _aero_card()
-    text = pp._format_actionable_ppp(card)
-    assert "Entry above current — wait for reclaim" in text
+    assert pp._effective_workflow_action(card) == "WAIT FOR ENTRY"
+    assert pp._format_actionable_ppp(card) == pp._pct(pp._actionable_ppp(card))
 
 
-def test_aero_does_not_rank_above_actionable_setups() -> None:
+def test_xlm_like_wait_for_entry_keeps_canonical_ppp_for_detail_sidebar_and_sort() -> None:
+    """Timing remains WAIT_FOR_ENTRY while every reporting consumer reads the
+    same canonical Actionable PPP, not Planning PPP or an execution gate."""
+    card = replace(
+        _aero_card(),
+        symbol="XLM",
+        action_label="WAIT_FOR_ENTRY",
+        current_price=Decimal("1.0000"),
+        target_exit_zone=(Decimal("1.4081"),),
+    )
+
+    actionable_ppp = pp._actionable_ppp(card)
+    assert actionable_ppp == Decimal("40.8100")
+    assert pp._effective_workflow_action(card) == "WAIT FOR ENTRY"
+
+    html = render_plan_card(card)
+    snapshot_row = build_json_snapshot([card])["symbols"][0]
+    assert "data-sort-ppp='40.8100'" in html
+    assert "data-actionable-ppp='40.81%'" in html
+    assert "<div class='field-value mono'>40.81%</div>" in html
+    assert snapshot_row["actionable_ppp_pct"] == str(actionable_ppp)
+    assert snapshot_row["actionable_ppp_display"] == "40.81%"
+
+
+def test_aero_waiting_setup_ranks_by_its_numeric_actionable_ppp() -> None:
     aero = _aero_card()
     # A genuinely activated setup (first target passed via history) with valid actionable PPP.
     actionable = build_profit_plan_card(
@@ -154,8 +180,8 @@ def test_aero_does_not_rank_above_actionable_setups() -> None:
     )
     assert pp._actionable_ppp(actionable) is not None
     assert pp._workflow_sort_bucket(actionable) == 0
-    assert pp._workflow_sort_bucket(aero) == 1
-    assert pp._workflow_sort_bucket(actionable) < pp._workflow_sort_bucket(aero)
+    assert pp._workflow_sort_bucket(aero) == 0
+    assert pp._actionable_ppp(aero) > pp._actionable_ppp(actionable)
 
 
 def test_aero_does_not_show_buy_ready_or_fix_ladder() -> None:
@@ -166,7 +192,7 @@ def test_aero_does_not_show_buy_ready_or_fix_ladder() -> None:
     assert "BUY_READY" not in html
     assert "BUY READY" not in html
     assert "FIX LADDER" not in html
-    assert "Entry above current — wait for reclaim" in html
+    assert "WAIT FOR ENTRY" in html
 
 
 # ---------------------------------------------------------------------------

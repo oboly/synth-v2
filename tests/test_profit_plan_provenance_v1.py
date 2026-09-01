@@ -15,6 +15,7 @@ or executor is touched.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 import tempfile
 from datetime import UTC, datetime
@@ -449,6 +450,19 @@ def test_actionable_ppp_unavailable_when_lifecycle_explicitly_blocking() -> None
     assert pp._map_lifecycle_blocks_action(card) is True
     assert pp._actionable_ppp_eligible(card) is False
     assert pp._actionable_ppp(card) is None
+
+
+def test_actionable_ppp_waiting_score_still_fails_closed_for_stale_or_missing_required_inputs() -> None:
+    """Removing entry-activation as an opportunity gate must not admit stale
+    prices, absent native-map truth, or absent active target levels."""
+    base = _activated_card(evidence=_active_map_evidence())
+    stale_price = replace(base, current_price_status="STALE_CURRENT_PRICE")
+    missing_map = replace(base, evidence=_active_map_evidence(native_map_id="DATA_UNAVAILABLE"))
+    missing_target = replace(base, target_exit_zone=())
+
+    assert pp._actionable_ppp(stale_price) is None
+    assert pp._actionable_ppp(missing_map) is None
+    assert pp._actionable_ppp(missing_target) is None
 
 
 def test_former_production_shape_mog_actionable_ppp_unavailable() -> None:

@@ -1108,8 +1108,10 @@ def _planning_ppp(card: ProfitPlanCard) -> Decimal | None:
 # Actionable PPP eligibility (v2)
 #
 # Actionable PPP = (highest active target - current price) / current price * 100
-# but only when canonical evidence proves the current setup was activated inside
-# the current map cycle. Otherwise actionable_ppp is None (fail closed).
+# for a canonically valid, computable current setup. It is an opportunity/ranking
+# value, not execution permission: entry/reclaim timing may remain waiting while
+# the score stays numeric. Missing or invalid canonical evidence still fails
+# closed to None.
 # ---------------------------------------------------------------------------
 
 _UNAVAILABLE_TOKENS: frozenset[str] = frozenset({"", DATA_UNAVAILABLE, "NONE", "NULL"})
@@ -1307,7 +1309,10 @@ def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
     Numeric Actionable PPP requires proven current-map/current-cycle native
     authority: canonical native map truth and available (non-blocking)
     lifecycle authority -- not merely a present map_cycle_id, which a
-    transient/non-canonical or non-current row can also carry.
+    transient/non-canonical or non-current row can also carry. It deliberately
+    does not require entry activation proof: that proof controls timing/action
+    permissions (for example FIX LADDER), whereas this is a comparable
+    opportunity value for a valid computable setup.
 
     Does not gate on ``selected_map_tier`` (native_row.current_map_status):
     the current native SHORT snapshot contract permanently retires that field
@@ -1331,8 +1336,6 @@ def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
     if _highest_active_target(card) is None:
         return False
     if _map_switch_review_required(card):
-        return False
-    if not _entry_activation_proof(card):
         return False
     return True
 
