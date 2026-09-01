@@ -11,7 +11,7 @@ Section ownership:
 - P2 — Exit-profile research continuation, P2 — Leak-free Zone/Fib touch evaluation, P2 — Native map level calibration / signed price bias -> Issue #270
 - P2 — Zone context guardrails -> already canonical (duplicates `AGENTS.md` operational-table contamination rule); no Issue required
 - P3 — Fibo/zone UI overlays, P3 — Target-box normalization backlog -> Issue #271
-- Strategy-promotion design note (research fib/target maps -> asset_exit_profile -> decision_gate -> execution_planner -> executor) -> no current validated promotion scope; not actionable, future review only, no Issue filed
+- Strategy-promotion design note (research fib/target maps -> asset_exit_profile -> decision_gate -> execution_planner -> executor) -> owned by Issue #657 (canonical architecture contract: `docs/architecture/automatic_exit_profile_promotion_v1.md`); producer implementation remains BLOCKED pending a validated Issue #270 evidence conclusion
 
 Unmigrated executable scope:
 - none

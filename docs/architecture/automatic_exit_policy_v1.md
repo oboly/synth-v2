@@ -144,14 +144,19 @@ against production evidence ahead of the one producer it structurally
 depends on. That producer was never scoped: the intended upstream design
 (research fib/target maps -> `asset_exit_profile` -> validated promotion)
 is explicitly recorded as unvalidated, non-actionable, future-review-only
-work with no filed Issue (`docs/todo/fibo_zones.md`,
+work (`docs/todo/fibo_zones.md`,
 `docs/development/docs_todo_issue_migration_batch_6b_v1.md`). Per this
 repository's research-promotion rules, fabricating generic/default target or
 invalidation prices to satisfy the resolver would be exactly the kind of
 unvalidated promotion those rules forbid, so #654 intentionally stops at
 root-cause documentation rather than inventing profile data. Designing and
 building a validated `automatic_exit_profile_v1` producer is separately
-scoped, separately reviewed work with its own Issue.
+scoped, separately reviewed work, tracked by Issue #657. #657's Phase A
+canonical architecture contract lives at
+`docs/architecture/automatic_exit_profile_promotion_v1.md`; it records the
+producer as `BLOCKED` pending a validated evidence conclusion from Issue
+#270 (or an explicitly reviewed successor source) and adds no producer or
+preview code.
 
 Phase 4B must consume only a fresh `COMPLETE` `account_state_snapshot_run_v1`
 bundle. The bundle binds exact same-refresh position and balance evidence to a
