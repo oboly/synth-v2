@@ -207,6 +207,136 @@ def test_future_aware_evidence_is_never_promotion_eligible() -> None:
     assert disposition.is_promotion_eligible(disposition_outcome=disposition.OUTCOME_VALIDATED) is False
 
 
+def test_original_asset_config_preserves_published_per_asset_sell_fraction() -> None:
+    """The 2021 findings ("Key sensitivity result" table) fix
+    max_ladder_sell_fraction per asset, not globally: HOT's explosive/moonbag
+    profile used 0.40, while LINK/XLM/SOL/XRP all used 0.80. Freezing "the"
+    contract config as one global 0.80 would silently overwrite HOT's
+    published baseline with a value it was never validated under."""
+    assert disposition.ORIGINAL_ASSET_CONFIG["HOT"].target_family == "EXPLOSIVE_SUPERCYCLE"
+    assert disposition.ORIGINAL_ASSET_CONFIG["HOT"].max_ladder_sell_fraction == Decimal("0.40")
+
+    for symbol, target_family in (
+        ("LINK", "PRO_3X4X"),
+        ("XLM", "PRO_3X4X"),
+        ("SOL", "SUPERCYCLE"),
+        ("XRP", "SUPERCYCLE"),
+    ):
+        config = disposition.ORIGINAL_ASSET_CONFIG[symbol]
+        assert config.target_family == target_family
+        assert config.max_ladder_sell_fraction == Decimal("0.80")
+
+    assert set(disposition.ORIGINAL_ASSET_CONFIG) == set(disposition.REQUIRED_ASSET_UNIVERSE)
+
+
+def test_baseline_config_match_requires_full_per_asset_config() -> None:
+    """`baseline_config_matches_published` must check target_family AND
+    max_ladder_sell_fraction together, not target family alone."""
+    assert disposition.baseline_config_matches_published(
+        symbol="HOT",
+        target_family="EXPLOSIVE_SUPERCYCLE",
+        max_ladder_sell_fraction=Decimal("0.40"),
+    ) is True
+
+    # Correct target family, but evaluated with the other four assets'
+    # sell fraction instead of HOT's own published 0.40: must fail, not be
+    # accepted because the family still matches.
+    assert disposition.baseline_config_matches_published(
+        symbol="HOT",
+        target_family="EXPLOSIVE_SUPERCYCLE",
+        max_ladder_sell_fraction=Decimal("0.80"),
+    ) is False
+
+    for symbol, target_family in (
+        ("LINK", "PRO_3X4X"),
+        ("XLM", "PRO_3X4X"),
+        ("SOL", "SUPERCYCLE"),
+        ("XRP", "SUPERCYCLE"),
+    ):
+        assert disposition.baseline_config_matches_published(
+            symbol=symbol,
+            target_family=target_family,
+            max_ladder_sell_fraction=Decimal("0.80"),
+        ) is True
+        # Same target family but wrong (HOT's) sell fraction must not match.
+        assert disposition.baseline_config_matches_published(
+            symbol=symbol,
+            target_family=target_family,
+            max_ladder_sell_fraction=Decimal("0.40"),
+        ) is False
+
+
+def test_baseline_config_mismatch_forces_reproduction_failure_disposition() -> None:
+    """Full five-asset baseline reproduction: HOT evaluated at the wrong
+    (0.80) sell fraction must resolve to REJECTED/BASELINE_REPRODUCTION_FAILED
+    when the config-match check feeds `baseline_reproduced`, and the overall
+    five-asset disposition must be forced to REJECTED even if every other
+    asset (and HOT's own validation windows) would otherwise score
+    VALIDATED."""
+    hot_config_ok = disposition.baseline_config_matches_published(
+        symbol="HOT", target_family="EXPLOSIVE_SUPERCYCLE", max_ladder_sell_fraction=Decimal("0.80")
+    )
+    assert hot_config_ok is False
+
+    hot_result = disposition.classify_asset_disposition(
+        symbol="HOT",
+        baseline_evaluable=True,
+        baseline_reproduced=hot_config_ok,
+        has_original_bucket=True,
+        validation_windows_ok=2,
+        validation_windows_total=2,
+        alpha_positive_ok_window_count=2,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+    assert hot_result.outcome == disposition.OUTCOME_REJECTED
+    assert hot_result.reason == disposition.REASON_BASELINE_REPRODUCTION_FAILED
+
+    others = [
+        disposition.AssetDisposition(symbol, disposition.OUTCOME_VALIDATED, None)
+        for symbol in disposition.REQUIRED_ASSET_UNIVERSE
+        if symbol != "HOT"
+    ]
+    overall = disposition.overall_disposition([hot_result] + others)
+    assert overall == disposition.OUTCOME_REJECTED
+
+
+def test_full_five_asset_baseline_reproduction_passes_only_with_exact_frozen_config() -> None:
+    """Reproduction of the complete five-asset baseline requires each asset's
+    own published (target_family, max_ladder_sell_fraction) pair; a run that
+    evaluates every asset at a single uniform 0.80 sell fraction reproduces
+    LINK/XLM/SOL/XRP but not HOT, and must not be reported as a full
+    reproduction."""
+    uniform_run_configs = {
+        symbol: Decimal("0.80") for symbol in disposition.REQUIRED_ASSET_UNIVERSE
+    }
+    match_results = {
+        symbol: disposition.baseline_config_matches_published(
+            symbol=symbol,
+            target_family=disposition.ORIGINAL_ASSET_CONFIG[symbol].target_family,
+            max_ladder_sell_fraction=fraction,
+        )
+        for symbol, fraction in uniform_run_configs.items()
+    }
+    assert match_results["HOT"] is False
+    assert all(match_results[symbol] for symbol in ("LINK", "XLM", "SOL", "XRP"))
+    assert not all(match_results.values())
+
+    exact_run_configs = {
+        symbol: disposition.ORIGINAL_ASSET_CONFIG[symbol].max_ladder_sell_fraction
+        for symbol in disposition.REQUIRED_ASSET_UNIVERSE
+    }
+    exact_match_results = {
+        symbol: disposition.baseline_config_matches_published(
+            symbol=symbol,
+            target_family=disposition.ORIGINAL_ASSET_CONFIG[symbol].target_family,
+            max_ladder_sell_fraction=fraction,
+        )
+        for symbol, fraction in exact_run_configs.items()
+    }
+    assert all(exact_match_results.values())
+
+
 def test_baseline_reproduction_failure_is_deterministic_and_fail_closed() -> None:
     result = disposition.classify_asset_disposition(
         symbol="LINK",

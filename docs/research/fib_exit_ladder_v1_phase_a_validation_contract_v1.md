@@ -87,7 +87,19 @@ EXIT_PROFILE_EXPLOSIVE_MOONBAG    (target_family=EXPLOSIVE_SUPERCYCLE)  HOT
 
 `HBAR` and `SUI` have no original bucket assignment; if they now produce a usable anchor, they are reported as unassigned/descriptive only (§ Missing-data handling: `INSUFFICIENT_DATA` at the per-symbol-original-window level, since no 2021 bucket exists for them to validate).
 
-Ladder parameters held at original defaults for every run: `max_ladder_sell_fraction=0.80`, `rungs_per_target=5`, `distribution=front_loaded`, `target_zone_low_pct=0.04`, `target_zone_high_pct=0.04`, `front_run_pct=0.08`, `end_pct_of_zone_high=0.98`. `TARGET_FAMILIES` multiplier/fraction tuples are used exactly as defined in the module (no retuning — see § Non-negotiable constraints).
+Ladder parameters held at original defaults for every run: `rungs_per_target=5`, `distribution=front_loaded`, `target_zone_low_pct=0.04`, `target_zone_high_pct=0.04`, `front_run_pct=0.08`, `end_pct_of_zone_high=0.98`. `TARGET_FAMILIES` multiplier/fraction tuples are used exactly as defined in the module (no retuning — see § Non-negotiable constraints).
+
+`max_ladder_sell_fraction` is **not** a single global value: the published 2021 findings (`docs/research/fib_exit_ladder_v1_findings.md`, "Key sensitivity result" table) fix it per asset, and Phase A must reproduce that exact per-asset value, not a uniform one:
+
+```text
+LINK   PRO_3X4X               max_ladder_sell_fraction=0.80
+XLM    PRO_3X4X               max_ladder_sell_fraction=0.80
+SOL    SUPERCYCLE             max_ladder_sell_fraction=0.80
+XRP    SUPERCYCLE             max_ladder_sell_fraction=0.80
+HOT    EXPLOSIVE_SUPERCYCLE   max_ladder_sell_fraction=0.40
+```
+
+`HOT`'s explosive/moonbag profile was published at `0.40`, not `0.80` — running `HOT` at `0.80` is not a reproduction of the frozen baseline, regardless of target family, and must be treated as a baseline-reproduction failure (§ Acceptance thresholds rule 1). `ORIGINAL_ASSET_CONFIG` in `src/research/fib_exit_ladder_v1_phase_a_disposition_v1.py` is the reference source for this exact per-asset `(target_family, max_ladder_sell_fraction)` pair; a findings report must use it (or reproduce it verbatim) rather than assuming one global sell fraction.
 
 ## Look-ahead / promotion-grade classification
 
@@ -196,7 +208,11 @@ Applied per originally-bucketed asset (`LINK`, `SOL`, `XRP`, `HOT`, `XLM`), acro
    baseline to validate against.
 
 1. BASELINE REPRODUCTION FAILURE  (fail-closed; must precede every other rule below)
-   If the original window IS evaluable (status=OK, anchor detected) but its
+   If the original window IS evaluable (status=OK, anchor detected) but either (a) it was not run
+   under this asset's exact published `ORIGINAL_ASSET_CONFIG` — `target_family` AND
+   `max_ladder_sell_fraction` together, not target family alone (e.g. running `HOT` at
+   `max_ladder_sell_fraction=0.80` instead of its published `0.40` is a reproduction failure even
+   though the target family matches) — or (b) it was run under the correct config but its
    total_return_pct_with_remaining / hold_return_pct / anchor timestamps do not match the
    historical findings doc within rounding tolerance under the unmodified, frozen methodology:
    REJECTED, reason=BASELINE_REPRODUCTION_FAILED.

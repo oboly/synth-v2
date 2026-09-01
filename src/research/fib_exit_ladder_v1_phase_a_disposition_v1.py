@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 OUTCOME_VALIDATED = "VALIDATED"
@@ -71,6 +72,60 @@ REQUIRED_ASSET_UNIVERSE = ("LINK", "XLM", "SOL", "XRP", "HOT")
 # parameter.
 METHODOLOGY_FUTURE_AWARE = True
 METHODOLOGY_CLASSIFICATION = "FUTURE_AWARE_RESEARCH"
+
+
+@dataclass(frozen=True)
+class OriginalAssetConfig:
+    """One asset's full published 2021 configuration, frozen verbatim from
+    the "Key sensitivity result" table in
+    docs/research/fib_exit_ladder_v1_findings.md.
+
+    `max_ladder_sell_fraction` is per asset, not a single global value:
+    HOT's published EXPLOSIVE_SUPERCYCLE config used 0.40 (large moonbag
+    reserve for an explosive mover), while LINK/XLM/SOL/XRP all used 0.80.
+    Reproducing "the baseline" means reproducing this full tuple for the
+    asset under evaluation, not just its target family — running HOT with
+    the other four assets' 0.80 fraction is not a reproduction of the
+    published HOT baseline even though the target family would still match.
+    """
+
+    symbol: str
+    target_family: str
+    max_ladder_sell_fraction: Decimal
+
+
+ORIGINAL_ASSET_CONFIG: dict[str, OriginalAssetConfig] = {
+    "LINK": OriginalAssetConfig("LINK", "PRO_3X4X", Decimal("0.80")),
+    "XLM": OriginalAssetConfig("XLM", "PRO_3X4X", Decimal("0.80")),
+    "SOL": OriginalAssetConfig("SOL", "SUPERCYCLE", Decimal("0.80")),
+    "XRP": OriginalAssetConfig("XRP", "SUPERCYCLE", Decimal("0.80")),
+    "HOT": OriginalAssetConfig("HOT", "EXPLOSIVE_SUPERCYCLE", Decimal("0.40")),
+}
+
+
+def original_config_for_asset(symbol: str) -> OriginalAssetConfig:
+    """The frozen published config for one of the five originally-bucketed
+    assets. Raises `KeyError` for any symbol outside `REQUIRED_ASSET_UNIVERSE`
+    (including HBAR/SUI, which have no original bucket) rather than
+    returning a default or guessed config."""
+    return ORIGINAL_ASSET_CONFIG[symbol]
+
+
+def baseline_config_matches_published(
+    *, symbol: str, target_family: str, max_ladder_sell_fraction: Decimal
+) -> bool:
+    """Whether an evaluated baseline run used this asset's exact published
+    original configuration: target family AND max_ladder_sell_fraction
+    together. A target-family match alone is not sufficient — e.g. HOT
+    evaluated under EXPLOSIVE_SUPERCYCLE at max_ladder_sell_fraction=0.80
+    (the other four assets' value) does not match HOT's published 0.40 and
+    must return False, forcing a BASELINE_REPRODUCTION_FAILED disposition
+    rather than being silently accepted as a reproduction."""
+    expected = original_config_for_asset(symbol)
+    return (
+        target_family == expected.target_family
+        and max_ladder_sell_fraction == expected.max_ladder_sell_fraction
+    )
 
 
 @dataclass(frozen=True)
