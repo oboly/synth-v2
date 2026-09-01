@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -52,6 +53,42 @@ def test_runner_import_and_default_cli_contract() -> None:
     assert args.venue == "bitvavo"
     assert args.selection_config == "configs/selection_engine_v2.yaml"
     assert args.output_dir == "data/research/cq_v1_temporal_population_v1"
+    assert args.resume is False
+    assert runner.parse_args(["--resume"]).resume is True
+
+
+def test_selection_config_is_pinned_by_path_and_sha() -> None:
+    path, digest = runner._validate_selection_config(runner.DEFAULT_SELECTION_CONFIG)
+    assert str(path) == runner.DEFAULT_SELECTION_CONFIG
+    assert digest == runner.PINNED_SELECTION_CONFIG_SHA256
+    with pytest.raises(ValueError, match="selection config path must be pinned"):
+        runner._validate_selection_config("configs/other.yaml")
+
+
+def test_resume_identity_rejects_changed_config_hash() -> None:
+    identity = runner._identity(
+        venue="bitvavo",
+        contract_sha="contract-sha",
+        selection_config_sha="config-sha",
+    )
+    checkpoint = dict(identity)
+    checkpoint["selection_config_sha256"] = "different"
+    with pytest.raises(ValueError, match="selection_config_sha256"):
+        runner._validate_resume_checkpoint(checkpoint, identity)
+
+
+def test_checkpointed_rows_truncate_uncommitted_tail(tmp_path) -> None:
+    path = tmp_path / "population.jsonl"
+    rows = [
+        {"observation_id": "one", "asset_id": 1},
+        {"observation_id": "two", "asset_id": 2},
+        {"observation_id": "uncheckpointed", "asset_id": 3},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    loaded = runner._load_checkpointed_rows(path, rows_written=2)
+    assert loaded == rows[:2]
+    persisted = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert persisted == rows[:2]
 
 
 def test_selection_source_query_is_point_in_time_and_not_current_max() -> None:
