@@ -12,7 +12,6 @@ from typing import Any
 
 from src.common.db import get_db_connection
 from src.research.cq_v1_temporal_population_v1 import (
-    DEFAULT_SELECTION_CONFIG,
     build_asof_population,
     canonical_json_sha256,
     load_temporal_contract,
@@ -23,6 +22,7 @@ from src.selection.selection_engine_v2 import load_selection_config
 
 RUNNER_NAME = "cq_v1_temporal_population_v1"
 DEFAULT_OUTPUT_DIR = "data/research/cq_v1_temporal_population_v1"
+DEFAULT_SELECTION_CONFIG = "configs/selection_engine_v2.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
