@@ -146,7 +146,7 @@ the fail-closed pattern already established for `structure_state` in
 §3.3. No historical DB rows are rewritten to add a `model_id` column; this
 is a pure adapter-level declaration.
 
-## 4. Freshness ownership (still not producer-owned — #547 Phase A: BLOCKED_NEEDS_MEASUREMENT)
+## 4. Freshness ownership (producer-owned as of #547 Phase C — see §4.2)
 
 **#547 Phase A evaluated, and explicitly declined to adopt, a producer-owned
 staleness rule.** The candidate derivation considered was:
@@ -248,6 +248,96 @@ and `rotation_evidence_contract_v1` are unchanged. Adopting a threshold is
 an explicit follow-up, not performed by this document or by the #547 Phase
 B measurement task.
 
+### 4.2 #547 Phase C — owner decision: `ROTATION_STALE_AFTER = 90 minutes` adopted
+
+**Decision: `ADOPTED`.** The repository owner reviewed the #547 Phase B
+measurement (§4.1) and explicitly adopted a producer-owned Rotation
+freshness boundary:
+
+```text
+ROTATION_FRESHNESS_REFERENCE   = producer persisted row asof_ts
+                                  (market_rotation_pressure_observation_v1
+                                  .as_of_ts_utc -> rotation_evidence_contract_v1)
+PUBLISHER_IS_FRESHNESS_AUTHORITY = 0
+PUBLISHER_IS_REPORTING_ONLY      = 1
+ROTATION_STALE_AFTER             = 90 minutes
+```
+
+The producer freshness boundary ends at **persisted evidence** -- i.e. the
+row committed by the writer
+(`src/research/run_market_rotation_pressure_v1.py`) into
+`market_rotation_pressure_observation_v1`. The Odroid publisher/dashboard
+leg measured in §5 of
+`docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md`
+(and the #705 PR that recorded it) is **downstream reporting
+observability only**: it remains useful operationally (it shows how long
+an already-fresh-or-stale row additionally takes to reach the dashboard),
+but it is explicitly **not a prerequisite** for, and never an input to,
+this producer-owned evidence-freshness boundary. The dashboard's own
+`classify_freshness()` / `DEFAULT_STALE_AFTER = 2h30m`
+(`src/reporting/market_rotation_pressure_dashboard_v1.py`) also remains
+unchanged and unadopted here — it is a separate consumer-owned display
+rule, not the producer boundary.
+
+`ROTATION_STALE_AFTER = 90 minutes` is composed of three explicitly
+distinct pieces. It must never be described as fully measured — only the
+middle component is:
+
+```text
+60m      canonical producer cadence (reviewed owner decision, "Cadence
+         decision" in docs/ops/market_rotation_pressure_runtime_owners_v1.md;
+         writer_oncalendar_utc = *:20:00 UTC) -- CONFIGURED fact.
+~23m38s  (1418.2s) observed production asof->persist MAXIMUM, from the
+         #547 Phase B / #705 measurement (§4.1 above; n=417, continuous,
+         2026-08-08..2026-09-01; steady-state max=1418.0s / raw max
+         asof_to_persist_lag=1418.0s) -- MEASURED statistic.
+~6m22s   remaining operational margin to reach the 90-minute boundary --
+         an explicit OWNER POLICY choice made in this Phase C decision,
+         NOT measured evidence. No distribution or incident record backs
+         this component; it exists solely because the owner chose a clean
+         90-minute boundary with a small additional buffer over the
+         measured 60m + ~23m38s (~83m38s) sum.
+60m + 1418.2s (~23m38s) + ~6m22s = 5400s = 90m, exactly.
+```
+
+Only the writer leg (§4.1's producer-owned `asof_to_persist_lag`
+distribution, n=417, `MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION`) is used
+in this composition. The publisher leg
+(`MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE`, §5.3 of the measurement
+document) is not used as an input to `ROTATION_STALE_AFTER` at all, per
+`PUBLISHER_IS_FRESHNESS_AUTHORITY=0`.
+
+`src/features/rotation_evidence_contract_v1.py` now implements this
+boundary directly (`ROTATION_STALE_AFTER`,
+`_compute_rotation_freshness()`), deterministically from the persisted row
+`as_of_ts_utc` plus the caller-supplied `evaluated_at` only -- no implicit
+wall-clock `now()`, no caller-supplied override, naive-UTC DB timestamps
+normalized via the existing `evidence_contract_v1.normalize_to_utc`
+helper:
+
+```text
+missing/invalid asof_ts             -> INSUFFICIENT_DATA (fail closed)
+asof_ts after evaluated_at (future) -> INSUFFICIENT_DATA (fail closed)
+age <= 90m                          -> FRESH
+age >  90m                          -> STALE (STALE_EVIDENCE, fail closed)
+```
+
+`FRESH` evidence resolves to `EvidenceStatus.VALID` (and so may become
+active/available downstream) only if every other canonical requirement
+also passes (reviewed `model_version`, mapped `input_interval`, etc., per
+§6); `STALE` resolves to `EvidenceStatus.STALE`, which remains fail-closed
+for any downstream promotion exactly like `INSUFFICIENT_DATA` -- neither
+is `VALID`. Missing/unsupported `model_version` continues to fail the
+whole contract closed regardless of freshness, unchanged from §3/§6.
+
+This adoption changes only `src/features/rotation_evidence_contract_v1.py`
+and this document. It does not touch
+`src/features/evidence_contract_v1.py` (the shared #669/#672 seam other
+adapters still reuse unmodified with no rule), #593, the Rotation Pressure
+formula, `selection_engine`, `decision_gate`, `execution_planner`,
+`executor`, any systemd timer/`OnCalendar`/`RandomizedDelaySec`, or any
+runtime/deploy state.
+
 ## 5. Completed evidence mapping
 
 New module `src/features/rotation_evidence_contract_v1.py`,
@@ -266,7 +356,7 @@ lookback_horizon    = "24h+168h"
 effective_horizon   = REGIME
 observed_lifecycle  = UNMEASURED
 asof_ts             = row.as_of_ts_utc, normalized to aware UTC
-freshness           = UNKNOWN | INSUFFICIENT_DATA (see §4)
+freshness           = FRESH | STALE | INSUFFICIENT_DATA (see §4.2)
 provenance          = {asset_id, market, venue, source_snapshot_24h_id, source_snapshot_7d_id}
 raw                 = {score_total, pressure_state, phase_state,
                        raw_return_24h_pct, raw_return_7d_pct}   (verbatim, unmodified)
@@ -302,9 +392,10 @@ slice, reusing the same `family=ROTATION` seam with a
 ```text
 missing asof_ts                -> freshness=INSUFFICIENT_DATA (MISSING_ASOF_TS)
 asof_ts after evaluated_at     -> freshness=INSUFFICIENT_DATA (ASOF_AFTER_EVALUATION_TS)
-asof_ts present, no owner rule -> freshness=UNKNOWN (FRESHNESS_NOT_OWNER_DEFINED);
-                                   status=INSUFFICIENT_DATA (see §4, #547 Phase A:
-                                   BLOCKED_NEEDS_MEASUREMENT)
+age <= ROTATION_STALE_AFTER    -> freshness=FRESH; status=VALID if all other
+(90m)                              requirements pass (see §4.2, #547 Phase C: ADOPTED)
+age >  ROTATION_STALE_AFTER    -> freshness=STALE (STALE_EVIDENCE); status=STALE
+(90m)                              (fail-closed, see §4.2)
 missing/blank model_version    -> status=INSUFFICIENT_DATA (MISSING_PROVENANCE);
                                    model_id/model_version both None
 unsupported model_version      -> status=INSUFFICIENT_DATA (UNSUPPORTED_MODEL_VERSION);
@@ -371,11 +462,11 @@ production_deploy=0
 - `db/migrations/20260627_market_rotation_history_v1.sql` (unmodified; source of `input_interval`)
 - `docs/research/market_rotation_pressure_v1.md` (updated to reflect promotion)
 - `docs/ops/market_rotation_pressure_runtime_owners_v1.md` (Issue #266 writer authorization, unaffected)
-- `docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md` (#547 Phase B OBSERVED measurement, `BLOCKED_NEEDS_MEASUREMENT` still stands pending owner safety-margin decision)
+- `docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md` (#547 Phase B OBSERVED measurement; producer-owned writer leg n=417 `MEASUREMENT_SUFFICIENT_FOR_OWNER_DECISION`, publisher leg `MEASUREMENT_INSUFFICIENT`; feeds the §4.2 Phase C owner decision)
 - #617 regime evidence matrix (downstream consumer)
 - #593 multi-horizon per-asset Rotation research/history (unaffected, not promoted)
 - #449 Rotation Flip research (unaffected)
 - #661 / #568 CQ temporal population/evaluation (unaffected)
 - #266 Rotation Pressure production writer cutover (operational, unaffected)
 - #676 this promotion
-- #547 Rotation Pressure freshness pipeline Phase A (this document's §4 update: `BLOCKED_NEEDS_MEASUREMENT`, no `ROTATION_STALE_AFTER` adopted; measurement contract recorded for Phase B)
+- #547 Rotation Pressure freshness pipeline Phase A (§4: `BLOCKED_NEEDS_MEASUREMENT`, no `ROTATION_STALE_AFTER` adopted; measurement contract recorded for Phase B), Phase B (§4.1: measurement collected, still `BLOCKED_NEEDS_MEASUREMENT`), Phase C (§4.2: `ADOPTED`, `ROTATION_STALE_AFTER = 90 minutes`, implemented in `src/features/rotation_evidence_contract_v1.py`)

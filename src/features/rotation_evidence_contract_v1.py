@@ -35,16 +35,20 @@ fail-closed gaps are documented in
       about an explicit reviewed declaration).
     - `observed_lifecycle` remains `UNMEASURED`: no persisted empirical
       lifecycle analysis exists for this lane.
-    - `freshness` remains producer-undeclared: the only existing staleness
-      rule (`classify_freshness()` / `DEFAULT_STALE_AFTER = 2h30m`) lives in
-      `src/reporting/market_rotation_pressure_dashboard_v1.py`, a
-      consumer/dashboard module, and the #676 owner decision does not adopt
-      it as producer-owned truth. An hourly writer cadence is a runtime
-      cadence fact, not a reviewed freshness rule (per the #676 task
-      contract: "Runtime cadence alone is NOT automatically the same as
-      freshness semantics"). This module reuses
-      `evidence_contract_v1.compute_freshness` unchanged, so freshness stays
-      `UNKNOWN`/`INSUFFICIENT_DATA` until a producer-owned rule is reviewed.
+    - `freshness` is now producer-owned (#547 Phase C owner decision,
+      superseding the `BLOCKED_NEEDS_MEASUREMENT` state left by #547 Phases
+      A/B). `ROTATION_STALE_AFTER = 90 minutes` below. The dashboard's
+      `classify_freshness()` / `DEFAULT_STALE_AFTER = 2h30m`
+      (`src/reporting/market_rotation_pressure_dashboard_v1.py`) remains a
+      separate consumer/reporting-owned rule and is explicitly NOT the
+      basis for this value; `PUBLISHER_IS_FRESHNESS_AUTHORITY=0` --
+      `src/reporting/market_rotation_pressure_dashboard_v1.py` and the
+      Odroid publisher leg measured in #705 are downstream reporting
+      observability only (`PUBLISHER_IS_REPORTING_ONLY=1`), never an input
+      to this producer-owned boundary. See `ROTATION_STALE_AFTER` for the
+      exact composition and
+      `docs/architecture/rotation_pressure_v1_canonical_promotion_v1.md` §4.2
+      for full record.
     - `model_id`/`model_version`: no `model_id` column is persisted. The
       #676 owner decision explicitly authorizes declaring
       `model_id = "market_rotation_pressure_v1"` as this producer's own
@@ -66,16 +70,17 @@ fail-closed gaps are documented in
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from src.features.evidence_contract_v1 import (
     EffectiveHorizon,
+    FreshnessState,
     ReasonCode,
     SignalHorizonV1Evidence,
     UNMEASURED_LIFECYCLE,
-    compute_freshness,
     is_blank,
+    normalize_to_utc,
     resolve_status,
     validate_input_interval,
 )
@@ -91,6 +96,31 @@ SUPPORTED_MODEL_VERSIONS = frozenset({"1.0"})
 
 INPUT_INTERVAL = "1h"
 LOOKBACK_HORIZON = "24h+168h"
+
+# #547 Phase C owner decision: producer-owned Rotation freshness boundary.
+# ROTATION_FRESHNESS_REFERENCE = producer persisted row asof_ts (this
+# module's own `market_rotation_pressure_observation_v1.as_of_ts_utc`
+# input) -> `rotation_evidence_contract_v1` persisted-evidence freshness
+# boundary. The Odroid publisher/reporting leg measured in #705 is
+# downstream reporting observability only (PUBLISHER_IS_FRESHNESS_AUTHORITY
+# = 0, PUBLISHER_IS_REPORTING_ONLY = 1) and is never consulted here.
+#
+# 90 minutes is composed of three explicitly distinct pieces -- do not
+# describe the whole 90m figure as "measured":
+#   60m  canonical producer cadence (reviewed owner decision, "Cadence
+#        decision" in docs/ops/market_rotation_pressure_runtime_owners_v1.md;
+#        writer_oncalendar_utc = *:20:00 UTC)
+#   ~23m38s (1418.2s) observed production asof->persist MAXIMUM, #705
+#        Phase B measurement (n=417, continuous, 2026-08-08..2026-09-01;
+#        docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md
+#        §4, steady-state max=1418.0s / raw max asof_to_persist_lag).
+#   ~6m22s remaining operational margin to reach 90m -- an explicit OWNER
+#        POLICY choice (#547 Phase C), NOT measured evidence. It exists
+#        purely to round the 60m + ~23m38s sum up to a clean 90-minute
+#        boundary with a small additional buffer; no distribution or
+#        incident record backs this component.
+# 60m + 1418.2s (~23m38s) + ~6m22s = 5400s = 90m exactly.
+ROTATION_STALE_AFTER = timedelta(minutes=90)
 
 _MARKET = "asset"
 
@@ -109,6 +139,53 @@ def _resolve_model_identity(
     return MODEL_ID, model_version, ()
 
 
+def _compute_rotation_freshness(
+    *,
+    asof_ts: datetime | None,
+    evaluated_at: datetime,
+) -> tuple[datetime | None, str, tuple[str, ...]]:
+    """Producer-owned Rotation freshness (#547 Phase C), deterministic from
+    `asof_ts` + the caller-supplied `evaluated_at` only.
+
+    No implicit wall-clock `now()` is ever read here -- `evaluated_at` is a
+    required keyword-only argument with no default, so a replay caller
+    always controls the evaluation instant and this function can never
+    silently observe current time. There is no threshold/override
+    parameter, so a caller cannot supply a different freshness boundary for
+    Rotation than `ROTATION_STALE_AFTER`.
+
+    Both timestamps are normalized to aware UTC via
+    `evidence_contract_v1.normalize_to_utc` before comparison, so a
+    naive-UTC-persisted `as_of_ts_utc` (this producer's `DATETIME(6)`
+    column carries no explicit tzinfo) compares correctly against an aware
+    `evaluated_at` deterministically, never by assuming local time.
+
+    - missing `asof_ts`                -> INSUFFICIENT_DATA (fail closed)
+    - `asof_ts` after `evaluated_at`    -> INSUFFICIENT_DATA (fail closed;
+      a producer timestamp from the future is a data-integrity
+      contradiction, not a staleness judgement)
+    - age <= ROTATION_STALE_AFTER (90m) -> FRESH
+    - age >  ROTATION_STALE_AFTER (90m) -> STALE (fail closed)
+    """
+    normalized_asof_ts = normalize_to_utc(asof_ts)
+    normalized_evaluated_at = normalize_to_utc(evaluated_at)
+
+    if normalized_asof_ts is None:
+        return None, FreshnessState.INSUFFICIENT_DATA, (ReasonCode.MISSING_ASOF_TS,)
+
+    if normalized_asof_ts > normalized_evaluated_at:
+        return (
+            normalized_asof_ts,
+            FreshnessState.INSUFFICIENT_DATA,
+            (ReasonCode.ASOF_AFTER_EVALUATION_TS,),
+        )
+
+    age = normalized_evaluated_at - normalized_asof_ts
+    if age <= ROTATION_STALE_AFTER:
+        return normalized_asof_ts, FreshnessState.FRESH, ()
+    return normalized_asof_ts, FreshnessState.STALE, (ReasonCode.STALE_EVIDENCE,)
+
+
 def build_rotation_pressure_evidence(
     row: Mapping[str, Any],
     *,
@@ -125,7 +202,7 @@ def build_rotation_pressure_evidence(
     raw_asof_ts = row.get("as_of_ts_utc")
     model_version = row.get("model_version")
 
-    normalized_asof_ts, freshness, freshness_reason_codes = compute_freshness(
+    normalized_asof_ts, freshness, freshness_reason_codes = _compute_rotation_freshness(
         asof_ts=raw_asof_ts,
         evaluated_at=evaluated_at,
     )
