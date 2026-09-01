@@ -100,6 +100,14 @@ def test_build_outcomes_batches_once_per_asof_and_is_deterministic(monkeypatch) 
     assert all(row["target_outcome_status"] == "UNAVAILABLE_NO_CANONICAL_TARGET_PRICE" for row in rows1)
 
 
+def test_population_venue_mismatch_fails_closed(monkeypatch) -> None:
+    observation = _observation(1, "2026-07-18T00:00:00+00:00", "obs-1")
+    observation["venue"] = "other"
+    _, horizons = mod.load_contract()
+    with pytest.raises(ValueError, match="population venue mismatch"):
+        mod.build_outcome_rows(object(), observations=[observation], venue="bitvavo", horizons=horizons)
+
+
 def test_single_horizon_remains_one_label_per_observation(monkeypatch) -> None:
     observation = _observation(1, "2026-07-18T00:00:00+00:00", "obs-1")
 
@@ -119,6 +127,13 @@ def test_single_horizon_remains_one_label_per_observation(monkeypatch) -> None:
     assert rows[0]["horizon"] == "1h"
     assert rows[0]["status"] == "COMPLETE"
     assert rows[0]["forward_return_pct"] == Decimal("1.000000")
+
+
+def test_existing_output_artifact_fails_closed(tmp_path) -> None:
+    existing = tmp_path / mod.OUTPUT_ROWS
+    existing.write_text("already frozen\n")
+    with pytest.raises(ValueError, match="immutable outcome artifacts already exist"):
+        mod.ensure_output_paths_clear(tmp_path)
 
 
 def test_write_artifacts_contains_only_technical_summary(tmp_path) -> None:
