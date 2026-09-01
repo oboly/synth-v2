@@ -137,9 +137,14 @@ def _load_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any
         if not isinstance(row, dict):
             raise ValueError(f"checkpointed population row {index} is not an object")
         rows.append(row)
-    with path.open("wb") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+        tmp = Path(handle.name)
         for row in rows:
             handle.write(_row_line(row))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
     return rows
 
 
