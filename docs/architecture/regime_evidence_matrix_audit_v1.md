@@ -64,8 +64,10 @@ math, thresholds, or tables were introduced to perform this audit.
      no freshness).
   2. `src/features/relative_strength_snapshot.py` →
      `relative_strength_snapshot` table: cross-asset 7d/14d cross-sectional
-     ranking from `obs_market_candle`. No `model_version`, `asof`, or
-     freshness field documented in the module.
+     ranking from `obs_market_candle`. It persists `snapshot_ts_utc` per
+     row (a real as-of timestamp), but there is no `model_version` and no
+     declared freshness/staleness rule, and `snapshot_ts_utc` is not
+     mapped to the #243 `SignalHorizonV1.asof_ts`/`freshness` contract.
 - These two lanes are not declared as the same evidence or reconciled.
 - **Classification: semantically unresolved.** No single declared canonical
   owner for "relative strength" as a #617 evidence family; two overlapping,
