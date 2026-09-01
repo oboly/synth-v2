@@ -77,6 +77,24 @@ def test_resume_identity_rejects_changed_config_hash() -> None:
         runner._validate_resume_checkpoint(checkpoint, identity)
 
 
+def test_selection_config_hash_is_bound_into_observation_identity() -> None:
+    base = {
+        "asset_id": 7,
+        "venue": "bitvavo",
+        "asof_ts_utc": "2026-07-18T00:00:00+00:00",
+        "evidence_key": "evidence",
+        "cq_model_version": "cq_shadow_v1",
+        "model_family_version": MODEL_FAMILY_VERSION,
+        "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+        "observation_id": "old",
+    }
+    first = runner._bind_selection_config_provenance([dict(base)], "config-a")[0]
+    second = runner._bind_selection_config_provenance([dict(base)], "config-b")[0]
+    assert first["selection_config_sha256"] == "config-a"
+    assert second["selection_config_sha256"] == "config-b"
+    assert first["observation_id"] != second["observation_id"]
+
+
 def test_checkpointed_rows_truncate_uncommitted_tail(tmp_path) -> None:
     path = tmp_path / "population.jsonl"
     rows = [
@@ -89,6 +107,44 @@ def test_checkpointed_rows_truncate_uncommitted_tail(tmp_path) -> None:
     assert loaded == rows[:2]
     persisted = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert persisted == rows[:2]
+
+
+def test_interrupted_state_is_explicit_and_resumable(tmp_path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    summary_path = tmp_path / "summary.json"
+    population_path = tmp_path / "population.jsonl"
+    population_path.write_text('{"observation_id":"one"}\n', encoding="utf-8")
+    identity = runner._identity(
+        venue="bitvavo",
+        contract_sha="contract-sha",
+        selection_config_sha="config-sha",
+    )
+    runner._atomic_json(
+        checkpoint_path,
+        {
+            **identity,
+            "terminal_state": "RUNNING",
+            "asofs_completed": 3,
+            "rows_written": 1,
+            "last_asof_ts_utc": "2026-07-20T00:00:00+00:00",
+        },
+    )
+    runner._write_interrupted_state(
+        checkpoint_path=checkpoint_path,
+        summary_path=summary_path,
+        population_path=population_path,
+        identity=identity,
+        signum=15,
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert checkpoint["terminal_state"] == "INTERRUPTED"
+    assert summary["terminal_state"] == "INTERRUPTED"
+    assert summary["resumable"] == 1
+    assert summary["asofs_completed"] == 3
+    assert summary["rows_written"] == 1
+    assert summary["selection_config_sha256"] == "config-sha"
+    runner._validate_resume_checkpoint(checkpoint, identity)
 
 
 def test_selection_source_query_is_point_in_time_and_not_current_max() -> None:
