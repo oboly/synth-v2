@@ -4923,11 +4923,10 @@ def _build_client_js(storage_scope: str) -> str:
       item.dataset.renderId = card.dataset.renderId || '';
       var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
       var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
-      // Actionable PPP when eligible; otherwise fall back to Planning PPP so every
-      // held token still shows a reference number (or its unavailable reason).
-      var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
-        ? card.dataset.actionablePpp
-        : card.dataset.planningPpp || '';
+      // The compact sidebar is a read-model consumer of the same canonical
+      // Actionable PPP field as the card detail and PPP sort. Planning PPP is
+      // a separate reference metric and must never substitute for it here.
+      var ppp = card.dataset.actionablePpp || '';
       var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
       var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
       var tags = (isWalletHeld ? " <span class='pp-selector-tag'>WALLET</span>" : '') +
