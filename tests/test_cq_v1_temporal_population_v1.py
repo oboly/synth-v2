@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 import src.research.cq_v1_temporal_population_v1 as mod
+import src.research.run_cq_v1_temporal_population_v1 as runner
 from src.research.cq_v1_model_candidate_v1 import COVERAGE_ARTIFACT_SHA256, MODEL_FAMILY_VERSION
 from src.selection.selection_engine_v2 import SelectionCandidate, SelectionRow
 
@@ -44,6 +45,13 @@ def test_contract_is_exact_frozen_45_date_family() -> None:
     assert len(mod.derive_asofs(contract)) == 45
     assert contract["frozen_model_family"]["model_family_version"] == MODEL_FAMILY_VERSION
     assert contract["frozen_model_family"]["coverage_artifact_sha256"] == COVERAGE_ARTIFACT_SHA256
+
+
+def test_runner_import_and_default_cli_contract() -> None:
+    args = runner.parse_args([])
+    assert args.venue == "bitvavo"
+    assert args.selection_config == "configs/selection_engine_v2.yaml"
+    assert args.output_dir == "data/research/cq_v1_temporal_population_v1"
 
 
 def test_selection_source_query_is_point_in_time_and_not_current_max() -> None:
