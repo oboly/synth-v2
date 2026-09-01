@@ -1,0 +1,338 @@
+{
+  "schema": "fib_exit_ladder_v1_phase_a_evidence_summary_v1",
+  "source": "derived exclusively from the six local artifacts listed in fib_exit_ladder_v1_phase_a_provenance_v1.md all_rows (never best_rows)",
+  "runner": "run_fib_exit_ladder_scoreboard_v1",
+  "methodology_classification": "FUTURE_AWARE_RESEARCH",
+  "methodology_promotion_grade": 0,
+  "promotion_eligible": false,
+  "windows": {
+    "baseline_2020_2022": {
+      "from_ts": "2020-01-01 00:00:00",
+      "to_ts": "2022-01-01 00:00:00",
+      "venue": "bitvavo",
+      "interval": "1d"
+    },
+    "validation_2022_2024": {
+      "from_ts": "2022-01-01 00:00:00",
+      "to_ts": "2024-01-01 00:00:00",
+      "venue": "bitvavo",
+      "interval": "1d"
+    },
+    "validation_2024_2026": {
+      "from_ts": "2024-01-01 00:00:00",
+      "to_ts": "2026-09-01 00:00:00",
+      "venue": "bitvavo",
+      "interval": "1d"
+    }
+  },
+  "assets": {
+    "LINK": {
+      "target_family": "PRO_3X4X",
+      "max_ladder_sell_fraction": "0.80",
+      "published_baseline_total_return_pct": "93.6754",
+      "published_baseline_hold_return_pct": "21.5124",
+      "baseline_evaluable": true,
+      "baseline_reproduced": true,
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "93.67542573591519434628975266",
+          "hold_return_pct": "21.51236749116607773851590106",
+          "alpha_vs_hold_pct": "72.16305824474911660777385160",
+          "entry_ts": "2021-01-22 00:00:00",
+          "entry_price": "14.1500000000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "36.75403225806451612903225806",
+          "hold_return_pct": "36.75403225806451612903225806",
+          "alpha_vs_hold_pct": "0E-26",
+          "entry_ts": "2023-11-03 00:00:00",
+          "entry_price": "9.9200000000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "-5.13622220867621660062988926",
+          "hold_return_pct": "-25.74672355989027735446510210",
+          "alpha_vs_hold_pct": "20.61050135121406075383521284",
+          "entry_ts": "2024-11-21 00:00:00",
+          "entry_price": "13.1240000000",
+          "frozen_family_ranked_first_same_fraction": true
+        }
+      },
+      "validation_windows_ok": 2,
+      "alpha_positive_ok_window_count": 1,
+      "bucket_sign_agreement": true,
+      "bucket_rank_agreement_all_ok_windows": null,
+      "disposition": "REVISED",
+      "reason": null
+    },
+    "XLM": {
+      "target_family": "PRO_3X4X",
+      "max_ladder_sell_fraction": "0.80",
+      "published_baseline_total_return_pct": "128.7534",
+      "published_baseline_hold_return_pct": "22.8163",
+      "baseline_evaluable": true,
+      "baseline_reproduced": true,
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "128.7534419257198715263231392",
+          "hold_return_pct": "22.81629660661918726434855467",
+          "alpha_vs_hold_pct": "105.9371453191006842619745845",
+          "entry_ts": "2021-01-27 00:00:00",
+          "entry_price": "0.1909600000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "5.505082306377619861473419088",
+          "hold_return_pct": "5.505082306377619861473419088",
+          "alpha_vs_hold_pct": "0E-27",
+          "entry_ts": "2023-07-17 00:00:00",
+          "entry_price": "0.1111700000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "37.10183183013085209858870598",
+          "hold_return_pct": "-15.97753675053680559378957221",
+          "alpha_vs_hold_pct": "53.07936858066765769237827819",
+          "entry_ts": "2025-04-07 00:00:00",
+          "entry_price": "0.1816300000",
+          "frozen_family_ranked_first_same_fraction": true
+        }
+      },
+      "validation_windows_ok": 2,
+      "alpha_positive_ok_window_count": 1,
+      "bucket_sign_agreement": true,
+      "bucket_rank_agreement_all_ok_windows": null,
+      "disposition": "REVISED",
+      "reason": null
+    },
+    "SOL": {
+      "target_family": "SUPERCYCLE",
+      "max_ladder_sell_fraction": "0.80",
+      "published_baseline_total_return_pct": "178.3058",
+      "published_baseline_hold_return_pct": "165.8023",
+      "baseline_evaluable": true,
+      "baseline_reproduced": true,
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "178.3058411062782342688435955",
+          "hold_return_pct": "165.8022978693131291573293494",
+          "alpha_vs_hold_pct": "12.5035432369651051115142461",
+          "entry_ts": "2021-08-26 00:00:00",
+          "entry_price": "56.2260000000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "355.8889326782989465007856167",
+          "hold_return_pct": "613.6620044818792983540684646",
+          "alpha_vs_hold_pct": "-257.7730718035803518532828479",
+          "entry_ts": "2023-06-15 00:00:00",
+          "entry_price": "12.9410000000",
+          "frozen_family_ranked_first_same_fraction": false
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "23.19736984326162340504326162",
+          "hold_return_pct": "-10.42015957984042015957984042",
+          "alpha_vs_hold_pct": "33.61752942310204356462310204",
+          "entry_ts": "2024-08-05 00:00:00",
+          "entry_price": "99.0100000000",
+          "frozen_family_ranked_first_same_fraction": false
+        }
+      },
+      "validation_windows_ok": 2,
+      "alpha_positive_ok_window_count": 1,
+      "bucket_sign_agreement": true,
+      "bucket_rank_agreement_all_ok_windows": null,
+      "disposition": "REVISED",
+      "reason": null
+    },
+    "XRP": {
+      "target_family": "SUPERCYCLE",
+      "max_ladder_sell_fraction": "0.80",
+      "published_baseline_total_return_pct": "207.5549",
+      "published_baseline_hold_return_pct": "145.9933",
+      "baseline_evaluable": true,
+      "baseline_reproduced": true,
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "207.5549113793939393939393939",
+          "hold_return_pct": "145.9932659932659932659932660",
+          "alpha_vs_hold_pct": "61.5616453861279461279461279",
+          "entry_ts": "2021-02-23 00:00:00",
+          "entry_price": "0.2970000000",
+          "frozen_family_ranked_first_same_fraction": false
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "97.42465358007288317256162916",
+          "hold_return_pct": "83.61736334405144694533762058",
+          "alpha_vs_hold_pct": "13.80729023602143622722400858",
+          "entry_ts": "2022-11-14 00:00:00",
+          "entry_price": "0.3110000000",
+          "frozen_family_ranked_first_same_fraction": false
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "62.04039581559466666666666666",
+          "hold_return_pct": "18.74800",
+          "alpha_vs_hold_pct": "43.29239581559466666666666666",
+          "entry_ts": "2024-11-20 00:00:00",
+          "entry_price": "1.0000000000",
+          "frozen_family_ranked_first_same_fraction": false
+        }
+      },
+      "validation_windows_ok": 2,
+      "alpha_positive_ok_window_count": 2,
+      "bucket_sign_agreement": true,
+      "bucket_rank_agreement_all_ok_windows": false,
+      "disposition": "REVISED",
+      "reason": null
+    },
+    "HOT": {
+      "target_family": "EXPLOSIVE_SUPERCYCLE",
+      "max_ladder_sell_fraction": "0.40",
+      "published_baseline_total_return_pct": "563.1368",
+      "published_baseline_hold_return_pct": "591.5183",
+      "baseline_evaluable": true,
+      "baseline_reproduced": true,
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "OK",
+          "target_family": "EXPLOSIVE_SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": "563.1367601498221547451123959",
+          "hold_return_pct": "591.5183426473280141271225679",
+          "alpha_vs_hold_pct": "-28.3815824975058593820101720",
+          "entry_ts": "2021-02-15 00:00:00",
+          "entry_price": "0.0009287100",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "EXPLOSIVE_SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": "25.43645152118282627239124254",
+          "hold_return_pct": "25.43645152118282627239124254",
+          "alpha_vs_hold_pct": "0E-26",
+          "entry_ts": "2023-12-11 00:00:00",
+          "entry_price": "0.0017585000",
+          "frozen_family_ranked_first_same_fraction": true
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "EXPLOSIVE_SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": "-74.24920634920634920634920635",
+          "hold_return_pct": "-74.24920634920634920634920635",
+          "alpha_vs_hold_pct": "0E-26",
+          "entry_ts": "2024-09-06 00:00:00",
+          "entry_price": "0.0012600000",
+          "frozen_family_ranked_first_same_fraction": false
+        }
+      },
+      "validation_windows_ok": 2,
+      "alpha_positive_ok_window_count": 0,
+      "bucket_sign_agreement": false,
+      "bucket_rank_agreement_all_ok_windows": null,
+      "disposition": "REJECTED",
+      "reason": null
+    }
+  },
+  "descriptive_assets": {
+    "HBAR": {
+      "has_original_bucket": false,
+      "note": "selected from best_rows (best across family AND fraction); no frozen config exists for this symbol; excluded from overall_disposition",
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "INSUFFICIENT_CANDLES",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": null,
+          "hold_return_pct": null,
+          "alpha_vs_hold_pct": null
+        },
+        "validation_2022_2024": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": "109.7584515160451462427280770",
+          "hold_return_pct": "109.7584515160451462427280770",
+          "alpha_vs_hold_pct": "0E-25"
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "193.9242094563356643356643357",
+          "hold_return_pct": "-11.32727272727272727272727273",
+          "alpha_vs_hold_pct": "205.2514821836083916083916084"
+        }
+      }
+    },
+    "SUI": {
+      "has_original_bucket": false,
+      "note": "selected from best_rows (best across family AND fraction); no frozen config exists for this symbol; excluded from overall_disposition",
+      "windows": {
+        "baseline_2020_2022": {
+          "status": "INSUFFICIENT_CANDLES",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": null,
+          "hold_return_pct": null,
+          "alpha_vs_hold_pct": null
+        },
+        "validation_2022_2024": {
+          "status": "NO_ANCHOR_SET_FOUND",
+          "target_family": "PRO_3X4X",
+          "max_ladder_sell_fraction": "0.40",
+          "total_return_pct_with_remaining": null,
+          "hold_return_pct": null,
+          "alpha_vs_hold_pct": null
+        },
+        "validation_2024_2026": {
+          "status": "OK",
+          "target_family": "SUPERCYCLE",
+          "max_ladder_sell_fraction": "0.80",
+          "total_return_pct_with_remaining": "212.3768757719626911679891813",
+          "hold_return_pct": "-6.709026907702404391146113000",
+          "alpha_vs_hold_pct": "219.0859026796650955591352943"
+        }
+      }
+    }
+  },
+  "overall_disposition": "REJECTED"
+}
