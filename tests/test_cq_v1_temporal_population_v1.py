@@ -6,7 +6,9 @@ from decimal import Decimal
 import pytest
 
 import src.research.cq_v1_temporal_population_v1 as mod
+import src.research.run_cq_v1_temporal_population_v1 as runner
 from src.research.cq_v1_model_candidate_v1 import COVERAGE_ARTIFACT_SHA256, MODEL_FAMILY_VERSION
+from src.selection.run_selection_engine_v2 import DEFAULT_CONFIG_PATH
 from src.selection.selection_engine_v2 import SelectionCandidate, SelectionRow
 
 
@@ -37,6 +39,12 @@ class FakeConn:
 
     def cursor(self):
         return self._cursor
+
+
+def test_runner_import_and_default_selection_config_owner() -> None:
+    args = runner.parse_args([])
+    assert args.selection_config == DEFAULT_CONFIG_PATH
+    assert runner.RUNNER_NAME == "cq_v1_temporal_population_v1"
 
 
 def test_contract_is_exact_frozen_45_date_family() -> None:
