@@ -21,16 +21,20 @@ outcome categories is reached.
 
 ## Artifacts used
 
-The six raw sweep files below are the direct source of this report but are
-**not** committed to this repository (large machine-generated backtest
-output). Immutable identity/provenance for each file (sha256, byte size,
-row count, generation window, venue, interval, symbol universe, runner,
-methodology classification) is tracked in
+The six raw sweep files below are the direct source of this report. The
+three JSON files (`all_rows` — the complete 105-row sweep needed for
+deterministic reproduction) are committed verbatim under
+`data/research/fib_exit_ladder_v1_phase_a/`; the three CSV files are a
+redundant second serialization of the same sweeps and are not committed.
+Immutable identity/provenance for each file (sha256, byte size, row count,
+generation window, venue, interval, symbol universe, runner, methodology
+classification) is tracked in
 `docs/research/fib_exit_ladder_v1_phase_a_provenance_v1.md`. The exact rows
 this report is derived from — every field needed to reproduce the
 per-asset/per-window disposition below without re-running the backtest — are
-tracked in
-`docs/research/fib_exit_ladder_v1_phase_a_evidence_summary_v1.json`.
+tracked in `docs/research/fib_exit_ladder_v1_phase_a_evidence_summary_v1.json`,
+and independently re-derived straight from the committed raw JSON by
+`tests/test_fib_exit_ladder_v1_phase_a_raw_evidence_reproduction_v1.py`.
 
 ```text
 baseline_2020_2022.csv       baseline_2020_2022.json
