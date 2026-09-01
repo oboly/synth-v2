@@ -21,6 +21,14 @@ Per docs/architecture/regime_evidence_matrix_audit_v1.md 3.1/3.2:
       unknown fields unknown rather than infer them") this module emits
       `UNKNOWN` and fails the evidence closed to `INSUFFICIENT_DATA` rather
       than inferring an horizon from `interval_code`.
+    - `freshness` is likewise producer-owned (#243 3.5) and undeclared here;
+      see `evidence_contract_v1.compute_freshness`. This module does not
+      invent a staleness rule for `structure_state`.
+    - `model_id`/`model_version` are mapped strictly from the row's own
+      persisted `engine_name`/`engine_version`. `engine_name` must exactly
+      match this producer's declared `ENGINE_NAME`; a missing/absent/wrong
+      `engine_name`, or a missing/unreviewed `engine_version`, fails the
+      identity closed rather than fabricating or substituting a value.
     - `reclaim_state`/`reclaim_score` are exposed here as their own
       RELATIVE_STRENGTH component, kept separate from
       `relative_strength_evidence_contract_v1.py`'s cross-sectional-rank
@@ -41,6 +49,7 @@ from src.features.evidence_contract_v1 import (
     UNMEASURED_LIFECYCLE,
     compute_freshness,
     resolve_status,
+    validate_input_interval,
 )
 
 FAMILY_PRICE_STRUCTURE = "PRICE_STRUCTURE"
@@ -67,10 +76,34 @@ _STATE_FIELD_BY_COMPONENT: dict[str, tuple[str, str]] = {
 }
 
 
-def _model_version_reason_codes(engine_version: str | None) -> tuple[str, ...]:
-    if engine_version is None or engine_version not in SUPPORTED_ENGINE_VERSIONS:
-        return (ReasonCode.UNSUPPORTED_MODEL_VERSION,)
-    return ()
+def _resolve_model_identity(
+    engine_name: str | None,
+    engine_version: str | None,
+) -> tuple[str | None, str | None, tuple[str, ...]]:
+    """Map persisted `engine_name`/`engine_version` to `model_id`/
+    `model_version` strictly. Never fabricates or substitutes an identity:
+    each field is only populated when the persisted value is present and,
+    for `engine_name`, matches this producer's declared identity exactly.
+    """
+    reason_codes: tuple[str, ...] = ()
+
+    model_id: str | None = None
+    if not engine_name:
+        reason_codes += (ReasonCode.MISSING_ENGINE_NAME,)
+    elif engine_name != ENGINE_NAME:
+        reason_codes += (ReasonCode.UNEXPECTED_ENGINE_NAME,)
+    else:
+        model_id = engine_name
+
+    model_version: str | None = None
+    if not engine_version:
+        reason_codes += (ReasonCode.MISSING_ENGINE_VERSION,)
+    elif engine_version not in SUPPORTED_ENGINE_VERSIONS:
+        reason_codes += (ReasonCode.UNSUPPORTED_MODEL_VERSION,)
+    else:
+        model_version = engine_version
+
+    return model_id, model_version, reason_codes
 
 
 def build_structure_component_evidence(
@@ -79,7 +112,6 @@ def build_structure_component_evidence(
     *,
     family: str,
     evaluated_at: datetime,
-    stale_after_multiplier: float = 2.0,
 ) -> SignalHorizonV1Evidence:
     """Map one `structure_state` row + component onto `SignalHorizonV1Evidence`.
 
@@ -93,19 +125,23 @@ def build_structure_component_evidence(
 
     state_field, score_field = _STATE_FIELD_BY_COMPONENT[component]
 
-    asof_ts = row.get("asof_ts_utc")
+    raw_asof_ts = row.get("asof_ts_utc")
     input_interval = row.get("interval_code")
+    engine_name = row.get("engine_name")
     engine_version = row.get("engine_version")
 
-    freshness, freshness_reason_codes = compute_freshness(
-        asof_ts=asof_ts,
+    normalized_asof_ts, freshness, freshness_reason_codes = compute_freshness(
+        asof_ts=raw_asof_ts,
         evaluated_at=evaluated_at,
-        input_interval=input_interval,
-        stale_after_multiplier=stale_after_multiplier,
+    )
+
+    model_id, model_version, identity_reason_codes = _resolve_model_identity(
+        engine_name, engine_version
     )
 
     extra_reason_codes = freshness_reason_codes
-    extra_reason_codes += _model_version_reason_codes(engine_version)
+    extra_reason_codes += validate_input_interval(input_interval)
+    extra_reason_codes += identity_reason_codes
     # effective_horizon is never declared by this producer today; the
     # contract must fail closed rather than infer it from interval_code.
     extra_reason_codes += (ReasonCode.UNMAPPED_HORIZON,)
@@ -120,16 +156,16 @@ def build_structure_component_evidence(
         component=component,
         market=_MARKET,
         status=status,
-        model_id=ENGINE_NAME if engine_version is not None else None,
-        model_version=engine_version,
+        model_id=model_id,
+        model_version=model_version,
         input_interval=input_interval,
         lookback_horizon=None,
         effective_horizon=EffectiveHorizon.UNKNOWN,
         observed_lifecycle=UNMEASURED_LIFECYCLE,
-        asof_ts=asof_ts,
+        asof_ts=normalized_asof_ts,
         freshness=freshness,
         provenance={
-            "engine_name": row.get("engine_name"),
+            "engine_name": engine_name,
             "engine_version": engine_version,
             "asset_id": row.get("asset_id"),
             "venue": row.get("venue"),
@@ -146,7 +182,6 @@ def build_price_structure_evidence(
     row: Mapping[str, Any],
     *,
     evaluated_at: datetime,
-    stale_after_multiplier: float = 2.0,
 ) -> dict[str, SignalHorizonV1Evidence]:
     """Complete PRICE_STRUCTURE evidence (TREND/PULLBACK/RANGE) for one row."""
     return {
@@ -155,7 +190,6 @@ def build_price_structure_evidence(
             component,
             family=FAMILY_PRICE_STRUCTURE,
             evaluated_at=evaluated_at,
-            stale_after_multiplier=stale_after_multiplier,
         )
         for component in (COMPONENT_TREND, COMPONENT_PULLBACK, COMPONENT_RANGE)
     }
@@ -165,7 +199,6 @@ def build_reclaim_evidence(
     row: Mapping[str, Any],
     *,
     evaluated_at: datetime,
-    stale_after_multiplier: float = 2.0,
 ) -> SignalHorizonV1Evidence:
     """Complete the RECLAIM component of RELATIVE_STRENGTH for one row."""
     return build_structure_component_evidence(
@@ -173,5 +206,4 @@ def build_reclaim_evidence(
         COMPONENT_RECLAIM,
         family=FAMILY_RELATIVE_STRENGTH,
         evaluated_at=evaluated_at,
-        stale_after_multiplier=stale_after_multiplier,
     )

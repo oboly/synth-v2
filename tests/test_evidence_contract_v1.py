@@ -6,7 +6,9 @@ from src.features.evidence_contract_v1 import (
     ReasonCode,
     compute_freshness,
     interval_to_seconds,
+    normalize_to_utc,
     resolve_status,
+    validate_input_interval,
 )
 
 
@@ -21,62 +23,89 @@ def test_interval_to_seconds_unknown_returns_none():
     assert interval_to_seconds(None) is None
 
 
+def test_validate_input_interval_known_is_clean():
+    assert validate_input_interval("4h") == ()
+
+
+def test_validate_input_interval_unknown_flags_reason_code():
+    assert validate_input_interval("2w") == (ReasonCode.UNKNOWN_INPUT_INTERVAL,)
+    assert validate_input_interval(None) == (ReasonCode.UNKNOWN_INPUT_INTERVAL,)
+
+
+def test_normalize_to_utc_none():
+    assert normalize_to_utc(None) is None
+
+
+def test_normalize_to_utc_naive_is_interpreted_as_utc():
+    naive = datetime(2026, 1, 1, 12, 0, 0)
+    normalized = normalize_to_utc(naive)
+    assert normalized == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    assert normalized.tzinfo is UTC
+
+
+def test_normalize_to_utc_aware_non_utc_is_converted():
+    from datetime import timezone
+
+    plus_two = timezone(timedelta(hours=2))
+    aware = datetime(2026, 1, 1, 14, 0, 0, tzinfo=plus_two)
+    normalized = normalize_to_utc(aware)
+    assert normalized == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
 def test_compute_freshness_missing_asof():
-    freshness, reasons = compute_freshness(
+    normalized_asof, freshness, reasons = compute_freshness(
         asof_ts=None,
         evaluated_at=datetime(2026, 1, 1, tzinfo=UTC),
-        input_interval="1h",
     )
+    assert normalized_asof is None
     assert freshness == FreshnessState.INSUFFICIENT_DATA
     assert reasons == (ReasonCode.MISSING_ASOF_TS,)
 
 
-def test_compute_freshness_unknown_interval():
-    freshness, reasons = compute_freshness(
-        asof_ts=datetime(2026, 1, 1, tzinfo=UTC),
-        evaluated_at=datetime(2026, 1, 1, tzinfo=UTC),
-        input_interval="2w",
+def test_compute_freshness_present_asof_is_unknown_not_fresh_or_stale():
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    normalized_asof, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + timedelta(minutes=5),
+    )
+    # No producer has a reviewed staleness rule, so freshness must not be
+    # invented as FRESH/STALE from age alone.
+    assert normalized_asof == asof
+    assert freshness == FreshnessState.UNKNOWN
+    assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)
+
+
+def test_compute_freshness_far_future_asof_still_unknown_not_fresh():
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    normalized_asof, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + timedelta(days=400),
     )
     assert freshness == FreshnessState.UNKNOWN
-    assert reasons == (ReasonCode.UNKNOWN_INPUT_INTERVAL,)
+    assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)
 
 
-def test_compute_freshness_fresh():
-    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    evaluated_at = asof + timedelta(hours=1)
-    freshness, reasons = compute_freshness(
-        asof_ts=asof,
-        evaluated_at=evaluated_at,
-        input_interval="1h",
-        stale_after_multiplier=2.0,
-    )
-    assert freshness == FreshnessState.FRESH
-    assert reasons == ()
-
-
-def test_compute_freshness_stale():
-    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    evaluated_at = asof + timedelta(hours=3)
-    freshness, reasons = compute_freshness(
-        asof_ts=asof,
-        evaluated_at=evaluated_at,
-        input_interval="1h",
-        stale_after_multiplier=2.0,
-    )
-    assert freshness == FreshnessState.STALE
-    assert reasons == (ReasonCode.STALE_EVIDENCE,)
-
-
-def test_compute_freshness_future_asof_is_stale_not_fresh():
+def test_compute_freshness_asof_after_evaluation_is_insufficient_data():
     asof = datetime(2026, 1, 1, 5, 0, tzinfo=UTC)
     evaluated_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-    freshness, reasons = compute_freshness(
+    normalized_asof, freshness, reasons = compute_freshness(
         asof_ts=asof,
         evaluated_at=evaluated_at,
-        input_interval="1h",
     )
-    assert freshness == FreshnessState.STALE
-    assert reasons == (ReasonCode.STALE_EVIDENCE,)
+    assert freshness == FreshnessState.INSUFFICIENT_DATA
+    assert reasons == (ReasonCode.ASOF_AFTER_EVALUATION_TS,)
+
+
+def test_compute_freshness_normalizes_naive_asof_against_aware_evaluated_at():
+    naive_asof = datetime(2026, 1, 1, 0, 0, 0)
+    aware_evaluated_at = datetime(2026, 1, 1, 0, 5, 0, tzinfo=UTC)
+    normalized_asof, freshness, reasons = compute_freshness(
+        asof_ts=naive_asof,
+        evaluated_at=aware_evaluated_at,
+    )
+    assert normalized_asof == datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    assert freshness == FreshnessState.UNKNOWN
+    assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)
 
 
 def test_resolve_status_valid():
@@ -106,3 +135,12 @@ def test_resolve_status_insufficient_data_from_extra_reason_codes():
 def test_resolve_status_missing_asof_takes_precedence():
     status, reasons = resolve_status(freshness=FreshnessState.INSUFFICIENT_DATA)
     assert status == EvidenceStatus.INSUFFICIENT_DATA
+
+
+def test_resolve_status_unknown_freshness_is_insufficient_data():
+    status, reasons = resolve_status(
+        freshness=FreshnessState.UNKNOWN,
+        extra_reason_codes=(ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,),
+    )
+    assert status == EvidenceStatus.INSUFFICIENT_DATA
+    assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)

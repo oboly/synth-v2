@@ -66,7 +66,8 @@ with:
 
 ```text
 family, component, market
-status                  VALID | STALE | INSUFFICIENT_DATA
+status                  VALID | STALE | INSUFFICIENT_DATA (today always
+                         INSUFFICIENT_DATA — see §3.2/§3.4)
 model_id, model_version
 input_interval
 lookback_horizon
@@ -91,24 +92,50 @@ relative_strength_snapshot.snapshot_ts_utc -> asof_ts (per #669's explicit corre
                                                         timestamp, not absent)
 ```
 
-### 3.2 Freshness rule (new, generic — not an indicator threshold)
+### 3.2 Freshness rule (producer-owned; not invented here)
 
-`freshness = STALE` when `age(evaluated_at - asof_ts) > 2 * input_interval`
-duration, `FRESH` otherwise; `INSUFFICIENT_DATA` when `asof_ts` is absent;
-`UNKNOWN` when `input_interval` is not a recognized candle code. This is
-contract-completion infrastructure only (age vs. the producer's own
-declared bar interval); it introduces no new trend/pullback/reclaim/rank
-classification threshold. The `2x` multiplier is a caller-overridable
-parameter (`stale_after_multiplier`), not a hardcoded market constant.
+Per #243 §3.5, `freshness` is producer-owned. Neither `structure_state_engine`
+nor `relative_strength_snapshot` has a reviewed staleness rule, so
+`evidence_contract_v1.compute_freshness` does not invent one — no
+interval-relative threshold, no caller-supplied threshold:
+
+```text
+asof_ts absent                         -> freshness=INSUFFICIENT_DATA (MISSING_ASOF_TS)
+asof_ts after evaluated_at             -> freshness=INSUFFICIENT_DATA (ASOF_AFTER_EVALUATION_TS)
+                                           (a producer timestamp from the future relative
+                                           to the replay/evaluation point is a data-integrity
+                                           contradiction, not a staleness judgement)
+asof_ts present, otherwise             -> freshness=UNKNOWN (FRESHNESS_NOT_OWNER_DEFINED)
+```
+
+`FreshnessState.FRESH`/`STALE` remain reserved enum values for a future
+producer-owned rule; this contract never emits them. Promoting a producer
+to FRESH/STALE requires an explicit upstream owner decision recording a
+reviewed staleness rule for that producer specifically, tracked outside
+this issue.
+
+Both `asof_ts` and `evaluated_at` are normalized to aware UTC
+(`evidence_contract_v1.normalize_to_utc`) before comparison: persisted
+`structure_state`/`relative_strength_snapshot` rows are naive-UTC (the
+writers strip tzinfo before `INSERT`), so a naive producer value is
+interpreted as UTC and a non-UTC aware value is converted via
+`astimezone`, never compared against a naive value directly.
 
 ### 3.3 Model identity / provenance
 
 ```text
 PRICE_STRUCTURE / RECLAIM:
-  model_id = "structure_state_engine" if engine_version present else None
-  model_version = row.engine_version
-  supported versions reviewed here: {"1.2"}
-  unreviewed/absent engine_version -> UNSUPPORTED_MODEL_VERSION, fails closed
+  model_id maps from persisted engine_name only when it exactly equals
+    "structure_state_engine"; otherwise model_id=None.
+  model_version maps from persisted engine_version only when it is in the
+    reviewed set {"1.2"}; otherwise model_version=None.
+  missing engine_name        -> MISSING_ENGINE_NAME, fails closed
+  engine_name != "structure_state_engine" -> UNEXPECTED_ENGINE_NAME, fails closed
+  missing engine_version     -> MISSING_ENGINE_VERSION, fails closed
+  engine_version not reviewed -> UNSUPPORTED_MODEL_VERSION, fails closed
+  Never substitutes/fabricates a model_id merely because engine_version
+  is present, and never fabricates a model_id from this producer's own
+  ENGINE_NAME constant without checking the persisted value first.
 
 CROSS_SECTIONAL_RANK:
   relative_strength_snapshot has no model_id/model_version column at all.
@@ -126,13 +153,13 @@ inferred from `input_interval`). Per #669's required fail-closed behavior
 ("unknown/unmapped horizon -> INSUFFICIENT_DATA"), every evidence produced
 by this completion therefore carries `effective_horizon = UNKNOWN` and an
 `UNMAPPED_HORIZON` reason code, and its top-level `status` is
-`INSUFFICIENT_DATA` even when `freshness = FRESH`.
+`INSUFFICIENT_DATA` even when identity and provenance are otherwise clean.
 
 This is an honest, deterministic reflection of the current gap, not a
-defect: `freshness` still distinguishes `FRESH` from `STALE` in the
-`freshness` field and in `reason_codes`, so a future horizon-owner decision
+defect: the `freshness` and `reason_codes` fields still record the
+specific reason(s) independently, so a future horizon-owner decision
 (tracked outside this issue) can be layered on without touching this
-mapping's freshness/provenance logic. This document does not invent a
+mapping's identity/provenance logic. This document does not invent a
 horizon mapping to make the top-level status look complete.
 
 ### 3.5 `observed_lifecycle`
@@ -144,15 +171,18 @@ durations when they have not been measured").
 ## 4. Fail-closed behavior summary
 
 ```text
-missing asof_ts               -> freshness=INSUFFICIENT_DATA, status=INSUFFICIENT_DATA
-stale (age > 2x interval)     -> freshness=STALE; status=INSUFFICIENT_DATA (compounds
-                                  with the permanent UNMAPPED_HORIZON gap, see §3.4)
-unknown input_interval        -> freshness=UNKNOWN, status=INSUFFICIENT_DATA
-unsupported engine_version    -> status=INSUFFICIENT_DATA (PRICE_STRUCTURE/RECLAIM only)
-missing provenance            -> status=INSUFFICIENT_DATA (CROSS_SECTIONAL_RANK default;
-                                  PRICE_STRUCTURE/RECLAIM when engine_version absent)
-replay                        -> caller-supplied row + evaluated_at only; no internal
-                                  "latest" query exists in these modules
+missing asof_ts                -> freshness=INSUFFICIENT_DATA (MISSING_ASOF_TS)
+asof_ts after evaluated_at     -> freshness=INSUFFICIENT_DATA (ASOF_AFTER_EVALUATION_TS)
+asof_ts present, no owner rule -> freshness=UNKNOWN (FRESHNESS_NOT_OWNER_DEFINED);
+                                   status=INSUFFICIENT_DATA (compounds with the
+                                   permanent UNMAPPED_HORIZON gap, see §3.4)
+unknown input_interval         -> status=INSUFFICIENT_DATA (UNKNOWN_INPUT_INTERVAL)
+missing/wrong engine_name      -> status=INSUFFICIENT_DATA (PRICE_STRUCTURE/RECLAIM only)
+missing/unsupported engine_version -> status=INSUFFICIENT_DATA (PRICE_STRUCTURE/RECLAIM only)
+missing provenance              -> status=INSUFFICIENT_DATA (CROSS_SECTIONAL_RANK default)
+naive vs aware asof_ts/evaluated_at -> normalized to aware UTC before any comparison
+replay                          -> caller-supplied row + evaluated_at only; no internal
+                                    "latest" query exists in these modules
 ```
 
 ## 5. Non-goals (explicit)

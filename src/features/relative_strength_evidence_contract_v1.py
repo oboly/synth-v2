@@ -27,6 +27,9 @@ Per docs/architecture/regime_evidence_matrix_audit_v1.md 3.2:
     - This is generic cross-asset relative strength, not ETH/BTC leadership;
       the audit found no BTC/ETH-specific logic in this producer, so none is
       added here.
+    - `freshness` is producer-owned (#243 3.5) and undeclared here; see
+      `evidence_contract_v1.compute_freshness`. This module does not invent
+      a staleness rule for `relative_strength_snapshot`.
 """
 
 from __future__ import annotations
@@ -56,7 +59,6 @@ def build_cross_sectional_rank_evidence(
     evaluated_at: datetime,
     model_id: str | None = None,
     model_version: str | None = None,
-    stale_after_multiplier: float = 2.0,
 ) -> SignalHorizonV1Evidence:
     """Map one `relative_strength_snapshot` row onto `SignalHorizonV1Evidence`.
 
@@ -70,15 +72,13 @@ def build_cross_sectional_rank_evidence(
     identity for the run; omitting them fails the evidence closed rather
     than fabricating provenance.
     """
-    asof_ts = row.get("snapshot_ts_utc")
+    raw_asof_ts = row.get("snapshot_ts_utc")
     lookback_days = row.get("lookback_days")
     lookback_horizon = f"{lookback_days}d" if lookback_days is not None else None
 
-    freshness, freshness_reason_codes = compute_freshness(
-        asof_ts=asof_ts,
+    normalized_asof_ts, freshness, freshness_reason_codes = compute_freshness(
+        asof_ts=raw_asof_ts,
         evaluated_at=evaluated_at,
-        input_interval=INPUT_INTERVAL,
-        stale_after_multiplier=stale_after_multiplier,
     )
 
     extra_reason_codes = freshness_reason_codes
@@ -104,7 +104,7 @@ def build_cross_sectional_rank_evidence(
         lookback_horizon=lookback_horizon,
         effective_horizon=EffectiveHorizon.UNKNOWN,
         observed_lifecycle=UNMEASURED_LIFECYCLE,
-        asof_ts=asof_ts,
+        asof_ts=normalized_asof_ts,
         freshness=freshness,
         provenance={
             "asset_id": row.get("asset_id"),

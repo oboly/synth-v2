@@ -21,6 +21,14 @@ Boundary:
       historical row and the exact evaluation timestamp, so replay callers
       cannot accidentally observe current/live truth for a historical asof;
     - `effective_horizon` is never inferred from `input_interval` (#243 3.3);
+    - `freshness` is producer-owned per #243 3.5. Neither `structure_state_engine`
+      nor `relative_strength_snapshot` has a reviewed staleness rule, so this
+      module does not invent one (no interval-relative threshold, no
+      caller-supplied threshold). `compute_freshness` can only distinguish
+      "no asof at all" (INSUFFICIENT_DATA) from "asof present, freshness not
+      yet owner-defined" (UNKNOWN). Promoting a producer to FRESH/STALE
+      requires an explicit upstream owner decision recording a reviewed rule
+      for that producer, tracked outside this module;
     - unknown/unmapped/missing required fields fail closed rather than being
       guessed.
 """
@@ -28,7 +36,7 @@ Boundary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -43,6 +51,8 @@ class EffectiveHorizon:
 
 
 class FreshnessState:
+    # FRESH/STALE are reserved for a future producer-owned staleness rule.
+    # `compute_freshness` in this module never emits them today.
     FRESH = "FRESH"
     STALE = "STALE"
     INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
@@ -67,16 +77,22 @@ class EvidenceStatus:
 # at call sites; extend this list instead.
 class ReasonCode:
     MISSING_ASOF_TS = "MISSING_ASOF_TS"
+    ASOF_AFTER_EVALUATION_TS = "ASOF_AFTER_EVALUATION_TS"
+    FRESHNESS_NOT_OWNER_DEFINED = "FRESHNESS_NOT_OWNER_DEFINED"
     STALE_EVIDENCE = "STALE_EVIDENCE"
     UNMAPPED_HORIZON = "UNMAPPED_HORIZON"
     UNKNOWN_INPUT_INTERVAL = "UNKNOWN_INPUT_INTERVAL"
+    MISSING_ENGINE_NAME = "MISSING_ENGINE_NAME"
+    UNEXPECTED_ENGINE_NAME = "UNEXPECTED_ENGINE_NAME"
+    MISSING_ENGINE_VERSION = "MISSING_ENGINE_VERSION"
     UNSUPPORTED_MODEL_VERSION = "UNSUPPORTED_MODEL_VERSION"
     MISSING_PROVENANCE = "MISSING_PROVENANCE"
     LIFECYCLE_UNMEASURED = "LIFECYCLE_UNMEASURED"
 
 
-# Deterministic unit conversion only (not a market threshold). Extend rather
-# than infer new interval codes silently.
+# Deterministic unit conversion only (not a market threshold, and not
+# currently consulted by `compute_freshness` -- reserved for a future
+# producer-owned freshness rule that needs interval-relative age math).
 _INTERVAL_SECONDS: dict[str, int] = {
     "5m": 5 * 60,
     "15m": 15 * 60,
@@ -92,6 +108,31 @@ def interval_to_seconds(input_interval: str | None) -> int | None:
     if input_interval is None:
         return None
     return _INTERVAL_SECONDS.get(input_interval)
+
+
+def validate_input_interval(input_interval: str | None) -> tuple[str, ...]:
+    """Flag an unrecognized/unmapped `input_interval` deterministically."""
+    if interval_to_seconds(input_interval) is None:
+        return (ReasonCode.UNKNOWN_INPUT_INTERVAL,)
+    return ()
+
+
+def normalize_to_utc(dt: datetime | None) -> datetime | None:
+    """Normalize a producer timestamp to one internal UTC representation.
+
+    Persisted `structure_state`/`relative_strength_snapshot` rows are
+    naive-UTC (the writer strips tzinfo before persisting); callers may also
+    supply timezone-aware UTC. Both are deterministically mapped onto the
+    same aware-UTC value so comparisons never raise
+    `TypeError: can't compare offset-naive and offset-aware datetimes` and
+    never silently assume local time. A non-UTC aware offset is converted to
+    UTC via `astimezone`, not truncated/ignored.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,47 +175,61 @@ def compute_freshness(
     *,
     asof_ts: datetime | None,
     evaluated_at: datetime,
-    input_interval: str | None,
-    stale_after_multiplier: float = 2.0,
-) -> tuple[str, tuple[str, ...]]:
-    """Generic, producer-agnostic freshness rule.
+) -> tuple[datetime | None, str, tuple[str, ...]]:
+    """Producer-owned freshness (#243 3.5), not invented here.
 
-    This is contract-completion infrastructure (issue #669), not a
-    structure/relative-strength indicator threshold: it only measures the
-    age of an already-produced `asof_ts` against a multiple of the
-    producer's own declared `input_interval` bar duration. No structure or
-    relative-strength classification logic is touched.
+    Returns `(normalized_asof_ts, freshness, reason_codes)`. Neither
+    `structure_state_engine` nor `relative_strength_snapshot` has a reviewed
+    staleness rule, so this function never classifies FRESH/STALE from an
+    age-vs-interval computation. It only distinguishes:
+
+    - no `asof_ts` at all -> INSUFFICIENT_DATA;
+    - an `asof_ts` dated after `evaluated_at` -> INSUFFICIENT_DATA (a
+      producer timestamp from the future relative to the replay/evaluation
+      point is a data-integrity contradiction, not a staleness judgement,
+      so this is a zero-tolerance validity check rather than an invented
+      threshold);
+    - otherwise -> UNKNOWN, because freshness has not yet been defined by
+      the owning producer.
+
+    Both timestamps are normalized to aware UTC via `normalize_to_utc`
+    before comparison.
     """
-    if asof_ts is None:
-        return FreshnessState.INSUFFICIENT_DATA, (ReasonCode.MISSING_ASOF_TS,)
+    normalized_asof_ts = normalize_to_utc(asof_ts)
+    normalized_evaluated_at = normalize_to_utc(evaluated_at)
 
-    interval_seconds = interval_to_seconds(input_interval)
-    if interval_seconds is None:
-        return FreshnessState.UNKNOWN, (ReasonCode.UNKNOWN_INPUT_INTERVAL,)
+    if normalized_asof_ts is None:
+        return None, FreshnessState.INSUFFICIENT_DATA, (ReasonCode.MISSING_ASOF_TS,)
 
-    age = evaluated_at - asof_ts
-    max_age = timedelta(seconds=interval_seconds * stale_after_multiplier)
+    if normalized_asof_ts > normalized_evaluated_at:
+        return (
+            normalized_asof_ts,
+            FreshnessState.INSUFFICIENT_DATA,
+            (ReasonCode.ASOF_AFTER_EVALUATION_TS,),
+        )
 
-    if age < timedelta(0):
-        # Historical replay must never treat a future-dated row as fresh.
-        return FreshnessState.STALE, (ReasonCode.STALE_EVIDENCE,)
-
-    if age > max_age:
-        return FreshnessState.STALE, (ReasonCode.STALE_EVIDENCE,)
-
-    return FreshnessState.FRESH, ()
+    return (
+        normalized_asof_ts,
+        FreshnessState.UNKNOWN,
+        (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,),
+    )
 
 
 # Reason codes that must always fail an evidence contract closed to
-# INSUFFICIENT_DATA regardless of freshness. `STALE_EVIDENCE` is
-# deliberately excluded: staleness alone must resolve to `STALE`, not
-# `INSUFFICIENT_DATA`, so consumers can distinguish "usable but old" from
-# "cannot be trusted at all".
+# INSUFFICIENT_DATA regardless of freshness. `STALE_EVIDENCE` is reserved
+# for a future producer-owned staleness rule and is deliberately excluded:
+# staleness alone should resolve to `STALE`, not `INSUFFICIENT_DATA`, once
+# such a rule exists.
 HARD_FAIL_REASON_CODES: frozenset[str] = frozenset(
     {
         ReasonCode.MISSING_ASOF_TS,
+        ReasonCode.ASOF_AFTER_EVALUATION_TS,
+        ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,
         ReasonCode.UNKNOWN_INPUT_INTERVAL,
         ReasonCode.UNMAPPED_HORIZON,
+        ReasonCode.MISSING_ENGINE_NAME,
+        ReasonCode.UNEXPECTED_ENGINE_NAME,
+        ReasonCode.MISSING_ENGINE_VERSION,
         ReasonCode.UNSUPPORTED_MODEL_VERSION,
         ReasonCode.MISSING_PROVENANCE,
     }
