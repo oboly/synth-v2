@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -12,10 +12,9 @@ from src.research.cq_v1_model_candidate_v1 import COVERAGE_ARTIFACT_SHA256, MODE
 from src.research.cq_v1_pit_extractor_v1 import MRP_MODEL_VERSION
 from src.research.cq_v1_temporal_sampling_v1 import derive_asofs, split_for_asof
 from src.research.entry_quality_shadow_v1 import EntryQualityInput, compute_entry_quality_shadow
-from src.selection.selection_engine_v2 import SelectionCandidate, load_selection_config, rank_candidates
+from src.selection.selection_engine_v2 import SelectionCandidate, rank_candidates
 
 CQ_MODEL_VERSION = "cq_shadow_v1"
-DEFAULT_SELECTION_CONFIG = "configs/selection_engine_v2.yaml"
 CONTRACT_PATH = Path("config/research/cq_v1_temporal_sampling_v1.json")
 
 EVIDENCE_TS_FIELDS = (
@@ -75,7 +74,12 @@ def load_temporal_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     return payload
 
 
-def fetch_selection_candidates_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) -> tuple[list[SelectionCandidate], dict[int, dict[str, str | None]]]:
+def fetch_selection_candidates_asof(
+    conn: Any,
+    *,
+    venue: str,
+    asof_ts_utc: datetime,
+) -> tuple[list[SelectionCandidate], dict[int, dict[str, str | None]]]:
     sql = """
     WITH quality_latest AS (
         SELECT q.* FROM asset_interval_quality q
@@ -118,7 +122,12 @@ def fetch_selection_candidates_asof(conn: Any, *, venue: str, asof_ts_utc: datet
     LEFT JOIN signal_latest s1d ON s1d.asset_id=a.asset_id AND s1d.interval_code='1d'
     LEFT JOIN signal_latest s4h ON s4h.asset_id=a.asset_id AND s4h.interval_code='4h'
     LEFT JOIN signal_latest s1h ON s1h.asset_id=a.asset_id AND s1h.interval_code='1h'
-    WHERE a.is_enabled=1 AND a.is_tradeable=1
+    WHERE q1d.asset_id IS NOT NULL
+       OR q4h.asset_id IS NOT NULL
+       OR q1h.asset_id IS NOT NULL
+       OR s1d.asset_id IS NOT NULL
+       OR s4h.asset_id IS NOT NULL
+       OR s1h.asset_id IS NOT NULL
     ORDER BY a.asset_id
     """
     params = (venue, asof_ts_utc, venue, venue, asof_ts_utc, venue, venue)
@@ -136,15 +145,37 @@ def fetch_selection_candidates_asof(conn: Any, *, venue: str, asof_ts_utc: datet
         seen.add(asset_id)
         ev = {field: _iso(row.get(field)) for field in EVIDENCE_TS_FIELDS}
         evidence[asset_id] = ev
-        candidates.append(SelectionCandidate(
-            asset_id=asset_id,symbol=str(row["symbol"]),venue=str(row["venue"]),
-            quality_status_1d=str(row["quality_status_1d"]),quality_status_4h=str(row["quality_status_4h"]),quality_status_1h=str(row["quality_status_1h"]),
-            trend_score_1d=_decimal(row.get("trend_score_1d")),setup_score_1d=_decimal(row.get("setup_score_1d")),signal_confidence_1d=_decimal(row.get("signal_confidence_1d")),risk_score_1d=_decimal(row.get("risk_score_1d")),
-            volume_score_4h=_decimal(row.get("volume_score_4h")),compass_score_4h=_decimal(row.get("compass_score_4h")),setup_score_4h=_decimal(row.get("setup_score_4h")),relative_score_4h=_decimal(row.get("relative_score_4h")),signal_confidence_4h=_decimal(row.get("signal_confidence_4h")),expansion_position_score_4h=_decimal(row.get("expansion_position_score_4h")),pullback_quality_score_4h=_decimal(row.get("pullback_quality_score_4h")),risk_score_4h=_decimal(row.get("risk_score_4h")),
-            setup_score_1h=_decimal(row.get("setup_score_1h")),signal_confidence_1h=_decimal(row.get("signal_confidence_1h")),risk_score_1h=_decimal(row.get("risk_score_1h")),
-            latest_quality_asof_ts_utc=max((v for k,v in ev.items() if k.startswith("quality_") and v is not None), default=None),
-            advice_ts_1h_utc=ev["signal_ts_1h_utc"],advice_ts_4h_utc=ev["signal_ts_4h_utc"],
-        ))
+        candidates.append(
+            SelectionCandidate(
+                asset_id=asset_id,
+                symbol=str(row["symbol"]),
+                venue=str(row["venue"]),
+                quality_status_1d=str(row["quality_status_1d"]),
+                quality_status_4h=str(row["quality_status_4h"]),
+                quality_status_1h=str(row["quality_status_1h"]),
+                trend_score_1d=_decimal(row.get("trend_score_1d")),
+                setup_score_1d=_decimal(row.get("setup_score_1d")),
+                signal_confidence_1d=_decimal(row.get("signal_confidence_1d")),
+                risk_score_1d=_decimal(row.get("risk_score_1d")),
+                volume_score_4h=_decimal(row.get("volume_score_4h")),
+                compass_score_4h=_decimal(row.get("compass_score_4h")),
+                setup_score_4h=_decimal(row.get("setup_score_4h")),
+                relative_score_4h=_decimal(row.get("relative_score_4h")),
+                signal_confidence_4h=_decimal(row.get("signal_confidence_4h")),
+                expansion_position_score_4h=_decimal(row.get("expansion_position_score_4h")),
+                pullback_quality_score_4h=_decimal(row.get("pullback_quality_score_4h")),
+                risk_score_4h=_decimal(row.get("risk_score_4h")),
+                setup_score_1h=_decimal(row.get("setup_score_1h")),
+                signal_confidence_1h=_decimal(row.get("signal_confidence_1h")),
+                risk_score_1h=_decimal(row.get("risk_score_1h")),
+                latest_quality_asof_ts_utc=max(
+                    (v for k, v in ev.items() if k.startswith("quality_") and v is not None),
+                    default=None,
+                ),
+                advice_ts_1h_utc=ev["signal_ts_1h_utc"],
+                advice_ts_4h_utc=ev["signal_ts_4h_utc"],
+            )
+        )
     return candidates, evidence
 
 
@@ -170,7 +201,18 @@ def fetch_mrp_assets_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) -> di
     WHERE s.venue=%s AND o.model_version=%s AND s.model_version=%s AND o.as_of_ts_utc <= %s AND s.as_of_ts_utc <= %s
     ORDER BY o.asset_id,o.pressure_obs_id DESC
     """
-    params = (venue,MRP_MODEL_VERSION,MRP_MODEL_VERSION,asof_ts_utc,asof_ts_utc,venue,MRP_MODEL_VERSION,MRP_MODEL_VERSION,asof_ts_utc,asof_ts_utc)
+    params = (
+        venue,
+        MRP_MODEL_VERSION,
+        MRP_MODEL_VERSION,
+        asof_ts_utc,
+        asof_ts_utc,
+        venue,
+        MRP_MODEL_VERSION,
+        MRP_MODEL_VERSION,
+        asof_ts_utc,
+        asof_ts_utc,
+    )
     with conn.cursor() as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
@@ -181,9 +223,18 @@ def fetch_mrp_assets_asof(conn: Any, *, venue: str, asof_ts_utc: datetime) -> di
     return out
 
 
-def build_asof_population(conn: Any, *, contract: dict[str, Any], asof_ts_utc: datetime, venue: str, selection_config: dict[str, Any]) -> list[dict[str, Any]]:
+def build_asof_population(
+    conn: Any,
+    *,
+    contract: dict[str, Any],
+    asof_ts_utc: datetime,
+    venue: str,
+    selection_config: dict[str, Any],
+) -> list[dict[str, Any]]:
     split = split_for_asof(asof_ts_utc, contract)
-    candidates, evidence_by_asset = fetch_selection_candidates_asof(conn, venue=venue, asof_ts_utc=asof_ts_utc)
+    candidates, evidence_by_asset = fetch_selection_candidates_asof(
+        conn, venue=venue, asof_ts_utc=asof_ts_utc
+    )
     selection_rows = rank_candidates(candidates, selection_config)
     aggregate = fetch_mrp_aggregate_asof(conn, venue=venue, asof_ts_utc=asof_ts_utc)
     mrp_assets = fetch_mrp_assets_asof(conn, venue=venue, asof_ts_utc=asof_ts_utc)
@@ -191,32 +242,54 @@ def build_asof_population(conn: Any, *, contract: dict[str, Any], asof_ts_utc: d
     for selection in selection_rows:
         evidence = evidence_by_asset[selection.asset_id]
         evidence_key = canonical_json_sha256(evidence)
-        cq = compute_entry_quality_shadow(EntryQualityInput(
-            trade_quality_score=selection.trade_quality_score,
-            timing_refinement_score=selection.timing_refinement_score,
-            quality_penalty=selection.quality_penalty,
-            quality_status_1d=selection.quality_status_1d,
-            quality_status_4h=selection.quality_status_4h,
-            quality_status_1h=selection.quality_status_1h,
-        ))
+        cq = compute_entry_quality_shadow(
+            EntryQualityInput(
+                trade_quality_score=selection.trade_quality_score,
+                timing_refinement_score=selection.timing_refinement_score,
+                quality_penalty=selection.quality_penalty,
+                quality_status_1d=selection.quality_status_1d,
+                quality_status_4h=selection.quality_status_4h,
+                quality_status_1h=selection.quality_status_1h,
+            )
+        )
         mrp_asset = mrp_assets.get(selection.asset_id)
         identity = {
-            "asset_id": selection.asset_id,"venue": venue,"asof_ts_utc": asof_ts_utc.isoformat(),
-            "evidence_key": evidence_key,"cq_model_version": CQ_MODEL_VERSION,
-            "model_family_version": MODEL_FAMILY_VERSION,"coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
+            "asset_id": selection.asset_id,
+            "venue": venue,
+            "asof_ts_utc": asof_ts_utc.isoformat(),
+            "evidence_key": evidence_key,
+            "cq_model_version": CQ_MODEL_VERSION,
+            "model_family_version": MODEL_FAMILY_VERSION,
+            "coverage_artifact_sha256": COVERAGE_ARTIFACT_SHA256,
         }
-        rows.append({
-            **identity,"observation_id": canonical_json_sha256(identity),"symbol": selection.symbol,"split": split,
-            **evidence,"trade_quality_score": selection.trade_quality_score,"selection_score": selection.selection_score,
-            "timing_refinement_score": selection.timing_refinement_score,"quality_penalty": selection.quality_penalty,
-            "quality_status_1d": selection.quality_status_1d,"quality_status_4h": selection.quality_status_4h,"quality_status_1h": selection.quality_status_1h,
-            "cq_v0": cq.entry_quality_score,"cq_v0_state": cq.entry_quality_state,"cq_v0_reasons": cq.reasons,"cq_v0_blockers": cq.blockers,
-            "mrp_aggregate": aggregate,"mrp_aggregate_status": "AVAILABLE" if aggregate else "UNAVAILABLE_MRP_AGGREGATE",
-            "mrp_asset": mrp_asset,"mrp_asset_status": "AVAILABLE" if mrp_asset else "UNAVAILABLE_MRP_ASSET",
-            "sector_context_status": "UNAVAILABLE_HISTORICAL_MEMBERSHIP",
-            "ppp_status": "UNAVAILABLE_UNLESS_CANONICAL_PIT_ARTIFACT_SUPPLIED",
-            "canonical_candles_15m_status": "NOT_DIRECTLY_CONSUMED_BY_FROZEN_CQ_V1_FEATURE_RECONSTRUCTION",
-        })
+        rows.append(
+            {
+                **identity,
+                "observation_id": canonical_json_sha256(identity),
+                "symbol": selection.symbol,
+                "split": split,
+                "universe_provenance_status": "HISTORICAL_CORE_SOURCE_OBSERVED_AT_OR_BEFORE_ASOF",
+                **evidence,
+                "trade_quality_score": selection.trade_quality_score,
+                "selection_score": selection.selection_score,
+                "timing_refinement_score": selection.timing_refinement_score,
+                "quality_penalty": selection.quality_penalty,
+                "quality_status_1d": selection.quality_status_1d,
+                "quality_status_4h": selection.quality_status_4h,
+                "quality_status_1h": selection.quality_status_1h,
+                "cq_v0": cq.entry_quality_score,
+                "cq_v0_state": cq.entry_quality_state,
+                "cq_v0_reasons": cq.reasons,
+                "cq_v0_blockers": cq.blockers,
+                "mrp_aggregate": aggregate,
+                "mrp_aggregate_status": "AVAILABLE" if aggregate else "UNAVAILABLE_MRP_AGGREGATE",
+                "mrp_asset": mrp_asset,
+                "mrp_asset_status": "AVAILABLE" if mrp_asset else "UNAVAILABLE_MRP_ASSET",
+                "sector_context_status": "UNAVAILABLE_HISTORICAL_MEMBERSHIP",
+                "ppp_status": "UNAVAILABLE_UNLESS_CANONICAL_PIT_ARTIFACT_SUPPLIED",
+                "canonical_candles_15m_status": "NOT_DIRECTLY_CONSUMED_BY_FROZEN_CQ_V1_FEATURE_RECONSTRUCTION",
+            }
+        )
     ids = [row["observation_id"] for row in rows]
     if len(ids) != len(set(ids)):
         raise ValueError(f"duplicate observation identity at {asof_ts_utc.isoformat()}")
@@ -227,10 +300,16 @@ def summarize_population(rows: list[dict[str, Any]]) -> dict[str, Any]:
     asofs = sorted({str(row["asof_ts_utc"]) for row in rows})
     assets = {int(row["asset_id"]) for row in rows}
     return {
-        "row_count": len(rows),"unique_asset_count": len(assets),"unique_asof_count": len(asofs),
-        "first_asof_ts_utc": asofs[0] if asofs else None,"last_asof_ts_utc": asofs[-1] if asofs else None,
-        "mrp_aggregate_unavailable_count": sum(row["mrp_aggregate_status"] != "AVAILABLE" for row in rows),
+        "row_count": len(rows),
+        "unique_asset_count": len(assets),
+        "unique_asof_count": len(asofs),
+        "first_asof_ts_utc": asofs[0] if asofs else None,
+        "last_asof_ts_utc": asofs[-1] if asofs else None,
+        "mrp_aggregate_unavailable_count": sum(
+            row["mrp_aggregate_status"] != "AVAILABLE" for row in rows
+        ),
         "mrp_asset_unavailable_count": sum(row["mrp_asset_status"] != "AVAILABLE" for row in rows),
         "cq_v0_unavailable_count": sum(row["cq_v0"] is None for row in rows),
-        "sector_context_unavailable_count": len(rows),"ppp_unavailable_count": len(rows),
+        "sector_context_unavailable_count": len(rows),
+        "ppp_unavailable_count": len(rows),
     }
