@@ -6,7 +6,7 @@ Runtime impact: none. This document is audit/design only.
 
 ## 1. Decision summary
 
-Synth V1 should close the loop by reusing the execution lane that already exists instead of creating new named agents or a parallel opportunity/order stack.
+Synth V1 closes the loop by reusing the existing market, decision, planning and shared-executor contracts. It does not introduce new authority-bearing Asset Analyst, Investment Agent, wallet-agent or BUY/SELL executor services.
 
 Canonical V1 flow:
 
@@ -16,8 +16,8 @@ market-only producer / selection
 -> decision_gate account permission + allocation ceiling
 -> execution_planner immutable BUY ladder
 -> shared execution handoff / reconciliation
--> BUY fill / position truth
--> canonical automatic-exit policy/profile resolution
+-> BUY fill / canonical position truth
+-> canonical automatic-exit profile resolution
 -> automatic-exit candidate
 -> decision_gate exit permission
 -> execution_planner immutable SELL plan
@@ -27,57 +27,56 @@ market-only producer / selection
 -> next decision_gate evaluation of current market opportunities
 ```
 
-The account-state change is the reason a new investment evaluation becomes useful; it is not a reason to wake or mutate market ranking. Market ranking remains account-agnostic.
+Market ranking remains account-agnostic. Account-state changes may cause a new account-aware evaluation, but they never mutate market ranking truth.
 
-The following architectural decisions are explicit:
+Explicit decisions:
 
-1. **Do not create `Asset Analyst` or `Investment Agent` as new authority-bearing runtimes.** Market producers plus `selection_engine`/market read models already own those responsibilities.
-2. **Do not create a new `asset_opportunity` table for V1.** Reuse existing market proposal/candidate contracts and preserve provenance. A generalized persisted opportunity entity is justified only when multiple validated producers require one shared durable lifecycle owner.
-3. **Keep `execution_planner` in the automatic BUY lane.** It performs real deterministic transformation after permission: notional ceiling -> rounded base quantity -> venue-valid multi-leg immutable ladder. This is not permission logic and is not executor order handling.
-4. **Keep `decision_gate` as the sole account-aware permission/allocation owner.** No account facts enter market ranking/candidate production.
-5. **Use the existing COMPLETE account-state bundle as canonical wallet/account truth.** Do not create a wallet agent or second balance/reservation truth.
-6. **Reuse the shared side-neutral executor/handoff/reconciliation substrate.** No BUY-specific or SELL-specific broker stack.
-7. **Do not authorize automatic BUY LIVE before safe automatic exit coverage exists.** The current missing `automatic_exit_profile_v1` producer is a closed-loop blocker; #657 owns its design/promotion path.
+1. Do not create `Asset Analyst` or `Investment Agent` as new runtimes. Existing market producers plus `selection_engine`/read models own those logical roles.
+2. Do not add a generic `asset_opportunity` table for V1. Reuse existing proposal/candidate identity and provenance.
+3. Retain `execution_planner`. BUY still requires deterministic notional-to-quantity conversion, venue-safe rounding, minimum checks and immutable ladder construction after permission.
+4. `decision_gate` remains the sole account-aware permission/allocation owner for both BUY and SELL.
+5. COMPLETE account-state snapshots plus the canonical automatic-BUY allocation-evidence projection remain the wallet/account source of truth.
+6. Reuse the shared side-neutral executor/handoff/reconciliation substrate.
+7. Automatic BUY LIVE remains blocked until compatible automatic exit coverage is proven for the exact admitted V1 family.
 
 ## 2. Current-state audit
 
-Audit baseline: main `2744efd437b204933715bbe21a6875e4a4c048b8`.
-
-### 2.1 Market proposal and BUY candidate
-
-`docs/architecture/strategy_proposal_contract_v1.md` already defines the permanent market-only proposal boundary:
+The repository already contains the required BUY-side phases:
 
 ```text
-market evidence
--> strategy proposal
--> decision_gate
--> execution_planner
--> executor
+#399 Phase 1  market-only automatic BUY candidate
+#399 Phase 2  decision_gate BUY permission/allocation
+#399 Phase 3  execution_planner immutable BUY ladder
+#399 Phase 4  deterministic runtime + append-only evidence
+#399 Phase 5  DRY_RUN/PAPER acceptance preview
+#399 Phase 6  shared side-neutral executor handoff integration
+#399 Phase 7  separately authorized LIVE phase, not yet accepted
 ```
 
-It already requires account-agnostic proposal truth, expiry/freshness, provenance, horizon separation, entry/target/invalidation levels and proposal lifecycle.
-
-The automatic BUY lane has a narrower execution adapter in:
+Relevant owners include:
 
 ```text
+docs/architecture/strategy_proposal_contract_v1.md
 src/entry_policy/automatic_buy_candidate_v1.py
+src/decision_gate/automatic_buy_gate_v1.py
+src/decision_gate/automatic_buy_account_allocation_evidence_contract_v1.py
+src/decision_gate/automatic_buy_account_allocation_evidence_repository_v1.py
+src/execution_planner/automatic_buy_planner_v1.py
+src/entry_policy/automatic_buy_runtime_orchestrator_v1.py
+src/entry_policy/run_automatic_buy_dry_run_acceptance_v1.py
 ```
 
-This is sufficient for the current bounded V1 automatic-entry producer. It is not a replacement for the generic Strategy Proposal Contract and must not become a second market-ranking authority.
+The shared executor/handoff foundation already exists from #206 and #399 Phase 6. No BUY-specific broker stack is justified.
 
-Known gap retained from #557: current automatic BUY candidate logic can recognize an already-actionable entry/re-entry zone, but it does not itself own a full fall-through -> invalidated -> recovery/reclaim -> BUY_WINDOW state machine. That transition remains market-policy/producer-owned upstream of `decision_gate`.
+### 2.1 Strategy proposal vs automatic BUY candidate
+
+`StrategyProposal` remains the generic market-only proposal contract. `AutomaticBuyCandidateV1` is the narrower current automatic-entry seam. Neither contains account state, permission or broker authority.
+
+Current entry timing is not a full reclaim-state machine. The exact `WAITING / BUY_WINDOW / INVALIDATED / STOP_CHASING` transition and reclaim/recovery trigger remain market-policy/producer concerns upstream of `decision_gate`.
 
 ### 2.2 Account and deployable-capital truth
 
-Canonical automatic-BUY account evidence is already assembled by:
-
-```text
-src/decision_gate/automatic_buy_account_allocation_evidence_contract_v1.py
-src/decision_gate/automatic_buy_account_allocation_evidence_repository_v1.py
-docs/architecture/automatic_buy_account_allocation_evidence_v1.md
-```
-
-The projection reads canonical sources rather than caller-supplied account facts:
+Canonical automatic-BUY account evidence is assembled from account-owned state such as:
 
 ```text
 trading_account
@@ -90,309 +89,253 @@ automatic_buy_account_permission_v1
 account protection evidence
 ```
 
-For V1, deployable BUY capacity is not a second wallet balance. It is the fail-closed `decision_gate` result after composing fresh free quote balance, existing exposure/open-order conflict, bucket/account limits, protection state and the proposed position ceiling.
+The gate owns the final account-specific ceiling. Market ranking never reads or derives it.
 
-The gate's final authority remains:
+### 2.3 Planner necessity
 
-```text
-approved_notional_ceiling_eur
-```
-
-The existing implementation is deliberately conservative where bucket attribution is unavailable: bucket amount/open-position evidence can be account-wide and therefore over-restrictive. Do not create a speculative per-bucket position ledger merely to make V1 less conservative.
-
-### 2.3 Automatic BUY repository phases
-
-Issue #399 repository Phases 1-6 are already present:
-
-```text
-Phase 1  automatic BUY candidate
-Phase 2  decision_gate permission/allocation
-Phase 3  execution_planner BUY ladder
-Phase 4  deterministic runtime + append-only persistence
-Phase 5  DRY_RUN/PAPER acceptance preview
-Phase 6  shared side-neutral executor handoff integration
-```
-
-Key files include:
-
-```text
-src/decision_gate/automatic_buy_gate_v1.py
-src/execution_planner/automatic_buy_planner_v1.py
-src/entry_policy/automatic_buy_runtime_orchestrator_v1.py
-src/entry_policy/run_automatic_buy_dry_run_acceptance_v1.py
-```
-
-PR #447 proves Phase 6 adapts `AutomaticBuyPlanV1` to the existing shared `ApprovedExecutionPlanV1` / `ExecutionHandoffRepositoryV1` substrate rather than inventing a BUY executor.
-
-Phase 7 is intentionally separate LIVE authorization and must remain so.
-
-### 2.4 Why the BUY planner remains
-
-The #557 audit explicitly re-opened whether `execution_planner` could be removed for BUY. Current code answers that question: **retain it**.
-
-After `decision_gate` approves a notional ceiling, `automatic_buy_planner_v1` still owns non-trivial deterministic transformation:
+The planner remains required because the post-gate transformation is real:
 
 ```text
 approved EUR notional ceiling
 -> reference-price conversion to base quantity
--> side-aware quantity/price rounding
--> venue capability + min-quantity + min-notional checks
--> deterministic multi-leg distribution
+-> side-aware venue rounding
+-> min quantity / min notional / capability checks
+-> deterministic leg distribution
 -> immutable BUY plan
 ```
 
-Moving this into `decision_gate` would mix permission/allocation with execution construction. Moving it into the executor would give the order-handling layer execution-policy authority. Neither is acceptable.
+Moving this into `decision_gate` would mix permission with execution construction. Moving it into the executor would give order handling execution-policy authority.
 
-### 2.5 Shared executor / reconciliation
+## 3. Automatic-exit dependency and V1 family restriction
 
-Issue #206 and #399 Phase 6 provide the shared BUY/SELL handoff and order-handling substrate. The closed-loop architecture therefore reuses:
-
-```text
-ApprovedExecutionPlanV1
-ExecutionHandoffRepositoryV1
-shared per-leg persistence/state
-client-order idempotency
-shared venue adapter
-shared reconciliation
-```
-
-Do not add `current_limit_sell_orders`, a BUY executor, a SELL executor, or another broker-order truth table.
-
-### 2.6 Automatic exit coverage
-
-Automatic exit runtime/profile resolution exists and correctly fails closed when no unique valid `automatic_exit_profile_v1` exists.
-
-Issue #657 owns the missing evidence-backed profile producer/promotion architecture. Its current dependency split is canonical:
+The canonical #657 Phase A architecture contract is already landed as:
 
 ```text
-Phase A design contract: may proceed now
-Phase B producer/promotion: requires validated upstream evidence, currently #270 unless superseded by another reviewed canonical source
+docs/architecture/automatic_exit_profile_promotion_v1.md
 ```
 
-For V1, breadth is not required. One bounded deterministic strategy/horizon/profile family is sufficient to prove closed-loop exit coverage, but fabricated generic targets are forbidden.
+Its current state is architecture-complete but producer-blocked. The remaining dependency is **#657 Phase B evidence availability**, currently requiring a documented accepted conclusion from #270 or another explicitly reviewed source that supersedes it.
 
-## 3. Target component ownership
+The current `automatic_exit_profile_v1` resolver matches only:
+
+```text
+(venue, asset_id, market)
+```
+
+It does **not** bind profile rows by strategy, horizon or setup. Therefore V1 must not admit arbitrary same-market BUY candidates and assume the market-level profile is semantically compatible.
+
+### 3.1 Mandatory V1 restriction
+
+Until a separately reviewed profile schema/contract expansion adds strategy/horizon/setup identity, automatic BUY eligibility is restricted to the **exact profile-supported family** established by the accepted #657 Phase B evidence and promotion review.
+
+That family must be documented before any DRY_RUN/PAPER closed-loop acceptance that claims exit coverage and before any LIVE authorization. At minimum the admission contract must identify:
+
+```text
+venue
+asset_id
+market
+strategy_id / strategy family
+horizon
+setup family where relevant
+profile evidence_id / method_version
+```
+
+Only a BUY candidate matching that reviewed family may be considered covered by the market-level profile. A different strategy/horizon/setup on the same `(venue, asset_id, market)` is **not automatically covered** and must fail closed for automatic closed-loop admission.
+
+This restriction is a V1 architecture gate. It does not alter the existing resolver or schema. If more than one strategy/horizon family per market needs independent exit policy, that requires a separately reviewed schema/contract expansion owned outside this #557 audit.
+
+No profile may be fabricated simply to make the runtime pass.
+
+## 4. Target component ownership / gap matrix
 
 | Target concept | Classification | Canonical V1 owner |
 | --- | --- | --- |
-| Asset Analyst | RENAME_ONLY / logical role | existing market producers + proposal/candidate adapters |
-| Investment Agent | RENAME_ONLY / logical role | `selection_engine` / market-only ranking read model |
+| Asset Analyst | RENAME_ONLY logical role | existing market producers + candidate adapters |
+| Investment Agent | RENAME_ONLY logical role | `selection_engine` / market ranking read model |
 | Generic Strategy Proposal | REUSE_AS_IS | `strategy_proposal_contract_v1` |
-| V1 actionable automatic BUY candidate | REUSE_AS_IS | `automatic_buy_candidate_v1` |
-| Generic persisted `asset_opportunity` entity | NOT_REQUIRED_FOR_V1 | defer until multiple producers require shared persistence/lifecycle |
-| Opportunity lifecycle | EXTEND_EXISTING upstream | strategy proposal/market producer; never `decision_gate` |
+| Actionable automatic BUY candidate | REUSE_AS_IS | `automatic_buy_candidate_v1` |
+| Generic persisted `asset_opportunity` | NOT_REQUIRED_FOR_V1 | defer |
+| Opportunity lifecycle | EXTEND_EXISTING upstream | market/strategy producer |
 | Account/wallet truth | REUSE_AS_IS | COMPLETE account-state snapshot bundle |
-| Account allocation evidence | REUSE_AS_IS | `automatic_buy_account_allocation_evidence_*` |
-| Account permission/allocation | REUSE_AS_IS | `decision_gate` / `automatic_buy_gate_v1` |
-| BUY execution construction | REUSE_AS_IS | `execution_planner/automatic_buy_planner_v1` |
-| BUY runtime/audit/idempotency | REUSE_AS_IS | automatic BUY runtime Phase 4 |
+| Account allocation evidence | REUSE_AS_IS | automatic-BUY allocation-evidence projection |
+| BUY permission/allocation | REUSE_AS_IS | `decision_gate` |
+| BUY execution construction | REUSE_AS_IS | `execution_planner` |
+| BUY runtime/audit/idempotency | REUSE_AS_IS | #399 Phase 4 |
 | BUY DRY_RUN/PAPER seam | REUSE_AS_IS | #399 Phase 5 |
-| BUY shared executor handoff | REUSE_AS_IS | #399 Phase 6 + #206 shared executor |
-| Automatic exit profile resolution | REUSE_AS_IS | automatic exit runtime/resolver |
-| Automatic exit profile producer | NEW_REQUIRED | #657, evidence-backed only |
-| Shared order/fill/reconciliation truth | REUSE_AS_IS | shared executor/order persistence |
-| Wallet-trigger event service | NOT_REQUIRED_FOR_V1 | deterministic cadence over canonical account state first |
-
-## 4. Versioned contract decisions
-
-No new runtime dataclass is required by this architecture PR. Existing typed contracts already cover the V1 chain.
-
-Conceptual names from #557 map as follows:
-
-```text
-AssetOpportunityV1
-  -> StrategyProposal contract generically
-  -> AutomaticBuyCandidateV1 for current automatic BUY execution seam
-
-RankedOpportunityV1
-  -> selection_engine/read-model output; no account fields
-
-AccountInvestmentStateV1
-  -> AutomaticBuyAccountAllocationEvidenceV1 + canonical protection/config inputs
-
-DecisionGateInvestmentDecisionV1
-  -> AutomaticBuyGateDecisionV1
-
-ApprovedBuyIntentV1
-  -> AutomaticBuyPlanV1 after execution_planner transformation
-
-ExitIntent/Ladder
-  -> existing automatic-exit candidate/gate/planner chain, once #657 supplies a valid profile
-```
-
-Do not rename stable code merely to match these conceptual labels.
+| BUY shared executor handoff | REUSE_AS_IS | #399 Phase 6 + #206 |
+| Automatic-exit resolver | REUSE_AS_IS | existing automatic-exit runtime/resolver |
+| Automatic-exit promotion architecture | REUSE_AS_IS / LANDED | #657 Phase A canonical contract |
+| Automatic-exit evidence-backed producer | BLOCKED | #657 Phase B pending accepted evidence |
+| Strategy/horizon-specific exit-profile keying | NOT_PRESENT | V1 restricted to exact supported family; future reviewed schema expansion if needed |
+| Shared order/fill/reconciliation truth | REUSE_AS_IS | shared executor persistence/reconciliation |
+| Wallet-trigger event service | NOT_REQUIRED_FOR_V1 | deterministic cadence first |
 
 ## 5. Trigger semantics
 
-V1 should use a **deterministic cadence over canonical state** as the authoritative trigger mechanism.
-
-Rationale:
-
-- account snapshots and open-order/position truth already have canonical freshness semantics;
-- runtime idempotency already prevents duplicate logical evaluation/handoff;
-- a cadence is restart-safe and does not require a new event bus;
-- fill/account-change events may later be used as low-latency hints without becoming a second source of truth.
-
-Thus:
+V1 uses deterministic cadence over canonical state as the authoritative trigger.
 
 ```text
-sell fill / balance release
--> canonical reconciliation + next COMPLETE account snapshot
--> next automatic BUY evaluation cycle sees changed account evidence
--> decision_gate reevaluates the already-current market opportunity set
+SELL fill / released quote capacity
+-> reconciliation
+-> next COMPLETE account-state bundle
+-> next automatic BUY evaluation cycle
+-> decision_gate evaluates current ranked opportunities with fresh account facts
 ```
 
-An event may trigger an earlier cycle later, but the event itself must not carry balance truth or investment permission.
+A future event may accelerate a cycle, but the event is only a hint. It never carries canonical balance truth, market ranking truth or permission.
 
 ## 6. Duplicate and race prevention
 
-Use existing identities rather than introducing a new investment transaction id:
+Use existing identities:
 
 ```text
-market candidate/proposal identity
+candidate/proposal identity
 + canonical account evidence identity/timestamps
-+ policy/protection/config identities
++ config/protection identities
 -> automatic BUY runtime idempotency key
 -> immutable BUY plan identity
--> deterministic shared executor plan_reference_id / handoff identity
+-> shared executor plan_reference_id / handoff identity
 -> deterministic per-leg client order identity
 ```
 
-Repeated evaluation of the same snapshot must resolve to the same logical outcome/handoff. Simultaneous workers must respect the existing singleton/locking and persistence uniqueness contracts. Broker reconciliation remains the final order-state truth boundary.
+Repeated evaluation of identical evidence must not create a second logical plan or order. Singleton/locking, persistence uniqueness and shared reconciliation remain authoritative.
 
-## 7. Partial fills and exit coverage
+## 7. Fill -> exit coverage
 
-A BUY plan is not evidence of a position. Confirmed fill/position truth is required before SELL quantity is constructed.
-
-Closed-loop rule:
+A BUY plan is not a position. Exit quantity is derived only from confirmed fill/position truth.
 
 ```text
 confirmed filled quantity
 -> canonical position/fill evidence
--> automatic exit profile resolution
--> exit gate/planner
--> SELL plan no greater than confirmed available quantity
+-> exact admitted V1 family check
+-> automatic-exit profile resolution
+-> automatic-exit candidate
+-> decision_gate exit permission
+-> execution_planner immutable SELL plan
 -> shared executor/reconciliation
 ```
 
-Partial fills therefore create coverage only for confirmed filled quantity; remaining open BUY quantity remains BUY-order state. Restart/reconciliation must recover both independently.
+SELL planned quantity may not exceed confirmed available quantity. Partial fills receive exit coverage only for confirmed filled quantity; unfilled BUY remainder stays BUY-order state.
 
-If no unique valid automatic exit profile resolves, the automatic exit lane must remain fail-closed. This is why #657 is a V1-critical dependency before automatic BUY LIVE activation.
+If no unique valid profile resolves, or if the filled BUY does not match the exact reviewed profile-supported family, automatic exit handling fails closed.
 
-## 8. Opportunity changes while a BUY is open
+## 8. Opportunity lifecycle while BUY is open
 
-Market lifecycle and order lifecycle remain distinct.
+Market lifecycle and broker-order lifecycle remain distinct.
 
-- `INVALIDATED` / `STOP_CHASING` are market-side facts.
-- An already-open broker BUY is executor/order state.
-- Upstream policy may issue a reviewed cancel intent when an open BUY is no longer valid, but the executor must never infer cancellation from price/strategy itself.
-- A better-ranked opportunity does not silently steal an existing reservation. Reallocation requires a new `decision_gate` decision after canonical order/account state reflects released capacity.
+- `INVALIDATED` / `STOP_CHASING` remain market-side facts.
+- An open BUY is executor/order state.
+- Cancellation requires an explicit upstream-approved cancel intent; executor never infers strategy invalidation from price.
+- A better opportunity does not silently steal an existing reservation.
+- Reallocation occurs only after canonical account/order state reflects released capacity and `decision_gate` evaluates again.
 
-The exact reclaim/recovery trigger that restores `BUY_WINDOW` is not invented by this document.
+## 9. Multi-horizon and multi-account semantics
 
-## 9. Multi-horizon and multi-account
+Market ranking may retain separate 1h/4h/1d/etc. opportunities. They remain distinct market objects.
 
-Separate horizons remain separate market opportunities/proposals and preserve their own strategy/setup/provenance identity. `selection_engine` may rank them without account knowledge.
+However, automatic closed-loop V1 admission is narrower than market ranking: only the single exact strategy/horizon/profile family reviewed as compatible with the market-level exit profile may enter the automatic loop. Other same-market horizons remain visible/rankable but are non-eligible for automatic closed-loop execution until compatible profile semantics exist.
 
-Competition for one account's capital occurs only in `decision_gate`, using account policy/exposure constraints. The same market opportunity may produce independent decisions/plans for multiple accounts; account identity enters only downstream of the market candidate.
+Multiple accounts may independently evaluate the same admitted market opportunity. Account identity appears only downstream at `decision_gate`.
 
-## 10. Provenance chain
+## 10. Provenance
 
-Required deterministic lineage:
+Required lineage:
 
 ```text
-proposal/candidate identity + evidence
+market proposal/candidate evidence
+-> admitted V1 strategy/horizon family identity
 -> AutomaticBuyGateDecisionV1
 -> AutomaticBuyPlanV1
--> ApprovedExecutionPlanV1 / handoff plan_reference_id
--> broker BUY order leg(s)
--> fill / canonical position evidence
--> automatic exit profile + provenance
--> SELL decision/plan
--> shared executor handoff
--> broker SELL order leg(s)
+-> ApprovedExecutionPlanV1 / handoff
+-> BUY order leg(s)
+-> fill / position evidence
+-> automatic exit profile + evidence_id/method_version
+-> automatic-exit candidate
+-> SELL decision
+-> SELL plan
+-> shared handoff
+-> SELL order leg(s)
 -> fills / realized outcome
 ```
 
-`source_opportunity_id` may be useful as a reporting reference later, but it must never replace account/plan/order/fill identities.
+A reporting-only `source_opportunity_id` may supplement lineage but never replaces plan/order/fill identities.
 
 ## 11. Schema delta
 
-**No new schema is justified by #557 Phase A.**
+No new schema is justified by #557 Phase A.
 
-Specifically, do not add:
+Do not add from this issue:
 
 ```text
 asset_opportunity
 asset_opportunity_event
 wallet_agent_state
-current_limit_sell_orders
 investment_agent_state
+current_limit_sell_orders
 ```
 
-Current persisted runtime/audit/handoff/account-state structures are sufficient for the V1 loop. If later multi-producer opportunity persistence demonstrates a real lifecycle/query gap, that must be proposed as a separate minimal schema delta against the then-current contracts.
+The strategy/horizon/profile mismatch is handled in V1 by a strict admission restriction, not by silently changing `automatic_exit_profile_v1`. If multi-family automatic execution becomes required, the profile-key expansion must be a separate reviewed schema/contract issue.
 
-#657 may require its own profile-producer provenance/version/effective-time schema decisions; those belong to #657, not this document.
+#657 Phase B owns its own producer/promotion schema decisions and the pre-Phase-B immutability/supersession requirement already documented in `automatic_exit_profile_promotion_v1.md`.
 
-## 12. Failure-mode policy
+## 12. Failure modes
 
 | Failure mode | V1 behavior |
 | --- | --- |
 | stale/missing market candidate | fail closed / no BUY plan |
-| stale/missing account snapshot | fail closed in account-evidence/gate path |
-| insufficient free quote balance | deny/no plan |
-| conflicting open BUY/reservation | deny according to current gate evidence/policy |
-| duplicate evaluation | idempotent same logical audit/plan/handoff |
-| simultaneous runtime workers | singleton/lock + persistence uniqueness |
-| opportunity invalidated while BUY open | market layer records invalidation; cancellation requires explicit downstream intent, executor does not infer strategy |
-| STOP_CHASING while BUY open | same separation as invalidation |
+| stale/missing account evidence | fail closed in gate path |
+| insufficient free quote balance | deny |
+| open BUY/reservation conflict | deny according to canonical policy |
+| duplicate evaluation | idempotent same logical outcome |
+| simultaneous workers | singleton/lock + persistence uniqueness |
+| candidate invalidated while BUY open | explicit cancel-intent path only; executor does not infer |
 | partial BUY fill | exit only confirmed filled quantity |
-| missing exit profile | fail closed; #657 blocker |
-| conflicting exit profiles | fail closed exactly-one-match resolver semantics |
-| missing SELL ladder after fill | reconciliation/exit runtime must detect uncovered position; never invent targets |
-| target revision | only canonical profile/policy owner may supersede; executor never recalculates |
-| broker/API outage | no invented success; preserve persisted intent/state for reconciliation |
-| process restart | recover through persisted runtime/handoff/order state and deterministic identities |
-| exchange tick/minimum rejection | planner/venue constraints fail before handoff where possible; executor preserves broker rejection truth |
-| fee reserve | remain account/gate/venue-policy concern; do not hide inside market ranking |
-| market suspension/delisting | fail closed at venue/order capability boundary |
-| kill switch/pause | shared runtime/executor authority gate; never bypassed by opportunity logic |
-| multiple accounts | independent account decisions from shared market truth |
-| multiple horizons same asset | separate candidates; account competition resolved only by gate |
+| no exit profile | fail closed |
+| conflicting exit profiles | fail closed exactly-one-match |
+| same market but wrong strategy/horizon family | fail closed automatic-loop admission |
+| missing SELL coverage after fill | reconciliation/runtime surfaces uncovered position; never invent target |
+| target/profile revision | only canonical profile/policy owner may supersede |
+| account snapshot lag | fail closed on freshness |
+| broker snapshot lag | reconciliation remains source of broker-order truth |
+| venue rejection/minimum/tick failure | planner/venue constraints reject where possible; preserve broker rejection truth |
+| broker/API outage | preserve persisted intent/state; no invented success |
+| restart | recover from persisted runtime/handoff/order identity |
+| multiple accounts | independent downstream decisions |
+| multiple horizons same market | only exact admitted family automatic; others stay market-only/non-eligible |
+| delisting/suspension | fail closed at capability/order boundary |
+| kill switch/pause | never bypassed |
 
 ## 13. Issue reconciliation
 
 ### #399 automatic BUY
 
-Keep open until its separately authorized LIVE phase and acceptance are genuinely complete.
-
-Repository Phases 1-6 are reusable and consistent with this architecture. The planner is **not** superseded. Do not proceed to LIVE merely because Phase 6 exists: safe exit coverage and full DRY_RUN/PAPER closed-loop acceptance are prerequisites.
+Keep open. Repository Phases 1-6 are reusable. Phase 7 LIVE remains separate and must not proceed until exact closed-loop DRY_RUN/PAPER acceptance includes compatible exit coverage.
 
 ### #657 automatic exit profile promotion
 
-V1 critical. Proceed with its design contract now. Phase B producer/promotion stays evidence-gated. A single bounded validated profile family is sufficient for V1; broad calibration can follow later.
+V1 critical. **Phase A is already landed** in `docs/architecture/automatic_exit_profile_promotion_v1.md`. Do not schedule it again. Current dependency is Phase B evidence availability plus the Phase-B implementation/preview/approval work defined by that contract.
 
 ### #270 exit/target research
 
-Parallel upstream evidence lane. It must return an explicit research disposition and must not itself promote production policy.
+Current upstream evidence gate for #657 Phase B. It must return an explicit reviewed disposition and must not itself write production policy.
 
 ### #665 retracement/reload
 
-May attach later as another market-only producer after the core loop works. It must not add account-fill dependence to market ranking.
+May attach later as another market-only producer. It is not admitted to automatic closed-loop execution unless its strategy/horizon family is explicitly covered by compatible exit-profile semantics.
 
 ### #666 V1 finish line
 
-This document implements the Lane C architecture decision requested by #666: reuse current contracts, keep boundaries strict, and stop expanding V1 with unnecessary new services/entities.
+This contract narrows Lane C to reuse existing owners and one safe profile-supported automatic family rather than expanding V1 breadth.
 
 ## 14. Dependency-ordered implementation sequence
 
 1. Merge this #557 architecture contract after review.
-2. Land #657 Phase A design contract with source/provenance/effective-time/exact-one semantics and read-only preview boundary.
-3. Complete/consume accepted upstream target evidence (#270 or explicitly reviewed replacement).
-4. Implement the smallest #657 bounded producer/promotion preview; still no production write until reviewed acceptance.
-5. Exercise one exact DRY_RUN/PAPER closed loop: actionable market candidate -> gate -> BUY plan -> shared handoff/reconciliation simulation -> confirmed fill fixture/evidence -> exit profile -> SELL plan -> shared handoff/reconciliation -> released-capital reevaluation.
-6. Only after the exact path is accepted, review the separately authorized #399 LIVE phase with bounded account/market/notional/order limits and existing kill-switch/credential/runtime gates.
-7. Add event-trigger acceleration, broader opportunity persistence, more strategy families and richer reload behavior only after V1 closed-loop acceptance.
+2. Complete #270 or accept another explicitly reviewed canonical evidence source for #657 Phase B.
+3. Implement the smallest #657 Phase B producer/read-only preview permitted by the landed Phase A contract, including its documented schema/supersession prerequisites.
+4. Review and explicitly record the exact V1 automatic family `(market + strategy/horizon/setup semantics)` supported by the promoted profile evidence.
+5. Exercise one exact DRY_RUN/PAPER closed loop for that family only: candidate -> BUY gate -> BUY planner -> shared handoff/reconciliation -> confirmed fill evidence -> family compatibility check -> exit profile -> SELL gate -> SELL planner -> shared handoff/reconciliation -> released-capital reevaluation.
+6. Only after that exact path is accepted, review #399 Phase 7 separately with bounded account/market/notional/order authority and existing kill-switch/credential/runtime gates.
+7. Broaden strategies, horizons, profile schema or event-trigger acceleration only after V1 acceptance.
 
 ## 15. Safety
 
