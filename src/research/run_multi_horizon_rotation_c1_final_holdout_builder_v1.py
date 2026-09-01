@@ -9,14 +9,22 @@ after the frozen canonical source-content fingerprint verifies successfully.
 The holdout has exactly one canonical output location: the directory that
 already contains the frozen ``split_manifest_v1.json`` supplied on the command
 line. There is deliberately no ``--output-dir`` override, so the holdout cannot
-be reopened in a second location by pointing the runner somewhere else. A
-checkpoint written into that same canonical directory acts as the one-shot
-"opened" marker: once it exists in ``RUNNING``/``INTERRUPTED`` state, only an
-explicit ``--resume`` of that exact run is permitted, and once it reaches
-``FINISHED`` no further build is permitted at all.
+be reopened in a second location by pointing the runner somewhere else.
+
+That per-directory checkpoint is a convenience, not the security boundary: a
+caller could copy a byte-identical ``split_manifest_v1.json`` +
+``source_integrity_v1.json`` pair into a second directory and try to "open" a
+fresh checkpoint namespace there. The actual one-shot gate is a trusted,
+non-caller-selectable **opened-state registry** under the repository's
+canonical research state hierarchy (``REGISTRY_ROOT`` below), keyed by a
+SHA-256 fingerprint of ``(manifest_sha256, source_integrity_composite_sha256,
+venue, candidate_id, phase)``. Because the key is derived purely from frozen
+content, not from any caller-supplied path, copying the manifest/integrity
+pair anywhere resolves to the exact same registry entry and is denied.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -58,6 +66,14 @@ PHASE = "final_holdout"
 MANIFEST_BASENAME = "split_manifest_v1.json"
 INTEGRITY_BASENAME = "source_integrity_v1.json"
 RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
+TERMINAL_STATES_DENYING_FRESH = ("RUNNING", "INTERRUPTED", "FAILED", "FINISHED")
+
+# Trusted, non-caller-selectable authoritative opened-state registry. This is
+# NOT the canonical run directory (which is caller-supplied via --split-manifest)
+# and it is never overridable from the CLI or the environment: it is the only
+# thing that makes the holdout genuinely one-shot even if the frozen manifest
+# and source-integrity artifact are copied byte-for-byte into a second directory.
+REGISTRY_ROOT = Path(__file__).resolve().parents[2] / "data" / "research" / "multi_horizon_rotation_c1_final_holdout_registry_v1"
 
 
 class RunnerInterrupted(Exception):
@@ -223,6 +239,87 @@ def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
     )
 
 
+def registry_key_for(
+    *,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    venue: str,
+    candidate_id: str,
+    phase: str,
+) -> str:
+    """Path-independent fingerprint: identical manifest+integrity content always
+    resolves to the same registry entry, regardless of which directory the
+    caller supplied them from."""
+    material = {
+        "manifest_sha256": manifest_sha256,
+        "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "venue": venue,
+        "candidate_id": candidate_id,
+        "phase": phase,
+    }
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def registry_entry_path(key: str) -> Path:
+    return REGISTRY_ROOT / f"{key}.json"
+
+
+def load_registry_entry(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("registry entry must be a JSON object")
+    return raw
+
+
+def write_registry_entry(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+) -> None:
+    payload = {
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "venue": venue,
+        "candidate_id": CANDIDATE_ID,
+        "phase": PHASE,
+        "manifest_sha256": manifest_sha256,
+        "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "terminal_state": terminal_state,
+        # Informational only. The registry key above -- not this field -- is
+        # what makes reopening from a copied directory impossible.
+        "opened_run_dir": opened_run_dir,
+        "updated_ts_utc": json_default(datetime.now(UTC)),
+    }
+    write_json_atomic(path, payload)
+
+
+def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[str, str]) -> None:
+    """Create-or-update the registry entry into a terminal state.
+
+    Falls back to the caller-supplied identity fields when the entry does not
+    exist yet (e.g. it vanished independently of the local checkpoint), so a
+    FAILED/INTERRUPTED transition always leaves the fingerprint permanently
+    locked rather than silently no-op'ing.
+    """
+    existing = load_registry_entry(path)
+    opened_run_dir = str(existing.get("opened_run_dir", "")) if existing else identity.get("opened_run_dir", "")
+    write_registry_entry(
+        path,
+        venue=identity["venue"],
+        manifest_sha256=identity["manifest_sha256"],
+        source_integrity_composite_sha256=identity["source_integrity_composite_sha256"],
+        terminal_state=terminal_state,
+        opened_run_dir=opened_run_dir,
+    )
+
+
 def install_interrupt_handlers() -> dict[int, Any]:
     def handle_interrupt(signum: int, _frame: Any) -> None:
         raise RunnerInterrupted(signum)
@@ -251,6 +348,9 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     partial_path: Path | None = None
     cp_path: Path | None = None
+    registry_path: Path | None = None
+    registry_identity: dict[str, str] | None = None
+    opened = False
     last_completed_asof: datetime | None = None
     asofs_completed = 0
     row_count = 0
@@ -283,6 +383,34 @@ def main(argv: list[str] | None = None) -> int:
                     f"checkpoint terminal_state={checkpoint.get('terminal_state')!r} is not resumable; "
                     "only RUNNING or INTERRUPTED checkpoints may be resumed"
                 )
+            # The locking key is derived from the checkpoint's OWN recorded identity
+            # (not yet-recomputed values), so we can locate -- and if needed fail --
+            # the authoritative registry entry even if the DB/integrity step below
+            # never succeeds. From this point on the run is "opened": any ordinary
+            # failure must permanently lock this fingerprint as FAILED, not leave it
+            # silently resumable.
+            registry_identity = {
+                "venue": args.venue,
+                "candidate_id": CANDIDATE_ID,
+                "phase": PHASE,
+                "manifest_sha256": str(checkpoint["manifest_sha256"]),
+                "source_integrity_composite_sha256": str(checkpoint["source_integrity_composite_sha256"]),
+            }
+            registry_key = registry_key_for(
+                manifest_sha256=registry_identity["manifest_sha256"],
+                source_integrity_composite_sha256=registry_identity["source_integrity_composite_sha256"],
+                venue=args.venue,
+                candidate_id=CANDIDATE_ID,
+                phase=PHASE,
+            )
+            registry_path = registry_entry_path(registry_key)
+            registry_entry = load_registry_entry(registry_path)
+            if registry_entry is None or registry_entry.get("terminal_state") not in RESUMABLE_TERMINAL_STATES:
+                raise ValueError(
+                    "authoritative opened-state registry entry is missing or not resumable; "
+                    "refuses to resume"
+                )
+            opened = True
         else:
             if artifact_path.exists() or summary_path.exists() or cp_path.exists() or partial_path.exists():
                 raise ValueError(
@@ -349,10 +477,47 @@ def main(argv: list[str] | None = None) -> int:
                 f"asofs_completed={asofs_completed} rows={row_count} partial_bytes={checkpoint['partial_bytes']}"
             )
         else:
+            # Authoritative fingerprint-keyed check: identical manifest + source
+            # integrity content resolves to the same registry entry no matter what
+            # directory the caller supplied it from, so a byte-identical copy in a
+            # second directory cannot open a second checkpoint namespace.
+            registry_identity = {
+                "venue": args.venue,
+                "candidate_id": CANDIDATE_ID,
+                "phase": PHASE,
+                "manifest_sha256": manifest_sha,
+                "source_integrity_composite_sha256": composite_sha,
+            }
+            registry_key = registry_key_for(
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                venue=args.venue,
+                candidate_id=CANDIDATE_ID,
+                phase=PHASE,
+            )
+            registry_path = registry_entry_path(registry_key)
+            existing_registry_entry = load_registry_entry(registry_path)
+            if existing_registry_entry is not None and existing_registry_entry.get("terminal_state") in TERMINAL_STATES_DENYING_FRESH:
+                raise ValueError(
+                    "final holdout is already opened for this frozen manifest/source-integrity "
+                    "fingerprint (registry entry exists); runner is one-shot and refuses to reopen "
+                    "it, including from a different directory holding a copy of the same manifest "
+                    "and integrity artifact"
+                )
+
+            # Freeze the one-shot holdout-open state -- registry first (authoritative),
+            # then the local checkpoint -- immediately after integrity verification
+            # succeeds and immediately before the first holdout replay. From here any
+            # ordinary failure must permanently lock this fingerprint as FAILED.
+            write_registry_entry(
+                registry_path,
+                venue=args.venue,
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                terminal_state="RUNNING",
+                opened_run_dir=str(canonical_dir),
+            )
             partial_path.touch(exist_ok=False)
-            # Freeze the one-shot holdout-open checkpoint immediately after integrity
-            # verification succeeds and immediately before the first holdout replay.
-            # Its existence is what makes any later non-resume invocation fail closed.
             write_checkpoint(
                 cp_path,
                 venue=args.venue,
@@ -368,7 +533,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_rows_read=0,
                 terminal_state="RUNNING",
             )
-            emit(f"OPENED checkpoint={cp_path} state=RUNNING composite_sha256={composite_sha}")
+            opened = True
+            emit(
+                f"OPENED registry={registry_path} checkpoint={cp_path} state=RUNNING "
+                f"composite_sha256={composite_sha}"
+            )
 
         remaining_grid = [
             asof for asof in full_grid
@@ -480,6 +649,8 @@ def main(argv: list[str] | None = None) -> int:
                 source_rows_read=source_rows_read,
                 terminal_state="FINISHED",
             )
+            assert registry_path is not None and registry_identity is not None
+            mark_registry_terminal(registry_path, terminal_state="FINISHED", identity=registry_identity)
 
         finalize_artifact_bundle(
             partial_path=partial_path,
@@ -500,22 +671,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except RunnerInterrupted as exc:
-        if cp_path is not None and partial_path is not None and partial_path.exists() and cp_path.exists():
-            try:
-                mark_checkpoint_terminal(cp_path, terminal_state="INTERRUPTED")
-            except Exception:
-                pass
+        if opened:
+            if cp_path is not None and partial_path is not None and partial_path.exists() and cp_path.exists():
+                try:
+                    mark_checkpoint_terminal(cp_path, terminal_state="INTERRUPTED")
+                except Exception:
+                    pass
+            if registry_path is not None and registry_identity is not None:
+                try:
+                    mark_registry_terminal(registry_path, terminal_state="INTERRUPTED", identity=registry_identity)
+                except Exception:
+                    pass
         emit(
             f"INTERRUPTED runner={RUNNER_NAME} signal={signal.Signals(exc.signum).name} "
-            f"partial_artifact={partial_path} checkpoint={cp_path} final_holdout_access=GATED "
-            f"database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+            f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
+            f"final_holdout_access=GATED database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 128 + exc.signum
     except Exception as exc:
+        # Once the holdout was actually opened (registry + checkpoint created, or a
+        # resumed run of a previously-opened fingerprint), any ordinary failure must
+        # permanently lock the run as FAILED so it can never be silently resumed or
+        # reopened. A failure before opening (e.g. integrity verification itself)
+        # must not create any opened state at all.
+        if opened:
+            if cp_path is not None and cp_path.exists():
+                try:
+                    mark_checkpoint_terminal(cp_path, terminal_state="FAILED")
+                except Exception:
+                    pass
+            if registry_path is not None and registry_identity is not None:
+                try:
+                    mark_registry_terminal(registry_path, terminal_state="FAILED", identity=registry_identity)
+                except Exception:
+                    pass
         emit(
             f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
-            f"partial_artifact={partial_path} checkpoint={cp_path} final_holdout_access=GATED "
-            f"database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+            f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
+            f"final_holdout_access=GATED database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
         )
         return 1
     finally:

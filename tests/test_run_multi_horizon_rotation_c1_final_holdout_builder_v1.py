@@ -18,13 +18,18 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     checkpoint_path,
     load_checkpoint,
     load_manifest,
+    load_registry_entry,
     main,
     mark_checkpoint_terminal,
+    mark_registry_terminal,
     parse_args,
     reconcile_partial_to_checkpoint,
+    registry_entry_path,
+    registry_key_for,
     select_c1_spec,
     validate_resume_checkpoint,
     write_checkpoint,
+    write_registry_entry,
 )
 
 
@@ -45,9 +50,15 @@ def _manifest(*, end: str = "2026-09-01T02:00:00Z", holdout_end: str = "2026-08-
     }
 
 
-def _write_run_files(tmp_path: Path, *, manifest: dict[str, object] | None = None) -> tuple[Path, Path]:
-    manifest_path = tmp_path / "split_manifest_v1.json"
-    integrity_path = tmp_path / "source_integrity_v1.json"
+def _two_asof_manifest() -> dict[str, object]:
+    return _manifest(holdout_end="2026-08-22T06:30:00Z")
+
+
+def _write_run_files(tmp_path: Path, *, manifest: dict[str, object] | None = None, subdir: str = "") -> tuple[Path, Path]:
+    run_dir = (tmp_path / subdir) if subdir else tmp_path
+    run_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = run_dir / "split_manifest_v1.json"
+    integrity_path = run_dir / "source_integrity_v1.json"
     manifest_path.write_text(json.dumps(manifest or _manifest()), encoding="utf-8")
     integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
     return manifest_path, integrity_path
@@ -106,7 +117,7 @@ def test_manifest_requires_final_holdout_split(tmp_path: Path) -> None:
         load_manifest(path, venue="bitvavo")
 
 
-# --- Test 1/2: canonical directory binding, no alternate --output-dir --
+# --- Canonical per-directory binding (defense in depth, not the security gate) --
 
 
 def test_canonical_dir_is_the_manifest_directory(tmp_path: Path) -> None:
@@ -139,10 +150,7 @@ def test_canonical_dir_rejects_alternate_directory_for_integrity_artifact(tmp_pa
         canonical_run_dir(manifest_path, integrity_path)
 
 
-def test_no_output_dir_argument_means_alternate_directory_cannot_reopen_holdout(tmp_path: Path) -> None:
-    """Regression for the Codex BLOCK: there is no way to point the runner at a
-    second output location for the same frozen manifest, because the runner
-    never accepts one."""
+def test_no_output_dir_argument_at_all(tmp_path: Path) -> None:
     manifest_path, integrity_path = _write_run_files(tmp_path)
     with pytest.raises(SystemExit):
         parse_args(
@@ -157,7 +165,60 @@ def test_no_output_dir_argument_means_alternate_directory_cannot_reopen_holdout(
         )
 
 
-# --- Fresh-run one-shot denial (tests 3 & 4) ----------------------------
+# --- Registry: pure functions --------------------------------------------
+
+
+def test_registry_key_is_deterministic_and_path_independent() -> None:
+    """The key is a pure function of frozen content, never of any filesystem path."""
+    kwargs = dict(
+        manifest_sha256="m-sha",
+        source_integrity_composite_sha256="i-sha",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    key_a = registry_key_for(**kwargs)
+    key_b = registry_key_for(**kwargs)
+    assert key_a == key_b
+    assert registry_key_for(**{**kwargs, "manifest_sha256": "different"}) != key_a
+
+
+def test_registry_entry_round_trip_and_terminal_marking(tmp_path: Path) -> None:
+    path = registry_entry_path_for_test(tmp_path, "abc")
+    assert load_registry_entry(path) is None
+    write_registry_entry(
+        path,
+        venue="bitvavo",
+        manifest_sha256="m",
+        source_integrity_composite_sha256="i",
+        terminal_state="RUNNING",
+        opened_run_dir="/some/dir",
+    )
+    entry = load_registry_entry(path)
+    assert entry is not None
+    assert entry["terminal_state"] == "RUNNING"
+
+    identity = {
+        "venue": "bitvavo",
+        "candidate_id": "C1",
+        "phase": "final_holdout",
+        "manifest_sha256": "m",
+        "source_integrity_composite_sha256": "i",
+    }
+    mark_registry_terminal(path, terminal_state="FAILED", identity=identity)
+    assert load_registry_entry(path)["terminal_state"] == "FAILED"
+
+    # marking a NEVER-created entry still locks the fingerprint (fallback identity path)
+    missing_path = registry_entry_path_for_test(tmp_path, "never-existed")
+    mark_registry_terminal(missing_path, terminal_state="FAILED", identity=identity)
+    assert load_registry_entry(missing_path)["terminal_state"] == "FAILED"
+
+
+def registry_entry_path_for_test(root: Path, key: str) -> Path:
+    return root / f"{key}.json"
+
+
+# --- Fresh-run one-shot denial (local checkpoint layer) ------------------
 
 
 def test_fresh_run_denied_when_running_checkpoint_marker_exists(tmp_path: Path) -> None:
@@ -213,7 +274,6 @@ def test_fresh_run_denied_after_finished(tmp_path: Path) -> None:
         ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
     )
     assert exit_code == 1
-    # never overwritten
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
 
 
@@ -225,7 +285,7 @@ def test_resume_denied_when_checkpoint_or_partial_missing(tmp_path: Path) -> Non
     assert exit_code == 1
 
 
-def test_resume_denied_when_terminal_state_finished(tmp_path: Path) -> None:
+def test_resume_denied_when_local_checkpoint_terminal_state_finished(tmp_path: Path) -> None:
     manifest_path, integrity_path = _write_run_files(tmp_path)
     cp_path = checkpoint_path(tmp_path)
     write_checkpoint(
@@ -337,7 +397,7 @@ def test_interrupted_checkpoint_is_resumable_and_marks_terminal_state(tmp_path: 
     )
 
 
-# --- End-to-end runner harness (fresh, resume, denial, signals) --------
+# --- End-to-end runner harness (fresh, resume, denial, signals, registry) --
 
 
 class _FakeCursor:
@@ -356,8 +416,12 @@ class _FakeConnection:
         pass
 
 
-def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, module: object, *, phase_start: datetime) -> None:
-    """Stub every DB-touching function so main() can run end-to-end deterministically."""
+def _install_fake_pipeline(
+    monkeypatch: pytest.MonkeyPatch, module: object, *, phase_start: datetime, registry_root: Path
+) -> None:
+    """Stub every DB-touching function so main() can run end-to-end deterministically,
+    and point the trusted registry at an isolated test directory (never the real repo
+    data/research tree)."""
 
     def fake_get_db_connection() -> _FakeConnection:
         return _FakeConnection()
@@ -421,10 +485,7 @@ def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, module: object, *, p
     monkeypatch.setattr(module, "fetch_rotation_v1_points", fake_fetch_rotation_v1_points)
     monkeypatch.setattr(module, "fetch_candles_for_chunk", fake_fetch_candles_for_chunk)
     monkeypatch.setattr(module, "evaluate_candidate", fake_evaluate_candidate)
-
-
-def _two_asof_manifest() -> dict[str, object]:
-    return _manifest(holdout_end="2026-08-22T06:30:00Z")
+    monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)
 
 
 def test_fresh_run_completes_and_publishes_exactly_one_canonical_artifact(
@@ -434,8 +495,8 @@ def test_fresh_run_completes_and_publishes_exactly_one_canonical_artifact(
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     exit_code = module.main(
         ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
@@ -454,16 +515,215 @@ def test_fresh_run_completes_and_publishes_exactly_one_canonical_artifact(
     checkpoint = load_checkpoint(cp_path)
     assert checkpoint["terminal_state"] == "FINISHED"
     assert checkpoint["row_count"] == 2
-    assert checkpoint["manifest_sha256"]
-    assert checkpoint["source_integrity_composite_sha256"] == "fixed"
 
-    # Test 4: a second fresh invocation is denied after FINISHED.
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    registry_entry = load_registry_entry(registry_entry_path(registry_key))
+    assert registry_entry is not None
+    assert registry_entry["terminal_state"] == "FINISHED"
+    monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)  # sanity: still points at test dir
+
+    # A second fresh invocation in the SAME directory is denied after FINISHED.
     exit_code_again = module.main(
         ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
     )
     assert exit_code_again == 1
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
     assert len(artifact.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_byte_identical_manifest_copied_to_second_directory_cannot_reopen_holdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tests 1-3: the trusted registry -- not the caller-chosen directory -- is the
+    one-shot boundary. A byte-identical manifest+integrity pair copied into a second
+    directory resolves to the same registry key and is denied, even though nothing
+    local exists yet in that second directory."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path_a, integrity_path_a = _write_run_files(tmp_path, manifest=manifest, subdir="dir_a")
+    registry_root = tmp_path / "_shared_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    exit_code_a = module.main(
+        ["--split-manifest", str(manifest_path_a), "--source-integrity", str(integrity_path_a)]
+    )
+    assert exit_code_a == 0
+
+    # byte-identical copy into a second, unrelated directory
+    dir_b = tmp_path / "dir_b"
+    dir_b.mkdir()
+    manifest_path_b = dir_b / "split_manifest_v1.json"
+    integrity_path_b = dir_b / "source_integrity_v1.json"
+    manifest_path_b.write_bytes(manifest_path_a.read_bytes())
+    integrity_path_b.write_bytes(integrity_path_a.read_bytes())
+    assert manifest_path_a.read_bytes() == manifest_path_b.read_bytes()
+    assert manifest_path_a != manifest_path_b  # genuinely a different path
+
+    exit_code_b = module.main(
+        ["--split-manifest", str(manifest_path_b), "--source-integrity", str(integrity_path_b)]
+    )
+    assert exit_code_b == 1
+    assert not (dir_b / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not checkpoint_path(dir_b).exists()
+    assert not (dir_b / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+
+
+def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="RUNNING",
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+    )
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code == 0
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+
+
+def test_failed_registry_state_denies_resume_forever(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="INTERRUPTED",
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="FAILED",
+        opened_run_dir=str(tmp_path),
+    )
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code == 1
+    # never resumed, never overwritten
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
+    assert load_checkpoint(cp_path)["terminal_state"] == "INTERRUPTED"
+
+
+def test_finished_registry_state_denies_resume_forever(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="INTERRUPTED",
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="FINISHED",
+        opened_run_dir=str(tmp_path),
+    )
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code == 1
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
 
 
 def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
@@ -473,8 +733,8 @@ def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     calls = {"n": 0}
     real_write_row = module.write_row
@@ -503,6 +763,18 @@ def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
     assert checkpoint["asofs_completed"] == 0
     assert checkpoint["row_count"] == 0
 
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    registry_entry = load_registry_entry(registry_entry_path(registry_key))
+    assert registry_entry is not None
+    assert registry_entry["terminal_state"] == "INTERRUPTED"
+
     partial = tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial"
     assert partial.exists()
 
@@ -524,6 +796,7 @@ def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
     asofs = sorted(json.loads(line)["asof_ts"] for line in lines)
     assert len(set(asofs)) == 2
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
 
 
 def test_sigterm_interrupts_cleanly_with_exit_143(
@@ -533,8 +806,8 @@ def test_sigterm_interrupts_cleanly_with_exit_143(
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     def raising_evaluate_candidate(*args, **kwargs):
         raise RunnerInterrupted(signal.SIGTERM)
@@ -558,18 +831,31 @@ def test_sigterm_interrupts_cleanly_with_exit_143(
     checkpoint = load_checkpoint(cp_path)
     assert checkpoint["terminal_state"] == "INTERRUPTED"
 
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "INTERRUPTED"
+
     # Previous signal handlers must be restored, not left pointing at the runner's.
     assert signal.getsignal(signal.SIGINT) == sigint_before
     assert signal.getsignal(signal.SIGTERM) == sigterm_before
 
 
-def test_source_integrity_mismatch_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_integrity_mismatch_denied_and_creates_no_registry_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
     integrity_path.write_text(json.dumps({"composite_sha256": "stale"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     exit_code = module.main(
         ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
@@ -577,17 +863,22 @@ def test_source_integrity_mismatch_denied(tmp_path: Path, monkeypatch: pytest.Mo
     assert exit_code == 1
     assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
     assert not checkpoint_path(tmp_path).exists()
+    # Failure happened before the holdout was ever "opened": no registry entry at all.
+    assert not registry_root.exists() or list(registry_root.iterdir()) == []
 
 
-def test_resume_reverifies_source_integrity_before_continuing(
+def test_resume_reverifies_source_integrity_and_marks_failed_on_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Tests 11: a resume-time integrity drift, discovered after the holdout was
+    already opened, must permanently lock both the local checkpoint and the
+    authoritative registry entry as FAILED (never left resumable)."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     calls = {"n": 0}
     real_write_row = module.write_row
@@ -605,6 +896,17 @@ def test_resume_reverifies_source_integrity_before_continuing(
     assert exit_code == 130
     monkeypatch.setattr(module, "write_row", real_write_row)
 
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    reg_path = registry_entry_path(registry_key)
+    assert load_registry_entry(reg_path)["terminal_state"] == "INTERRUPTED"
+
     # Drift the frozen integrity artifact before resume; recompute always returns
     # "fixed" from the fake pipeline, so a stale artifact must be caught again.
     integrity_path.write_text(json.dumps({"composite_sha256": "drifted"}), encoding="utf-8")
@@ -620,14 +922,32 @@ def test_resume_reverifies_source_integrity_before_continuing(
     assert exit_code_resumed == 1
     assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
 
+    cp_path = checkpoint_path(tmp_path)
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(reg_path)["terminal_state"] == "FAILED"
+
+    # FAILED is permanently non-resumable: a further --resume attempt is denied.
+    exit_code_again = module.main(
+        [
+            "--split-manifest",
+            str(manifest_path),
+            "--source-integrity",
+            str(integrity_path),
+            "--resume",
+        ]
+    )
+    assert exit_code_again == 1
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(reg_path)["terminal_state"] == "FAILED"
+
 
 def test_invalid_checkpoint_asof_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     manifest_sha = module.manifest_fingerprint(manifest)
     cp_path = checkpoint_path(tmp_path)
@@ -647,6 +967,21 @@ def test_invalid_checkpoint_asof_denied(tmp_path: Path, monkeypatch: pytest.Monk
         terminal_state="RUNNING",
     )
     (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").write_bytes(b'{"row":1}\n')
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+    )
 
     exit_code = module.main(
         [
@@ -659,15 +994,19 @@ def test_invalid_checkpoint_asof_denied(tmp_path: Path, monkeypatch: pytest.Monk
     )
     assert exit_code == 1
     assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
 
 
-def test_manifest_mismatch_denied_on_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_manifest_mismatch_denied_on_resume_and_marks_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     cp_path = checkpoint_path(tmp_path)
     write_checkpoint(
@@ -686,6 +1025,21 @@ def test_manifest_mismatch_denied_on_resume(tmp_path: Path, monkeypatch: pytest.
         terminal_state="RUNNING",
     )
     (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256="not-the-real-sha",
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256="not-the-real-sha",
+        source_integrity_composite_sha256="fixed",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+    )
 
     exit_code = module.main(
         [
@@ -697,15 +1051,19 @@ def test_manifest_mismatch_denied_on_resume(tmp_path: Path, monkeypatch: pytest.
         ]
     )
     assert exit_code == 1
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
 
 
-def test_c1_only_result_from_replay_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_c1_only_result_from_replay_enforced_marks_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     manifest = _two_asof_manifest()
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
-    integrity_path.write_text(json.dumps({"composite_sha256": "fixed"}), encoding="utf-8")
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
 
     def bad_evaluate_candidate(*, candles_by_asset, asof_ts, spec, venue):
         return [
@@ -738,3 +1096,26 @@ def test_c1_only_result_from_replay_enforced(tmp_path: Path, monkeypatch: pytest
     )
     assert exit_code == 1
     assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+
+    cp_path = checkpoint_path(tmp_path)
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
+
+    # FAILED is permanent: neither a fresh run nor a resume can proceed.
+    exit_code_fresh_retry = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code_fresh_retry == 1
+    exit_code_resume_retry = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code_resume_retry == 1

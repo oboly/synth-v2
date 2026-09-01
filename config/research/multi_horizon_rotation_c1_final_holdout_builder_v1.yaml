@@ -14,9 +14,21 @@ canonical_run_binding:
   output_dir_argument: none
   canonical_dir_rule: directory_containing_supplied_split_manifest_v1_json
   required_colocated_files: [split_manifest_v1.json, source_integrity_v1.json]
-  opened_marker: checkpoint_file_running_state
+  opened_marker: local_checkpoint_running_state
   reopen_after_finished: DENY
   reopen_in_alternate_directory: DENY
+
+authoritative_opened_state_registry:
+  location: data/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  caller_selectable: false
+  key_fields: [manifest_sha256, source_integrity_composite_sha256, venue, candidate_id, phase]
+  key_is_path_independent: true
+  created_after: integrity_verification_success
+  created_before: first_holdout_replay
+  fresh_run_denied_registry_states: [RUNNING, INTERRUPTED, FAILED, FINISHED]
+  resume_allowed_registry_states: [RUNNING, INTERRUPTED]
+  resume_denied_registry_states: [FAILED, FINISHED]
+  silent_reset_or_refreeze: DENY
 
 integrity_gate:
   required: true
@@ -36,6 +48,9 @@ interruption_and_resume:
   resume_argument: --resume
   resume_allowed_terminal_states: [RUNNING, INTERRUPTED]
   resume_denied_terminal_states: [FINISHED, FAILED]
+  post_open_ordinary_exception_terminal_state: FAILED
+  post_open_failure_marks_both: [local_checkpoint, authoritative_registry]
+  pre_open_failure_creates_opened_state: false
 
 candidate:
   implementation: src/research/multi_horizon_rotation_replay_v1.py

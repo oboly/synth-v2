@@ -34,15 +34,34 @@ recompute-and-verify step runs again, before any further row is replayed.
 There is no `--output-dir` argument. The runner takes `--split-manifest` and
 `--source-integrity`, both of which must be named exactly `split_manifest_v1.json`
 and `source_integrity_v1.json` and must live in the same directory. That directory
-is the single canonical run directory, and every holdout artifact for this run
+is the canonical run directory, and per-run bookkeeping artifacts
 (`final_holdout_c1_rows_v1.jsonl`, `final_holdout_c1_summary_v1.json`, the
 `.final_holdout_c1_rows_v1.jsonl.partial` streaming file, and the
-`.final_holdout_c1_checkpoint_v1.json` checkpoint) is written there. There is
-no way to reopen the holdout in a second location for the same frozen manifest.
+`.final_holdout_c1_checkpoint_v1.json` checkpoint) are written there.
+
+That per-directory checkpoint alone is **not** the security boundary: a
+byte-identical copy of `split_manifest_v1.json` + `source_integrity_v1.json` in
+a second directory would otherwise open a fresh checkpoint namespace. The
+actual one-shot gate is a trusted, non-caller-selectable **opened-state
+registry** under `data/research/multi_horizon_rotation_c1_final_holdout_registry_v1/`
+(never overridable by any CLI flag or environment variable), keyed by a
+SHA-256 fingerprint of:
+
+```text
+manifest_sha256, source_integrity_composite_sha256, venue, candidate_id, phase
+```
+
+Because that key is a pure function of frozen content and never of any path,
+copying the manifest/integrity pair to another directory resolves to the
+exact same registry entry and is denied.
 
 Immediately after integrity verification succeeds and immediately before the
-first holdout replay, the runner freezes a `RUNNING` checkpoint in that
-directory. Its checkpoint schema binds:
+first holdout replay, the runner writes a `RUNNING` registry entry (the
+authoritative marker) and then the matching local `RUNNING` checkpoint. Once
+those exist, a fresh (non-`--resume`) invocation always fails closed for
+**any** registry state -- `RUNNING`, `INTERRUPTED`, `FAILED`, or `FINISHED` --
+including from a different directory holding a copy of the same manifest and
+integrity artifact. The local checkpoint schema binds:
 
 ```text
 runner, runner_version, venue, candidate_id, manifest_sha256,
@@ -51,24 +70,36 @@ last_completed_asof, asofs_completed, row_count, partial_bytes,
 source_query_count, source_rows_read, terminal_state, updated_ts_utc
 ```
 
-Once that checkpoint exists, a fresh (non-`--resume`) invocation always fails
-closed: `RUNNING` or `INTERRUPTED` state can only be continued with
-`--resume`, and `FINISHED` state can never be reopened.
+The registry entry binds the same identity fields plus `terminal_state` and
+`updated_ts_utc` (its state is the authority; the local checkpoint carries the
+per-as-of replay progress).
 
-## Interruption and resume
+## Interruption, failure, and resume
 
 `SIGINT` and `SIGTERM` are handled explicitly: the runner flushes and fsyncs
-the last fully committed as-of, marks the checkpoint `INTERRUPTED`, prints
-exactly one `INTERRUPTED` line with no traceback, restores the previous signal
-handlers, and exits `130` (SIGINT) or `143` (SIGTERM). No partially processed
-as-of is ever committed.
+the last fully committed as-of, marks both the local checkpoint and the
+registry entry `INTERRUPTED`, prints exactly one `INTERRUPTED` line with no
+traceback, restores the previous signal handlers, and exits `130` (SIGINT) or
+`143` (SIGTERM). No partially processed as-of is ever committed.
 
-`--resume` requires the canonical checkpoint and partial artifact to exist with
-`terminal_state` `RUNNING` or `INTERRUPTED`. It re-verifies source integrity,
-validates every checkpoint identity field, truncates the partial artifact back
-to the checkpoint's committed byte offset, reconciles the row count, confirms
-`last_completed_asof` belongs to the frozen holdout grid, and then continues
-strictly after that as-of.
+Once the holdout has been opened (registry + local checkpoint created, or a
+`--resume` of a previously-opened fingerprint), **any ordinary exception**
+atomically marks both the local checkpoint and the registry entry
+`FAILED` before the runner returns a non-zero exit code. `FAILED` is
+permanently non-resumable, exactly like `FINISHED` -- only `RUNNING` and
+`INTERRUPTED` may ever be resumed. A failure that happens *before* the holdout
+was opened (for example the initial integrity verification itself) creates no
+registry entry at all.
+
+`--resume` requires the canonical local checkpoint and partial artifact to
+exist with `terminal_state` `RUNNING` or `INTERRUPTED`, and the matching
+registry entry (located by the checkpoint's own recorded fingerprint) to exist
+in the same resumable state. It then re-verifies source integrity, validates
+every checkpoint identity field against the freshly recomputed manifest and
+integrity fingerprints, truncates the partial artifact back to the
+checkpoint's committed byte offset, reconciles the row count, confirms
+`last_completed_asof` belongs to the frozen holdout grid, and only then
+continues strictly after that as-of.
 
 ## Candidate scope
 
