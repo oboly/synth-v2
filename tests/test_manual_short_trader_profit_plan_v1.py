@@ -7630,15 +7630,106 @@ def test_operator_state_renders_valid_zero_distinct_from_unavailable() -> None:
     zero_html = render_full_html([fresh_non_actionable], rendered_at="now", broker_mode="test")
     unavailable_html = render_full_html([], rendered_at="now", broker_mode="test")
 
-    assert "Zero actionable candidates from current evidence" in zero_html
+    assert "No actionable candidates — current setups are not actionable" in zero_html
     assert "Source unavailable — no Profit Plan cards loaded" in unavailable_html
 
 
 def test_operator_state_renders_nonempty_unavailable_source_state() -> None:
     html = render_full_html([_ldo_like_card()], rendered_at="now", broker_mode="test")
 
-    assert "No actionable candidates — source evidence is stale or unavailable" in html
+    assert "No actionable candidates — unavailable evidence" in html
     assert "Unavailable: 1" in html
+
+
+def test_operator_state_banner_current_and_unavailable_never_blames_stale_evidence() -> None:
+    current_without_candidate = dataclasses.replace(
+        _fresh_canonical_card(), target_exit_zone=()
+    )
+    html = render_full_html(
+        [current_without_candidate, _ldo_like_card()], rendered_at="now", broker_mode="test"
+    )
+
+    headline = re.search(r"operator-state-summary[^>]*><strong>([^<]+)", html).group(1)
+
+    assert headline == "No actionable candidates — unavailable evidence"
+    assert "stale" not in headline.lower()
+
+
+def test_operator_state_banner_current_non_actionable_context_has_no_freshness_blame() -> None:
+    current_non_actionable = dataclasses.replace(
+        _fresh_canonical_card(),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+    )
+    html = render_full_html([current_non_actionable], rendered_at="now", broker_mode="test")
+
+    assert "No actionable candidates — current setups are not actionable" in html
+    assert "stale evidence" not in html
+    assert "unavailable evidence" not in html
+
+
+def test_operator_state_banner_stale_only() -> None:
+    fresh = _fresh_canonical_card()
+    stale = dataclasses.replace(
+        fresh,
+        current_price_status="STALE_CURRENT_PRICE",
+        evidence=dataclasses.replace(fresh.evidence, price_freshness_state="STALE"),
+    )
+    html = render_full_html([stale], rendered_at="now", broker_mode="test")
+
+    assert "No actionable candidates — stale evidence" in html
+
+
+def test_operator_state_banner_unavailable_only() -> None:
+    html = render_full_html([_ldo_like_card()], rendered_at="now", broker_mode="test")
+
+    assert "No actionable candidates — unavailable evidence" in html
+
+
+def test_operator_state_banner_mixed_non_actionable_stale_and_unavailable() -> None:
+    current_non_actionable = dataclasses.replace(
+        _fresh_canonical_card(),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+    )
+    fresh = _fresh_canonical_card()
+    stale = dataclasses.replace(
+        fresh,
+        symbol="STALE",
+        current_price_status="STALE_CURRENT_PRICE",
+        evidence=dataclasses.replace(fresh.evidence, price_freshness_state="STALE"),
+    )
+    unavailable = dataclasses.replace(_ldo_like_card(), symbol="UNAVAILABLE")
+    html = render_full_html(
+        [current_non_actionable, stale, unavailable], rendered_at="now", broker_mode="test"
+    )
+
+    assert (
+        "No actionable candidates — current setups are not actionable; stale evidence; unavailable evidence"
+        in html
+    )
+
+
+def test_operator_state_banner_regression_current_58_unavailable_7_never_mentions_stale() -> None:
+    current_non_actionable = dataclasses.replace(
+        _fresh_canonical_card(),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+    )
+    unavailable = _ldo_like_card()
+    cards = [
+        dataclasses.replace(current_non_actionable, symbol=f"CURRENT-{index}")
+        for index in range(58)
+    ] + [
+        dataclasses.replace(unavailable, symbol=f"UNAVAILABLE-{index}")
+        for index in range(7)
+    ]
+
+    html = render_full_html(cards, rendered_at="now", broker_mode="test")
+
+    headline = re.search(r"operator-state-summary[^>]*><strong>([^<]+)", html).group(1)
+    assert "Current evidence: 58" in html
+    assert "Stale: 0" in html
+    assert "Unavailable: 7" in html
+    assert "No actionable candidates" in headline
+    assert "stale" not in headline.lower()
 
 
 def test_card_candidate_evidence_preserves_fresh_price_and_unavailable_map() -> None:

@@ -1803,6 +1803,7 @@ class OperatorStateSummary:
     current_evidence_count: int
     stale_evidence_count: int
     unavailable_evidence_count: int
+    current_non_actionable_context_count: int
 
 
 def _operator_candidate_evidence_health(card: ProfitPlanCard) -> str:
@@ -1824,13 +1825,21 @@ def _operator_candidate_evidence_health(card: ProfitPlanCard) -> str:
 def build_operator_state_summary(cards: list[ProfitPlanCard]) -> OperatorStateSummary:
     """Summarize existing reporting truth without creating new authority."""
     health_counts = {"CURRENT": 0, "STALE": 0, DATA_UNAVAILABLE: 0}
+    current_non_actionable_context_count = 0
     for card in cards:
-        health_counts[_operator_candidate_evidence_health(card)] += 1
+        evidence_health = _operator_candidate_evidence_health(card)
+        health_counts[evidence_health] += 1
+        if (
+            evidence_health == "CURRENT"
+            and card.actionability_state != CARD_ACTIONABILITY_ACTIVE
+        ):
+            current_non_actionable_context_count += 1
     return OperatorStateSummary(
         actionable_candidate_count=sum(_actionable_ppp(card) is not None for card in cards),
         current_evidence_count=health_counts["CURRENT"],
         stale_evidence_count=health_counts["STALE"],
         unavailable_evidence_count=health_counts[DATA_UNAVAILABLE],
+        current_non_actionable_context_count=current_non_actionable_context_count,
     )
 
 
@@ -5250,6 +5259,20 @@ def _candidate_evidence_text(evidence_rows: tuple[EvidenceRow, ...]) -> str:
     return f"Price {price_status} · map {map_status}"
 
 
+def _no_actionable_candidates_headline(summary: OperatorStateSummary) -> str:
+    """Render only the no-actionable reason already carried by the summary."""
+    reasons: list[str] = []
+    if summary.current_non_actionable_context_count:
+        reasons.append("current setups are not actionable")
+    if summary.stale_evidence_count:
+        reasons.append("stale evidence")
+    if summary.unavailable_evidence_count:
+        reasons.append("unavailable evidence")
+    if reasons:
+        return f"No actionable candidates — {'; '.join(reasons)}"
+    return "Zero actionable candidates from current evidence"
+
+
 def _operator_state_summary_html(summary: OperatorStateSummary, *, total_count: int) -> str:
     health_html = (
         "<span class='operator-state-summary-current'>"
@@ -5263,10 +5286,8 @@ def _operator_state_summary_html(summary: OperatorStateSummary, *, total_count: 
         headline = "Source unavailable — no Profit Plan cards loaded"
     elif summary.actionable_candidate_count:
         headline = f"Actionable candidates: {summary.actionable_candidate_count}"
-    elif summary.stale_evidence_count or summary.unavailable_evidence_count:
-        headline = "No actionable candidates — source evidence is stale or unavailable"
     else:
-        headline = "Zero actionable candidates from current evidence"
+        headline = _no_actionable_candidates_headline(summary)
     return (
         "<div class='operator-state-summary' aria-live='polite'>"
         f"<strong>{esc(headline)}</strong>{health_html}"
