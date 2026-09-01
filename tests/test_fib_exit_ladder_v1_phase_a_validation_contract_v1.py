@@ -341,6 +341,58 @@ def test_all_ok_windows_non_positive_is_rejected_without_reason() -> None:
     assert result.reason is None
 
 
+def _kwargs_with_windows(validation_windows_ok: int, validation_windows_total: int) -> dict[str, object]:
+    return dict(
+        symbol="LINK",
+        baseline_evaluable=True,
+        baseline_reproduced=True,
+        has_original_bucket=True,
+        validation_windows_ok=validation_windows_ok,
+        validation_windows_total=validation_windows_total,
+        alpha_positive_ok_window_count=0,
+        bucket_sign_agreement=True,
+        bucket_rank_agreement_all_ok_windows=True,
+    )
+
+
+@pytest.mark.parametrize("validation_windows_total", [0, 1, 3, 5])
+def test_validation_windows_total_other_than_two_fails_closed(validation_windows_total: int) -> None:
+    """The frozen contract always defines exactly 2 validation windows
+    (§ New validation window(s)); any other total is malformed caller input
+    and must raise rather than silently resolving to any disposition,
+    VALIDATED included."""
+    with pytest.raises(ValueError):
+        disposition.classify_asset_disposition(
+            **_kwargs_with_windows(validation_windows_ok=0, validation_windows_total=validation_windows_total)
+        )
+
+
+def test_validation_windows_ok_negative_fails_closed() -> None:
+    with pytest.raises(ValueError):
+        disposition.classify_asset_disposition(
+            **_kwargs_with_windows(validation_windows_ok=-1, validation_windows_total=2)
+        )
+
+
+def test_validation_windows_ok_exceeds_total_fails_closed() -> None:
+    with pytest.raises(ValueError):
+        disposition.classify_asset_disposition(
+            **_kwargs_with_windows(validation_windows_ok=3, validation_windows_total=2)
+        )
+
+
+@pytest.mark.parametrize("validation_windows_ok", [0, 1, 2])
+def test_validation_windows_ok_within_bounds_does_not_raise(validation_windows_ok: int) -> None:
+    """total == 2 with ok in {0, 1, 2} is exactly the valid input range; none
+    of these must raise, and none of them may be silently miscounted."""
+    result = disposition.classify_asset_disposition(
+        **_kwargs_with_windows(validation_windows_ok=validation_windows_ok, validation_windows_total=2)
+    )
+    assert isinstance(result, disposition.AssetDisposition)
+    if validation_windows_ok == 0:
+        assert result.outcome == disposition.OUTCOME_INSUFFICIENT_DATA
+
+
 def test_overall_disposition_is_least_favorable() -> None:
     validated = disposition.AssetDisposition("LINK", disposition.OUTCOME_VALIDATED, None)
     revised = disposition.AssetDisposition("SOL", disposition.OUTCOME_REVISED, None)

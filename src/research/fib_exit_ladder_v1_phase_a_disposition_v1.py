@@ -94,8 +94,29 @@ def classify_asset_disposition(
     to VALIDATED even if `bucket_rank_agreement_all_ok_windows` is True.
 
     Fail-closed: any ambiguous or unreproducible input maps to
-    INSUFFICIENT_DATA or REJECTED, never to VALIDATED/REVISED.
+    INSUFFICIENT_DATA or REJECTED, never to VALIDATED/REVISED. Malformed
+    window counts (`validation_windows_total != 2`, or
+    `validation_windows_ok` outside `[0, validation_windows_total]`) raise
+    `ValueError` rather than silently coercing into a disposition — the
+    frozen contract (§ New validation window(s)) always defines exactly two
+    validation windows, so any other total means the caller itself violated
+    the contract, and this must never be papered over by returning
+    VALIDATED (or any other outcome) from bad input.
     """
+    if validation_windows_total != 2:
+        raise ValueError(
+            "validation_windows_total must be exactly 2, per the frozen "
+            "contract's two validation windows (§ New validation window(s)); "
+            f"got {validation_windows_total}."
+        )
+
+    if not (0 <= validation_windows_ok <= validation_windows_total):
+        raise ValueError(
+            "validation_windows_ok must be between 0 and "
+            "validation_windows_total inclusive; got "
+            f"{validation_windows_ok} of {validation_windows_total}."
+        )
+
     if not has_original_bucket:
         return AssetDisposition(symbol, OUTCOME_INSUFFICIENT_DATA, None)
 
