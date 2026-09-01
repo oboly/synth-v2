@@ -110,25 +110,32 @@ math, thresholds, or tables were introduced to perform this audit.
   (`db/migrations/20260712_market_rotation_pressure_v1.sql`).
 - The migration file's own header states: `-- Boundary: research-only ·
   market-only · account-agnostic`.
-- This directly contradicts #243 section 7.1, which names "Market Rotation
-  Pressure V1" as "the one canonical, accepted, versioned, persisted
-  per-asset lane" for Rotation.
+- #243 section 7.1 itself says only: `Owner: existing Rotation Pressure
+  market-only lane`, plus a canonical horizon interpretation
+  (`lookback_horizon: 24h + 168h`, `effective_horizon: REGIME`,
+  `observed_lifecycle: UNMEASURED unless backed by persisted empirical
+  analysis`). It does not, in its own text, grant production promotion.
+  The stronger phrase "the one canonical, accepted, versioned, persisted
+  per-asset lane" is a downstream characterization in
+  `docs/architecture/multi_tf_conviction_contract_v1.md` (#591) section 2,
+  not #243's own wording.
 - Fields present regardless of the boundary question: `model_version`,
   `as_of_ts_utc`, `market_score` (raw), categorical states
   (`acceleration_state`, `concentration_state`, `confirmation_state`), a
   dashboard-side `classify_freshness()` (`FRESH`/`STALE`,
-  `DEFAULT_STALE_AFTER≈2h30m`). `effective_horizon` = `REGIME` (single,
-  24h+168h composed) per #243; not separable into LONG/MID/SHORT.
-- Per #593 scoping (already settled): faster per-asset Rotation variants
-  remain research-only and must not be exposed as production regime truth.
-- **Classification: semantically unresolved.** The producer has real
-  operational characteristics (writer cadence, freshness, persistence,
-  versioning) that look production-grade, but its own migration boundary
-  comment says research-only. #617 cannot resolve this contradiction by
-  itself — it requires an explicit, reviewed promotion decision for
-  `market_rotation_pressure_snapshot_v1` (either fix the stale boundary
-  comment to reflect an already-made promotion decision, or confirm the
-  table is in fact research-only and #243 section 7.1 needs correction).
+  `DEFAULT_STALE_AFTER≈2h30m`).
+- **Classification: semantically unresolved (not a confirmed
+  contradiction).** The producer has real operational characteristics
+  (writer cadence, freshness, persistence, versioning) that look
+  production-grade, but its own migration boundary comment says
+  research-only, while #591's contract doc treats it as the canonical
+  production lane. #243 §7.1's own text is silent on production-promotion
+  status either way. #617 cannot resolve this by itself — it requires an
+  explicit, reviewed promotion decision for
+  `market_rotation_pressure_snapshot_v1`: either update the migration's
+  boundary comment to reflect an already-made promotion decision, or
+  correct #591 section 2's "canonical, accepted" characterization if the
+  table is in fact still research-only.
 
 ### 3.6 VOLATILITY
 
@@ -141,11 +148,10 @@ math, thresholds, or tables were introduced to perform this audit.
 
 ### 3.7 MACRO / LIQUIDITY
 
-- Issue #305 (macro regime engine) is explicitly open and unimplemented:
-  `docs/todo/market_intelligence/macro_regime_engine_v1.md` states
-  canonical macro inputs, classifiers, persistence, replay, and dashboard
-  consumption "are not implemented" and lists DXY/Gold/VIX/BTC-dominance/
-  ETH-BTC/TOTAL2 as an open P1 input inventory task.
+- GitHub Issue #305 ("Macro regime engine input inventory and deterministic
+  classifiers") is confirmed `OPEN` via the GitHub Issue itself (not the
+  frozen `docs/todo/` reference doc, which is legacy/non-authoritative per
+  `AGENTS.md`). No canonical macro classifier exists in `src/` on `main`.
 - The closest artifact, `market_global_snapshot_v1` (`btc_dominance_pct`,
   `eth_dominance_pct`, `as_of_ts_utc`), is a raw ingestion side-table
   embedded in the Rotation ETL pipeline, not a standalone macro producer —
@@ -176,7 +182,7 @@ PRICE_STRUCTURE         semantically unresolved    structure_state (trend_state_
 RELATIVE_STRENGTH       semantically unresolved    structure_state.reclaim_* + relative_strength_snapshot (unreconciled)
 MOMENTUM                MISSING                     none (active_regime_observation is a single narrow hypothesis, not general)
 BREADTH                 semantically unresolved    market_breath_live_v1 built on src/research module
-ROTATION                semantically unresolved    market_rotation_pressure_snapshot_v1 (migration says research-only; #243 says canonical)
+ROTATION                semantically unresolved    market_rotation_pressure_snapshot_v1 (migration says research-only; #591 characterizes it as canonical, #243 §7.1 itself is silent on promotion)
 VOLATILITY              MISSING                     none
 MACRO/LIQUIDITY         MISSING                     market_global_snapshot_v1 (raw only, #305 open)
 ETH/BTC leadership      MISSING                     none distinct
@@ -189,11 +195,12 @@ evidence envelope in this slice.
 
 ## 5. Required owner/promotion decisions before an evidence envelope can be built
 
-1. **Rotation boundary contradiction** — a reviewed decision on whether
+1. **Rotation promotion status** — a reviewed decision on whether
    `market_rotation_pressure_snapshot_v1` is production or research-only.
    If production, the migration's boundary comment must be corrected by
-   its owning issue; if research-only, #243 section 7.1 needs a correction
-   pass. #617 must not decide this unilaterally.
+   its owning issue; if research-only, #591 section 2's "canonical,
+   accepted" characterization needs a correction pass. #617 must not
+   decide this unilaterally.
 2. **PRICE_STRUCTURE / RELATIVE_STRENGTH `effective_horizon` and
    freshness mapping** — the `structure_state` engine owner must define
    `effective_horizon` (per #243 §3.3) and a freshness/staleness rule for
@@ -210,9 +217,9 @@ evidence envelope in this slice.
    re-scoped issue is needed before momentum evidence can exist.
 6. **VOLATILITY owner** — no issue currently owns a general volatility
    regime family; needs a new issue.
-7. **MACRO/LIQUIDITY and ETH/BTC leadership** — #305 already owns this and
-   is open/unimplemented; #617 has no authority to invent a classifier in
-   its place.
+7. **MACRO/LIQUIDITY and ETH/BTC leadership** — GitHub Issue #305 is
+   confirmed `OPEN` and already owns this space; #617 has no authority to
+   invent a classifier in its place.
 
 ## 6. Non-goals confirmed for this slice
 
