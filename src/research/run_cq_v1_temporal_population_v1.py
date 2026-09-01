@@ -190,7 +190,6 @@ def _write_interrupted_state(
     asofs_completed = int(checkpoint.get("asofs_completed", 0))
     rows_written = int(checkpoint.get("rows_written", 0))
     last_asof = checkpoint.get("last_asof_ts_utc")
-    population_sha = _population_sha(population_path) if population_path.exists() else None
     interrupted = {
         **identity,
         "terminal_state": "INTERRUPTED",
@@ -199,7 +198,6 @@ def _write_interrupted_state(
         "asofs_completed": asofs_completed,
         "rows_written": rows_written,
         "last_asof_ts_utc": last_asof,
-        "population_sha256": population_sha,
         "forward_outcomes_read": 0,
         "db_writes": 0,
     }
