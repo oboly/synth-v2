@@ -1784,7 +1784,7 @@ def test_seven_unavailable_native_cards_fail_closed_with_reference_only_bridge()
         assert evidence_rows["map_lifecycle"]["status"] == "DATA_UNAVAILABLE"
         assert evidence_rows["per_level_status"]["status"] == "NON_CANONICAL_REFERENCE"
         assert "Transient SHORT context (non-canonical reference)" in html
-        assert "Non-canonical reference target zone" in html
+        assert "Non-canonical reference target" in html
         assert "MAP SWITCH REVIEW" not in html
         assert "MAP EXPIRED" not in html
         assert "WAIT FOR NEW MAP" not in html
@@ -2853,7 +2853,7 @@ def test_json_snapshot_includes_new_semantic_fields() -> None:
     assert isinstance(row["relevance_reasons"], list)
 
 
-def test_active_trade_setup_keeps_active_zone_wording() -> None:
+def test_active_trade_setup_keeps_active_label_wording() -> None:
     card = _make_card(
         current_price="0.470000",
         fib_ext=_wld_fib_ext(),
@@ -2861,12 +2861,37 @@ def test_active_trade_setup_keeps_active_zone_wording() -> None:
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
     )
-    html = render_plan_card(card)
-    assert card.actionability_state == "ACTIVE_TRADE_SETUP"
-    assert "Re-entry zone" in html
-    assert "Target zone" in html
-    assert "Reference re-entry zone" not in html
-    assert "Historical target zone" not in html
+    display = _pp_module._actionability_display_bundle(card)
+    assert card.actionability_state == _pp_module.CARD_ACTIONABILITY_ACTIVE
+    assert display[:2] == ("Re-entry", "Target")
+
+
+def test_actionability_display_labels_do_not_use_zone_wording() -> None:
+    card = _make_card(
+        current_price="0.470000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    expected_labels = {
+        _pp_module.CARD_ACTIONABILITY_ACTIVE: ("Re-entry", "Target"),
+        _pp_module.CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE: (
+            "Non-canonical reference re-entry",
+            "Non-canonical reference target",
+        ),
+        _pp_module.CARD_ACTIONABILITY_NAVIGATION_ONLY: ("Reference re-entry", "Navigation target"),
+        _pp_module.CARD_ACTIONABILITY_HISTORICAL_REFERENCE: ("Reference re-entry", "Historical target"),
+        _pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE: ("Reference re-entry", "Historical target"),
+        _pp_module.CARD_ACTIONABILITY_INVALIDATED: ("Invalidated re-entry", "Historical target"),
+    }
+
+    for actionability_state, expected in expected_labels.items():
+        display = _pp_module._actionability_display_bundle(
+            dataclasses.replace(card, actionability_state=actionability_state)
+        )
+        assert display[:2] == expected
+        assert "zone" not in " ".join(display[:2]).lower()
 
 
 def test_map_completed_card_uses_reference_wording_and_fresh_map_warning() -> None:
@@ -2880,11 +2905,11 @@ def test_map_completed_card_uses_reference_wording_and_fresh_map_warning() -> No
     html = render_plan_card(card)
     assert card.scenario_type == "MAP_COMPLETED"
     assert card.actionability_state == "NEEDS_RECOMPUTE"
-    assert "Reference re-entry zone" in html
-    assert "Historical target zone" in html
+    assert "Reference re-entry" in html
+    assert "Historical target" in html
     assert "Fresh map required before new orders" in html
-    assert "Re-entry zone" not in html.replace("Reference re-entry zone", "")
-    assert "Target zone" not in html.replace("Historical target zone", "")
+    assert "Reference re-entry zone" not in html
+    assert "Historical target zone" not in html
 
 
 def test_navigation_only_card_shows_navigation_wording() -> None:
@@ -2913,7 +2938,7 @@ def test_navigation_only_card_shows_navigation_wording() -> None:
     html = render_plan_card(card)
     assert card.actionability_state == "NAVIGATION_ONLY"
     assert card.action_label == "NAVIGATION_ONLY"
-    assert "Navigation target zone" in html
+    assert "Navigation target" in html
     assert "NAVIGATION ONLY" in html or "NAVIGATION MAP" in html
 
 
@@ -2979,12 +3004,12 @@ def test_invalidated_card_uses_reference_review_wording() -> None:
     )
     html = render_plan_card(card)
     assert card.actionability_state == "INVALIDATED"
-    assert "Invalidated re-entry zone" in html
-    assert "Historical target zone" in html
+    assert "Invalidated re-entry" in html
+    assert "Historical target" in html
     assert "Context invalidated — review existing orders if applicable" in html
     assert "Order review" in html
-    assert "Re-entry zone" not in html.replace("Invalidated re-entry zone", "")
-    assert "Target zone" not in html.replace("Historical target zone", "")
+    assert "Invalidated re-entry zone" not in html
+    assert "Historical target zone" not in html
 
 
 def test_native_short_context_available_does_not_regress_to_missing_symbol() -> None:
