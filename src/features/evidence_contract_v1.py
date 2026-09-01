@@ -117,6 +117,13 @@ def validate_input_interval(input_interval: str | None) -> tuple[str, ...]:
     return ()
 
 
+def is_blank(value: str | None) -> bool:
+    """None, empty, or whitespace-only. A non-blank value is never trimmed
+    or altered by callers of this helper -- it is either accepted exactly
+    as given or rejected as missing provenance."""
+    return value is None or str(value).strip() == ""
+
+
 def normalize_to_utc(dt: datetime | None) -> datetime | None:
     """Normalize a producer timestamp to one internal UTC representation.
 

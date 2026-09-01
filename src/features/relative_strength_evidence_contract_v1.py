@@ -43,6 +43,7 @@ from src.features.evidence_contract_v1 import (
     SignalHorizonV1Evidence,
     UNMEASURED_LIFECYCLE,
     compute_freshness,
+    is_blank,
     resolve_status,
 )
 
@@ -51,12 +52,6 @@ COMPONENT_CROSS_SECTIONAL_RANK = "CROSS_SECTIONAL_RANK"
 
 INPUT_INTERVAL = "1d"
 _MARKET = "asset"
-
-
-def _is_blank(identifier: str | None) -> bool:
-    """None, empty, or whitespace-only. A non-blank identifier is never
-    trimmed/altered -- it is either accepted exactly as given or rejected."""
-    return identifier is None or identifier.strip() == ""
 
 
 def build_cross_sectional_rank_evidence(
@@ -89,8 +84,8 @@ def build_cross_sectional_rank_evidence(
         evaluated_at=evaluated_at,
     )
 
-    model_id_blank = _is_blank(model_id)
-    model_version_blank = _is_blank(model_version)
+    model_id_blank = is_blank(model_id)
+    model_version_blank = is_blank(model_version)
     resolved_model_id = None if model_id_blank else model_id
     resolved_model_version = None if model_version_blank else model_version
 
