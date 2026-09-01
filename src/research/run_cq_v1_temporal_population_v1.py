@@ -29,6 +29,17 @@ PINNED_SELECTION_CONFIG_SHA256 = "08cec05f70cb8b2ff43b24a90dc4b8fb1f09d3535f9a79
 CHECKPOINT_VERSION = "1.0.0"
 WORKER_COUNT = 1
 
+OBSERVATION_IDENTITY_FIELDS = (
+    "asset_id",
+    "venue",
+    "asof_ts_utc",
+    "evidence_key",
+    "cq_model_version",
+    "model_family_version",
+    "coverage_artifact_sha256",
+    "selection_config_sha256",
+)
+
 
 class _Interrupted(RuntimeError):
     def __init__(self, signum: int) -> None:
@@ -94,7 +105,19 @@ def _atomic_json(path: Path, payload: Any) -> None:
 
 
 def _row_line(row: dict[str, Any]) -> bytes:
-    return (json.dumps(row, sort_keys=True, separators=(",", ":"), default=_json_default) + "\n").encode("utf-8")
+    return (
+        json.dumps(row, sort_keys=True, separators=(",", ":"), default=_json_default) + "\n"
+    ).encode("utf-8")
+
+
+def _bind_selection_config_provenance(
+    rows: list[dict[str, Any]], selection_config_sha: str
+) -> list[dict[str, Any]]:
+    for row in rows:
+        row["selection_config_sha256"] = selection_config_sha
+        identity = {field: row[field] for field in OBSERVATION_IDENTITY_FIELDS}
+        row["observation_id"] = canonical_json_sha256(identity)
+    return rows
 
 
 def _load_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any]]:
@@ -116,9 +139,14 @@ def _load_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any
         if not isinstance(row, dict):
             raise ValueError(f"checkpointed population row {index} is not an object")
         rows.append(row)
-    with path.open("wb") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as handle:
+        tmp = Path(handle.name)
         for row in rows:
             handle.write(_row_line(row))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
     return rows
 
 
@@ -143,7 +171,43 @@ def _validate_resume_checkpoint(checkpoint: dict[str, Any], identity: dict[str, 
     for key, expected in identity.items():
         actual = checkpoint.get(key)
         if actual != expected:
-            raise ValueError(f"resume identity mismatch for {key}: checkpoint={actual!r} expected={expected!r}")
+            raise ValueError(
+                f"resume identity mismatch for {key}: checkpoint={actual!r} expected={expected!r}"
+            )
+
+
+def _write_interrupted_state(
+    *,
+    checkpoint_path: Path,
+    summary_path: Path,
+    population_path: Path,
+    identity: dict[str, Any],
+    signum: int,
+) -> None:
+    checkpoint: dict[str, Any] = {}
+    if checkpoint_path.exists():
+        raw = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            checkpoint = raw
+    asofs_completed = int(checkpoint.get("asofs_completed", 0))
+    rows_written = int(checkpoint.get("rows_written", 0))
+    last_asof = checkpoint.get("last_asof_ts_utc")
+    # Do not hash population_path here: it may contain an uncheckpointed tail that
+    # resume intentionally discards, so only FINISHED artifacts receive a population hash.
+    _ = population_path
+    interrupted = {
+        **identity,
+        "terminal_state": "INTERRUPTED",
+        "signal": signum,
+        "resumable": 1,
+        "asofs_completed": asofs_completed,
+        "rows_written": rows_written,
+        "last_asof_ts_utc": last_asof,
+        "forward_outcomes_read": 0,
+        "db_writes": 0,
+    }
+    _atomic_json(checkpoint_path, interrupted)
+    _atomic_json(summary_path, interrupted)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -174,7 +238,9 @@ def run(args: argparse.Namespace) -> int:
     contract_sha = canonical_json_sha256(contract)
     config_path, config_sha = _validate_selection_config(args.selection_config)
     config = load_selection_config(str(config_path))
-    identity = _identity(venue=args.venue, contract_sha=contract_sha, selection_config_sha=config_sha)
+    identity = _identity(
+        venue=args.venue, contract_sha=contract_sha, selection_config_sha=config_sha
+    )
     print(
         f"PHASE phase=setup status=finished elapsed_s={time.monotonic() - setup_started:.3f} "
         f"asof_scope={len(asofs)} workers={WORKER_COUNT}",
@@ -220,8 +286,13 @@ def run(args: argparse.Namespace) -> int:
             start_index = completed
             print(f"RESUME asofs_completed={completed} rows_written={rows_written}", flush=True)
         else:
-            if any(path.exists() for path in (population_path, summary_path, manifest_path, checkpoint_path)):
-                raise ValueError("output directory already contains temporal population artifacts; use --resume")
+            if any(
+                path.exists()
+                for path in (population_path, summary_path, manifest_path, checkpoint_path)
+            ):
+                raise ValueError(
+                    "output directory already contains temporal population artifacts; use --resume"
+                )
             rows = []
             start_index = 0
             _atomic_json(
@@ -258,6 +329,7 @@ def run(args: argparse.Namespace) -> int:
                     venue=args.venue,
                     selection_config=config,
                 )
+                _bind_selection_config_provenance(asof_rows, config_sha)
                 asof_elapsed = time.monotonic() - asof_started
                 print(
                     f"QUERY phase=asof_population status=finished index={zero_index + 1}/45 "
@@ -300,17 +372,20 @@ def run(args: argparse.Namespace) -> int:
 
         population_sha = _population_sha(population_path)
         summary = summarize_population(rows)
-        summary.update({
-            "runner": RUNNER_NAME,
-            "venue": args.venue,
-            "contract_sha256": contract_sha,
-            "selection_config_path": DEFAULT_SELECTION_CONFIG,
-            "selection_config_sha256": config_sha,
-            "population_sha256": population_sha,
-            "expected_unique_asof_count": 45,
-            "forward_outcomes_read": 0,
-            "db_writes": 0,
-        })
+        summary.update(
+            {
+                "runner": RUNNER_NAME,
+                "terminal_state": "FINISHED",
+                "venue": args.venue,
+                "contract_sha256": contract_sha,
+                "selection_config_path": DEFAULT_SELECTION_CONFIG,
+                "selection_config_sha256": config_sha,
+                "population_sha256": population_sha,
+                "expected_unique_asof_count": 45,
+                "forward_outcomes_read": 0,
+                "db_writes": 0,
+            }
+        )
         _atomic_json(summary_path, summary)
         manifest = {
             "runner": RUNNER_NAME,
@@ -351,6 +426,13 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     except _Interrupted as exc:
+        _write_interrupted_state(
+            checkpoint_path=checkpoint_path,
+            summary_path=summary_path,
+            population_path=population_path,
+            identity=identity,
+            signum=exc.signum,
+        )
         print(
             f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable=1 outcomes_read=0 "
             f"elapsed_s={time.monotonic() - run_started:.3f}",
