@@ -108,6 +108,70 @@ def test_compute_freshness_normalizes_naive_asof_against_aware_evaluated_at():
     assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)
 
 
+def test_compute_freshness_with_stale_after_fresh_within_window():
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    normalized_asof, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + timedelta(minutes=30),
+        stale_after=timedelta(hours=1),
+    )
+    assert normalized_asof == asof
+    assert freshness == FreshnessState.FRESH
+    assert reasons == ()
+
+
+def test_compute_freshness_with_stale_after_fresh_at_exact_boundary():
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    stale_after = timedelta(hours=1)
+    _, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + stale_after,
+        stale_after=stale_after,
+    )
+    assert freshness == FreshnessState.FRESH
+    assert reasons == ()
+
+
+def test_compute_freshness_with_stale_after_stale_past_window():
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    stale_after = timedelta(hours=1)
+    _, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + stale_after + timedelta(seconds=1),
+        stale_after=stale_after,
+    )
+    assert freshness == FreshnessState.STALE
+    assert reasons == (ReasonCode.STALE_EVIDENCE,)
+
+
+def test_compute_freshness_stale_after_none_preserves_unknown_default():
+    """Callers that never opt in (any producer without a reviewed rule)
+    keep receiving UNKNOWN -- the new parameter is additive, not a
+    behavior change for existing unreviewed adapters."""
+    asof = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    _, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=asof + timedelta(minutes=5),
+    )
+    assert freshness == FreshnessState.UNKNOWN
+    assert reasons == (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,)
+
+
+def test_compute_freshness_future_asof_fails_closed_even_with_stale_after():
+    """A future asof is a data-integrity contradiction, not a staleness
+    judgement -- it must stay INSUFFICIENT_DATA even when a producer-owned
+    `stale_after` is supplied, never silently FRESH."""
+    asof = datetime(2026, 1, 1, 5, 0, tzinfo=UTC)
+    evaluated_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    _, freshness, reasons = compute_freshness(
+        asof_ts=asof,
+        evaluated_at=evaluated_at,
+        stale_after=timedelta(hours=1),
+    )
+    assert freshness == FreshnessState.INSUFFICIENT_DATA
+    assert reasons == (ReasonCode.ASOF_AFTER_EVALUATION_TS,)
+
+
 def test_resolve_status_valid():
     status, reasons = resolve_status(freshness=FreshnessState.FRESH)
     assert status == EvidenceStatus.VALID

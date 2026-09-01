@@ -36,7 +36,7 @@ Boundary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -182,13 +182,18 @@ def compute_freshness(
     *,
     asof_ts: datetime | None,
     evaluated_at: datetime,
+    stale_after: timedelta | None = None,
 ) -> tuple[datetime | None, str, tuple[str, ...]]:
     """Producer-owned freshness (#243 3.5), not invented here.
 
-    Returns `(normalized_asof_ts, freshness, reason_codes)`. Neither
-    `structure_state_engine` nor `relative_strength_snapshot` has a reviewed
-    staleness rule, so this function never classifies FRESH/STALE from an
-    age-vs-interval computation. It only distinguishes:
+    Returns `(normalized_asof_ts, freshness, reason_codes)`.
+
+    `stale_after` is `None` by default, which preserves the original
+    unreviewed behaviour for any producer without a reviewed staleness rule
+    (`structure_state_engine`, `relative_strength_snapshot`, and any future
+    adapter that does not pass it): this function never classifies
+    FRESH/STALE from an age-vs-interval computation for those callers. It
+    only distinguishes:
 
     - no `asof_ts` at all -> INSUFFICIENT_DATA;
     - an `asof_ts` dated after `evaluated_at` -> INSUFFICIENT_DATA (a
@@ -198,6 +203,17 @@ def compute_freshness(
       threshold);
     - otherwise -> UNKNOWN, because freshness has not yet been defined by
       the owning producer.
+
+    A caller may only pass a non-`None` `stale_after` when its own module
+    has a reviewed, owner-documented staleness rule for that specific
+    producer (e.g. `rotation_evidence_contract_v1.ROTATION_STALE_AFTER`).
+    This function does not expose a generic runtime override -- there is no
+    way for an arbitrary caller to inject an ad hoc threshold through
+    `build_rotation_pressure_evidence` or any other adapter's public
+    signature; each adapter that wants FRESH/STALE must hardcode its own
+    reviewed constant and pass it here explicitly. When `stale_after` is
+    given and the (non-future) `asof_ts` age exceeds it, the result is
+    `STALE` with `ReasonCode.STALE_EVIDENCE`; otherwise it is `FRESH`.
 
     Both timestamps are normalized to aware UTC via `normalize_to_utc`
     before comparison.
@@ -215,11 +231,22 @@ def compute_freshness(
             (ReasonCode.ASOF_AFTER_EVALUATION_TS,),
         )
 
-    return (
-        normalized_asof_ts,
-        FreshnessState.UNKNOWN,
-        (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,),
-    )
+    if stale_after is None:
+        return (
+            normalized_asof_ts,
+            FreshnessState.UNKNOWN,
+            (ReasonCode.FRESHNESS_NOT_OWNER_DEFINED,),
+        )
+
+    age = normalized_evaluated_at - normalized_asof_ts
+    if age > stale_after:
+        return (
+            normalized_asof_ts,
+            FreshnessState.STALE,
+            (ReasonCode.STALE_EVIDENCE,),
+        )
+
+    return (normalized_asof_ts, FreshnessState.FRESH, ())
 
 
 # Reason codes that must always fail an evidence contract closed to

@@ -146,34 +146,44 @@ the fail-closed pattern already established for `structure_state` in
 §3.3. No historical DB rows are rewritten to add a `model_id` column; this
 is a pure adapter-level declaration.
 
-## 4. Freshness ownership (still not producer-owned)
+## 4. Freshness ownership (now producer-owned, #547 Phase A)
 
-**Unchanged from the #676 audit finding.** The only existing staleness rule
-for this lane is `classify_freshness()` /
+**Superseded by #547 Phase A.** The #676 audit finding above (freshness
+`UNKNOWN` pending an explicit owner decision) is resolved: this contract now
+declares its own producer-owned staleness rule,
+`rotation_evidence_contract_v1.ROTATION_STALE_AFTER = timedelta(minutes=105)`.
+
+The dashboard's `classify_freshness()` /
 `DEFAULT_STALE_AFTER = timedelta(hours=2, minutes=30)` in
-`src/reporting/market_rotation_pressure_dashboard_v1.py:10,107-122` — a
-consumer/dashboard module, not the producer. The #676 owner decision does
-not adopt this rule as producer-owned truth, and the gurkDB writer's hourly
-run cadence (`docs/ops/market_rotation_pressure_runtime_owners_v1.md`) is a
-runtime operational fact, not a reviewed freshness semantics decision —
-per the #676 task contract, "Runtime cadence alone is NOT automatically the
-same as freshness semantics."
+`src/reporting/market_rotation_pressure_dashboard_v1.py:10,107-122` remains a
+separate consumer/dashboard-owned rule and is **not** adopted here — #547
+deliberately derives `ROTATION_STALE_AFTER` independently, from the writer's
+own measured/documented persist timing only
+(`docs/ops/market_rotation_pressure_runtime_owners_v1.md`: gurkDB
+`synth-market-rotation-pressure-writer.timer`, `OnCalendar=*:20:00 UTC`,
+`RandomizedDelaySec=180`, three real per-invocation-verified cycles
+completing within their `HH:20:00-HH:23:xx` start window, historical ~1-2
+minute runtime): `input_interval` (60 min) + writer's documented worst-case
+persist lag (25 min) + a 20 min operational safety margin for runtime
+variance = 105 min. This is the writer's own schedule and observed
+completion time relative to its own `as_of_ts_utc`, not an inference from
+the reporting layer's assumption, and it is intentionally tighter than the
+dashboard's 2h30 window.
 
-Therefore this contract reuses `evidence_contract_v1.compute_freshness`
-**unchanged**: freshness resolves to `UNKNOWN`
-(`FRESHNESS_NOT_OWNER_DEFINED`) for any present, non-future `asof_ts`, and
-to `INSUFFICIENT_DATA` for a missing or future-dated `asof_ts`. No new
-threshold is invented, and no caller-supplied override exists — the
-adapter function takes no freshness/threshold parameter at all. Top-level
-`status` is therefore `INSUFFICIENT_DATA` today even for a fresh, valid,
-correctly-identified row, exactly as for the still-open
-PRICE_STRUCTURE/RELATIVE_STRENGTH gaps documented in #669/#672 — the only
-difference for `ROTATION` is that `effective_horizon` is now resolved
-(`REGIME`, not `UNKNOWN`/`UNMAPPED_HORIZON`).
-
-Promoting freshness to a reviewed producer-owned rule (e.g. formally
-adopting the dashboard's 2h30 window, or a different rule) is an explicit
-follow-up decision, not made by this document.
+`evidence_contract_v1.compute_freshness` gained an additive, opt-in
+`stale_after` parameter (default `None`, preserving the original
+`UNKNOWN`-only behavior for every other still-unreviewed adapter). Only
+`rotation_evidence_contract_v1` passes a non-`None` value, sourced from its
+own hardcoded `ROTATION_STALE_AFTER` constant — there is still no
+caller-supplied/runtime-injectable override; `build_rotation_pressure_evidence`
+takes no freshness/threshold parameter. Freshness now resolves to `FRESH`
+for a present, non-future `asof_ts` within `ROTATION_STALE_AFTER` of
+`evaluated_at`, `STALE` (`STALE_EVIDENCE`) beyond it, and
+`INSUFFICIENT_DATA` for a missing or future-dated `asof_ts`, exactly as
+`#243 §3.5` requires. Top-level `status` is therefore `VALID` for a fresh,
+valid, correctly-identified row (previously always `INSUFFICIENT_DATA`
+regardless of freshness) — the still-open PRICE_STRUCTURE/RELATIVE_STRENGTH
+gaps documented in #669/#672 are unaffected by this change.
 
 ## 5. Completed evidence mapping
 
@@ -193,7 +203,7 @@ lookback_horizon    = "24h+168h"
 effective_horizon   = REGIME
 observed_lifecycle  = UNMEASURED
 asof_ts             = row.as_of_ts_utc, normalized to aware UTC
-freshness           = UNKNOWN | INSUFFICIENT_DATA (see §4)
+freshness           = FRESH | STALE | INSUFFICIENT_DATA (see §4)
 provenance          = {asset_id, market, venue, source_snapshot_24h_id, source_snapshot_7d_id}
 raw                 = {score_total, pressure_state, phase_state,
                        raw_return_24h_pct, raw_return_7d_pct}   (verbatim, unmodified)
@@ -229,8 +239,9 @@ slice, reusing the same `family=ROTATION` seam with a
 ```text
 missing asof_ts                -> freshness=INSUFFICIENT_DATA (MISSING_ASOF_TS)
 asof_ts after evaluated_at     -> freshness=INSUFFICIENT_DATA (ASOF_AFTER_EVALUATION_TS)
-asof_ts present, no owner rule -> freshness=UNKNOWN (FRESHNESS_NOT_OWNER_DEFINED);
-                                   status=INSUFFICIENT_DATA
+asof_ts age <= ROTATION_STALE_AFTER (105 min) -> freshness=FRESH
+asof_ts age >  ROTATION_STALE_AFTER (105 min) -> freshness=STALE (STALE_EVIDENCE);
+                                   status=STALE
 missing/blank model_version    -> status=INSUFFICIENT_DATA (MISSING_PROVENANCE);
                                    model_id/model_version both None
 unsupported model_version      -> status=INSUFFICIENT_DATA (UNSUPPORTED_MODEL_VERSION);
@@ -238,7 +249,9 @@ unsupported model_version      -> status=INSUFFICIENT_DATA (UNSUPPORTED_MODEL_VE
 naive vs aware timestamps       -> normalized to aware UTC before any comparison
 replay                          -> caller-supplied row + evaluated_at only; no internal
                                     "latest" query exists in this module; no
-                                    freshness/threshold override parameter exists
+                                    caller-supplied/runtime-injectable freshness
+                                    override parameter exists (ROTATION_STALE_AFTER
+                                    is this module's own hardcoded constant)
 ```
 
 `effective_horizon = REGIME` is always resolved (an explicit owner
@@ -303,3 +316,4 @@ production_deploy=0
 - #661 / #568 CQ temporal population/evaluation (unaffected)
 - #266 Rotation Pressure production writer cutover (operational, unaffected)
 - #676 this promotion
+- #547 Rotation Pressure freshness pipeline Phase A (this document's §4 update: producer-owned `ROTATION_STALE_AFTER`)
