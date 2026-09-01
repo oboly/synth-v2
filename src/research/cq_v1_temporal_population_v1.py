@@ -16,6 +16,7 @@ from src.selection.selection_engine_v2 import SelectionCandidate, rank_candidate
 
 CQ_MODEL_VERSION = "cq_shadow_v1"
 CONTRACT_PATH = Path("config/research/cq_v1_temporal_sampling_v1.json")
+PINNED_TEMPORAL_CONTRACT_SHA256 = "db3cac1381c346821e7c1333f52d3e966e7d5030b7fe892ab82decc0fd2be526"
 
 EVIDENCE_TS_FIELDS = (
     "quality_ts_1d_utc",
@@ -64,6 +65,12 @@ def load_temporal_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError("temporal contract must be an object")
+    actual_contract_sha = canonical_json_sha256(payload)
+    if actual_contract_sha != PINNED_TEMPORAL_CONTRACT_SHA256:
+        raise ValueError(
+            "temporal contract SHA256 mismatch: "
+            f"expected={PINNED_TEMPORAL_CONTRACT_SHA256} actual={actual_contract_sha}"
+        )
     frozen = payload["frozen_model_family"]
     if frozen["model_family_version"] != MODEL_FAMILY_VERSION:
         raise ValueError("frozen model family version mismatch")
