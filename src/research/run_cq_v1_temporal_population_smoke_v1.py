@@ -21,6 +21,7 @@ from src.selection.selection_engine_v2 import load_selection_config
 
 RUNNER_NAME = "cq_v1_temporal_population_smoke_v1"
 WORKER_COUNT = 1
+DEFAULT_SYMBOL = "ADA-EUR"
 
 
 class _Interrupted(RuntimeError):
@@ -33,7 +34,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only one-asof CQ v1 temporal population smoke")
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--asof-index", type=int, default=1, help="1-based frozen as-of index")
-    parser.add_argument("--asset-id", type=int, default=None, help="optional single query/build asset")
+    parser.add_argument("--symbol", default=DEFAULT_SYMBOL, help="single bounded smoke symbol")
+    parser.add_argument("--asset-id", type=int, default=None, help="optional explicit asset id override")
     parser.add_argument("--selection-config", default=DEFAULT_SELECTION_CONFIG)
     return parser.parse_args(argv)
 
@@ -44,6 +46,17 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(type(value).__name__)
+
+
+def _resolve_asset_id(conn: Any, *, symbol: str, explicit_asset_id: int | None) -> int:
+    if explicit_asset_id is not None:
+        return explicit_asset_id
+    with conn.cursor() as cur:
+        cur.execute("SELECT asset_id FROM asset WHERE symbol=%s ORDER BY asset_id LIMIT 2", (symbol,))
+        rows = cur.fetchall()
+    if len(rows) != 1:
+        raise ValueError(f"symbol={symbol} must resolve to exactly one asset_id, got {len(rows)}")
+    return int(rows[0]["asset_id"])
 
 
 def run(args: argparse.Namespace) -> int:
@@ -70,9 +83,9 @@ def run(args: argparse.Namespace) -> int:
             signal.signal(signum, _handle_signal)
 
         print(
-            f"STARTED runner={RUNNER_NAME} mode=SMOKE scope=one_asof workers={WORKER_COUNT} "
+            f"STARTED runner={RUNNER_NAME} mode=SMOKE scope=one_asof_one_asset workers={WORKER_COUNT} "
             f"venue={args.venue} asof_index={args.asof_index}/{len(asofs)} "
-            f"asof={asof.isoformat()} asset_id={args.asset_id if args.asset_id is not None else 'ALL'}",
+            f"asof={asof.isoformat()} symbol={args.symbol} explicit_asset_id={args.asset_id}",
             flush=True,
         )
         print(
@@ -88,9 +101,12 @@ def run(args: argparse.Namespace) -> int:
             f"PHASE phase=db_connect status=finished elapsed_s={time.monotonic() - connect_started:.3f}",
             flush=True,
         )
+        asset_id = _resolve_asset_id(conn, symbol=args.symbol, explicit_asset_id=args.asset_id)
+        print(f"BOUND symbol={args.symbol} asset_id={asset_id}", flush=True)
+
         query_started = time.monotonic()
         print(
-            f"QUERY phase=asof_population status=started asof={asof.isoformat()} asset_id={args.asset_id if args.asset_id is not None else 'ALL'}",
+            f"QUERY phase=asof_population status=started asof={asof.isoformat()} asset_id={asset_id}",
             flush=True,
         )
         rows = build_asof_population(
@@ -99,7 +115,7 @@ def run(args: argparse.Namespace) -> int:
             asof_ts_utc=asof,
             venue=args.venue,
             selection_config=config,
-            asset_id=args.asset_id,
+            asset_id=asset_id,
         )
         _bind_selection_config_provenance(rows, config_sha)
         query_elapsed = time.monotonic() - query_started
@@ -108,17 +124,15 @@ def run(args: argparse.Namespace) -> int:
             flush=True,
         )
 
-        if args.asset_id is not None:
-            if not rows:
-                raise ValueError(f"asset_id={args.asset_id} produced no row at frozen asof {asof.isoformat()}")
-            if len(rows) != 1 or int(rows[0]["asset_id"]) != args.asset_id:
-                raise ValueError(f"asset_id={args.asset_id} did not remain single-asset bounded")
+        if not rows:
+            raise ValueError(f"asset_id={asset_id} produced no row at frozen asof {asof.isoformat()}")
+        if len(rows) != 1 or int(rows[0]["asset_id"]) != asset_id:
+            raise ValueError(f"asset_id={asset_id} did not remain single-asset bounded")
 
-        for row in rows:
-            print(json.dumps(row, sort_keys=True, default=_json_default), flush=True)
+        print(json.dumps(rows[0], sort_keys=True, default=_json_default), flush=True)
         print(
-            f"FINISHED runner={RUNNER_NAME} asof={asof.isoformat()} source_rows={len(rows)} "
-            f"output_rows={len(rows)} outcomes_read=0 db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
+            f"FINISHED runner={RUNNER_NAME} asof={asof.isoformat()} asset_id={asset_id} source_rows=1 "
+            f"output_rows=1 outcomes_read=0 db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
             flush=True,
         )
         return 0
