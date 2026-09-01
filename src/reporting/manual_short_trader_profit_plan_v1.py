@@ -3509,43 +3509,43 @@ def format_invalidation_line(
 
 
 def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, str, str, str]:
-    reentry_label = "Re-entry zone"
-    target_label = "Target zone"
+    reentry_label = "Re-entry"
+    target_label = "Target"
     order_ladder_label = "Order ladder"
     open_orders_label = "Existing open orders:"
     reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
     target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
 
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
-        return "Entry zone", target_label, "Market zones", "", reentry_line, target_line
+        return "Entry", target_label, "Market zones", "", reentry_line, target_line
 
     if card.actionability_state == CARD_ACTIONABILITY_ACTIVE:
         return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
 
-    reentry_label = "Reference re-entry zone"
+    reentry_label = "Reference re-entry"
     open_orders_label = "Existing open orders to review:"
     order_ladder_label = "Order review"
 
     if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE:
-        reentry_label = "Non-canonical reference re-entry zone"
-        target_label = "Non-canonical reference target zone"
+        reentry_label = "Non-canonical reference re-entry"
+        target_label = "Non-canonical reference target"
         target_line = format_target_zone_line(card.sell_zone, card.current_price)
         if not card.sell_zone:
             target_line = "Canonical map context unavailable"
     elif card.actionability_state == CARD_ACTIONABILITY_NAVIGATION_ONLY:
-        target_label = "Navigation target zone"
+        target_label = "Navigation target"
         if not card.target_exit_zone:
             target_line = "Navigation only"
     elif card.actionability_state == CARD_ACTIONABILITY_HISTORICAL_REFERENCE:
-        target_label = "Historical target zone"
+        target_label = "Historical target"
         if not card.target_exit_zone:
             target_line = "Historical targets already completed"
     elif card.actionability_state == CARD_ACTIONABILITY_NEEDS_RECOMPUTE:
-        target_label = "Historical target zone"
+        target_label = "Historical target"
         target_line = "Fresh map required before new orders"
     elif card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
-        reentry_label = "Invalidated re-entry zone"
-        target_label = "Historical target zone"
+        reentry_label = "Invalidated re-entry"
+        target_label = "Historical target"
         target_line = "Context invalidated — review existing orders if applicable"
 
     return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
