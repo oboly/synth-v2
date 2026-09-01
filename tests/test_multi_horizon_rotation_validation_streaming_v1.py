@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -80,14 +79,78 @@ def _assert_equivalent(actual: object, expected: object, *, path: str = "root") 
     assert actual == expected, path
 
 
-def test_streaming_summary_matches_frozen_in_memory_semantics() -> None:
-    rows = _rows()
+def _summary(rows: list[ValidationRow]) -> dict[str, object]:
     accumulator = StreamingValidationAccumulator()
     for row in rows:
         accumulator.add(row)
-    actual = serializable_streaming_summary(accumulator)
+    return serializable_streaming_summary(accumulator)
+
+
+def test_streaming_summary_matches_frozen_in_memory_semantics() -> None:
+    rows = _rows()
+    _assert_equivalent(_summary(rows), _reference(rows))
+
+
+def test_streaming_summary_matches_sparse_global_asof_semantics() -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    rows: list[ValidationRow] = []
+    samples = (0, 1, 2, 4, 5)
+    candidate_values = {0: 1.0, 1: 1.0, 2: -1.0, 4: -1.0, 5: -1.0}
+    b1_values = {0: 1.0, 1: 1.0, 2: 1.0, 4: 1.0, 5: -1.0}
+    for sample in samples:
+        ts = start + timedelta(minutes=15 * sample)
+        for candidate in ("C1", "C2", "C3"):
+            rows.append(
+                ValidationRow(
+                    venue="bitvavo",
+                    asset_id=1,
+                    asof_ts=ts,
+                    candidate_id=candidate,
+                    candidate_score=candidate_values[sample],
+                    b0_score=10.0,
+                    b0_pressure_state="ROTATION_IN",
+                    b1_return=b1_values[sample],
+                    forward_15m=0.01,
+                    forward_1h=0.01,
+                    forward_4h=0.01,
+                    forward_24h=0.01,
+                )
+            )
+    actual = _summary(rows)
     expected = _reference(rows)
     _assert_equivalent(actual, expected)
+    for candidate in ("C1", "C2", "C3"):
+        assert actual["lead_lag_vs_b1"][candidate]["mean_delta_samples"] == -3.0
+
+
+def test_lead_lag_pairing_state_stays_bounded_on_alternating_input() -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    accumulator = StreamingValidationAccumulator()
+    for sample in range(500):
+        ts = start + timedelta(minutes=15 * sample)
+        sign = 1.0 if sample % 2 == 0 else -1.0
+        for candidate in ("C1", "C2", "C3"):
+            accumulator.add(
+                ValidationRow(
+                    venue="bitvavo",
+                    asset_id=1,
+                    asof_ts=ts,
+                    candidate_id=candidate,
+                    candidate_score=sign,
+                    b0_score=sign,
+                    b0_pressure_state="ROTATION_IN" if sign > 0 else "ROTATION_OUT",
+                    b1_return=-sign,
+                    forward_15m=sign * 0.01,
+                    forward_1h=sign * 0.01,
+                    forward_4h=sign * 0.01,
+                    forward_24h=sign * 0.01,
+                )
+            )
+    accumulator.finish()
+    for pairer in accumulator.lead_lag.values():
+        assert len(pairer.pending_candidates) == 0
+        assert len(pairer.references) == 0
+        assert len(pairer.delta_counts) <= 33
 
 
 def test_streaming_accumulator_rejects_asof_reversal() -> None:
