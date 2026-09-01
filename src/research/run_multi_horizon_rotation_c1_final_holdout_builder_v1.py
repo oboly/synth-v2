@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import signal
+import socket
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -376,6 +377,68 @@ def create_registry_entry_exclusive(
                 pass
 
 
+def resume_lease_path(registry_key: str) -> Path:
+    """Deterministic, path-independent lease location derived purely from the
+    same authoritative registry key -- never caller-selectable, never derived
+    from --split-manifest/--source-integrity paths."""
+    return REGISTRY_ROOT / f"{registry_key}.resume_lease.json"
+
+
+def acquire_resume_lease_exclusive(path: Path, *, registry_key: str) -> bool:
+    """Atomic exclusive-create, identical primitive to registry creation: write a
+    temp file, fsync it durable, then ``os.link`` it into place. At most one
+    concurrent resume of the same opened holdout can ever hold the lease.
+
+    Deliberately has NO automatic staleness/timeout recovery: a lease left behind
+    by a hard-killed process (SIGKILL, not caught by our SIGINT/SIGTERM handling)
+    stays forever and permanently denies further --resume until a human clears it.
+    An unsafe automatic timeout could let two live resumes run concurrently, which
+    is exactly the bug this lease exists to prevent.
+    """
+    payload = {
+        "registry_key": registry_key,
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "acquired_ts_utc": json_default(datetime.now(UTC)),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path = Path(temp_name)
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def release_resume_lease(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[str, str]) -> None:
     """Create-or-update the registry entry into a terminal state.
 
@@ -426,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     cp_path: Path | None = None
     registry_path: Path | None = None
     registry_identity: dict[str, str] | None = None
+    resume_lease_held_path: Path | None = None
     opened = False
     last_completed_asof: datetime | None = None
     asofs_completed = 0
@@ -486,6 +550,22 @@ def main(argv: list[str] | None = None) -> int:
                     "authoritative opened-state registry entry is missing or not resumable; "
                     "refuses to resume"
                 )
+
+            # Exclusive per-registry-entry resume lease: at most one concurrent
+            # --resume of the same opened holdout may proceed. This is a single
+            # atomic exclusive-create (same primitive as registry creation), not a
+            # check-then-create sequence, so a second concurrent resume can never
+            # slip through. It must be acquired BEFORE any partial reconciliation,
+            # BEFORE the checkpoint/registry are ever mutated by this process, and
+            # BEFORE "opened" is set -- a lost race leaves nothing behind to clean
+            # up and must not mark the checkpoint or registry FAILED.
+            lease_path = resume_lease_path(registry_key)
+            if not acquire_resume_lease_exclusive(lease_path, registry_key=registry_key):
+                raise ValueError(
+                    "another --resume is already in progress for this opened holdout "
+                    "(resume lease held); refuses to run a second concurrent resume"
+                )
+            resume_lease_held_path = lease_path
             opened = True
         else:
             if artifact_path.exists() or summary_path.exists() or cp_path.exists() or partial_path.exists():
@@ -733,6 +813,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             assert registry_path is not None and registry_identity is not None
             mark_registry_terminal(registry_path, terminal_state="FINISHED", identity=registry_identity)
+            if resume_lease_held_path is not None:
+                release_resume_lease(resume_lease_held_path)
 
         finalize_artifact_bundle(
             partial_path=partial_path,
@@ -764,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
                     mark_registry_terminal(registry_path, terminal_state="INTERRUPTED", identity=registry_identity)
                 except Exception:
                     pass
+            if resume_lease_held_path is not None:
+                release_resume_lease(resume_lease_held_path)
         emit(
             f"INTERRUPTED runner={RUNNER_NAME} signal={signal.Signals(exc.signum).name} "
             f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
@@ -787,6 +871,8 @@ def main(argv: list[str] | None = None) -> int:
                     mark_registry_terminal(registry_path, terminal_state="FAILED", identity=registry_identity)
                 except Exception:
                     pass
+            if resume_lease_held_path is not None:
+                release_resume_lease(resume_lease_held_path)
         emit(
             f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
             f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "

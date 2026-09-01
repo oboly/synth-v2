@@ -55,6 +55,19 @@ interruption_and_resume:
   post_open_failure_marks_both: [local_checkpoint, authoritative_registry]
   pre_open_failure_creates_opened_state: false
 
+resume_lease:
+  location: data/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  path_rule: "<registry_key>.resume_lease.json"
+  caller_selectable: false
+  key_is_path_independent: true
+  creation_primitive: atomic_exclusive_create_tempfile_fsync_then_os_link
+  check_then_create_sequence: false
+  concurrent_resume_winner_count: 1
+  acquired_before: [source_integrity_reverify, checkpoint_registry_identity_validation, partial_reconcile, replay]
+  released_on: [FINISHED, INTERRUPTED, FAILED]
+  automatic_stale_lease_recovery: false
+  lease_identity_fields: [registry_key, runner, runner_version, pid, hostname, acquired_ts_utc]
+
 candidate:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
   candidate_id: C1

@@ -105,7 +105,43 @@ registry entry at all.
 `--resume` requires the canonical local checkpoint and partial artifact to
 exist with `terminal_state` `RUNNING` or `INTERRUPTED`, and the matching
 registry entry (located by the checkpoint's own recorded fingerprint) to exist
-in the same resumable state. It then re-verifies source integrity, validates
+in the same resumable state.
+
+### Exclusive resume lease
+
+An opened holdout can be resumed by more than one process (a retried job, an
+operator error, two schedulers racing). To make `--resume` itself exclusive,
+the runner then acquires a **resume lease** at
+`<registry_key>.resume_lease.json` in the same trusted `REGISTRY_ROOT` --
+deterministic from the registry key alone, so it is path-independent and not
+caller-selectable. Acquisition uses the identical atomic exclusive-create
+primitive as registry creation (temp file, fsync, `os.link()` into place): at
+most one concurrent `--resume` of the same opened fingerprint can ever hold
+the lease. A second resume that loses the race gets `False` back immediately
+and performs **zero** partial reconciliation, replay, or output mutation --
+the checkpoint, registry entry, and partial artifact are all left completely
+untouched, and the existing lease is never overwritten.
+
+The lease is acquired right after the registry entry is confirmed resumable
+and *before* anything else -- before source integrity is re-verified, before
+checkpoint/registry identity is validated, before the partial artifact is
+reconciled, and before any replay. It is released:
+
+- on successful completion, right after the checkpoint and registry are
+  marked `FINISHED`;
+- on `SIGINT`/`SIGTERM`, right after both are marked `INTERRUPTED` (a further
+  explicit `--resume` is then allowed to reacquire it);
+- on any ordinary post-open failure, right after both are marked `FAILED`
+  (permanently non-resumable, so the lease is simply gone with them).
+
+There is deliberately **no automatic staleness/timeout recovery** for the
+lease. A lease left behind by a process that was hard-killed (e.g. `SIGKILL`,
+which bypasses the `SIGINT`/`SIGTERM` handling above) stays forever and
+permanently blocks further `--resume` until a human clears it -- an automatic
+timeout could let two live resumes run concurrently, which is exactly what
+the lease exists to prevent.
+
+Once the lease is held, `--resume` re-verifies source integrity, validates
 every checkpoint identity field against the freshly recomputed manifest and
 integrity fingerprints, truncates the partial artifact back to the
 checkpoint's committed byte offset, reconciles the row count, confirms

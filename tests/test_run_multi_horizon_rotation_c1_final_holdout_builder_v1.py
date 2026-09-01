@@ -16,6 +16,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     CANDIDATE_ID,
     PHASE,
     RunnerInterrupted,
+    acquire_resume_lease_exclusive,
     canonical_run_dir,
     checkpoint_path,
     create_registry_entry_exclusive,
@@ -29,6 +30,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     reconcile_partial_to_checkpoint,
     registry_entry_path,
     registry_key_for,
+    resume_lease_path,
     select_c1_spec,
     validate_resume_checkpoint,
     write_checkpoint,
@@ -726,6 +728,7 @@ def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch
     assert exit_code == 0
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+    assert not resume_lease_path(registry_key).exists()
 
 
 def test_failed_registry_state_denies_resume_forever(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -899,6 +902,94 @@ def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
     assert len(set(asofs)) == 2
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+    assert not resume_lease_path(registry_key).exists()
+
+
+def test_sigint_during_resume_releases_lease_and_leaves_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The lease must be released on SIGINT/SIGTERM during --resume itself (not
+    just during a fresh run), leaving the checkpoint/registry INTERRUPTED and a
+    further explicit --resume allowed."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="INTERRUPTED",
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="INTERRUPTED",
+        opened_run_dir=str(tmp_path),
+    )
+
+    def raising_evaluate_candidate(*args, **kwargs):
+        raise RunnerInterrupted(signal.SIGINT)
+
+    monkeypatch.setattr(module, "evaluate_candidate", raising_evaluate_candidate)
+
+    exit_code = module.main(
+        [
+            "--split-manifest",
+            str(manifest_path),
+            "--source-integrity",
+            str(integrity_path),
+            "--resume",
+        ]
+    )
+    assert exit_code == 130
+    out = capsys.readouterr().out
+    assert len([line for line in out.splitlines() if line.startswith("INTERRUPTED")]) == 1
+
+    assert load_checkpoint(cp_path)["terminal_state"] == "INTERRUPTED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "INTERRUPTED"
+    lease_path = resume_lease_path(registry_key)
+    assert not lease_path.exists()
+
+    # A further explicit resume is allowed and completes.
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    exit_code_again = module.main(
+        [
+            "--split-manifest",
+            str(manifest_path),
+            "--source-integrity",
+            str(integrity_path),
+            "--resume",
+        ]
+    )
+    assert exit_code_again == 0
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+    assert not lease_path.exists()
 
 
 def test_sigterm_interrupts_cleanly_with_exit_143(
@@ -1155,6 +1246,7 @@ def test_manifest_mismatch_denied_on_resume_and_marks_failed(
     assert exit_code == 1
     assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
+    assert not resume_lease_path(registry_key).exists()
 
 
 def test_c1_only_result_from_replay_enforced_marks_failed(
@@ -1221,3 +1313,175 @@ def test_c1_only_result_from_replay_enforced_marks_failed(
         ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
     )
     assert exit_code_resume_retry == 1
+
+
+# --- Resume lease: exclusivity, release, and no-mutation-on-loss ---------
+
+
+def test_existing_resume_lease_denies_resume_before_any_partial_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="RUNNING",
+    )
+    partial_path = tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial"
+    partial_path.write_bytes(b"")
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+    )
+
+    # Simulate another resume already holding the lease.
+    lease_path = resume_lease_path(registry_key)
+    won = acquire_resume_lease_exclusive(lease_path, registry_key=registry_key)
+    assert won is True
+    lease_bytes_before = lease_path.read_bytes()
+    checkpoint_before = load_checkpoint(cp_path)
+    registry_before = load_registry_entry(registry_entry_path(registry_key))
+
+    exit_code = module.main(
+        [
+            "--split-manifest",
+            str(manifest_path),
+            "--source-integrity",
+            str(integrity_path),
+            "--resume",
+        ]
+    )
+    assert exit_code == 1
+
+    # Nothing about the checkpoint, registry, partial, or the other resume's
+    # lease was touched by the denied caller.
+    assert load_checkpoint(cp_path) == checkpoint_before
+    assert load_registry_entry(registry_entry_path(registry_key)) == registry_before
+    assert partial_path.read_bytes() == b""
+    assert lease_path.read_bytes() == lease_bytes_before
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not (tmp_path / "final_holdout_c1_summary_v1.json").exists()
+
+
+def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: --resume previously allowed two processes
+    to both reconcile the same partial, append rows, and finalize concurrently.
+    Two real threads race two --resume invocations of the SAME opened holdout
+    (same checkpoint, same registry entry, same partial file), synchronized via
+    a barrier placed immediately before the exclusive lease-acquire call."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})  # threads can't signal.signal()
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="INTERRUPTED",
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="INTERRUPTED",
+        opened_run_dir=str(tmp_path),
+    )
+
+    barrier = threading.Barrier(2, timeout=5)
+    real_acquire = module.acquire_resume_lease_exclusive
+
+    def synced_acquire(path: Path, *, registry_key: str) -> bool:
+        barrier.wait()  # both threads reach the exclusive lease-acquire together
+        return real_acquire(path, registry_key=registry_key)
+
+    monkeypatch.setattr(module, "acquire_resume_lease_exclusive", synced_acquire)
+
+    def run() -> int:
+        return module.main(
+            [
+                "--split-manifest",
+                str(manifest_path),
+                "--source-integrity",
+                str(integrity_path),
+                "--resume",
+            ]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_1 = executor.submit(run)
+        future_2 = executor.submit(run)
+        exit_1 = future_1.result()
+        exit_2 = future_2.result()
+
+    assert {exit_1, exit_2} == {0, 1}, f"expected exactly one winner: exit_1={exit_1} exit_2={exit_2}"
+
+    # Winner resumed without duplicating rows: exactly the two frozen as-ofs, once each.
+    artifact = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+    assert artifact.exists()
+    lines = artifact.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    asofs = [json.loads(line)["asof_ts"] for line in lines]
+    assert len(asofs) == len(set(asofs)) == 2
+
+    # Exactly one final artifact/summary; final checkpoint + registry FINISHED.
+    assert (tmp_path / "final_holdout_c1_summary_v1.json").exists()
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+
+    # Lease absent once the winner has finished.
+    assert not resume_lease_path(registry_key).exists()
