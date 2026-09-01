@@ -218,6 +218,36 @@ producer-owned rule can be adopted:
    constant and pass it into `compute_freshness`.
 ```
 
+### 4.1 #547 Phase B — measurement collected, still `BLOCKED_NEEDS_MEASUREMENT`
+
+Item 1 above is now satisfied for the producer-owned leg:
+`docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md`
+records a 417-real-cycle, continuous, OBSERVED `asof_to_persist_lag`
+distribution (gurkDB, `2026-08-08`..`2026-09-01`; steady-state p50=1298.3s,
+p95=1383.2s, p99=1416.8s, max=1418.2s), replacing the three-cycle anecdote,
+plus `writer_scheduling_lag` and `writer_runtime` distributions confirming
+runtime is trivial (p99=6s) and persist lag is dominated by the deliberate
+`:20:00` schedule offset.
+
+The publisher leg (`persist_to_published_lag`/`total_asof_to_published_lag`)
+is now partially observed from a manually-collected Odroid journal export
+(34 successful + 6 network-outage-failed cycles, ~33h coverage:
+`2026-08-31T06:36Z`..`2026-09-01T15:36Z`), but that document's own harness
+reports `publisher_leg_sufficiency=MEASUREMENT_INSUFFICIENT_PARTIAL_COVERAGE`
+against the 417-cycle writer sample (missing ~546.6h / ~22.8 days of
+further-back publisher journal history) -- per the #547 task contract, this
+partial sample is **not** treated as equivalent evidentiary weight to the
+writer leg and no threshold candidate is drawn from it alone (see that
+document's §5.3 and §6).
+
+Items 2 and 3 remain open: no owner-reviewed safety-margin decision has
+been recorded, and this document's own `ROTATION_STALE_AFTER` derivation
+has not yet been re-run against the new measurement. **Decision remains
+`BLOCKED_NEEDS_MEASUREMENT`** -- `evidence_contract_v1.compute_freshness`
+and `rotation_evidence_contract_v1` are unchanged. Adopting a threshold is
+an explicit follow-up, not performed by this document or by the #547 Phase
+B measurement task.
+
 ## 5. Completed evidence mapping
 
 New module `src/features/rotation_evidence_contract_v1.py`,
@@ -341,6 +371,7 @@ production_deploy=0
 - `db/migrations/20260627_market_rotation_history_v1.sql` (unmodified; source of `input_interval`)
 - `docs/research/market_rotation_pressure_v1.md` (updated to reflect promotion)
 - `docs/ops/market_rotation_pressure_runtime_owners_v1.md` (Issue #266 writer authorization, unaffected)
+- `docs/research/market_rotation_pressure_freshness_sla_measurement_v1.md` (#547 Phase B OBSERVED measurement, `BLOCKED_NEEDS_MEASUREMENT` still stands pending owner safety-margin decision)
 - #617 regime evidence matrix (downstream consumer)
 - #593 multi-horizon per-asset Rotation research/history (unaffected, not promoted)
 - #449 Rotation Flip research (unaffected)
