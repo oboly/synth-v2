@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import tempfile
+import time
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +27,7 @@ DEFAULT_OUTPUT_DIR = "data/research/cq_v1_temporal_population_v1"
 DEFAULT_SELECTION_CONFIG = "configs/selection_engine_v2.yaml"
 PINNED_SELECTION_CONFIG_SHA256 = "08cec05f70cb8b2ff43b24a90dc4b8fb1f09d3535f9a791f05af3ddf57dff65b"
 CHECKPOINT_VERSION = "1.0.0"
+WORKER_COUNT = 1
 
 
 class _Interrupted(RuntimeError):
@@ -145,13 +147,20 @@ def _validate_resume_checkpoint(checkpoint: dict[str, Any], identity: dict[str, 
 
 
 def run(args: argparse.Namespace) -> int:
-    print(f"STARTED runner={RUNNER_NAME} venue={args.venue}", flush=True)
+    mode = "RESUME" if args.resume else "FRESH"
+    run_started = time.monotonic()
+    print(
+        f"STARTED runner={RUNNER_NAME} mode={mode} scope=frozen_daily_pit_45_asofs "
+        f"workers={WORKER_COUNT} venue={args.venue}",
+        flush=True,
+    )
     print(
         "SAFETY research_only=1 market_only=1 account_awareness=0 outcomes_read=0 db_writes=0 "
         "model_retuning=0 production_ranking_changes=0 decision_gate=none execution_planner=none "
         "executor=none broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 runtime_activation=0",
         flush=True,
     )
+    setup_started = time.monotonic()
     out_dir = _safe_output_dir(args.output_dir)
     population_path = out_dir / "population.jsonl"
     summary_path = out_dir / "summary.json"
@@ -166,6 +175,11 @@ def run(args: argparse.Namespace) -> int:
     config_path, config_sha = _validate_selection_config(args.selection_config)
     config = load_selection_config(str(config_path))
     identity = _identity(venue=args.venue, contract_sha=contract_sha, selection_config_sha=config_sha)
+    print(
+        f"PHASE phase=setup status=finished elapsed_s={time.monotonic() - setup_started:.3f} "
+        f"asof_scope={len(asofs)} workers={WORKER_COUNT}",
+        flush=True,
+    )
 
     conn = None
     previous_handlers: dict[int, Any] = {}
@@ -193,7 +207,8 @@ def run(args: argparse.Namespace) -> int:
                     raise ValueError("FINISHED population SHA256 mismatch")
                 print(
                     f"FINISHED runner={RUNNER_NAME} resume_noop=1 rows={checkpoint.get('rows_written', 0)} "
-                    f"population_sha256={checkpoint.get('population_sha256')} outcomes_read=0",
+                    f"population_sha256={checkpoint.get('population_sha256')} outcomes_read=0 "
+                    f"elapsed_s={time.monotonic() - run_started:.3f}",
                     flush=True,
                 )
                 return 0
@@ -220,16 +235,34 @@ def run(args: argparse.Namespace) -> int:
                 },
             )
 
+        db_connect_started = time.monotonic()
         conn = get_db_connection()
+        print(
+            f"PHASE phase=db_connect status=finished elapsed_s={time.monotonic() - db_connect_started:.3f}",
+            flush=True,
+        )
+        population_started = time.monotonic()
         with population_path.open("ab") as population:
             for zero_index in range(start_index, len(asofs)):
                 asof = asofs[zero_index]
+                asof_started = time.monotonic()
+                print(
+                    f"QUERY phase=asof_population status=started index={zero_index + 1}/45 "
+                    f"ts={asof.isoformat()} workers={WORKER_COUNT}",
+                    flush=True,
+                )
                 asof_rows = build_asof_population(
                     conn,
                     contract=contract,
                     asof_ts_utc=asof,
                     venue=args.venue,
                     selection_config=config,
+                )
+                asof_elapsed = time.monotonic() - asof_started
+                print(
+                    f"QUERY phase=asof_population status=finished index={zero_index + 1}/45 "
+                    f"ts={asof.isoformat()} rows={len(asof_rows)} elapsed_s={asof_elapsed:.3f}",
+                    flush=True,
                 )
                 for row in asof_rows:
                     population.write(_row_line(row))
@@ -247,10 +280,17 @@ def run(args: argparse.Namespace) -> int:
                     },
                 )
                 print(
-                    f"ASOF index={zero_index + 1}/45 ts={asof.isoformat()} rows={len(asof_rows)} total_rows={len(rows)}",
+                    f"ASOF index={zero_index + 1}/45 ts={asof.isoformat()} rows={len(asof_rows)} "
+                    f"total_rows={len(rows)} elapsed_s={asof_elapsed:.3f}",
                     flush=True,
                 )
+        print(
+            f"PHASE phase=population status=finished asofs={len(asofs) - start_index} rows={len(rows)} "
+            f"elapsed_s={time.monotonic() - population_started:.3f}",
+            flush=True,
+        )
 
+        finalize_started = time.monotonic()
         unique_asofs = {row["asof_ts_utc"] for row in rows}
         if unique_asofs != {asof.isoformat() for asof in asofs}:
             raise RuntimeError("population does not contain exactly the frozen 45 as-of timestamps")
@@ -299,19 +339,30 @@ def run(args: argparse.Namespace) -> int:
             },
         )
         print(
+            f"PHASE phase=finalize status=finished rows={len(rows)} "
+            f"elapsed_s={time.monotonic() - finalize_started:.3f}",
+            flush=True,
+        )
+        print(
             f"FINISHED runner={RUNNER_NAME} rows={summary['row_count']} unique_assets={summary['unique_asset_count']} "
-            f"unique_asofs={summary['unique_asof_count']} population_sha256={population_sha}",
+            f"unique_asofs={summary['unique_asof_count']} population_sha256={population_sha} "
+            f"elapsed_s={time.monotonic() - run_started:.3f}",
             flush=True,
         )
         return 0
     except _Interrupted as exc:
         print(
-            f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable=1 outcomes_read=0",
+            f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable=1 outcomes_read=0 "
+            f"elapsed_s={time.monotonic() - run_started:.3f}",
             flush=True,
         )
         return 130
     except Exception as exc:
-        print(f"FAILED runner={RUNNER_NAME} error={type(exc).__name__}:{exc}", flush=True)
+        print(
+            f"FAILED runner={RUNNER_NAME} error={type(exc).__name__}:{exc} "
+            f"elapsed_s={time.monotonic() - run_started:.3f}",
+            flush=True,
+        )
         raise
     finally:
         if conn is not None:
