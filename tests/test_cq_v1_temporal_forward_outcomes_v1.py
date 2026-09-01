@@ -271,6 +271,112 @@ def test_interrupt_then_resume_finishes_same_output(monkeypatch, tmp_path, capsy
     assert "resume_noop=1" in noop_output
 
 
+def test_interrupt_preserves_primary_result_when_connection_cleanup_fails(monkeypatch, tmp_path, capsys) -> None:
+    observations = [
+        _observation(1, "2026-07-18T00:00:00+00:00", "obs-1"),
+        _observation(1, "2026-07-19T00:00:00+00:00", "obs-2"),
+    ]
+    _, horizons = mod.load_contract()
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(mod, "load_contract", lambda path=mod.DEFAULT_CONTRACT: ({}, horizons))
+    monkeypatch.setattr(mod, "load_population", lambda path, contract: observations)
+
+    class InterfaceErrorLike(Exception):
+        pass
+
+    class Conn:
+        def rollback(self):
+            raise InterfaceErrorLike("connection already closed")
+
+        def close(self):
+            raise InterfaceErrorLike("connection already closed")
+
+    monkeypatch.setattr(mod, "get_db_connection", lambda: Conn())
+    calls = {"n": 0}
+
+    def interrupt_second(conn, *, observations, venue, horizons):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+        return [_outcome_row(observations[0])]
+
+    monkeypatch.setattr(mod, "build_outcome_rows", interrupt_second)
+    output_dir = tmp_path / "run"
+
+    assert mod.run(_args(output_dir=str(output_dir))) == 130
+
+    checkpoint = json.loads((output_dir / mod.OUTPUT_CHECKPOINT).read_text())
+    assert checkpoint["terminal_state"] == "INTERRUPTED"
+    assert checkpoint["resumable"] == 1
+    assert checkpoint["asofs_completed"] == 1
+    assert checkpoint["outcome_rows_written"] == 1
+    assert checkpoint["db_writes"] == 0
+    assert (output_dir / mod.OUTPUT_ROWS).read_bytes() == mod._row_line(_outcome_row(observations[0]))
+    output = capsys.readouterr().out
+    assert output.count("INTERRUPTED runner=") == 1
+    assert "FAILED runner=" not in output
+    assert "resumable=1" in output
+    assert "db_writes=0" in output
+    assert signal.getsignal(signal.SIGINT) is previous_sigint_handler
+    assert signal.getsignal(signal.SIGTERM) is previous_sigterm_handler
+
+
+def test_success_preserves_primary_result_when_connection_cleanup_fails(monkeypatch, tmp_path, capsys) -> None:
+    observation = _observation(1, "2026-07-18T00:00:00+00:00", "obs-1")
+    _, horizons = mod.load_contract()
+    monkeypatch.setattr(mod, "load_contract", lambda path=mod.DEFAULT_CONTRACT: ({}, horizons))
+    monkeypatch.setattr(mod, "load_population", lambda path, contract: [observation])
+
+    class InterfaceErrorLike(Exception):
+        pass
+
+    class Conn:
+        def rollback(self):
+            raise InterfaceErrorLike("connection already closed")
+
+        def close(self):
+            raise InterfaceErrorLike("connection already closed")
+
+    monkeypatch.setattr(mod, "get_db_connection", lambda: Conn())
+    monkeypatch.setattr(
+        mod,
+        "build_outcome_rows",
+        lambda conn, *, observations, venue, horizons: [_outcome_row(observations[0])],
+    )
+
+    assert mod.run(_args(output_dir=str(tmp_path / "run"))) == 0
+    output = capsys.readouterr().out
+    assert output.count("FINISHED runner=") == 1
+    assert "FAILED runner=" not in output
+
+
+def test_work_error_remains_failed_when_connection_cleanup_fails(monkeypatch, tmp_path, capsys) -> None:
+    observation = _observation(1, "2026-07-18T00:00:00+00:00", "obs-1")
+    _, horizons = mod.load_contract()
+    monkeypatch.setattr(mod, "load_contract", lambda path=mod.DEFAULT_CONTRACT: ({}, horizons))
+    monkeypatch.setattr(mod, "load_population", lambda path, contract: [observation])
+
+    class Conn:
+        def rollback(self):
+            raise RuntimeError("connection already closed")
+
+        def close(self):
+            raise RuntimeError("connection already closed")
+
+    monkeypatch.setattr(mod, "get_db_connection", lambda: Conn())
+    monkeypatch.setattr(
+        mod,
+        "build_outcome_rows",
+        lambda conn, *, observations, venue, horizons: (_ for _ in ()).throw(ValueError("work failure")),
+    )
+
+    assert mod.run(_args(output_dir=str(tmp_path / "run"))) == 1
+    output = capsys.readouterr().out
+    assert output.count("FAILED runner=") == 1
+    assert "ValueError:work failure" in output
+
+
 def test_finalize_summary_is_technical_only(tmp_path) -> None:
     output_dir = tmp_path / "run"
     args = _args(output_dir=str(output_dir))

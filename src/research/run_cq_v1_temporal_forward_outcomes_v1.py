@@ -463,6 +463,15 @@ def _has_durable_checkpoint(output_dir: Path) -> bool:
     )
 
 
+def _safe_cleanup_connection(conn: Any) -> None:
+    """Best-effort read-only connection cleanup after the runner result is decided."""
+    for cleanup in (conn.rollback, conn.close):
+        try:
+            cleanup()
+        except Exception:
+            pass
+
+
 def _finalize(
     output_dir: Path,
     *,
@@ -652,11 +661,12 @@ def run(args: argparse.Namespace) -> int:
         )
         return 1
     finally:
-        if conn is not None:
-            conn.rollback()
-            conn.close()
-        for signum, previous in previous_handlers.items():
-            signal.signal(signum, previous)
+        try:
+            if conn is not None:
+                _safe_cleanup_connection(conn)
+        finally:
+            for signum, previous in previous_handlers.items():
+                signal.signal(signum, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
