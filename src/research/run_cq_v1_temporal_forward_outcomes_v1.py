@@ -212,6 +212,8 @@ def build_outcome_rows(
 ) -> list[dict[str, Any]]:
     by_asof: dict[datetime, list[dict[str, Any]]] = defaultdict(list)
     for row in observations:
+        if str(row["venue"]) != venue:
+            raise ValueError(f"population venue mismatch observation={row['venue']} requested={venue}")
         by_asof[parse_ts(row["asof_ts_utc"])].append(row)
     out: list[dict[str, Any]] = []
     max_horizon = max(item.delta for item in horizons)
@@ -275,8 +277,20 @@ def _atomic_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def artifact_paths(output_dir: Path) -> tuple[Path, Path, Path]:
+    return output_dir / OUTPUT_ROWS, output_dir / OUTPUT_SUMMARY, output_dir / OUTPUT_MANIFEST
+
+
+def ensure_output_paths_clear(output_dir: Path) -> None:
+    existing = [path for path in artifact_paths(output_dir) if path.exists()]
+    if existing:
+        joined = ",".join(str(path) for path in existing)
+        raise ValueError(f"immutable outcome artifacts already exist: {joined}")
+
+
 def write_artifacts(output_dir: Path, rows: list[dict[str, Any]], *, observation_count: int) -> None:
-    rows_path = output_dir / OUTPUT_ROWS
+    ensure_output_paths_clear(output_dir)
+    rows_path, summary_path, manifest_path = artifact_paths(output_dir)
     rows_text = "".join(json.dumps(_jsonable(row), sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
     _atomic_text(rows_path, rows_text)
     rows_sha = _sha256_path(rows_path)
@@ -294,7 +308,6 @@ def write_artifacts(output_dir: Path, rows: list[dict[str, Any]], *, observation
         "db_writes": 0,
         "production_ranking_changes": 0,
     }
-    summary_path = output_dir / OUTPUT_SUMMARY
     _atomic_text(summary_path, json.dumps(summary, sort_keys=True, indent=2) + "\n")
     manifest = {
         "runner": RUNNER_NAME,
@@ -310,7 +323,7 @@ def write_artifacts(output_dir: Path, rows: list[dict[str, Any]], *, observation
         "broker_writes": 0,
         "production_ranking_changes": 0,
     }
-    _atomic_text(output_dir / OUTPUT_MANIFEST, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+    _atomic_text(manifest_path, json.dumps(manifest, sort_keys=True, indent=2) + "\n")
     print(
         f"ARTIFACTS outcomes={rows_path} rows={len(rows)} outcomes_sha256={rows_sha} db_writes=0",
         flush=True,
@@ -330,6 +343,8 @@ def run(args: argparse.Namespace) -> int:
         "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 runtime_activation=0",
         flush=True,
     )
+    output_dir = Path(args.output_dir)
+    ensure_output_paths_clear(output_dir)
     contract, horizons = load_contract(args.contract)
     population_path = Path(args.population)
     observations = select_population_rows(load_population(population_path, contract), args)
@@ -346,7 +361,7 @@ def run(args: argparse.Namespace) -> int:
     finally:
         conn.rollback()
         conn.close()
-    write_artifacts(Path(args.output_dir), rows, observation_count=len(observations))
+    write_artifacts(output_dir, rows, observation_count=len(observations))
     print(
         f"FINISHED runner={RUNNER_NAME} observations={len(observations)} outcome_rows={len(rows)} "
         f"db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
