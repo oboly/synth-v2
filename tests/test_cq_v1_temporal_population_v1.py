@@ -49,7 +49,9 @@ def test_contract_is_exact_frozen_45_date_family() -> None:
 def test_selection_source_query_is_point_in_time_and_not_current_max() -> None:
     cursor = FakeCursor([])
     asof = datetime(2026, 8, 14, tzinfo=UTC)
-    candidates, evidence = mod.fetch_selection_candidates_asof(FakeConn(cursor), venue="bitvavo", asof_ts_utc=asof)
+    candidates, evidence = mod.fetch_selection_candidates_asof(
+        FakeConn(cursor), venue="bitvavo", asof_ts_utc=asof
+    )
     assert candidates == []
     assert evidence == {}
     query, params = cursor.executed[0]
@@ -58,6 +60,18 @@ def test_selection_source_query_is_point_in_time_and_not_current_max() -> None:
     assert "asof_ts_utc <= %s" in query
     assert "signal_ts_utc <= %s" in query
     assert params.count(asof) == 2
+
+
+def test_selection_universe_does_not_depend_on_mutable_current_asset_flags() -> None:
+    cursor = FakeCursor([])
+    asof = datetime(2026, 8, 14, tzinfo=UTC)
+    mod.fetch_selection_candidates_asof(FakeConn(cursor), venue="bitvavo", asof_ts_utc=asof)
+    query, _ = cursor.executed[0]
+    normalized = query.lower()
+    assert "is_enabled" not in normalized
+    assert "is_tradeable" not in normalized
+    assert "q1d.asset_id is not null" in normalized
+    assert "s1h.asset_id is not null" in normalized
 
 
 def test_mrp_queries_bound_observation_and_parent_snapshot_to_asof() -> None:
@@ -74,21 +88,53 @@ def test_mrp_queries_bound_observation_and_parent_snapshot_to_asof() -> None:
 
 def _candidate() -> SelectionCandidate:
     return SelectionCandidate(
-        asset_id=7,symbol="TEST",venue="bitvavo",
-        quality_status_1d="TRUSTED",quality_status_4h="TRUSTED",quality_status_1h="TRUSTED",
-        trend_score_1d=Decimal("0.6"),setup_score_1d=Decimal("0.6"),signal_confidence_1d=Decimal("0.6"),risk_score_1d=Decimal("0.2"),
-        volume_score_4h=Decimal("0.6"),compass_score_4h=Decimal("0.6"),setup_score_4h=Decimal("0.6"),relative_score_4h=Decimal("0.6"),signal_confidence_4h=Decimal("0.6"),expansion_position_score_4h=Decimal("0.6"),pullback_quality_score_4h=Decimal("0.6"),risk_score_4h=Decimal("0.2"),
-        setup_score_1h=Decimal("0.6"),signal_confidence_1h=Decimal("0.6"),risk_score_1h=Decimal("0.2"),
+        asset_id=7,
+        symbol="TEST",
+        venue="bitvavo",
+        quality_status_1d="TRUSTED",
+        quality_status_4h="TRUSTED",
+        quality_status_1h="TRUSTED",
+        trend_score_1d=Decimal("0.6"),
+        setup_score_1d=Decimal("0.6"),
+        signal_confidence_1d=Decimal("0.6"),
+        risk_score_1d=Decimal("0.2"),
+        volume_score_4h=Decimal("0.6"),
+        compass_score_4h=Decimal("0.6"),
+        setup_score_4h=Decimal("0.6"),
+        relative_score_4h=Decimal("0.6"),
+        signal_confidence_4h=Decimal("0.6"),
+        expansion_position_score_4h=Decimal("0.6"),
+        pullback_quality_score_4h=Decimal("0.6"),
+        risk_score_4h=Decimal("0.2"),
+        setup_score_1h=Decimal("0.6"),
+        signal_confidence_1h=Decimal("0.6"),
+        risk_score_1h=Decimal("0.2"),
     )
 
 
 def _selection() -> SelectionRow:
     return SelectionRow(
-        asset_id=7,symbol="TEST",venue="bitvavo",asof_ts_utc=None,advice_ts_1h_utc=None,advice_ts_4h_utc=None,
-        quality_status_1d="TRUSTED",quality_status_4h="TRUSTED",quality_status_1h="TRUSTED",
-        selection_state="BUY_READY",selection_bias="BULLISH",selection_score=Decimal("0.63"),priority_rank=1,
-        allow_trade_flag=1,allowed_sleeves="",blocked_reason=None,summary="",
-        trade_quality_score=Decimal("0.61"),relative_rank_score=Decimal("0.6"),timing_refinement_score=Decimal("0.03"),quality_penalty=Decimal("0"),
+        asset_id=7,
+        symbol="TEST",
+        venue="bitvavo",
+        asof_ts_utc=None,
+        advice_ts_1h_utc=None,
+        advice_ts_4h_utc=None,
+        quality_status_1d="TRUSTED",
+        quality_status_4h="TRUSTED",
+        quality_status_1h="TRUSTED",
+        selection_state="BUY_READY",
+        selection_bias="BULLISH",
+        selection_score=Decimal("0.63"),
+        priority_rank=1,
+        allow_trade_flag=1,
+        allowed_sleeves="",
+        blocked_reason=None,
+        summary="",
+        trade_quality_score=Decimal("0.61"),
+        relative_rank_score=Decimal("0.6"),
+        timing_refinement_score=Decimal("0.03"),
+        quality_penalty=Decimal("0"),
     )
 
 
@@ -103,14 +149,29 @@ def test_population_row_preserves_unavailable_sector_and_ppp(monkeypatch) -> Non
         "signal_ts_4h_utc": "2026-07-17T20:00:00+00:00",
         "signal_ts_1h_utc": "2026-07-17T23:00:00+00:00",
     }
-    monkeypatch.setattr(mod, "fetch_selection_candidates_asof", lambda *a, **k: ([_candidate()], {7: evidence}))
+    monkeypatch.setattr(
+        mod,
+        "fetch_selection_candidates_asof",
+        lambda *a, **k: ([_candidate()], {7: evidence}),
+    )
     monkeypatch.setattr(mod, "rank_candidates", lambda *a, **k: [_selection()])
-    monkeypatch.setattr(mod, "fetch_mrp_aggregate_asof", lambda *a, **k: {"model_version": "1.0", "market_score": Decimal("10")})
-    monkeypatch.setattr(mod, "fetch_mrp_assets_asof", lambda *a, **k: {7: {"model_version": "1.0", "asset_id": 7}})
-    rows = mod.build_asof_population(object(), contract=contract, asof_ts_utc=asof, venue="bitvavo", selection_config={})
+    monkeypatch.setattr(
+        mod,
+        "fetch_mrp_aggregate_asof",
+        lambda *a, **k: {"model_version": "1.0", "market_score": Decimal("10")},
+    )
+    monkeypatch.setattr(
+        mod,
+        "fetch_mrp_assets_asof",
+        lambda *a, **k: {7: {"model_version": "1.0", "asset_id": 7}},
+    )
+    rows = mod.build_asof_population(
+        object(), contract=contract, asof_ts_utc=asof, venue="bitvavo", selection_config={}
+    )
     assert len(rows) == 1
     row = rows[0]
     assert row["split"] == "discovery"
+    assert row["universe_provenance_status"] == "HISTORICAL_CORE_SOURCE_OBSERVED_AT_OR_BEFORE_ASOF"
     assert row["cq_v0"] == Decimal("0.610000")
     assert row["sector_context_status"] == "UNAVAILABLE_HISTORICAL_MEMBERSHIP"
     assert row["ppp_status"] == "UNAVAILABLE_UNLESS_CANONICAL_PIT_ARTIFACT_SUPPLIED"
@@ -132,8 +193,20 @@ def test_non_frozen_asof_fails_closed(monkeypatch) -> None:
 
 def test_summary_reports_temporal_counts() -> None:
     rows = [
-        {"asset_id": 1,"asof_ts_utc": "2026-07-18T00:00:00+00:00","mrp_aggregate_status": "AVAILABLE","mrp_asset_status": "AVAILABLE","cq_v0": Decimal("0.5")},
-        {"asset_id": 1,"asof_ts_utc": "2026-07-19T00:00:00+00:00","mrp_aggregate_status": "AVAILABLE","mrp_asset_status": "UNAVAILABLE_MRP_ASSET","cq_v0": None},
+        {
+            "asset_id": 1,
+            "asof_ts_utc": "2026-07-18T00:00:00+00:00",
+            "mrp_aggregate_status": "AVAILABLE",
+            "mrp_asset_status": "AVAILABLE",
+            "cq_v0": Decimal("0.5"),
+        },
+        {
+            "asset_id": 1,
+            "asof_ts_utc": "2026-07-19T00:00:00+00:00",
+            "mrp_aggregate_status": "AVAILABLE",
+            "mrp_asset_status": "UNAVAILABLE_MRP_ASSET",
+            "cq_v0": None,
+        },
     ]
     summary = mod.summarize_population(rows)
     assert summary["row_count"] == 2
