@@ -13,7 +13,6 @@ from src.features.rotation_evidence_contract_v1 import (
     INPUT_INTERVAL,
     LOOKBACK_HORIZON,
     MODEL_ID,
-    ROTATION_STALE_AFTER,
     build_rotation_pressure_evidence,
 )
 
@@ -124,56 +123,36 @@ def test_asof_after_evaluation_is_explicit_not_silently_fresh():
     assert ReasonCode.ASOF_AFTER_EVALUATION_TS in evidence.reason_codes
 
 
-def test_freshness_is_fresh_under_the_reviewed_producer_owned_rule():
-    """#547 Phase A adopted a reviewed producer-owned staleness rule
-    (`ROTATION_STALE_AFTER`, derived only from the writer's own measured
-    persist timing, never from the dashboard's consumer-owned 2h30 rule). A
-    row only minutes old must be FRESH, not UNKNOWN."""
+def test_freshness_is_unknown_without_a_reviewed_producer_owned_rule():
+    """No producer-owned staleness rule has been reviewed/adopted for this
+    lane (the dashboard's 2h30 rule is consumer-owned only, per the #676
+    owner decision). Freshness must stay UNKNOWN and the evidence must fail
+    closed, even for a row that is only minutes old."""
     evidence = build_rotation_pressure_evidence(
         _row(), evaluated_at=ASOF_AWARE + timedelta(minutes=5)
     )
-    assert evidence.freshness == FreshnessState.FRESH
-    assert evidence.status == EvidenceStatus.VALID
-
-
-def test_freshness_is_fresh_at_the_stale_after_boundary():
-    evidence = build_rotation_pressure_evidence(
-        _row(), evaluated_at=ASOF_AWARE + ROTATION_STALE_AFTER
-    )
-    assert evidence.freshness == FreshnessState.FRESH
-    assert evidence.status == EvidenceStatus.VALID
-
-
-def test_freshness_is_stale_just_past_the_stale_after_boundary():
-    evidence = build_rotation_pressure_evidence(
-        _row(), evaluated_at=ASOF_AWARE + ROTATION_STALE_AFTER + timedelta(seconds=1)
-    )
-    assert evidence.freshness == FreshnessState.STALE
-    assert ReasonCode.STALE_EVIDENCE in evidence.reason_codes
-    assert evidence.status == EvidenceStatus.STALE
+    assert evidence.freshness == FreshnessState.UNKNOWN
+    assert ReasonCode.FRESHNESS_NOT_OWNER_DEFINED in evidence.reason_codes
+    assert evidence.status == EvidenceStatus.INSUFFICIENT_DATA
 
 
 def test_freshness_cannot_be_supplied_by_arbitrary_caller_override():
     """`build_rotation_pressure_evidence` exposes no threshold/override
-    parameter -- `ROTATION_STALE_AFTER` is this producer's own hardcoded,
-    reviewed constant, not a caller-configurable staleness knob."""
+    parameter -- freshness is derived solely from `compute_freshness`,
+    which has no caller-configurable staleness knob."""
     import inspect
 
     signature = inspect.signature(build_rotation_pressure_evidence)
-    assert "stale_after" not in signature.parameters
     assert "stale_after_multiplier" not in signature.parameters
     assert "freshness" not in signature.parameters
     assert "freshness_override" not in signature.parameters
 
 
 def test_replay_uses_supplied_row_not_current_wallclock():
-    """A replay caller supplying a far-future `evaluated_at` gets a
-    deterministic STALE (age-based) classification computed only from the
-    supplied row/evaluated_at pair -- never a "latest" wall-clock fallback."""
     evidence = build_rotation_pressure_evidence(
         _row(), evaluated_at=ASOF_AWARE + timedelta(days=400)
     )
-    assert evidence.freshness == FreshnessState.STALE
+    assert evidence.freshness == FreshnessState.UNKNOWN
     assert evidence.asof_ts == ASOF_AWARE
 
 

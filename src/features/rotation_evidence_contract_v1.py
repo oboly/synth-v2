@@ -35,22 +35,16 @@ fail-closed gaps are documented in
       about an explicit reviewed declaration).
     - `observed_lifecycle` remains `UNMEASURED`: no persisted empirical
       lifecycle analysis exists for this lane.
-    - `freshness` is now producer-owned (#547 Phase A), superseding the
-      #676-era `UNKNOWN`/`INSUFFICIENT_DATA`-only state. The dashboard's
-      `classify_freshness()` / `DEFAULT_STALE_AFTER = 2h30m`
-      (`src/reporting/market_rotation_pressure_dashboard_v1.py`) is still a
-      separate consumer/reporting-owned rule and is deliberately NOT reused
-      or adopted here. `ROTATION_STALE_AFTER` below is instead derived
-      solely from the writer's own measured/documented persist timing
-      (`docs/ops/market_rotation_pressure_runtime_owners_v1.md`, gurkDB
-      `synth-market-rotation-pressure-writer.timer`:
-      `OnCalendar=*:20:00 UTC`, `RandomizedDelaySec=180`, three real
-      per-invocation-verified cycles completing writes within their
-      `HH:20:00-HH:23:xx` start window with historical ~1-2 minute runtime).
-      This is a genuinely producer-owned fact (the writer's own schedule and
-      observed completion time relative to its own `as_of_ts_utc`), not an
-      inference from the dashboard's consumer-side assumption -- see #547
-      Phase A audit for the full chain evidence and derivation.
+    - `freshness` remains producer-undeclared: the only existing staleness
+      rule (`classify_freshness()` / `DEFAULT_STALE_AFTER = 2h30m`) lives in
+      `src/reporting/market_rotation_pressure_dashboard_v1.py`, a
+      consumer/dashboard module, and the #676 owner decision does not adopt
+      it as producer-owned truth. An hourly writer cadence is a runtime
+      cadence fact, not a reviewed freshness rule (per the #676 task
+      contract: "Runtime cadence alone is NOT automatically the same as
+      freshness semantics"). This module reuses
+      `evidence_contract_v1.compute_freshness` unchanged, so freshness stays
+      `UNKNOWN`/`INSUFFICIENT_DATA` until a producer-owned rule is reviewed.
     - `model_id`/`model_version`: no `model_id` column is persisted. The
       #676 owner decision explicitly authorizes declaring
       `model_id = "market_rotation_pressure_v1"` as this producer's own
@@ -72,7 +66,7 @@ fail-closed gaps are documented in
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Mapping
 
 from src.features.evidence_contract_v1 import (
@@ -97,26 +91,6 @@ SUPPORTED_MODEL_VERSIONS = frozenset({"1.0"})
 
 INPUT_INTERVAL = "1h"
 LOOKBACK_HORIZON = "24h+168h"
-
-# Producer-owned staleness rule (#547 Phase A). Derived only from this
-# producer's own writer, never from the dashboard's reporting-owned 2h30
-# rule:
-#   input_interval                                    60 min (INPUT_INTERVAL)
-#   + writer's documented worst-case persist lag       25 min (gurkDB
-#     synth-market-rotation-pressure-writer.timer: OnCalendar=*:20:00 UTC,
-#     RandomizedDelaySec=180 -> worst-case start :23:00; historical runtime
-#     ~1-2 min -> worst-case persisted by roughly :24-:25, per
-#     docs/ops/market_rotation_pressure_runtime_owners_v1.md)
-#   + 20 min operational safety margin (the "~1-2 min" runtime figure is a
-#     historical observation, not a hard upper bound, so this margin
-#     absorbs normal runtime variance without adopting an unreviewed
-#     multi-hour grace window)
-#   = 105 min
-# A row stays FRESH for up to this age past its own `as_of_ts_utc`; beyond
-# it, the writer has missed its normal hourly cycle and the row is STALE.
-# This is intentionally tighter than the dashboard's 2h30 rule, which this
-# module does not adopt by assumption.
-ROTATION_STALE_AFTER = timedelta(minutes=105)
 
 _MARKET = "asset"
 
@@ -154,7 +128,6 @@ def build_rotation_pressure_evidence(
     normalized_asof_ts, freshness, freshness_reason_codes = compute_freshness(
         asof_ts=raw_asof_ts,
         evaluated_at=evaluated_at,
-        stale_after=ROTATION_STALE_AFTER,
     )
 
     model_id, resolved_model_version, identity_reason_codes = _resolve_model_identity(

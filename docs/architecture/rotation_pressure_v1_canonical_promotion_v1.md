@@ -146,44 +146,64 @@ the fail-closed pattern already established for `structure_state` in
 §3.3. No historical DB rows are rewritten to add a `model_id` column; this
 is a pure adapter-level declaration.
 
-## 4. Freshness ownership (now producer-owned, #547 Phase A)
+## 4. Freshness ownership (still not producer-owned — #547 Phase A: BLOCKED_NEEDS_MEASUREMENT)
 
-**Superseded by #547 Phase A.** The #676 audit finding above (freshness
-`UNKNOWN` pending an explicit owner decision) is resolved: this contract now
-declares its own producer-owned staleness rule,
-`rotation_evidence_contract_v1.ROTATION_STALE_AFTER = timedelta(minutes=105)`.
+**#547 Phase A evaluated, and explicitly declined to adopt, a producer-owned
+staleness rule.** The candidate derivation considered was:
+
+```text
+input_interval (60 min, INPUT_INTERVAL, reviewed producer fact)
++ writer's documented worst-case persist lag (25 min: gurkDB
+  synth-market-rotation-pressure-writer.timer OnCalendar=*:20:00 UTC,
+  RandomizedDelaySec=180 -> worst-case start :23:00; three real
+  per-invocation-verified cycles all completing within that window with
+  historical ~1-2 min runtime, per
+  docs/ops/market_rotation_pressure_runtime_owners_v1.md)
++ operational safety margin for runtime variance beyond the observed
+  ~1-2 min figure
+= candidate ROTATION_STALE_AFTER
+```
+
+The first two components have a concrete, reviewed evidentiary basis: the
+60-minute cadence is an explicit, reviewed owner decision (see "Cadence
+decision" in `docs/ops/market_rotation_pressure_runtime_owners_v1.md`, not
+timer cadence alone treated as freshness semantics), and the 25-minute
+persist-lag figure is directly measured from three real,
+per-invocation-verified writer cycles. The third component — the
+operational safety margin — is **not** defensible: no p95/p99 (or any)
+measured distribution of writer invocation duration exists beyond the
+three-cycle "historically ~1-2 min" observation, no incident/postmortem
+record establishes a needed buffer, and no owner decision in #547 records a
+reviewed margin value. Any specific minute figure for this component would
+be invented slack, not evidence — so per the #547 task contract ("do not
+invent a threshold"), no `ROTATION_STALE_AFTER` is adopted.
 
 The dashboard's `classify_freshness()` /
 `DEFAULT_STALE_AFTER = timedelta(hours=2, minutes=30)` in
 `src/reporting/market_rotation_pressure_dashboard_v1.py:10,107-122` remains a
-separate consumer/dashboard-owned rule and is **not** adopted here — #547
-deliberately derives `ROTATION_STALE_AFTER` independently, from the writer's
-own measured/documented persist timing only
-(`docs/ops/market_rotation_pressure_runtime_owners_v1.md`: gurkDB
-`synth-market-rotation-pressure-writer.timer`, `OnCalendar=*:20:00 UTC`,
-`RandomizedDelaySec=180`, three real per-invocation-verified cycles
-completing within their `HH:20:00-HH:23:xx` start window, historical ~1-2
-minute runtime): `input_interval` (60 min) + writer's documented worst-case
-persist lag (25 min) + a 20 min operational safety margin for runtime
-variance = 105 min. This is the writer's own schedule and observed
-completion time relative to its own `as_of_ts_utc`, not an inference from
-the reporting layer's assumption, and it is intentionally tighter than the
-dashboard's 2h30 window.
+separate consumer/dashboard-owned rule and continues to be **not** adopted
+as producer-owned truth (unchanged from the #676 finding).
 
-`evidence_contract_v1.compute_freshness` gained an additive, opt-in
-`stale_after` parameter (default `None`, preserving the original
-`UNKNOWN`-only behavior for every other still-unreviewed adapter). Only
-`rotation_evidence_contract_v1` passes a non-`None` value, sourced from its
-own hardcoded `ROTATION_STALE_AFTER` constant — there is still no
-caller-supplied/runtime-injectable override; `build_rotation_pressure_evidence`
-takes no freshness/threshold parameter. Freshness now resolves to `FRESH`
-for a present, non-future `asof_ts` within `ROTATION_STALE_AFTER` of
-`evaluated_at`, `STALE` (`STALE_EVIDENCE`) beyond it, and
-`INSUFFICIENT_DATA` for a missing or future-dated `asof_ts`, exactly as
-`#243 §3.5` requires. Top-level `status` is therefore `VALID` for a fresh,
-valid, correctly-identified row (previously always `INSUFFICIENT_DATA`
-regardless of freshness) — the still-open PRICE_STRUCTURE/RELATIVE_STRENGTH
-gaps documented in #669/#672 are unaffected by this change.
+**Decision: `BLOCKED_NEEDS_MEASUREMENT`.** `evidence_contract_v1.compute_freshness`
+and `rotation_evidence_contract_v1` are unchanged by #547 Phase A: freshness
+still resolves to `UNKNOWN` (`FRESHNESS_NOT_OWNER_DEFINED`) for any present,
+non-future `asof_ts`, and to `INSUFFICIENT_DATA` for a missing or
+future-dated `asof_ts` or for `status`. What #547 Phase B needs before a
+producer-owned rule can be adopted:
+
+```text
+1. Measured writer invocation-duration distribution (not just 3 cycles):
+   capture ExecMainStartTimestamp/ExecMainExitTimestamp across a materially
+   larger, continuous sample (e.g. one full week of real hourly cycles) and
+   record p50/p95/p99 runtime, not only the historical "~1-2 min" anecdote.
+2. An explicit owner decision recording the reviewed safety-margin value
+   (or a documented policy for deriving it from the measured distribution,
+   e.g. "p99 + fixed constant"), attached to #547 as evidence -- not
+   invented ad hoc in this contract module.
+3. Re-run this Phase A derivation with that measurement in hand; only then
+   may `rotation_evidence_contract_v1` gain a `ROTATION_STALE_AFTER`
+   constant and pass it into `compute_freshness`.
+```
 
 ## 5. Completed evidence mapping
 
@@ -203,7 +223,7 @@ lookback_horizon    = "24h+168h"
 effective_horizon   = REGIME
 observed_lifecycle  = UNMEASURED
 asof_ts             = row.as_of_ts_utc, normalized to aware UTC
-freshness           = FRESH | STALE | INSUFFICIENT_DATA (see §4)
+freshness           = UNKNOWN | INSUFFICIENT_DATA (see §4)
 provenance          = {asset_id, market, venue, source_snapshot_24h_id, source_snapshot_7d_id}
 raw                 = {score_total, pressure_state, phase_state,
                        raw_return_24h_pct, raw_return_7d_pct}   (verbatim, unmodified)
@@ -239,9 +259,9 @@ slice, reusing the same `family=ROTATION` seam with a
 ```text
 missing asof_ts                -> freshness=INSUFFICIENT_DATA (MISSING_ASOF_TS)
 asof_ts after evaluated_at     -> freshness=INSUFFICIENT_DATA (ASOF_AFTER_EVALUATION_TS)
-asof_ts age <= ROTATION_STALE_AFTER (105 min) -> freshness=FRESH
-asof_ts age >  ROTATION_STALE_AFTER (105 min) -> freshness=STALE (STALE_EVIDENCE);
-                                   status=STALE
+asof_ts present, no owner rule -> freshness=UNKNOWN (FRESHNESS_NOT_OWNER_DEFINED);
+                                   status=INSUFFICIENT_DATA (see §4, #547 Phase A:
+                                   BLOCKED_NEEDS_MEASUREMENT)
 missing/blank model_version    -> status=INSUFFICIENT_DATA (MISSING_PROVENANCE);
                                    model_id/model_version both None
 unsupported model_version      -> status=INSUFFICIENT_DATA (UNSUPPORTED_MODEL_VERSION);
@@ -249,9 +269,7 @@ unsupported model_version      -> status=INSUFFICIENT_DATA (UNSUPPORTED_MODEL_VE
 naive vs aware timestamps       -> normalized to aware UTC before any comparison
 replay                          -> caller-supplied row + evaluated_at only; no internal
                                     "latest" query exists in this module; no
-                                    caller-supplied/runtime-injectable freshness
-                                    override parameter exists (ROTATION_STALE_AFTER
-                                    is this module's own hardcoded constant)
+                                    freshness/threshold override parameter exists
 ```
 
 `effective_horizon = REGIME` is always resolved (an explicit owner
@@ -316,4 +334,4 @@ production_deploy=0
 - #661 / #568 CQ temporal population/evaluation (unaffected)
 - #266 Rotation Pressure production writer cutover (operational, unaffected)
 - #676 this promotion
-- #547 Rotation Pressure freshness pipeline Phase A (this document's §4 update: producer-owned `ROTATION_STALE_AFTER`)
+- #547 Rotation Pressure freshness pipeline Phase A (this document's §4 update: `BLOCKED_NEEDS_MEASUREMENT`, no `ROTATION_STALE_AFTER` adopted; measurement contract recorded for Phase B)
