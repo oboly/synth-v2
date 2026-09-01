@@ -10,13 +10,32 @@ phase:
   c2_access: DENY
   c3_access: DENY
 
+canonical_run_binding:
+  output_dir_argument: none
+  canonical_dir_rule: directory_containing_supplied_split_manifest_v1_json
+  required_colocated_files: [split_manifest_v1.json, source_integrity_v1.json]
+  opened_marker: checkpoint_file_running_state
+  reopen_after_finished: DENY
+  reopen_in_alternate_directory: DENY
+
 integrity_gate:
   required: true
   artifact: source_integrity_v1.json
   mode: recompute_then_verify_existing
   verification_must_complete_before_candidate_replay: true
+  verification_must_complete_before_resumed_replay: true
   drift_policy: fail_closed
   refreeze_on_drift: false
+
+interruption_and_resume:
+  signals_handled: [SIGINT, SIGTERM]
+  sigint_exit_code: 130
+  sigterm_exit_code: 143
+  interrupted_lines_emitted: 1
+  traceback_on_interrupt: false
+  resume_argument: --resume
+  resume_allowed_terminal_states: [RUNNING, INTERRUPTED]
+  resume_denied_terminal_states: [FINISHED, FAILED]
 
 candidate:
   implementation: src/research/multi_horizon_rotation_replay_v1.py
