@@ -440,6 +440,29 @@ def _write_terminal_checkpoint(
     _atomic_json(output_dir / OUTPUT_CHECKPOINT, payload)
 
 
+def _has_durable_checkpoint(output_dir: Path) -> bool:
+    checkpoint_path = output_dir / OUTPUT_CHECKPOINT
+    if not checkpoint_path.exists():
+        return False
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(checkpoint, dict)
+        and checkpoint.get("runner") == RUNNER_NAME
+        and checkpoint.get("checkpoint_version") == CHECKPOINT_VERSION
+        and checkpoint.get("terminal_state") in {"RUNNING", "INTERRUPTED", "FAILED", "FINISHED"}
+        and type(checkpoint.get("resumable")) is int
+        and checkpoint["resumable"] in (0, 1)
+        and type(checkpoint.get("asofs_completed")) is int
+        and checkpoint["asofs_completed"] >= 0
+        and type(checkpoint.get("outcome_rows_written")) is int
+        and checkpoint["outcome_rows_written"] >= 0
+        and checkpoint.get("db_writes") == 0
+    )
+
+
 def _finalize(
     output_dir: Path,
     *,
@@ -521,6 +544,9 @@ def run(args: argparse.Namespace) -> int:
     last_asof_ts_utc: str | None = None
     identity: dict[str, Any] | None = None
     try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, lambda sig, _frame: (_ for _ in ()).throw(_Interrupted(sig)))
         contract, horizons = load_contract(args.contract)
         observations = select_population_rows(load_population(Path(args.population), contract), args)
         if args.horizon is not None:
@@ -542,9 +568,6 @@ def run(args: argparse.Namespace) -> int:
                 flush=True,
             )
             return 0
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous_handlers[signum] = signal.getsignal(signum)
-            signal.signal(signum, lambda sig, _frame: (_ for _ in ()).throw(_Interrupted(sig)))
         print(
             f"BOUND observations={len(observations)} unique_asofs={len(asofs)} horizons={','.join(item.label for item in horizons)} "
             f"resume_from_asof={asofs_completed} population_sha256={PINNED_POPULATION_SHA256}",
@@ -593,7 +616,8 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     except _Interrupted as exc:
-        if identity is not None and output_dir.exists():
+        resumable = _has_durable_checkpoint(output_dir)
+        if resumable and identity is not None:
             _write_terminal_checkpoint(
                 output_dir,
                 identity=identity,
@@ -604,13 +628,14 @@ def run(args: argparse.Namespace) -> int:
                 signal_number=exc.signum,
             )
         print(
-            f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable=1 asofs_completed={asofs_completed} "
+            f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable={int(resumable)} asofs_completed={asofs_completed} "
             f"outcome_rows={outcome_rows_written} db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
             flush=True,
         )
         return 130
     except Exception as exc:
-        if identity is not None and output_dir.exists() and (output_dir / OUTPUT_CHECKPOINT).exists():
+        resumable = _has_durable_checkpoint(output_dir)
+        if resumable and identity is not None:
             _write_terminal_checkpoint(
                 output_dir,
                 identity=identity,
@@ -620,7 +645,7 @@ def run(args: argparse.Namespace) -> int:
                 last_asof_ts_utc=last_asof_ts_utc,
             )
         print(
-            f"FAILED runner={RUNNER_NAME} error={type(exc).__name__}:{exc} resumable={int(output_dir.exists())} "
+            f"FAILED runner={RUNNER_NAME} error={type(exc).__name__}:{exc} resumable={int(resumable)} "
             f"asofs_completed={asofs_completed} outcome_rows={outcome_rows_written} db_writes=0 "
             f"elapsed_s={time.monotonic() - started:.3f}",
             flush=True,
