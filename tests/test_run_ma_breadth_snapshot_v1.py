@@ -76,3 +76,21 @@ def test_runner_interrupt_emits_single_terminal_summary(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert output.count("INTERRUPTED runner=ma_breadth_snapshot_v1") == 1
     assert "signal=SIGTERM" in output
+
+
+
+def test_runner_authorization_denial_preserves_exit_code_and_emits_one_failed_summary(monkeypatch, capsys):
+    def deny(*_args, **_kwargs):
+        raise SystemExit(3)
+
+    monkeypatch.setattr(
+        "src.operations.writer_capability_authorization_v1.require_capability_write_authorization",
+        deny,
+    )
+    monkeypatch.setattr(runner, "get_db_connection", lambda: (_ for _ in ()).throw(AssertionError("DB must not open")))
+    monkeypatch.setattr(runner, "persist_snapshot", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not persist")))
+
+    assert runner.main([*_args(), "--write-db"]) == 3
+    output = capsys.readouterr().out
+    assert output.count("FAILED runner=ma_breadth_snapshot_v1") == 1
+    assert "FINISHED runner=ma_breadth_snapshot_v1" not in output

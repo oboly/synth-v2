@@ -117,8 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         exit_code = exc.code if isinstance(exc.code, int) else 1
         print(
-            f"FAILED runner={RUNNER_NAME} error_type=SystemExit exit_code={exit_code} "
-            f"elapsed={_elapsed(started)}",
+            f"FAILED runner={RUNNER_NAME} error_type=SystemExit exit_code={exit_code} elapsed={_elapsed(started)}",
             flush=True,
         )
         return exit_code
