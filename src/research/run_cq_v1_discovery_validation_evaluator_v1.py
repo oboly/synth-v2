@@ -24,6 +24,7 @@ import csv
 import json
 import signal
 from pathlib import Path
+from statistics import mean
 from typing import Any
 
 from src.research import cq_v1_discovery_validation_evaluator_v1 as core
@@ -61,6 +62,50 @@ class _RunnerInterrupted(Exception):
     def __init__(self, signum: int) -> None:
         super().__init__(f"signal={signum}")
         self.signum = signum
+
+
+def _build_buckets_allow_partial_metrics(rows: list[dict[str, Any]], score: str) -> list[dict[str, Any]]:
+    """Preserve rank buckets while tolerating missing non-selected outcomes.
+
+    `score_horizon_split_metrics` constructs an eligible set independently for
+    each outcome metric. A row eligible for forward return can therefore have
+    missing MFE or MAE. The core bucket schema contains all three metrics, so
+    compute each metric's bucket stats only from values actually present.
+    The caller reads only the selected metric, whose eligibility set is
+    unchanged. No imputation or weight renormalization is introduced.
+    """
+    ordered = sorted(rows, key=lambda row: (float(row["scores"][score]), str(row["observation_id"])))
+    n = len(ordered)
+    bucket_count = core._bucket_count_for(n)
+    buckets: list[dict[str, Any]] = []
+    for bucket_index in range(bucket_count):
+        bucket_rows = [
+            row
+            for rank, row in enumerate(ordered)
+            if min(bucket_count - 1, (rank * bucket_count) // n) == bucket_index
+        ]
+        score_vals = [float(row["scores"][score]) for row in bucket_rows]
+        bucket: dict[str, Any] = {
+            "bucket": bucket_index + 1,
+            "n": len(bucket_rows),
+            "score_min": min(score_vals) if score_vals else None,
+            "score_max": max(score_vals) if score_vals else None,
+            "score_mean": mean(score_vals) if score_vals else None,
+        }
+        for outcome_metric in core.OUTCOME_METRICS:
+            values = [
+                float(row[outcome_metric])
+                for row in bucket_rows
+                if core._number(row.get(outcome_metric)) is not None
+            ]
+            bucket[outcome_metric] = core._stats(values)
+        buckets.append(bucket)
+    return buckets
+
+
+# The CLI is the supported evaluator entry point. Install the partial-outcome
+# safe bucket implementation before any evaluation path runs.
+core.build_buckets = _build_buckets_allow_partial_metrics
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
