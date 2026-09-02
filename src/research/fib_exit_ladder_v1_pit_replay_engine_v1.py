@@ -20,9 +20,8 @@ Boundary:
     - No account/balance/position/order access.
     - No decision_gate, execution_planner, or executor imports.
     - No `automatic_exit_profile_v1` writes, no #657 promotion/binding.
-    - This module never reads a candle index beyond what the contract's § 2
-      closed-candle rule permits at the timestamp being evaluated (see
-      `find_pit_anchor` docstring for how this is structurally enforced).
+    - Detection advances in timestamp order and returns at the earliest
+      observable entry. It never reads a candle after that entry index.
 
 Explicitly NOT reused from the future-aware `#270` detector:
     `find_anchor_set` in run_fib_exit_ladder_backtest_v1.py uses
@@ -115,45 +114,39 @@ class PitAnchor:
     entry_price: Decimal
 
 
-def _first_confirmed_wave2_for_pair(
-    candles: list[Candle],
-    high_idx: int,
-    anchor_low: Decimal,
-    wave1_high: Decimal,
-    wave1_range: Decimal,
+@dataclass
+class _PitPairState:
+    """Incremental state for one `(low_idx, high_idx)` candidate pair.
+
+    `find_pit_anchor` advances every pair only with the current chronological
+    scan candle. No pair owns or rescans a future suffix.
+    """
+
+    low_idx: int
+    high_idx: int
+    anchor_low: Decimal
+    wave1_high: Decimal
+    wave1_range: Decimal
+    high_ts: datetime
+    pending_wave2_idx: Optional[int] = None
+
+
+def _wave2_is_valid_for_pair(
+    *,
+    candle: Candle,
+    state: _PitPairState,
     min_wave2_days_after_high: int,
     wave2_min_retrace: Decimal,
     wave2_max_retrace: Decimal,
-) -> Optional[tuple[int, int]]:
-    """Return the first confirmed wave2 for one low/high pair in one scan.
-
-    Each suffix candle is read once. Reclaim is checked before that candle can
-    become wave2, so a reclaim before any valid wave2 is ignored and a candle
-    cannot confirm itself. Once valid, the earliest pending wave2 stays fixed
-    until the first later reclaim confirms it.
-    """
-    high_ts = candles[high_idx].open_ts_utc
-    pending_wave2_idx: Optional[int] = None
-
-    for scan_idx in range(high_idx + 1, len(candles) - 1):
-        candle = candles[scan_idx]
-        if pending_wave2_idx is not None and candle.close_price > wave1_high:
-            return pending_wave2_idx, scan_idx
-
-        if pending_wave2_idx is not None:
-            continue
-
-        wave2_days_after_high = (candle.open_ts_utc - high_ts).days
-        if wave2_days_after_high < min_wave2_days_after_high:
-            continue
-        wave2_low = candle.low_price
-        if wave2_low <= anchor_low or wave2_low >= wave1_high:
-            continue
-        retrace = (wave1_high - wave2_low) / wave1_range
-        if wave2_min_retrace <= retrace <= wave2_max_retrace:
-            pending_wave2_idx = scan_idx
-
-    return None
+) -> bool:
+    wave2_days_after_high = (candle.open_ts_utc - state.high_ts).days
+    if wave2_days_after_high < min_wave2_days_after_high:
+        return False
+    wave2_low = candle.low_price
+    if wave2_low <= state.anchor_low or wave2_low >= state.wave1_high:
+        return False
+    retrace = (state.wave1_high - wave2_low) / state.wave1_range
+    return wave2_min_retrace <= retrace <= wave2_max_retrace
 
 
 def find_pit_anchor(
@@ -165,75 +158,116 @@ def find_pit_anchor(
     wave2_min_retrace: Decimal = DEFAULT_WAVE2_MIN_RETRACE,
     wave2_max_retrace: Decimal = DEFAULT_WAVE2_MAX_RETRACE,
 ) -> Optional[PitAnchor]:
-    """The earliest observable PIT-confirmed anchor, or None.
+    """Return the earliest observable PIT-confirmed anchor, or ``None``.
 
-    Each (low_idx, high_idx) pair uses one forward scan to retain its earliest
-    valid pending wave2 and find the first later reclaim. No candidate is
-    scored by a future high or a future return. The entry is only the next
-    candle's open after the confirmation close has become observable.
+    Detection is chronological. For each closed candle `scan_idx`, every
+    already-known `(low_idx, high_idx)` pair is advanced exactly once with
+    that candle. Confirmation is checked before the candle may become a new
+    wave2, so same-candle confirmation is impossible. Once any pair confirms,
+    all confirmations at that same timestamp are tie-broken deterministically
+    by `(low_idx, high_idx, wave2_idx)`, the next candle's open fixes entry,
+    and the function returns immediately. Nothing after that entry index is
+    inspected.
     """
-    if len(candles) < MIN_CANDLES_REQUIRED:
+    candle_count = len(candles)
+    if candle_count < MIN_CANDLES_REQUIRED:
         return None
 
-    best: Optional[PitAnchor] = None
-    for low_idx in range(0, len(candles) - 2):
-        anchor_low = candles[low_idx].low_price
-        if anchor_low <= 0:
-            continue
+    active_pairs: list[_PitPairState] = []
 
-        min_wave1_high = max(
-            anchor_low * (Decimal("1") + pivot_threshold_pct),
-            anchor_low * (Decimal("1") + min_wave1_gain_pct),
-        )
-        for high_idx in range(low_idx + 1, len(candles) - 1):
-            wave1_days = (candles[high_idx].open_ts_utc - candles[low_idx].open_ts_utc).days
-            if wave1_days < min_wave1_days:
+    # `scan_idx` is the candle that has just become fully observable. The
+    # range stops one candle before the end because confirmation needs the
+    # next candle's open as the tradeable entry/observable timestamp.
+    for scan_idx in range(0, candle_count - 1):
+        scan_candle = candles[scan_idx]
+
+        # First, let the just-closed candle confirm only wave2 candidates that
+        # were already pending before this candle. This prevents a candle from
+        # qualifying as wave2 and confirming itself.
+        confirmed_states = [
+            state
+            for state in active_pairs
+            if state.pending_wave2_idx is not None
+            and scan_candle.close_price > state.wave1_high
+        ]
+        if confirmed_states:
+            chosen = min(
+                confirmed_states,
+                key=lambda state: (
+                    state.low_idx,
+                    state.high_idx,
+                    state.pending_wave2_idx,
+                ),
+            )
+            assert chosen.pending_wave2_idx is not None
+            wave2_idx = chosen.pending_wave2_idx
+            entry_idx = scan_idx + 1
+            entry_candle = candles[entry_idx]
+            wave2_candle = candles[wave2_idx]
+            return PitAnchor(
+                anchor_low=chosen.anchor_low,
+                anchor_low_ts=candles[chosen.low_idx].open_ts_utc,
+                wave1_high=chosen.wave1_high,
+                wave1_high_ts=candles[chosen.high_idx].open_ts_utc,
+                wave2_low=wave2_candle.low_price,
+                wave2_low_ts=wave2_candle.open_ts_utc,
+                wave1_range=chosen.wave1_range,
+                confirmation_idx=scan_idx,
+                confirmation_ts=scan_candle.open_ts_utc,
+                entry_idx=entry_idx,
+                entry_ts=entry_candle.open_ts_utc,
+                entry_price=entry_candle.open_price,
+            )
+
+        # No confirmation at this timestamp. Advance every existing pair once
+        # with this candle, retaining the earliest valid pending wave2.
+        for state in active_pairs:
+            if state.pending_wave2_idx is not None:
                 continue
-
-            wave1_high = candles[high_idx].high_price
-            if wave1_high < min_wave1_high:
-                continue
-
-            wave1_range = wave1_high - anchor_low
-            if wave1_range <= 0:
-                continue
-
-            confirmed = _first_confirmed_wave2_for_pair(
-                candles,
-                high_idx=high_idx,
-                anchor_low=anchor_low,
-                wave1_high=wave1_high,
-                wave1_range=wave1_range,
+            if _wave2_is_valid_for_pair(
+                candle=scan_candle,
+                state=state,
                 min_wave2_days_after_high=min_wave2_days_after_high,
                 wave2_min_retrace=wave2_min_retrace,
                 wave2_max_retrace=wave2_max_retrace,
-            )
-            if confirmed is None:
+            ):
+                state.pending_wave2_idx = scan_idx
+
+        # Finally, the current closed candle may become a wave1 high for
+        # future candles. Every candidate low used here is strictly historical
+        # (`low_idx < scan_idx`); no future candle is consulted.
+        if scan_idx == 0:
+            continue
+        wave1_high = scan_candle.high_price
+        for low_idx in range(0, scan_idx):
+            low_candle = candles[low_idx]
+            anchor_low = low_candle.low_price
+            if anchor_low <= 0:
                 continue
-            wave2_idx, confirmation_idx = confirmed
-
-            entry = pit_contract.entry_from_confirmation(candles, confirmation_idx)
-            if entry is None:
+            wave1_days = (scan_candle.open_ts_utc - low_candle.open_ts_utc).days
+            if wave1_days < min_wave1_days:
                 continue
-
-            candidate = PitAnchor(
-                anchor_low=anchor_low,
-                anchor_low_ts=candles[low_idx].open_ts_utc,
-                wave1_high=wave1_high,
-                wave1_high_ts=candles[high_idx].open_ts_utc,
-                wave2_low=candles[wave2_idx].low_price,
-                wave2_low_ts=candles[wave2_idx].open_ts_utc,
-                wave1_range=wave1_range,
-                confirmation_idx=confirmation_idx,
-                confirmation_ts=candles[confirmation_idx].open_ts_utc,
-                entry_idx=entry.entry_idx,
-                entry_ts=entry.entry_ts,
-                entry_price=entry.entry_price,
+            min_wave1_high = max(
+                anchor_low * (Decimal("1") + pivot_threshold_pct),
+                anchor_low * (Decimal("1") + min_wave1_gain_pct),
             )
-            if best is None or candidate.entry_idx < best.entry_idx:
-                best = candidate
+            if wave1_high < min_wave1_high:
+                continue
+            wave1_range = wave1_high - anchor_low
+            if wave1_range <= 0:
+                continue
+            active_pairs.append(
+                _PitPairState(
+                    low_idx=low_idx,
+                    high_idx=scan_idx,
+                    anchor_low=anchor_low,
+                    wave1_high=wave1_high,
+                    wave1_range=wave1_range,
+                    high_ts=scan_candle.open_ts_utc,
+                )
+            )
 
-    return best
+    return None
 
 
 # ---------------------------------------------------------------------------
