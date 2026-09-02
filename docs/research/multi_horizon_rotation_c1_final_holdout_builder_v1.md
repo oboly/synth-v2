@@ -76,14 +76,80 @@ manifest and integrity artifact. The local checkpoint schema binds:
 
 ```text
 runner, runner_version, venue, candidate_id, manifest_sha256,
-source_integrity_composite_sha256, phase, phase_start, phase_end,
-last_completed_asof, asofs_completed, row_count, partial_bytes,
-source_query_count, source_rows_read, terminal_state, updated_ts_utc
+source_integrity_composite_sha256, implementation_fingerprint_sha256,
+phase, phase_start, phase_end, last_completed_asof, asofs_completed,
+row_count, partial_bytes, source_query_count, source_rows_read,
+terminal_state, updated_ts_utc
 ```
 
 The registry entry binds the same identity fields plus `terminal_state` and
 `updated_ts_utc` (its state is the authority; the local checkpoint carries the
 per-as-of replay progress).
+
+## Approved execution host
+
+Current #593 topology has no shared cross-host authoritative state store, and
+`database_writes` must remain `0` for this research-only runner, so no
+DB-backed cross-host lock exists. The authoritative opened-state registry
+above is deliberately **host-local**: a different host has its own,
+independent registry and could otherwise "open" the identical frozen
+manifest/integrity content a second time.
+
+To close that gap without inventing a new DB mutation layer, the runner
+additionally enforces a single **approved execution host**,
+`gurkdb` (`APPROVED_EXECUTION_HOST`, matching the existing canonical-host
+convention already used by `src/operations/verify_agent_worktree_v1.py`).
+Exactly-once ownership of the holdout is the **conjunction** of two
+independent controls, neither sufficient alone:
+
+```text
+approved-host-only + trusted host-local registry
+```
+
+Before any registry entry is created and before any holdout replay, the
+runner compares `socket.gethostname()` (the trusted `gethostname(2)`
+syscall answer, never a caller-controlled environment variable such as
+`HOSTNAME`) against the fixed `APPROVED_EXECUTION_HOST` constant and fails
+closed on any mismatch. There is no CLI/env override for the approved host.
+A non-approved host cannot open, resume, or replay this holdout at all,
+regardless of whether it holds a byte-identical copy of the frozen
+manifest/integrity pair.
+
+## Frozen C1 implementation fingerprint
+
+Before any final-holdout candidate replay, and before any registry entry is
+created (fresh run) or continued (resume), the runner recomputes a
+deterministic SHA-256 **implementation fingerprint** and verifies it against
+a pre-registered, committed expected value at
+`docs/research/multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json`.
+There is no CLI/env override and no refreeze/update mechanism in the
+runner -- a mismatch always fails closed.
+
+The fingerprint binds every semantic that can change the evaluated C1
+signal:
+
+```text
+1. canonical JSON of the frozen C1 candidate spec from CANDIDATE_SPECS
+   (candidate_id, model_version, horizon_minutes, effective_horizon --
+   which together fix the lookback/input-interval semantics)
+2. exact source bytes, on disk, of src/research/multi_horizon_rotation_replay_v1.py
+   -- the sole module owning the C1 formula, sign, weights, eligibility/
+   minimum-cohort, and boundary/gap semantics
+```
+
+`implementation_fingerprint_sha256` is SHA-256 over the canonical
+(`sort_keys=True, separators=(",", ":")`) JSON envelope
+`{"c1_spec": <spec fields>, "replay_source_sha256": <sha256 of the replay
+module's source bytes>}`. Hashing the module's actual source bytes (rather
+than `inspect.getsource`) avoids formatting-related instability and detects
+any change to that file.
+
+The verified fingerprint is bound into both the local checkpoint and the
+authoritative registry entry (`implementation_fingerprint_sha256`), so a
+later `--resume` re-validates it against the checkpoint's own recorded
+value and fails closed -- permanently locking the run `FAILED` -- if the
+frozen C1 spec or replay implementation has drifted since the run was
+opened, even if the module-level gate were somehow bypassed.
 
 ## Interruption, failure, and resume
 

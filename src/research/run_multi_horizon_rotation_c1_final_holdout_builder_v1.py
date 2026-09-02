@@ -47,6 +47,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
+from src.research import multi_horizon_rotation_replay_v1 as c1_replay_module
 from src.research.multi_horizon_rotation_dataset_builder_v1 import observed_asset_ids_at_asof
 from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, evaluate_candidate
 from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
@@ -76,6 +77,22 @@ PHASE = "final_holdout"
 MANIFEST_BASENAME = "split_manifest_v1.json"
 INTEGRITY_BASENAME = "source_integrity_v1.json"
 RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
+
+# The single approved execution host for this frozen #593 C1 final-holdout
+# run -- see ``enforce_approved_execution_host`` for why this is required in
+# addition to (not instead of) the host-local registry, and
+# ``src/operations/verify_agent_worktree_v1.py::CANONICAL_HOST`` for the
+# existing repo convention this reuses.
+APPROVED_EXECUTION_HOST = "gurkdb"
+
+# Committed, pre-registered expected implementation fingerprint for the
+# frozen C1 candidate spec + replay implementation. No CLI/env override.
+IMPLEMENTATION_FINGERPRINT_DOC_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "research"
+    / "multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json"
+)
 
 def default_registry_root() -> Path:
     """Durable, host-level authoritative state root -- independent of any git
@@ -154,6 +171,147 @@ def default_registry_root() -> Path:
 # and source-integrity artifact are copied byte-for-byte into a second directory,
 # a second worktree, or a second clone on the same host.
 REGISTRY_ROOT = default_registry_root()
+
+
+def current_trusted_hostname() -> str:
+    """Trusted OS-reported hostname -- ``gethostname(2)`` via
+    ``socket.gethostname()`` -- never a caller-controlled environment
+    variable such as ``HOSTNAME``, which a caller could set arbitrarily."""
+    return socket.gethostname()
+
+
+def enforce_approved_execution_host() -> None:
+    """Fail closed unless this process is running on the single approved
+    execution host for this frozen #593 C1 final-holdout run.
+
+    Current #593 topology has no shared cross-host authoritative state store
+    (and ``database_writes`` must remain 0 for this research-only runner, so
+    no DB-backed cross-host lock is introduced here). The authoritative
+    opened-state registry (``default_registry_root``) is therefore
+    deliberately host-local: two clones/worktrees for the SAME user on the
+    SAME host share one registry, but a different host has its own,
+    independent registry and could otherwise "open" the identical frozen
+    manifest/integrity content a second time. A host restriction alone would
+    likewise not stop a second process on the SAME host from reopening it.
+
+    Exactly-once ownership of the holdout is therefore the CONJUNCTION of
+    two independent controls, not either one alone:
+
+        approved-host-only + trusted host-local registry
+
+    This function enforces the first half: the holdout may only ever be
+    opened/resumed/replayed on ``APPROVED_EXECUTION_HOST``. Any other host
+    fails closed here, before any registry entry is created and before any
+    holdout replay -- so another host cannot execute or open this holdout at
+    all, regardless of whether it has a byte-identical copy of the frozen
+    manifest/integrity pair.
+
+    The approved host itself is a fixed constant, matching the actual
+    intended research execution host for this frozen #593 holdout run (the
+    same host already used as the canonical convention for gating sensitive
+    runtime operations in this repo; see
+    ``src/operations/verify_agent_worktree_v1.py::CANONICAL_HOST``). There is
+    deliberately no CLI/env override for it, and the current hostname is
+    read from the trusted ``gethostname(2)`` syscall
+    (``current_trusted_hostname``), not from any caller-controlled
+    environment variable, so a caller cannot spoof approval by setting
+    ``HOSTNAME`` or any other environment variable.
+    """
+    actual = current_trusted_hostname()
+    if actual != APPROVED_EXECUTION_HOST:
+        raise ValueError(
+            f"final holdout may only execute on the approved host "
+            f"{APPROVED_EXECUTION_HOST!r}; actual host is {actual!r}. Refusing "
+            "to create any registry entry or replay any holdout data on this host."
+        )
+
+
+def _c1_spec_fingerprint_material(spec: Any) -> dict[str, Any]:
+    return {
+        "candidate_id": spec.candidate_id,
+        "model_version": spec.model_version,
+        "horizon_minutes": spec.horizon_minutes,
+        "effective_horizon": spec.effective_horizon,
+    }
+
+
+def compute_c1_implementation_fingerprint(spec: Any) -> dict[str, str]:
+    """Deterministic SHA-256 fingerprint binding every semantic that can
+    change the evaluated C1 signal:
+
+    1. the canonical JSON of the frozen C1 candidate spec (candidate_id,
+       model_version, horizon_minutes, effective_horizon -- which together
+       fix the lookback/input-interval semantics via
+       ``CandidateSpec.candles_per_window``/``lookback_horizon``); and
+    2. the exact source bytes, on disk, of the sole module that owns the C1
+       replay formula, sign, weights, eligibility/minimum-cohort, and
+       boundary/gap semantics (``multi_horizon_rotation_replay_v1`` --
+       ``evaluate_candidate`` and everything it calls live in this one
+       file).
+
+    Uses the module's own actual source bytes (``Path(...).read_bytes()``)
+    rather than ``inspect.getsource`` -- source-inspection reformats
+    whitespace/comments and is not guaranteed byte-stable, whereas hashing
+    the file directly detects literally any change to it and is trivially
+    deterministic and reproducible by re-running this same function.
+    """
+    spec_material = _c1_spec_fingerprint_material(spec)
+    spec_json = json.dumps(spec_material, sort_keys=True, separators=(",", ":"))
+    replay_source_path = Path(c1_replay_module.__file__).resolve()
+    replay_source_sha256 = hashlib.sha256(replay_source_path.read_bytes()).hexdigest()
+    envelope = {"c1_spec": spec_material, "replay_source_sha256": replay_source_sha256}
+    envelope_json = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(envelope_json.encode("utf-8")).hexdigest()
+    return {
+        "c1_spec_json": spec_json,
+        "replay_source_sha256": replay_source_sha256,
+        "implementation_fingerprint_sha256": fingerprint,
+    }
+
+
+def load_frozen_c1_implementation_fingerprint() -> dict[str, Any]:
+    """Load the committed, pre-registered expected implementation fingerprint
+    from ``IMPLEMENTATION_FINGERPRINT_DOC_PATH``.
+
+    There is no CLI/env override for this path or its content -- it must be
+    the fixed file committed alongside the frozen candidate definition. This
+    fails closed (raises) if the file is missing or malformed; there is no
+    fallback and no refreeze/update mechanism in this runner.
+    """
+    path = IMPLEMENTATION_FINGERPRINT_DOC_PATH
+    if not path.exists():
+        raise ValueError(
+            f"frozen C1 implementation fingerprint doc is missing at {path}; "
+            "cannot verify implementation identity before opening the holdout"
+        )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("implementation_fingerprint_sha256"), str):
+        raise ValueError(f"frozen C1 implementation fingerprint doc at {path} is malformed")
+    return raw
+
+
+def verify_c1_implementation_fingerprint(spec: Any) -> str:
+    """Recompute the current C1 implementation fingerprint and fail closed
+    unless it exactly matches the committed frozen expected value.
+
+    Must be called, on both a fresh run and a resumed run, before any
+    registry entry is created and before any holdout replay. Returns the
+    verified fingerprint so the caller can bind it into the
+    checkpoint/registry identity, which makes a later ``--resume`` under
+    changed code fail closed even if this function were somehow bypassed.
+    """
+    current = compute_c1_implementation_fingerprint(spec)
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen["implementation_fingerprint_sha256"]
+    actual = current["implementation_fingerprint_sha256"]
+    if actual != expected:
+        raise ValueError(
+            "C1 implementation fingerprint mismatch: the frozen candidate spec "
+            "and/or replay implementation has drifted since the expected "
+            f"fingerprint was frozen (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return actual
 
 
 class RunnerInterrupted(Exception):
@@ -237,6 +395,7 @@ def write_checkpoint(
     source_query_count: int,
     source_rows_read: int,
     terminal_state: str,
+    implementation_fingerprint_sha256: str = "",
 ) -> None:
     payload = {
         "runner": RUNNER_NAME,
@@ -245,6 +404,7 @@ def write_checkpoint(
         "candidate_id": CANDIDATE_ID,
         "manifest_sha256": manifest_sha256,
         "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "implementation_fingerprint_sha256": implementation_fingerprint_sha256,
         "phase": PHASE,
         "phase_start": json_default(phase_start),
         "phase_end": json_default(phase_end),
@@ -275,6 +435,7 @@ def validate_resume_checkpoint(
     venue: str,
     manifest_sha256: str,
     source_integrity_composite_sha256: str,
+    implementation_fingerprint_sha256: str | None = None,
 ) -> None:
     if checkpoint.get("runner") != RUNNER_NAME or checkpoint.get("runner_version") != RUNNER_VERSION:
         raise ValueError("checkpoint runner/version mismatch")
@@ -288,6 +449,13 @@ def validate_resume_checkpoint(
         raise ValueError("checkpoint split manifest mismatch")
     if checkpoint.get("source_integrity_composite_sha256") != source_integrity_composite_sha256:
         raise ValueError("checkpoint source integrity mismatch")
+    if implementation_fingerprint_sha256 is not None:
+        if checkpoint.get("implementation_fingerprint_sha256") != implementation_fingerprint_sha256:
+            raise ValueError(
+                "checkpoint implementation fingerprint mismatch; the frozen C1 "
+                "candidate spec/replay implementation has drifted since this run "
+                "was opened; refuses to resume under changed code"
+            )
     terminal_state = checkpoint.get("terminal_state")
     if terminal_state not in RESUMABLE_TERMINAL_STATES:
         raise ValueError(
@@ -316,6 +484,7 @@ def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
         source_query_count=int(checkpoint.get("source_query_count", 0)),
         source_rows_read=int(checkpoint.get("source_rows_read", 0)),
         terminal_state=terminal_state,
+        implementation_fingerprint_sha256=str(checkpoint.get("implementation_fingerprint_sha256", "")),
     )
 
 
@@ -361,6 +530,7 @@ def _registry_payload(
     source_integrity_composite_sha256: str,
     terminal_state: str,
     opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
 ) -> dict[str, object]:
     return {
         "runner": RUNNER_NAME,
@@ -370,6 +540,7 @@ def _registry_payload(
         "phase": PHASE,
         "manifest_sha256": manifest_sha256,
         "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "implementation_fingerprint_sha256": implementation_fingerprint_sha256,
         "terminal_state": terminal_state,
         # Informational only. The registry key above -- not this field -- is
         # what makes reopening from a copied directory impossible.
@@ -386,6 +557,7 @@ def write_registry_entry(
     source_integrity_composite_sha256: str,
     terminal_state: str,
     opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
 ) -> None:
     """Create-or-overwrite. Only safe for transitions on an entry this process
     already knows it owns (terminal-state updates); never used for the initial
@@ -398,6 +570,7 @@ def write_registry_entry(
             source_integrity_composite_sha256=source_integrity_composite_sha256,
             terminal_state=terminal_state,
             opened_run_dir=opened_run_dir,
+            implementation_fingerprint_sha256=implementation_fingerprint_sha256,
         ),
     )
 
@@ -410,6 +583,7 @@ def create_registry_entry_exclusive(
     source_integrity_composite_sha256: str,
     terminal_state: str,
     opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
 ) -> bool:
     """Atomic exclusive-create: write a temp file, fsync it durable, then link it
     into place. ``os.link`` either creates the target or raises ``FileExistsError``
@@ -426,6 +600,7 @@ def create_registry_entry_exclusive(
         source_integrity_composite_sha256=source_integrity_composite_sha256,
         terminal_state=terminal_state,
         opened_run_dir=opened_run_dir,
+        implementation_fingerprint_sha256=implementation_fingerprint_sha256,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
@@ -538,6 +713,11 @@ def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[st
     """
     existing = load_registry_entry(path)
     opened_run_dir = str(existing.get("opened_run_dir", "")) if existing else identity.get("opened_run_dir", "")
+    implementation_fingerprint_sha256 = (
+        str(existing.get("implementation_fingerprint_sha256", ""))
+        if existing
+        else identity.get("implementation_fingerprint_sha256", "")
+    )
     write_registry_entry(
         path,
         venue=identity["venue"],
@@ -545,6 +725,7 @@ def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[st
         source_integrity_composite_sha256=identity["source_integrity_composite_sha256"],
         terminal_state=terminal_state,
         opened_run_dir=opened_run_dir,
+        implementation_fingerprint_sha256=implementation_fingerprint_sha256,
     )
 
 
@@ -578,6 +759,7 @@ def finalize_c1_holdout_bundle(
     row_count: int,
     source_query_count: int,
     source_rows_read: int,
+    implementation_fingerprint_sha256: str = "",
 ) -> tuple[int, int | None]:
     """Publish the final artifact bundle and commit the FINISHED terminal state
     as one signal-safe, forward-only critical section.
@@ -658,6 +840,7 @@ def finalize_c1_holdout_bundle(
                 source_query_count=source_query_count,
                 source_rows_read=source_rows_read,
                 terminal_state="FINISHED",
+                implementation_fingerprint_sha256=implementation_fingerprint_sha256,
             )
         except RunnerInterrupted as exc:
             if deferred_signum is None:
@@ -710,7 +893,13 @@ def main(argv: list[str] | None = None) -> int:
     row_count = 0
     source_query_count = 0
     source_rows_read = 0
+    implementation_fingerprint = ""
     try:
+        enforce_approved_execution_host()
+        emit(
+            f"HOST_APPROVED host={current_trusted_hostname()} "
+            f"approved_host={APPROVED_EXECUTION_HOST}"
+        )
         manifest_path = Path(args.split_manifest)
         integrity_path = Path(args.source_integrity)
         canonical_dir = canonical_run_dir(manifest_path, integrity_path)
@@ -749,6 +938,7 @@ def main(argv: list[str] | None = None) -> int:
                 "phase": PHASE,
                 "manifest_sha256": str(checkpoint["manifest_sha256"]),
                 "source_integrity_composite_sha256": str(checkpoint["source_integrity_composite_sha256"]),
+                "implementation_fingerprint_sha256": str(checkpoint.get("implementation_fingerprint_sha256", "")),
             }
             registry_key = registry_key_for(
                 manifest_sha256=registry_identity["manifest_sha256"],
@@ -795,7 +985,17 @@ def main(argv: list[str] | None = None) -> int:
                     "to continue an interrupted RUNNING checkpoint."
                 )
 
-        conn = get_db_connection()
+        try:
+            conn = get_db_connection()
+        except Exception as exc:
+            # Sanitized re-raise only: the underlying DB-connect exception is
+            # never interpolated into any emit()/print() log line. pymysql
+            # connection-argument construction touches a local variable named
+            # ``password`` (see src/common/db_core_v1.py::get_connection), so
+            # a raw connection-failure exception is treated as carrying
+            # sensitive data and must never reach clear-text logging -- only
+            # the exception class name (never its message/args) is logged.
+            raise RuntimeError(f"database connection failed: {exc.__class__.__name__}") from exc
 
         # Hard gate: recompute and verify frozen source content before any holdout
         # candidate replay or forward-label construction is allowed. This must
@@ -815,10 +1015,25 @@ def main(argv: list[str] | None = None) -> int:
             f"elapsed_s={time.perf_counter() - gate_started:.3f}"
         )
 
+        c1_spec = select_c1_spec()
+
+        # Hard gate: recompute and verify the frozen C1 implementation
+        # fingerprint (spec + replay source bytes) before any registry entry
+        # is created and before any holdout replay. This must happen on both
+        # a fresh run and a resumed run, exactly like the source-integrity
+        # gate above.
+        emit("PHASE_STARTED name=verify_frozen_c1_implementation_fingerprint")
+        fingerprint_gate_started = time.perf_counter()
+        implementation_fingerprint = verify_c1_implementation_fingerprint(c1_spec)
+        emit(
+            "PHASE_FINISHED name=verify_frozen_c1_implementation_fingerprint state=VERIFIED "
+            f"implementation_fingerprint_sha256={implementation_fingerprint} "
+            f"elapsed_s={time.perf_counter() - fingerprint_gate_started:.3f}"
+        )
+
         source_span = manifest["source_span"]
         coverage = fetch_asset_coverage(conn, venue=args.venue, through_ts=parse_ts(source_span["end"]))
         pit_index = fetch_rotation_v1_points(conn, venue=args.venue, through_ts=phase_end)
-        c1_spec = select_c1_spec()
         spec_by_id = {CANDIDATE_ID: c1_spec}
         full_grid = asof_grid(phase_start, phase_end)
 
@@ -829,6 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
                 venue=args.venue,
                 manifest_sha256=manifest_sha,
                 source_integrity_composite_sha256=composite_sha,
+                implementation_fingerprint_sha256=implementation_fingerprint,
             )
             reconcile_partial_to_checkpoint(partial_path, checkpoint)
             last_raw = checkpoint.get("last_completed_asof")
@@ -863,6 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
                 "phase": PHASE,
                 "manifest_sha256": manifest_sha,
                 "source_integrity_composite_sha256": composite_sha,
+                "implementation_fingerprint_sha256": implementation_fingerprint,
             }
             registry_key = registry_key_for(
                 manifest_sha256=manifest_sha,
@@ -887,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_integrity_composite_sha256=composite_sha,
                 terminal_state="RUNNING",
                 opened_run_dir=str(canonical_dir),
+                implementation_fingerprint_sha256=implementation_fingerprint,
             )
             if not won_registry_creation:
                 raise ValueError(
@@ -934,6 +1152,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_query_count=0,
                 source_rows_read=0,
                 terminal_state="RUNNING",
+                implementation_fingerprint_sha256=implementation_fingerprint,
             )
             emit(
                 f"OPENED registry={registry_path} checkpoint={cp_path} state=RUNNING "
@@ -1001,6 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
                         source_query_count=source_query_count,
                         source_rows_read=source_rows_read,
                         terminal_state="RUNNING",
+                        implementation_fingerprint_sha256=implementation_fingerprint,
                     )
                     if asofs_completed % 96 == 0:
                         emit(
@@ -1020,6 +1240,7 @@ def main(argv: list[str] | None = None) -> int:
             "venue": args.venue,
             "manifest_sha256": manifest_sha,
             "source_integrity_composite_sha256": composite_sha,
+            "implementation_fingerprint_sha256": implementation_fingerprint,
             "phase_start": phase_start.isoformat().replace("+00:00", "Z"),
             "phase_end_exclusive": phase_end.isoformat().replace("+00:00", "Z"),
             "asof_count": asofs_completed,
@@ -1054,6 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
             row_count=row_count,
             source_query_count=source_query_count,
             source_rows_read=source_rows_read,
+            implementation_fingerprint_sha256=implementation_fingerprint,
         )
         partial_path = None
         emit(

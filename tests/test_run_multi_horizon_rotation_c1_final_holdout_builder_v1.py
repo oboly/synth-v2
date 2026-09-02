@@ -19,6 +19,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     acquire_run_lease_exclusive,
     canonical_run_dir,
     checkpoint_path,
+    compute_c1_implementation_fingerprint,
     create_registry_entry_exclusive,
     default_registry_root,
     finalize_c1_holdout_bundle,
@@ -41,6 +42,15 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
 
 
 BASE = datetime(2026, 8, 22, 6, 0, tzinfo=UTC)
+
+# The real, current implementation fingerprint for the frozen C1 spec + the
+# actual on-disk replay module -- used when tests hand-construct a
+# RUNNING/INTERRUPTED checkpoint or registry entry that a subsequent
+# ``--resume`` must accept (the real runner always validates this field on
+# resume; see ``verify_c1_implementation_fingerprint``).
+REAL_C1_IMPLEMENTATION_FINGERPRINT = compute_c1_implementation_fingerprint(select_c1_spec())[
+    "implementation_fingerprint_sha256"
+]
 
 
 def _manifest(*, end: str = "2026-09-01T02:00:00Z", holdout_end: str = "2026-08-22T06:30:00Z") -> dict[str, object]:
@@ -465,6 +475,9 @@ def _install_fake_pipeline(
     def fake_get_db_connection() -> _FakeConnection:
         return _FakeConnection()
 
+    def fake_current_trusted_hostname() -> str:
+        return module.APPROVED_EXECUTION_HOST
+
     def fake_build_integrity_payload(conn, *, venue, split_manifest):
         return {"composite_sha256": "fixed"}
 
@@ -518,6 +531,7 @@ def _install_fake_pipeline(
         return results
 
     monkeypatch.setattr(module, "get_db_connection", fake_get_db_connection)
+    monkeypatch.setattr(module, "current_trusted_hostname", fake_current_trusted_hostname)
     monkeypatch.setattr(module, "build_integrity_payload", fake_build_integrity_payload)
     monkeypatch.setattr(module, "verify_existing", fake_verify_existing)
     monkeypatch.setattr(module, "fetch_asset_coverage", fake_fetch_asset_coverage)
@@ -713,6 +727,7 @@ def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch
         source_query_count=0,
         source_rows_read=0,
         terminal_state="RUNNING",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
     )
     (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
     registry_key = registry_key_for(
@@ -728,6 +743,7 @@ def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch
         manifest_sha256=manifest_sha,
         source_integrity_composite_sha256="fixed",
         terminal_state="RUNNING",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
         opened_run_dir=str(tmp_path),
     )
 
@@ -943,6 +959,7 @@ def test_sigint_during_resume_releases_lease_and_leaves_interrupted(
         source_query_count=0,
         source_rows_read=0,
         terminal_state="INTERRUPTED",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
     )
     (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
     registry_key = registry_key_for(
@@ -958,6 +975,7 @@ def test_sigint_during_resume_releases_lease_and_leaves_interrupted(
         manifest_sha256=manifest_sha,
         source_integrity_composite_sha256="fixed",
         terminal_state="INTERRUPTED",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
         opened_run_dir=str(tmp_path),
     )
 
@@ -1433,6 +1451,7 @@ def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
         source_query_count=0,
         source_rows_read=0,
         terminal_state="INTERRUPTED",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
     )
     (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
     registry_key = registry_key_for(
@@ -1448,6 +1467,7 @@ def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
         manifest_sha256=manifest_sha,
         source_integrity_composite_sha256="fixed",
         terminal_state="INTERRUPTED",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
         opened_run_dir=str(tmp_path),
     )
 
@@ -2116,3 +2136,260 @@ def test_main_reports_finished_not_interrupted_when_signal_deferred_during_final
     )
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
     assert not run_lease_path(registry_key).exists()
+
+
+# --- Approved execution host --------------------------------------------
+
+
+def test_fresh_run_on_approved_host_completes_and_emits_host_approved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert f"HOST_APPROVED host={module.APPROVED_EXECUTION_HOST} approved_host={module.APPROVED_EXECUTION_HOST}" in out
+
+
+def test_fresh_run_denied_on_non_approved_host_before_registry_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: a non-approved host must be denied
+    before any registry entry is created and before any DB access/replay --
+    zero DB calls, zero registry/checkpoint/output mutation."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    db_calls = {"n": 0}
+
+    def counting_get_db_connection() -> _FakeConnection:
+        db_calls["n"] += 1
+        return _FakeConnection()
+
+    monkeypatch.setattr(module, "get_db_connection", counting_get_db_connection)
+    monkeypatch.setattr(module, "current_trusted_hostname", lambda: "not-the-approved-host")
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 1
+    assert db_calls["n"] == 0
+
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not (tmp_path / "final_holdout_c1_summary_v1.json").exists()
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert not any(registry_root.glob("*.json"))
+
+
+def test_caller_cannot_spoof_approved_host_via_hostname_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trusted hostname source is socket.gethostname(), never the HOSTNAME
+    environment variable, so a caller setting HOSTNAME to the approved host
+    name cannot bypass the guard when the OS-reported hostname is not
+    actually approved."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    monkeypatch.setattr(module, "current_trusted_hostname", lambda: "attacker-controlled-host")
+    monkeypatch.setenv("HOSTNAME", module.APPROVED_EXECUTION_HOST)
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 1
+    assert not any(registry_root.glob("*.json"))
+    assert not checkpoint_path(tmp_path).exists()
+
+
+def test_current_trusted_hostname_ignores_hostname_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """current_trusted_hostname() must be a pure function of the OS-reported
+    hostname (socket.gethostname()), unaffected by the HOSTNAME env var."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    before = module.current_trusted_hostname()
+    monkeypatch.setenv("HOSTNAME", "totally-different-spoofed-hostname")
+    after = module.current_trusted_hostname()
+    assert after == before
+
+
+# --- Frozen C1 implementation fingerprint --------------------------------
+
+
+def test_verify_c1_implementation_fingerprint_matches_committed_frozen_doc() -> None:
+    """The exact frozen (unmodified) C1 spec + replay implementation must
+    verify successfully against the committed expected fingerprint doc."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    result = module.verify_c1_implementation_fingerprint(module.select_c1_spec())
+    assert result == REAL_C1_IMPLEMENTATION_FINGERPRINT
+
+
+def test_verify_c1_implementation_fingerprint_fails_when_c1_spec_changed() -> None:
+    """A changed C1 candidate spec (e.g. a different horizon/model_version --
+    which would flip lookback/horizon semantics) must fail verification even
+    though the replay module source is untouched."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    from src.research.multi_horizon_rotation_replay_v1 import CandidateSpec
+
+    drifted_spec = CandidateSpec("C1", "1.0.0-c1-DRIFTED", 15, "VERY_SHORT")
+    with pytest.raises(ValueError, match="C1 implementation fingerprint mismatch"):
+        module.verify_c1_implementation_fingerprint(drifted_spec)
+
+
+def test_verify_c1_implementation_fingerprint_fails_when_replay_source_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed replay-implementation source (e.g. a score weight/sign/
+    formula edit) must fail verification even though the C1 spec itself is
+    untouched -- the fingerprint binds the exact source bytes of the file
+    that owns the formula/eligibility/boundary semantics."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    real_path = Path(module.c1_replay_module.__file__).resolve()
+    drifted_path = tmp_path / "drifted_multi_horizon_rotation_replay_v1.py"
+    drifted_path.write_bytes(real_path.read_bytes() + b"\n# drifted\n")
+
+    class _DriftedReplayModule:
+        __file__ = str(drifted_path)
+
+    monkeypatch.setattr(module, "c1_replay_module", _DriftedReplayModule())
+
+    with pytest.raises(ValueError, match="C1 implementation fingerprint mismatch"):
+        module.verify_c1_implementation_fingerprint(module.select_c1_spec())
+
+
+def test_verify_c1_implementation_fingerprint_fails_when_frozen_doc_disagrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even an unmodified implementation must fail closed if the committed
+    frozen doc records a different expected value (e.g. it was frozen
+    against different code, or has itself drifted)."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(
+        module,
+        "load_frozen_c1_implementation_fingerprint",
+        lambda: {"implementation_fingerprint_sha256": "0" * 64},
+    )
+    with pytest.raises(ValueError, match="C1 implementation fingerprint mismatch"):
+        module.verify_c1_implementation_fingerprint(module.select_c1_spec())
+
+
+def test_fresh_run_denied_before_registry_creation_on_implementation_fingerprint_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: an implementation fingerprint mismatch
+    must fail closed BEFORE any registry entry is created, on a fresh run --
+    zero registry/checkpoint/output mutation, no holdout outcomes replayed."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    monkeypatch.setattr(
+        module,
+        "load_frozen_c1_implementation_fingerprint",
+        lambda: {"implementation_fingerprint_sha256": "0" * 64},
+    )
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 1
+    assert not any(registry_root.glob("*.json"))
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+
+
+def test_resume_denied_and_marked_failed_on_implementation_fingerprint_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: an opened holdout resumed under
+    changed C1 implementation must fail closed and permanently lock the run
+    FAILED (non-resumable) -- it must not continue, and no further holdout
+    rows may be replayed after the mismatch is detected."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(
+        cp_path,
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=None,
+        asofs_completed=0,
+        row_count=0,
+        partial_bytes=0,
+        source_query_count=0,
+        source_rows_read=0,
+        terminal_state="RUNNING",
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
+    )
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    write_registry_entry(
+        registry_entry_path(registry_key),
+        venue="bitvavo",
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+        implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT,
+    )
+
+    # Simulate the C1 implementation having drifted since this run was opened.
+    monkeypatch.setattr(
+        module,
+        "load_frozen_c1_implementation_fingerprint",
+        lambda: {"implementation_fingerprint_sha256": "1" * 64},
+    )
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code == 1
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
+    # No further rows were ever replayed after the mismatch was detected.
+    assert load_checkpoint(cp_path)["row_count"] == 0
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    # FAILED is permanently non-resumable: a further --resume must also be denied.
+    exit_code_2 = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+    assert exit_code_2 == 1
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
