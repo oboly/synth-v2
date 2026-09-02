@@ -270,3 +270,16 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+def test_upsert_rejects_missing_market_before_any_sql():
+    conn = _FakeConn()
+    row = etl.CandleRow(
+        asset_id=1, venue="bitvavo", interval_code="1w",
+        open_ts_utc=datetime(2025, 5, 19), close_ts_utc=datetime(2025, 5, 26),
+        open=Decimal("1"), high=Decimal("1"), low=Decimal("1"), close=Decimal("1"), volume=Decimal("1"),
+    )
+    with pytest.raises(ValueError, match="market identity"):
+        etl.upsert_candles(conn, [row], authorization=_CANDLE_AUTH)
+    assert conn.cursor_instance.executemany_calls == []

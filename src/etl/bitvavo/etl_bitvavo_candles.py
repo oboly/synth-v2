@@ -395,6 +395,9 @@ def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) ->
     require_writer_mutation_authorization(authorization, "public_candle_freshness")
     if not rows:
         return 0
+    if any(not row.market for row in rows):
+        raise ValueError("candle market identity is required")
+
     sql = """
     INSERT INTO obs_market_candle (
         asset_id,
@@ -462,8 +465,6 @@ def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) ->
             low_price=VALUES(low_price), close_price=VALUES(close_price), volume_base=VALUES(volume_base)
         """
         identity_payload = [{**item, "market": row.market} for item, row in zip(payload, rows)]
-        if any(not item["market"] for item in identity_payload):
-            raise ValueError("candle market identity is required")
         cur.executemany(identity_sql, identity_payload)
 
     return len(rows)
