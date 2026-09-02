@@ -100,17 +100,19 @@ def _insufficient_data_series(length: int = 10) -> list[ladder_bt.Candle]:
 
 
 class _TripwireCandles:
-    """A read-only candle sequence that raises if any index at or beyond
-    `forbidden_from_idx` is ever accessed, used to structurally prove a
-    detector call makes no future-index access at all (not merely that its
-    *result* happens to be unaffected)."""
+    """Full-length read-only sequence that rejects forbidden future reads.
+
+    `__len__` deliberately reports the real full series length. This prevents
+    the detector from passing merely because a test fixture silently truncates
+    the visible range. Any index at or after `forbidden_from_idx` explodes.
+    """
 
     def __init__(self, candles: list[ladder_bt.Candle], forbidden_from_idx: int) -> None:
         self._candles = candles
         self._forbidden_from_idx = forbidden_from_idx
 
     def __len__(self) -> int:
-        return self._forbidden_from_idx
+        return len(self._candles)
 
     def __getitem__(self, item):
         if isinstance(item, slice):
@@ -147,15 +149,14 @@ def test_changing_candles_after_decision_timestamp_does_not_change_detector_resu
     assert anchor_mutated == anchor_full
 
 
-def test_detector_never_requires_full_series_suffix_access() -> None:
-    """Structural proof: find_pit_anchor never reads a candle at or beyond
-    the entry candle's own index + 1, using a sequence that raises on any
-    such access instead of merely comparing before/after results."""
+def test_detector_never_reads_after_earliest_observable_entry_with_full_length_tripwire() -> None:
+    """Structural proof with real full length, not a shortened fixture."""
     full = _confirmed_series()
     anchor_full = engine.find_pit_anchor(full)
     assert anchor_full is not None
 
     tripwire = _TripwireCandles(full, forbidden_from_idx=anchor_full.entry_idx + 1)
+    assert len(tripwire) == len(full)
     anchor_via_tripwire = engine.find_pit_anchor(tripwire)  # type: ignore[arg-type]
     assert anchor_via_tripwire == anchor_full
 
@@ -501,17 +502,6 @@ def test_multiple_valid_wave2_candidates_keep_the_earliest_pending_candidate() -
         second_confirmation_day=21,
     )
 
-    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
-        candles,
-        high_idx=14,
-        anchor_low=Decimal("1.00"),
-        wave1_high=Decimal("2.50"),
-        wave1_range=Decimal("1.50"),
-        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
-        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
-        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
-    )
-    assert confirmed == (17, 21)
     anchor = engine.find_pit_anchor(candles)
     assert anchor is not None
     assert anchor.wave2_low_ts == candles[17].open_ts_utc
@@ -591,59 +581,36 @@ def test_oos_rejects_forged_non_frozen_sell_fraction() -> None:
 def test_wave2_candle_cannot_confirm_itself() -> None:
     candles = _wave2_confirmation_edge_series(first_confirmation_day=None)
     candles[17] = _candle(17, "1.55", "2.65", "1.50", "2.60")
-
-    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
-        candles,
-        high_idx=14,
-        anchor_low=Decimal("1.00"),
-        wave1_high=Decimal("2.50"),
-        wave1_range=Decimal("1.50"),
-        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
-        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
-        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
-    )
-    assert confirmed is None
+    assert engine.find_pit_anchor(candles) is None
 
 
-def test_pair_scan_reads_each_forward_candle_at_most_once() -> None:
-    class CountingCandles:
-        def __init__(self, values: list[ladder_bt.Candle]) -> None:
-            self.values = values
-            self.read_counts: dict[int, int] = {}
-
-        def __len__(self) -> int:
-            return len(self.values)
-
-        def __getitem__(self, index: int) -> ladder_bt.Candle:
-            self.read_counts[index] = self.read_counts.get(index, 0) + 1
-            return self.values[index]
-
-    candles = CountingCandles(_wave2_confirmation_edge_series(first_confirmation_day=None))
-    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
-        candles,  # type: ignore[arg-type]
-        high_idx=14,
-        anchor_low=Decimal("1.00"),
-        wave1_high=Decimal("2.50"),
-        wave1_range=Decimal("1.50"),
-        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
-        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
-        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
-    )
-
-    assert confirmed is None
-    assert all(candles.read_counts.get(index, 0) == 1 for index in range(15, len(candles) - 1))
-
-
-def test_find_pit_anchor_has_no_per_wave2_confirmation_rescan_pattern() -> None:
+def test_find_pit_anchor_uses_one_chronological_forward_scan_without_suffix_rescans() -> None:
     import inspect
 
     source = inspect.getsource(engine.find_pit_anchor)
     tree = ast.parse(source)
-    assert "_valid_wave2_indices" not in source
-    assert "find_confirmation_index" not in source
-    assert any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_first_confirmed_wave2_for_pair"
+
+    # The detector owns one chronological scan variable. Candidate pairs are
+    # advanced against that current candle rather than each rescanning a
+    # remaining suffix independently.
+    scan_loops = [
+        node
         for node in ast.walk(tree)
-    )
+        if isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "scan_idx"
+    ]
+    assert len(scan_loops) == 1
+    assert "find_confirmation_index" not in source
+    assert "_first_confirmed_wave2_for_pair" not in source
+    assert "future_high" not in source
+
+
+def test_find_pit_anchor_returns_before_forbidden_future_tail_is_touched() -> None:
+    full = _confirmed_series(tail_days=120)
+    anchor = engine.find_pit_anchor(full)
+    assert anchor is not None
+
+    guarded = _TripwireCandles(full, forbidden_from_idx=anchor.entry_idx + 1)
+    result = engine.find_pit_anchor(guarded)  # type: ignore[arg-type]
+    assert result == anchor
