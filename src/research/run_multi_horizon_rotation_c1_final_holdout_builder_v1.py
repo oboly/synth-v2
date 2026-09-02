@@ -20,18 +20,21 @@ namespace there. The actual one-shot gate is a trusted, non-caller-selectable
 (``REGISTRY_ROOT`` below, see ``default_registry_root``), keyed by a SHA-256
 fingerprint of ``(manifest_sha256, source_integrity_composite_sha256, venue,
 candidate_id, phase)``. Because the key is derived purely from frozen
-content, and the registry root itself lives outside any git checkout, copying
-the manifest/integrity pair anywhere -- including into a different clone or
-worktree on the same host -- resolves to the exact same registry entry and is
-denied. This is host-local, not cross-host: two clones for the SAME user on
-the SAME host share it; a different host has its own home directory and does
-not.
+content, and the registry root itself is derived from trusted OS account
+metadata (``pwd.getpwuid(os.geteuid()).pw_dir``, not ``HOME`` or any other
+caller-controlled environment variable) and lives outside any git checkout,
+copying the manifest/integrity pair anywhere -- including into a different
+clone or worktree on the same host, or under a caller-controlled ``HOME`` --
+resolves to the exact same registry entry and is denied. This is host-local,
+not cross-host: two clones for the SAME effective user on the SAME host
+share it; a different host has its own account database and does not.
 """
 
 import argparse
 import hashlib
 import json
 import os
+import pwd
 import signal
 import socket
 import tempfile
@@ -76,7 +79,7 @@ RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
 
 def default_registry_root() -> Path:
     """Durable, host-level authoritative state root -- independent of any git
-    checkout/worktree.
+    checkout/worktree, and independent of any caller-controlled environment.
 
     A prior version derived this from ``Path(__file__).resolve().parents[2]``,
     i.e. checkout-local: a second clone or worktree of this same repository
@@ -85,27 +88,57 @@ def default_registry_root() -> Path:
     host could each open their own "one-shot" holdout -- the one-shot gate
     was not actually shared.
 
-    This now follows the same convention already used for other durable,
-    non-checkout-local Synth runtime state
-    (see ``docs/ops/synth_runtime_runners_v1.md`` and
-    ``src/exit_policy/run_automatic_exit_policy_once_v1.py::default_lock_path``):
-    the XDG-style state root under the invoking user's home directory,
-    ``~/.local/state/synth/...``. Because it is keyed off ``Path.home()``
-    rather than the repository checkout path, every clone/worktree for the
-    SAME user on the SAME host resolves to the exact same registry root --
-    this is genuinely durable and shared across checkouts. It is
-    deliberately host-local, not cross-host: a different host has its own
-    home directory and its own, independent copy of this state. There is no
-    single shared authoritative DB/state store for research-only artifacts
-    in the current topology, so filesystem-local (per-host) durable state is
-    the correct choice here, not a DB table.
+    A second version derived this from ``Path.home()``. That is also wrong:
+    ``Path.home()`` (and the ``HOME`` environment variable it reads) is
+    caller-controlled -- a caller can set ``HOME`` to an arbitrary directory
+    and obtain a different, empty registry root, reopening the identical
+    frozen holdout inputs there. That defeats the entire point of the
+    authoritative registry.
+
+    This now resolves the invoking account's home directory from trusted
+    account metadata instead of any environment variable: the effective UID
+    (``os.geteuid()``, which is fixed by the OS process, not by the caller's
+    shell environment) is looked up via ``pwd.getpwuid`` to obtain the
+    account's registered home directory (``pw_dir``) from the host's user
+    database (``/etc/passwd`` or equivalent NSS source). This is the same
+    trusted-identity approach already used elsewhere in this repository for
+    account-derived paths/ownership checks (see
+    ``src/common/synth_chain_4h_db_binding_v1.py`` and
+    ``src/operations/run_native_short_snapshot_filesystem_preflight_v1.py``).
+
+    Because the key is derived purely from frozen content and the registry
+    root is derived purely from trusted OS account metadata, every
+    clone/worktree for the SAME effective user on the SAME host resolves to
+    the exact same registry root regardless of ``HOME``, ``XDG_STATE_HOME``,
+    current working directory, or checkout/worktree path -- this is
+    genuinely durable and shared across checkouts, and it cannot be
+    redirected by the caller. It is deliberately host-local, not
+    cross-host: a different host has its own account database and its own,
+    independent copy of this state. There is no single shared authoritative
+    DB/state store for research-only artifacts in the current topology, so
+    filesystem-local (per-host) durable state is the correct choice here,
+    not a DB table.
 
     There is deliberately no CLI/env override for this path: the entire
     point of the authoritative registry is that the caller cannot select a
-    different location for it.
+    different location for it. If trusted account metadata cannot be
+    resolved, this fails closed (raises) rather than silently falling back
+    to ``HOME`` or any other caller-controlled value.
     """
+    try:
+        trusted_home = pwd.getpwuid(os.geteuid()).pw_dir
+    except KeyError as exc:
+        raise RuntimeError(
+            "cannot resolve authoritative registry root: no passwd entry for "
+            f"effective UID {os.geteuid()}"
+        ) from exc
+    if not trusted_home:
+        raise RuntimeError(
+            "cannot resolve authoritative registry root: passwd entry for "
+            f"effective UID {os.geteuid()} has no home directory"
+        )
     return (
-        Path.home()
+        Path(trusted_home)
         / ".local"
         / "state"
         / "synth"

@@ -460,7 +460,7 @@ def _install_fake_pipeline(
     and point the trusted registry at an isolated test directory (never the real repo
     data/research tree). Pass ``registry_root=None`` to leave ``module.REGISTRY_ROOT``
     untouched -- used by tests that set it themselves (e.g. by deriving it from a
-    monkeypatched ``Path.home()``) to exercise the real default-registry-root wiring."""
+    monkeypatched ``pwd.getpwuid``) to exercise the real default-registry-root wiring."""
 
     def fake_get_db_connection() -> _FakeConnection:
         return _FakeConnection()
@@ -1619,17 +1619,28 @@ def test_resume_racing_active_fresh_run_fails_closed_with_zero_mutation(
 # --- Durable, checkout-independent authoritative registry root -----------
 
 
-def test_default_registry_root_is_home_based_and_checkout_independent(
+def _fake_pwent(home: Path) -> object:
+    """A minimal stand-in for the ``pwd.struct_passwd`` entry returned by
+    ``pwd.getpwuid`` -- only ``pw_dir`` is read by ``default_registry_root``."""
+
+    class _FakePwent:
+        pw_dir = str(home)
+
+    return _FakePwent()
+
+
+def test_default_registry_root_is_trusted_account_based_and_checkout_independent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression for the Codex BLOCK: REGISTRY_ROOT used to be derived from
-    Path(__file__), i.e. checkout-local. It must now be a pure function of the
-    invoking user's home directory only, so it never depends on the checkout
-    path, worktree path, or current working directory."""
+    Path(__file__) (checkout-local), then from Path.home() / HOME
+    (caller-controlled). It must now be a pure function of trusted OS account
+    metadata (pwd.getpwuid(os.geteuid()).pw_dir) only, so it never depends on
+    HOME, the checkout path, worktree path, or current working directory."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
 
     root = module.default_registry_root()
     assert root == (
@@ -1649,19 +1660,96 @@ def test_default_registry_root_is_home_based_and_checkout_independent(
     assert module.default_registry_root() == root
 
 
+def test_default_registry_root_is_invariant_under_home_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the exact Codex BLOCK: changing HOME (or XDG_STATE_HOME)
+    must NOT change the resolved registry root, since a caller who controls
+    HOME could otherwise reopen identical frozen holdout inputs against a
+    fresh, empty registry."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    real_home = tmp_path / "real_home"
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(real_home))
+
+    root_before = module.default_registry_root()
+
+    spoofed_home = tmp_path / "attacker_controlled_home"
+    monkeypatch.setenv("HOME", str(spoofed_home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "attacker_controlled_xdg_state"))
+
+    root_after = module.default_registry_root()
+    assert root_after == root_before
+    assert "attacker_controlled" not in str(root_after)
+
+
+def test_default_registry_root_same_uid_yields_same_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two independent resolutions for the same effective UID must agree."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    fixed_home = tmp_path / "fixed_home"
+    calls: list[int] = []
+
+    def fake_getpwuid(uid: int) -> object:
+        calls.append(uid)
+        return _fake_pwent(fixed_home)
+
+    monkeypatch.setattr(module.pwd, "getpwuid", fake_getpwuid)
+
+    first = module.default_registry_root()
+    second = module.default_registry_root()
+    assert first == second
+    assert len(set(calls)) == 1  # same UID both times
+
+
+def test_default_registry_root_fails_closed_when_account_metadata_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the effective UID has no resolvable passwd entry, the registry root
+    must fail closed (raise) rather than silently falling back to HOME or any
+    other caller-controlled value."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    def raising_getpwuid(uid: int) -> object:
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    monkeypatch.setattr(module.pwd, "getpwuid", raising_getpwuid)
+
+    with pytest.raises(RuntimeError, match="cannot resolve authoritative registry root"):
+        module.default_registry_root()
+
+
+def test_default_registry_root_fails_closed_when_home_dir_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolvable-but-empty pw_dir must also fail closed, not silently fall
+    back to HOME or the current working directory."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    class _EmptyHomePwent:
+        pw_dir = ""
+
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _EmptyHomePwent())
+
+    with pytest.raises(RuntimeError, match="cannot resolve authoritative registry root"):
+        module.default_registry_root()
+
+
 def test_two_checkout_roots_with_identical_inputs_share_registry_and_second_cannot_reopen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Regression for the Codex BLOCK: two different checkout/worktree
     directories with byte-identical frozen manifest/integrity content must
     resolve to the SAME authoritative registry entry, using the real default
-    registry-root computation (only ``Path.home()`` is faked, to avoid
+    registry-root computation (only ``pwd.getpwuid`` is faked, to avoid
     touching the actual host state) -- not a registry root manually shared
     between the two invocations by the test itself."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
     monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
     _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
 
@@ -1714,7 +1802,7 @@ def test_two_checkout_roots_racing_fresh_runs_share_run_lease_exactly_one_wins(
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
     monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
     _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
     monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})  # threads can't signal.signal()
