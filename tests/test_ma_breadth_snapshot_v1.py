@@ -2,7 +2,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import pytest
-from src.features.ma_breadth_snapshot_v1 import MABreadthInputError, UniverseMember, build_snapshot, universe_identity
+from src.features.ma_breadth_snapshot_v1 import (
+    MABreadthInputError,
+    UniverseMember,
+    build_snapshot,
+    fetch_candles_at_or_before,
+    fetch_universe_members,
+    universe_identity,
+)
 
 ASOF = datetime(2026, 9, 1, tzinfo=UTC)
 MEMBERS = [UniverseMember(1, "BTC-EUR", "BTC"), UniverseMember(2, "ETH-EUR", "ETH")]
@@ -42,20 +49,12 @@ def test_wrong_interval_fails_closed():
         build_snapshot(members=MEMBERS, candles=_frame(_candles(1, 50, 1)), asof_ts_utc=ASOF, venue="bitvavo", interval_code="1h")
 
 
-def test_same_asset_two_markets_keep_market_specific_sma50_truth():
+def test_same_asset_two_markets_fail_closed_without_canonical_candle_market_identity():
     members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
     eur = _candles(1, 50, 1, market="AAA-EUR")[:-1] + _candles(1, 1, 2, market="AAA-EUR")
     usdc = _candles(1, 50, 2, market="AAA-USDC")
-    result = build_snapshot(members=members, candles=_frame(eur, usdc), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
-    assert (result.eligible_count, result.evaluated_count, result.universe_above_sma50_count) == (2, 2, 1)
-    assert result.universe_above_sma50_pct == Decimal("50")
-
-
-def test_missing_market_specific_rows_are_insufficient_and_not_reused():
-    members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
-    result = build_snapshot(members=members, candles=_frame(_candles(1, 50, 1, market="AAA-EUR")), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
-    assert (result.eligible_count, result.evaluated_count, result.insufficient_history_count) == (2, 1, 1)
-    assert result.coverage_pct == Decimal("50")
+    with pytest.raises(MABreadthInputError, match="ambiguous candle market identity"):
+        build_snapshot(members=members, candles=_frame(eur, usdc), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
 
 
 def test_duplicate_exact_asof_constituent_rows_fail_closed():
@@ -64,9 +63,76 @@ def test_duplicate_exact_asof_constituent_rows_fail_closed():
         build_snapshot(members=[MEMBERS[0]], candles=_frame(rows), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
 
 
-def test_reversed_source_order_has_same_market_specific_result():
-    members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
-    rows = _candles(1, 50, 1, market="AAA-EUR")[:-1] + _candles(1, 1, 2, market="AAA-EUR") + _candles(1, 50, 2, market="AAA-USDC")
-    forward = build_snapshot(members=members, candles=_frame(rows), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
-    reverse = build_snapshot(members=members, candles=_frame(list(reversed(rows))), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+def test_reversed_source_order_has_same_unambiguous_result():
+    rows = _candles(1, 50, 1)[:-1] + _candles(1, 1, 2) + _candles(2, 50, 2)
+    forward = build_snapshot(members=MEMBERS, candles=_frame(rows), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+    reverse = build_snapshot(members=MEMBERS, candles=_frame(list(reversed(rows))), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
     assert forward == reverse
+
+
+class _FixtureCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def execute(self, sql, _params):
+        self.connection.queries.append(sql)
+        if "FROM venue_market vm" in sql:
+            self.rows = [
+                row for row in self.connection.venue_markets
+                if sum(
+                    candidate["venue"] == row["venue"]
+                    and candidate["asset_id"] == row["asset_id"]
+                    and candidate["is_tradeable"]
+                    for candidate in self.connection.venue_markets
+                ) == 1
+            ]
+        else:
+            self.rows = [
+                row for row in self.connection.candle_rows
+                if row["asset_id"] in _params[3:]
+            ]
+
+    def fetchall(self):
+        return self.rows
+
+
+class _FixtureConnection:
+    def __init__(self):
+        self.queries = []
+        self.venue_markets = [
+            {"venue": "bitvavo", "asset_id": 1, "market": "AAA-EUR", "symbol": "AAA", "is_tradeable": True},
+            {"venue": "bitvavo", "asset_id": 1, "market": "AAA-USDC", "symbol": "AAA", "is_tradeable": True},
+            {"venue": "bitvavo", "asset_id": 2, "market": "BBB-EUR", "symbol": "BBB", "is_tradeable": True},
+        ]
+        self.candle_rows = _candles(1, 50, 2) + _candles(2, 50, 2)
+
+    def cursor(self):
+        return _FixtureCursor(self)
+
+
+def test_multi_market_fixture_excludes_ambiguous_asset_and_never_attributes_its_one_series_twice(monkeypatch):
+    conn = _FixtureConnection()
+    monkeypatch.setattr(
+        "src.features.ma_breadth_snapshot_v1.fetch_publication_cohort_contract",
+        lambda _conn: type("Contract", (), {"predicate": lambda self, _alias: "1=1"})(),
+    )
+
+    assert len([row for row in conn.candle_rows if row["asset_id"] == 1]) == 50
+    members = fetch_universe_members(conn, venue="bitvavo")
+    candles = fetch_candles_at_or_before(conn, members=members, venue="bitvavo", asof_ts_utc=ASOF)
+    result = build_snapshot(members=members, candles=candles, asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+
+    universe_sql, candle_sql = conn.queries
+    assert "SELECT COUNT(*)" in universe_sql
+    assert "candidate_vm.base_asset_id = vm.base_asset_id" in universe_sql
+    assert "JOIN venue_market" not in candle_sql
+    assert members == [UniverseMember(2, "BBB-EUR", "BBB")]
+    assert set(candles["market"]) == {"BBB-EUR"}
+    assert (result.eligible_count, result.evaluated_count, result.coverage_pct) == (1, 1, Decimal("100"))
