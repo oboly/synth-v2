@@ -87,7 +87,7 @@ def build_snapshot(
     Percentage denominator is ``evaluated_count``: only constituents with an
     exact-asof candle and a valid 50-bar SMA are evaluated.  ``eligible_count``
     is retained unchanged, so insufficient history never becomes "below MA".
-    A stale constituent has candle history but no exact-asof candle.
+    A stale constituent has no usable exact-asof candle observation.
     """
     if interval_code != INPUT_INTERVAL:
         raise MABreadthInputError(f"unsupported input interval: {interval_code}")
@@ -126,7 +126,7 @@ def build_snapshot(
             & (featured["market"].astype(str) == member.market)
         ] if not featured.empty else featured
         if rows.empty:
-            insufficient += 1
+            stale += 1
             continue
         exact_rows = rows.loc[rows["close_ts_utc"] == exact_asof]
         if exact_rows.empty:

@@ -51,10 +51,10 @@ def test_same_asset_two_markets_keep_market_specific_sma50_truth():
     assert result.universe_above_sma50_pct == Decimal("50")
 
 
-def test_missing_market_specific_rows_are_insufficient_and_not_reused():
+def test_missing_market_specific_rows_are_stale_and_not_reused():
     members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
     result = build_snapshot(members=members, candles=_frame(_candles(1, 50, 1, market="AAA-EUR")), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
-    assert (result.eligible_count, result.evaluated_count, result.insufficient_history_count) == (2, 1, 1)
+    assert (result.eligible_count, result.evaluated_count, result.stale_constituent_count, result.insufficient_history_count) == (2, 1, 1, 0)
     assert result.coverage_pct == Decimal("50")
 
 
@@ -116,3 +116,30 @@ def test_fetch_candles_preserves_persisted_market_identity_for_same_asset():
     assert "c.market" in conn.cursor_instance.sql
     assert "JOIN venue_market" not in conn.cursor_instance.sql
     assert conn.cursor_instance.params[-4:] == (1, "AAA-EUR", 1, "AAA-USDC")
+
+
+def test_stale_and_insufficient_history_have_distinct_exact_asof_provenance():
+    members = [
+        UniverseMember(1, "AAA-EUR", "AAA"),
+        UniverseMember(2, "BBB-EUR", "BBB"),
+        UniverseMember(3, "CCC-EUR", "CCC"),
+        UniverseMember(4, "DDD-EUR", "DDD"),
+    ]
+    above = _candles(1, 50, 1, market="AAA-EUR")[:-1] + _candles(1, 1, 2, market="AAA-EUR")
+    below = _candles(2, 50, 2, market="BBB-EUR")
+    stale = _candles(3, 50, 2, market="CCC-EUR", at_asof=False)
+    insufficient = _candles(4, 49, 2, market="DDD-EUR")
+    result = build_snapshot(
+        members=members,
+        candles=_frame(above, below, stale, insufficient),
+        asof_ts_utc=ASOF,
+        venue="bitvavo",
+        interval_code="4h",
+    )
+    assert result.eligible_count == 4
+    assert result.evaluated_count == 2
+    assert result.stale_constituent_count == 1
+    assert result.insufficient_history_count == 1
+    assert result.universe_above_sma50_count == 1
+    assert result.universe_above_sma50_pct == Decimal("50")
+    assert result.coverage_pct == Decimal("50")
