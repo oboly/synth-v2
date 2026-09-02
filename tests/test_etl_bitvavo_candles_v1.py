@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from src.etl.bitvavo import etl_bitvavo_candles as etl
 
 
