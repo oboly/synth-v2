@@ -494,20 +494,29 @@ def test_reclaim_before_valid_wave2_does_not_block_later_confirmation() -> None:
     assert anchor.entry_idx == 21
 
 
-def test_multiple_valid_wave2_candidates_have_independent_confirmation_searches() -> None:
+def test_multiple_valid_wave2_candidates_keep_the_earliest_pending_candidate() -> None:
     candles = _wave2_confirmation_edge_series(
-        first_confirmation_day=18,
+        first_confirmation_day=None,
         second_wave2_day=20,
         second_confirmation_day=21,
     )
 
-    assert engine.pit_contract.find_confirmation_index(candles, Decimal("2.50"), 17) == 18
-    assert engine.pit_contract.find_confirmation_index(candles, Decimal("2.50"), 20) == 21
+    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
+        candles,
+        high_idx=14,
+        anchor_low=Decimal("1.00"),
+        wave1_high=Decimal("2.50"),
+        wave1_range=Decimal("1.50"),
+        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
+        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
+        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
+    )
+    assert confirmed == (17, 21)
     anchor = engine.find_pit_anchor(candles)
     assert anchor is not None
     assert anchor.wave2_low_ts == candles[17].open_ts_utc
-    assert anchor.confirmation_idx == 18
-    assert anchor.entry_idx == 19
+    assert anchor.confirmation_idx == 21
+    assert anchor.entry_idx == 22
 
 
 def test_valid_wave2_without_later_confirmation_is_not_an_anchor() -> None:
@@ -577,3 +586,64 @@ def test_oos_rejects_forged_non_frozen_sell_fraction() -> None:
     )
     with pytest.raises(ValueError, match="max_ladder_sell_fraction"):
         engine.evaluate_oos_window(forged, "OOS_WINDOW_1", _confirmed_series())
+
+
+def test_wave2_candle_cannot_confirm_itself() -> None:
+    candles = _wave2_confirmation_edge_series(first_confirmation_day=None)
+    candles[17] = _candle(17, "1.55", "2.65", "1.50", "2.60")
+
+    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
+        candles,
+        high_idx=14,
+        anchor_low=Decimal("1.00"),
+        wave1_high=Decimal("2.50"),
+        wave1_range=Decimal("1.50"),
+        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
+        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
+        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
+    )
+    assert confirmed is None
+
+
+def test_pair_scan_reads_each_forward_candle_at_most_once() -> None:
+    class CountingCandles:
+        def __init__(self, values: list[ladder_bt.Candle]) -> None:
+            self.values = values
+            self.read_counts: dict[int, int] = {}
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+        def __getitem__(self, index: int) -> ladder_bt.Candle:
+            self.read_counts[index] = self.read_counts.get(index, 0) + 1
+            return self.values[index]
+
+    candles = CountingCandles(_wave2_confirmation_edge_series(first_confirmation_day=None))
+    confirmed = engine._first_confirmed_wave2_for_pair(  # noqa: SLF001
+        candles,  # type: ignore[arg-type]
+        high_idx=14,
+        anchor_low=Decimal("1.00"),
+        wave1_high=Decimal("2.50"),
+        wave1_range=Decimal("1.50"),
+        min_wave2_days_after_high=engine.DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
+        wave2_min_retrace=engine.DEFAULT_WAVE2_MIN_RETRACE,
+        wave2_max_retrace=engine.DEFAULT_WAVE2_MAX_RETRACE,
+    )
+
+    assert confirmed is None
+    assert all(candles.read_counts.get(index, 0) == 1 for index in range(15, len(candles) - 1))
+
+
+def test_find_pit_anchor_has_no_per_wave2_confirmation_rescan_pattern() -> None:
+    import inspect
+
+    source = inspect.getsource(engine.find_pit_anchor)
+    tree = ast.parse(source)
+    assert "_valid_wave2_indices" not in source
+    assert "find_confirmation_index" not in source
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_first_confirmed_wave2_for_pair"
+        for node in ast.walk(tree)
+    )

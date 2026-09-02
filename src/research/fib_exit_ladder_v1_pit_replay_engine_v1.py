@@ -115,7 +115,7 @@ class PitAnchor:
     entry_price: Decimal
 
 
-def _valid_wave2_indices(
+def _first_confirmed_wave2_for_pair(
     candles: list[Candle],
     high_idx: int,
     anchor_low: Decimal,
@@ -124,28 +124,36 @@ def _valid_wave2_indices(
     min_wave2_days_after_high: int,
     wave2_min_retrace: Decimal,
     wave2_max_retrace: Decimal,
-) -> list[int]:
-    """All geometrically valid wave2 indices for one low/high pair.
+) -> Optional[tuple[int, int]]:
+    """Return the first confirmed wave2 for one low/high pair in one scan.
 
-    Confirmation is deliberately not part of this validation. Each valid
-    candidate must find its own first reclaim strictly after its own wave2_idx;
-    a reclaim before the candidate cannot confirm or eliminate it.
+    Each suffix candle is read once. Reclaim is checked before that candle can
+    become wave2, so a reclaim before any valid wave2 is ignored and a candle
+    cannot confirm itself. Once valid, the earliest pending wave2 stays fixed
+    until the first later reclaim confirms it.
     """
-    valid_indices: list[int] = []
-    for wave2_idx in range(high_idx + 1, len(candles) - 1):
-        wave2_days_after_high = (candles[wave2_idx].open_ts_utc - candles[high_idx].open_ts_utc).days
+    high_ts = candles[high_idx].open_ts_utc
+    pending_wave2_idx: Optional[int] = None
+
+    for scan_idx in range(high_idx + 1, len(candles) - 1):
+        candle = candles[scan_idx]
+        if pending_wave2_idx is not None and candle.close_price > wave1_high:
+            return pending_wave2_idx, scan_idx
+
+        if pending_wave2_idx is not None:
+            continue
+
+        wave2_days_after_high = (candle.open_ts_utc - high_ts).days
         if wave2_days_after_high < min_wave2_days_after_high:
             continue
-        wave2_low = candles[wave2_idx].low_price
-        if wave2_low <= anchor_low:
-            continue
-        if wave2_low >= wave1_high:
+        wave2_low = candle.low_price
+        if wave2_low <= anchor_low or wave2_low >= wave1_high:
             continue
         retrace = (wave1_high - wave2_low) / wave1_range
-        if retrace < wave2_min_retrace or retrace > wave2_max_retrace:
-            continue
-        valid_indices.append(wave2_idx)
-    return valid_indices
+        if wave2_min_retrace <= retrace <= wave2_max_retrace:
+            pending_wave2_idx = scan_idx
+
+    return None
 
 
 def find_pit_anchor(
@@ -159,12 +167,10 @@ def find_pit_anchor(
 ) -> Optional[PitAnchor]:
     """The earliest observable PIT-confirmed anchor, or None.
 
-    Every geometrically valid (low_idx, high_idx, wave2_idx) tuple is
-    evaluated independently. Its first valid reclaim is searched strictly
-    after its own wave2 candle, so an earlier reclaim cannot confirm or block
-    a later wave2 candidate. No candidate is scored by a future high or a
-    future return. The entry is only the next candle's open after the
-    confirmation close has become observable.
+    Each (low_idx, high_idx) pair uses one forward scan to retain its earliest
+    valid pending wave2 and find the first later reclaim. No candidate is
+    scored by a future high or a future return. The entry is only the next
+    candle's open after the confirmation close has become observable.
     """
     if len(candles) < MIN_CANDLES_REQUIRED:
         return None
@@ -192,7 +198,7 @@ def find_pit_anchor(
             if wave1_range <= 0:
                 continue
 
-            for wave2_idx in _valid_wave2_indices(
+            confirmed = _first_confirmed_wave2_for_pair(
                 candles,
                 high_idx=high_idx,
                 anchor_low=anchor_low,
@@ -201,33 +207,31 @@ def find_pit_anchor(
                 min_wave2_days_after_high=min_wave2_days_after_high,
                 wave2_min_retrace=wave2_min_retrace,
                 wave2_max_retrace=wave2_max_retrace,
-            ):
-                confirmation_idx = pit_contract.find_confirmation_index(
-                    candles, wave1_high=wave1_high, wave2_idx=wave2_idx
-                )
-                if confirmation_idx is None:
-                    continue
+            )
+            if confirmed is None:
+                continue
+            wave2_idx, confirmation_idx = confirmed
 
-                entry = pit_contract.entry_from_confirmation(candles, confirmation_idx)
-                if entry is None:
-                    continue
+            entry = pit_contract.entry_from_confirmation(candles, confirmation_idx)
+            if entry is None:
+                continue
 
-                candidate = PitAnchor(
-                    anchor_low=anchor_low,
-                    anchor_low_ts=candles[low_idx].open_ts_utc,
-                    wave1_high=wave1_high,
-                    wave1_high_ts=candles[high_idx].open_ts_utc,
-                    wave2_low=candles[wave2_idx].low_price,
-                    wave2_low_ts=candles[wave2_idx].open_ts_utc,
-                    wave1_range=wave1_range,
-                    confirmation_idx=confirmation_idx,
-                    confirmation_ts=candles[confirmation_idx].open_ts_utc,
-                    entry_idx=entry.entry_idx,
-                    entry_ts=entry.entry_ts,
-                    entry_price=entry.entry_price,
-                )
-                if best is None or candidate.entry_idx < best.entry_idx:
-                    best = candidate
+            candidate = PitAnchor(
+                anchor_low=anchor_low,
+                anchor_low_ts=candles[low_idx].open_ts_utc,
+                wave1_high=wave1_high,
+                wave1_high_ts=candles[high_idx].open_ts_utc,
+                wave2_low=candles[wave2_idx].low_price,
+                wave2_low_ts=candles[wave2_idx].open_ts_utc,
+                wave1_range=wave1_range,
+                confirmation_idx=confirmation_idx,
+                confirmation_ts=candles[confirmation_idx].open_ts_utc,
+                entry_idx=entry.entry_idx,
+                entry_ts=entry.entry_ts,
+                entry_price=entry.entry_price,
+            )
+            if best is None or candidate.entry_idx < best.entry_idx:
+                best = candidate
 
     return best
 
