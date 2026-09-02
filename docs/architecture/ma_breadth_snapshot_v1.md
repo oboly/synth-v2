@@ -15,16 +15,30 @@ obs_market_candle + canonical publication cohort
 
 The v1 universe is `publication_cohort_enabled_tradeable_venue_market`: global
 account-agnostic `asset.is_publication_cohort`, `asset.is_enabled`,
-`asset.is_tradeable`, and `venue_market.is_tradeable`, bound to venue.  Each
+`asset.is_tradeable`, and `venue_market.is_tradeable`, bound to venue. It
+admits an asset only when it has exactly one eligible `venue_market` on that
+venue. `obs_market_candle` is canonically keyed by
+`(asset_id, venue, interval_code, open_ts_utc)` and carries no market, pair,
+quote, or `venue_market_id`; #310 V1 therefore excludes ambiguous multi-market
+assets rather than attributing one candle series to multiple markets. This
+restriction remains until a canonical market-keyed candle source exists. Each
 snapshot saves a deterministic SHA-256 of sorted `(asset_id, market, symbol)`;
 that hash is part of its idempotent identity.
 
-Candle/feature evaluation preserves `(venue, asset_id, market, interval)` end-to-end. A missing market-specific row is stale and never borrows a sibling market row; an exact-asof row without enough history is insufficient history. Duplicate exact-asof rows for that identity fail closed; dataframe order is not a tie-breaker.
+Candle/feature evaluation uses the sole vetted market for each
+`(venue, asset_id)` candle identity. A caller supplying more than one market
+for an asset fails closed. No usable exact-asof candle is `stale`; an exact-asof
+series with fewer than 50 observations is `insufficient_history`. Duplicate
+exact-asof candle rows within the canonical identity fail closed; dataframe order
+is not a tie-breaker.
 
 `asof_ts_utc` is an exact caller-supplied final-candle close timestamp.  The
-producer never falls back to a later/latest row during replay. An eligible constituent with no usable exact-asof candle is `stale`; one with exact-asof data but fewer than 50 final candles is `insufficient_history`. Only evaluated
-constituents form the MA percentage denominator; `eligible_count` and all
-exclusions remain explicit.  Zero evaluated constituents is
+producer never falls back to a later/latest row during replay.  An eligible
+constituent with no exact-asof candle is `stale`; one with exact-asof data but
+fewer than 50 final candles is `insufficient_history`. Ambiguous multi-market
+assets are excluded before `eligible_count` is calculated. Only evaluated
+constituents form the MA percentage denominator, while `coverage_pct` is
+`evaluated_count / eligible_count` for that unambiguous universe. Zero evaluated constituents is
 `INSUFFICIENT_DATA` and the percentage is null.
 
 v1 primary truth is only `universe_above_sma50_count` and

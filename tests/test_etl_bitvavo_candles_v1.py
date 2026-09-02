@@ -22,8 +22,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from src.etl.bitvavo import etl_bitvavo_candles as etl
 
 
@@ -75,12 +73,10 @@ def test_parse_weekly_payload_sets_close_to_plus_seven_days() -> None:
     rows = etl.parse_bitvavo_payload(
         asset_id=1,
         venue="bitvavo",
-        market="WLD-EUR",
         interval_code="1W",
         payload=[[1748822400000, "1.0", "2.0", "0.5", "1.5", "12.0"]],
     )
     assert rows[0].interval_code == "1w"
-    assert rows[0].market == "WLD-EUR"
     assert rows[0].open_ts_utc == datetime(2025, 6, 2, 0, 0)
     assert rows[0].close_ts_utc == datetime(2025, 6, 9, 0, 0)
 
@@ -152,7 +148,6 @@ def _week_gap_rows() -> list[etl.CandleRow]:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
-            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 5, 19, 0, 0),
             close_ts_utc=datetime(2025, 5, 26, 0, 0),
@@ -165,7 +160,6 @@ def _week_gap_rows() -> list[etl.CandleRow]:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
-            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 6, 2, 0, 0),
             close_ts_utc=datetime(2025, 6, 9, 0, 0),
@@ -224,7 +218,6 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
-            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 5, 19, 0, 0),
             close_ts_utc=datetime(2025, 5, 26, 0, 0),
@@ -240,9 +233,6 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
     sql, payload = conn.cursor_instance.executemany_calls[0]
     assert "ON DUPLICATE KEY UPDATE" in sql
     assert payload[0]["interval_code"] == "1w"
-    identity_sql, identity_payload = conn.cursor_instance.executemany_calls[1]
-    assert "obs_market_candle_market_identity_v1" in identity_sql
-    assert identity_payload[0]["market"] == "WLD-EUR"
     assert payload[0]["volume_quote_eur"] == str(Decimal("15.00"))
 
 
@@ -272,16 +262,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-def test_upsert_rejects_missing_market_before_any_sql():
-    conn = _FakeConn()
-    row = etl.CandleRow(
-        asset_id=1, venue="bitvavo", interval_code="1w",
-        open_ts_utc=datetime(2025, 5, 19), close_ts_utc=datetime(2025, 5, 26),
-        open=Decimal("1"), high=Decimal("1"), low=Decimal("1"), close=Decimal("1"), volume=Decimal("1"),
-    )
-    with pytest.raises(ValueError, match="market identity"):
-        etl.upsert_candles(conn, [row], authorization=_CANDLE_AUTH)
-    assert conn.cursor_instance.executemany_calls == []

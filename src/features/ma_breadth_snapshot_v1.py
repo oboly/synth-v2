@@ -27,7 +27,7 @@ LOOKBACK_HORIZON = "50 bars @ 4h"
 EFFECTIVE_HORIZON = "UNKNOWN"
 FRESHNESS_STATUS = "UNKNOWN"
 UNIVERSE_ID = "publication_cohort_enabled_tradeable_venue_market"
-UNIVERSE_VERSION = "asset_publication_cohort_v1"
+UNIVERSE_VERSION = "asset_publication_cohort_unambiguous_candle_identity_v1"
 DATA_STATUS_AVAILABLE = "AVAILABLE"
 DATA_STATUS_INSUFFICIENT = "INSUFFICIENT_DATA"
 
@@ -78,6 +78,25 @@ def universe_identity(members: Iterable[UniverseMember]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def _market_by_asset(members: Iterable[UniverseMember]) -> dict[int, str]:
+    """Return the only market that may be attributed to each candle asset.
+
+    ``obs_market_candle`` is keyed by asset/venue/interval/open timestamp and
+    has no market-level identity. A caller that supplies two markets for one
+    asset would therefore make attribution unprovable; reject that input.
+    """
+    result: dict[int, str] = {}
+    for member in members:
+        existing = result.get(member.asset_id)
+        if existing is not None:
+            raise MABreadthInputError(
+                "ambiguous candle market identity for "
+                f"asset_id={member.asset_id}: {existing!r} and {member.market!r}"
+            )
+        result[member.asset_id] = member.market
+    return result
+
+
 def build_snapshot(
     *, members: Iterable[UniverseMember], candles: pd.DataFrame, asof_ts_utc: datetime,
     venue: str, interval_code: str,
@@ -93,6 +112,7 @@ def build_snapshot(
         raise MABreadthInputError(f"unsupported input interval: {interval_code}")
     asof = _utc(asof_ts_utc)
     universe = tuple(sorted(members, key=lambda item: (item.asset_id, item.market)))
+    _market_by_asset(universe)
     if candles.empty:
         candles = pd.DataFrame(columns=["venue", "asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"])
     required = {"venue", "asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"}
@@ -166,6 +186,13 @@ def fetch_universe_members(conn: Any, *, venue: str) -> list[UniverseMember]:
     FROM venue_market vm JOIN asset a ON a.asset_id = vm.base_asset_id
     WHERE vm.venue=%s AND vm.is_tradeable=1 AND a.is_enabled=1
       AND COALESCE(a.is_tradeable, 0)=1 AND {contract.predicate('a')}
+      AND 1 = (
+          SELECT COUNT(*)
+          FROM venue_market candidate_vm
+          WHERE candidate_vm.venue = vm.venue
+            AND candidate_vm.base_asset_id = vm.base_asset_id
+            AND candidate_vm.is_tradeable = 1
+      )
     ORDER BY a.asset_id, vm.market
     """
     with conn.cursor() as cur:
@@ -177,20 +204,23 @@ def fetch_candles_at_or_before(conn: Any, *, members: Iterable[UniverseMember], 
     member_list = tuple(members)
     if not member_list:
         return pd.DataFrame()
-    member_placeholders = ",".join(["(%s,%s)"] * len(member_list))
+    market_by_asset = _market_by_asset(member_list)
+    placeholders = ",".join(["%s"] * len(member_list))
     sql = f"""
-    SELECT c.venue, c.asset_id, c.market, c.interval_code, c.close_ts_utc, c.open_price, c.high_price,
+    SELECT c.venue, c.asset_id, c.interval_code, c.close_ts_utc, c.open_price, c.high_price,
            c.low_price, c.close_price, c.volume_base
-    FROM obs_market_candle_market_identity_v1 c
+    FROM obs_market_candle c
     WHERE c.venue=%s AND c.interval_code=%s AND c.close_ts_utc<=%s
-      AND (c.asset_id, c.market) IN ({member_placeholders})
-    ORDER BY c.asset_id, c.market, c.close_ts_utc
+      AND c.asset_id IN ({placeholders})
+    ORDER BY c.asset_id, c.close_ts_utc
     """
     with conn.cursor() as cur:
-        member_params = tuple(value for member in member_list for value in (member.asset_id, member.market))
-        cur.execute(sql, (venue, INPUT_INTERVAL, _utc(asof_ts_utc).replace(tzinfo=None), *member_params))
+        cur.execute(sql, (venue, INPUT_INTERVAL, _utc(asof_ts_utc).replace(tzinfo=None), *[member.asset_id for member in member_list]))
         rows = cur.fetchall()
-    return pd.DataFrame(rows)
+    candles = pd.DataFrame(rows)
+    if not candles.empty:
+        candles["market"] = candles["asset_id"].map(market_by_asset)
+    return candles
 
 
 def persist_snapshot(conn: Any, snapshot: MABreadthSnapshot, *, authorization: Any) -> str:
