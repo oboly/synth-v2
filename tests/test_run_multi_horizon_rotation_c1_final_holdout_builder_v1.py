@@ -13,6 +13,7 @@ import pytest
 from src.research.multi_horizon_rotation_dataset_builder_v1 import AssetCoverage, RotationV1PitIndex
 from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, Candle, CandidateResult
 from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import (
+    APPROVED_EXECUTION_ACCOUNT,
     CANDIDATE_ID,
     PHASE,
     RunnerInterrupted,
@@ -21,7 +22,9 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     checkpoint_path,
     compute_c1_implementation_fingerprint,
     create_registry_entry_exclusive,
+    current_trusted_execution_account,
     default_registry_root,
+    enforce_approved_execution_account,
     finalize_c1_holdout_bundle,
     load_checkpoint,
     load_manifest,
@@ -471,13 +474,16 @@ def _install_fake_pipeline(
     and point the trusted registry at an isolated test directory (never the real repo
     data/research tree). Pass ``registry_root=None`` to leave ``module.REGISTRY_ROOT``
     untouched -- used by tests that set it themselves (e.g. by deriving it from a
-    monkeypatched ``pwd.getpwuid``) to exercise the real default-registry-root wiring."""
+    monkeypatched ``pwd.getpwnam``) to exercise the real default-registry-root wiring."""
 
     def fake_get_db_connection() -> _FakeConnection:
         return _FakeConnection()
 
     def fake_current_trusted_hostname() -> str:
         return module.APPROVED_EXECUTION_HOST
+
+    def fake_current_trusted_execution_account() -> str:
+        return module.APPROVED_EXECUTION_ACCOUNT
 
     def fake_build_integrity_payload(conn, *, venue, split_manifest):
         return {"composite_sha256": "fixed"}
@@ -533,6 +539,7 @@ def _install_fake_pipeline(
 
     monkeypatch.setattr(module, "get_db_connection", fake_get_db_connection)
     monkeypatch.setattr(module, "current_trusted_hostname", fake_current_trusted_hostname)
+    monkeypatch.setattr(module, "current_trusted_execution_account", fake_current_trusted_execution_account)
     monkeypatch.setattr(module, "build_integrity_payload", fake_build_integrity_payload)
     monkeypatch.setattr(module, "verify_existing", fake_verify_existing)
     monkeypatch.setattr(module, "fetch_asset_coverage", fake_fetch_asset_coverage)
@@ -1642,12 +1649,15 @@ def test_resume_racing_active_fresh_run_fails_closed_with_zero_mutation(
 # --- Durable, checkout-independent authoritative registry root -----------
 
 
-def _fake_pwent(home: Path) -> object:
+def _fake_pwent(home: Path, *, name: str = APPROVED_EXECUTION_ACCOUNT) -> object:
     """A minimal stand-in for the ``pwd.struct_passwd`` entry returned by
-    ``pwd.getpwuid`` -- only ``pw_dir`` is read by ``default_registry_root``."""
+    ``pwd.getpwnam``/``pwd.getpwuid`` -- ``pw_dir`` is read by
+    ``default_registry_root`` (via ``getpwnam``); ``pw_name`` is read by
+    ``current_trusted_execution_account`` (via ``getpwuid``)."""
 
     class _FakePwent:
         pw_dir = str(home)
+        pw_name = name
 
     return _FakePwent()
 
@@ -1657,13 +1667,19 @@ def test_default_registry_root_is_trusted_account_based_and_checkout_independent
 ) -> None:
     """Regression for the Codex BLOCK: REGISTRY_ROOT used to be derived from
     Path(__file__) (checkout-local), then from Path.home() / HOME
-    (caller-controlled). It must now be a pure function of trusted OS account
-    metadata (pwd.getpwuid(os.geteuid()).pw_dir) only, so it never depends on
-    HOME, the checkout path, worktree path, or current working directory."""
+    (caller-controlled), then from the INVOKING process's effective UID
+    (pwd.getpwuid(os.geteuid()).pw_dir) -- which is per-effective-UID, not
+    per-approved-identity, so a different local account on the approved host
+    could reopen the identical frozen holdout under its own, distinct
+    registry root. It must now be a pure function of the FIXED approved
+    execution account's trusted OS account metadata
+    (pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT).pw_dir) only, so it never
+    depends on HOME, the checkout path, worktree path, current working
+    directory, or which account is actually invoking the process."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _fake_pwent(fake_home))
 
     root = module.default_registry_root()
     assert root == (
@@ -1693,7 +1709,7 @@ def test_default_registry_root_is_invariant_under_home_env_override(
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     real_home = tmp_path / "real_home"
-    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(real_home))
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _fake_pwent(real_home))
 
     root_before = module.default_registry_root()
 
@@ -1709,36 +1725,36 @@ def test_default_registry_root_is_invariant_under_home_env_override(
 def test_default_registry_root_same_uid_yields_same_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two independent resolutions for the same effective UID must agree."""
+    """Two independent resolutions for the same approved account must agree."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fixed_home = tmp_path / "fixed_home"
-    calls: list[int] = []
+    calls: list[str] = []
 
-    def fake_getpwuid(uid: int) -> object:
-        calls.append(uid)
+    def fake_getpwnam(name: str) -> object:
+        calls.append(name)
         return _fake_pwent(fixed_home)
 
-    monkeypatch.setattr(module.pwd, "getpwuid", fake_getpwuid)
+    monkeypatch.setattr(module.pwd, "getpwnam", fake_getpwnam)
 
     first = module.default_registry_root()
     second = module.default_registry_root()
     assert first == second
-    assert len(set(calls)) == 1  # same UID both times
+    assert len(set(calls)) == 1  # same approved account name both times
 
 
 def test_default_registry_root_fails_closed_when_account_metadata_unresolvable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the effective UID has no resolvable passwd entry, the registry root
-    must fail closed (raise) rather than silently falling back to HOME or any
-    other caller-controlled value."""
+    """If the approved account has no resolvable passwd entry, the registry
+    root must fail closed (raise) rather than silently falling back to HOME
+    or any other caller-controlled value."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
-    def raising_getpwuid(uid: int) -> object:
-        raise KeyError(f"getpwuid(): uid not found: {uid}")
+    def raising_getpwnam(name: str) -> object:
+        raise KeyError(f"getpwnam(): name not found: {name!r}")
 
-    monkeypatch.setattr(module.pwd, "getpwuid", raising_getpwuid)
+    monkeypatch.setattr(module.pwd, "getpwnam", raising_getpwnam)
 
     with pytest.raises(RuntimeError, match="cannot resolve authoritative registry root"):
         module.default_registry_root()
@@ -1754,7 +1770,7 @@ def test_default_registry_root_fails_closed_when_home_dir_empty(
     class _EmptyHomePwent:
         pw_dir = ""
 
-    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _EmptyHomePwent())
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _EmptyHomePwent())
 
     with pytest.raises(RuntimeError, match="cannot resolve authoritative registry root"):
         module.default_registry_root()
@@ -1766,13 +1782,14 @@ def test_two_checkout_roots_with_identical_inputs_share_registry_and_second_cann
     """Regression for the Codex BLOCK: two different checkout/worktree
     directories with byte-identical frozen manifest/integrity content must
     resolve to the SAME authoritative registry entry, using the real default
-    registry-root computation (only ``pwd.getpwuid`` is faked, to avoid
+    registry-root computation (only ``pwd.getpwnam`` is faked, to avoid
     touching the actual host state) -- not a registry root manually shared
-    between the two invocations by the test itself."""
+    between the two invocations by the test itself. This also proves the
+    approved account still resolves the same registry across checkouts."""
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _fake_pwent(fake_home))
     monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
     _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
 
@@ -1825,7 +1842,7 @@ def test_two_checkout_roots_racing_fresh_runs_share_run_lease_exactly_one_wins(
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
 
     fake_home = tmp_path / "fake_home"
-    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(fake_home))
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _fake_pwent(fake_home))
     monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
     _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
     monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})  # threads can't signal.signal()
@@ -2487,3 +2504,169 @@ def test_missing_or_malformed_approved_split_manifest_sha_fails_closed(monkeypat
     monkeypatch.setattr(module, "load_frozen_c1_implementation_fingerprint", lambda: frozen)
     with pytest.raises(ValueError, match="approved_split_manifest_sha256"):
         module.verify_approved_split_manifest(_manifest())
+
+
+# --- Approved execution account (exact-head Codex blocker fix) -----------
+#
+# The registry root used to be keyed purely by the invoking process's
+# effective UID (pwd.getpwuid(os.geteuid())). That is per-effective-UID, not
+# per-approved-identity: a different local account on the approved host
+# resolves its OWN passwd entry and its OWN, distinct registry root, and
+# could reopen the identical frozen holdout content there even though the
+# host itself is approved. These tests cover the fix:
+# ``enforce_approved_execution_account`` + a registry root now bound to the
+# single fixed ``APPROVED_EXECUTION_ACCOUNT`` via ``pwd.getpwnam``.
+
+
+def test_enforce_approved_execution_account_passes_for_approved_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(module, "current_trusted_execution_account", lambda: module.APPROVED_EXECUTION_ACCOUNT)
+    module.enforce_approved_execution_account()  # must not raise
+
+
+def test_enforce_approved_execution_account_denies_different_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(module, "current_trusted_execution_account", lambda: "a-different-local-account")
+    with pytest.raises(ValueError, match="approved account"):
+        module.enforce_approved_execution_account()
+
+
+def test_current_trusted_execution_account_reads_pw_name_via_effective_uid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The account identity must come from pwd.getpwuid(os.geteuid()).pw_name
+    -- trusted OS account metadata keyed by the fixed effective UID -- never
+    from USER/LOGNAME or any other caller-controlled environment variable."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: _fake_pwent(Path("/unused"), name="real-account"))
+    monkeypatch.setenv("USER", "spoofed-account")
+    monkeypatch.setenv("LOGNAME", "spoofed-account")
+    monkeypatch.setenv("HOME", "/home/spoofed-account")
+
+    assert module.current_trusted_execution_account() == "real-account"
+
+
+def test_execution_account_cannot_be_spoofed_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """USER/LOGNAME/HOME must not be able to make a denied account pass the
+    approved-account check: the trusted identity comes from
+    pwd.getpwuid(os.geteuid()), never from these caller-controlled variables."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(
+        module.pwd, "getpwuid", lambda uid: _fake_pwent(Path("/unused"), name="attacker-account")
+    )
+    monkeypatch.setenv("USER", module.APPROVED_EXECUTION_ACCOUNT)
+    monkeypatch.setenv("LOGNAME", module.APPROVED_EXECUTION_ACCOUNT)
+    monkeypatch.setenv("HOME", f"/home/{module.APPROVED_EXECUTION_ACCOUNT}")
+
+    with pytest.raises(ValueError, match="approved account"):
+        module.enforce_approved_execution_account()
+
+
+def test_current_trusted_execution_account_fails_closed_when_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    def raising_getpwuid(uid: int) -> object:
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    monkeypatch.setattr(module.pwd, "getpwuid", raising_getpwuid)
+    with pytest.raises(RuntimeError, match="cannot resolve trusted execution account"):
+        module.current_trusted_execution_account()
+
+
+def test_run_denied_for_different_execution_account_zero_db_calls_zero_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Approved host + different effective UID/account must fail closed before
+    any DB connection, and must leave behind no registry/checkpoint/partial/
+    final output -- the account check runs before manifest loading, DB
+    connect, registry creation, checkpoint, source-integrity work, or replay."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    db_calls: list[int] = []
+
+    def denied_get_db_connection() -> _FakeConnection:
+        db_calls.append(1)
+        raise AssertionError("must not connect to the database for a denied execution account")
+
+    monkeypatch.setattr(module, "get_db_connection", denied_get_db_connection)
+    monkeypatch.setattr(module, "current_trusted_execution_account", lambda: "a-different-local-account")
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+
+    assert exit_code == 1
+    assert db_calls == []
+    assert not registry_root.exists() or list(registry_root.iterdir()) == []
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not (tmp_path / "final_holdout_c1_summary_v1.json").exists()
+
+
+def test_run_denied_for_different_execution_account_on_resume_zero_db_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same account denial must also apply on --resume, before the
+    resume path ever reads a checkpoint or touches the registry."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    db_calls: list[int] = []
+
+    def denied_get_db_connection() -> _FakeConnection:
+        db_calls.append(1)
+        raise AssertionError("must not connect to the database for a denied execution account")
+
+    monkeypatch.setattr(module, "get_db_connection", denied_get_db_connection)
+    monkeypatch.setattr(module, "current_trusted_execution_account", lambda: "a-different-local-account")
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]
+    )
+
+    assert exit_code == 1
+    assert db_calls == []
+    assert not checkpoint_path(tmp_path).exists()
+
+
+def test_approved_account_still_resolves_same_registry_across_home_cwd_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The approved account's registry root must stay identical across a
+    changed HOME, a changed current working directory, and a simulated
+    different worktree/checkout path -- it is a pure function of the fixed
+    approved account's passwd entry, never of any of those caller-selectable
+    values."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    approved_home = tmp_path / "approved_account_home"
+    monkeypatch.setattr(module.pwd, "getpwnam", lambda name: _fake_pwent(approved_home))
+
+    baseline = module.default_registry_root()
+
+    monkeypatch.setenv("HOME", str(tmp_path / "attacker_controlled_home"))
+    other_cwd = tmp_path / "worktree_b" / "deep" / "path"
+    other_cwd.mkdir(parents=True)
+    monkeypatch.chdir(other_cwd)
+
+    assert module.default_registry_root() == baseline

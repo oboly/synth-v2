@@ -20,14 +20,20 @@ namespace there. The actual one-shot gate is a trusted, non-caller-selectable
 (``REGISTRY_ROOT`` below, see ``default_registry_root``), keyed by a SHA-256
 fingerprint of ``(manifest_sha256, source_integrity_composite_sha256, venue,
 candidate_id, phase)``. Because the key is derived purely from frozen
-content, and the registry root itself is derived from trusted OS account
-metadata (``pwd.getpwuid(os.geteuid()).pw_dir``, not ``HOME`` or any other
-caller-controlled environment variable) and lives outside any git checkout,
-copying the manifest/integrity pair anywhere -- including into a different
-clone or worktree on the same host, or under a caller-controlled ``HOME`` --
-resolves to the exact same registry entry and is denied. This is host-local,
-not cross-host: two clones for the SAME effective user on the SAME host
-share it; a different host has its own account database and does not.
+content, and the registry root itself is derived from the single fixed
+approved execution account's trusted OS account metadata
+(``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT).pw_dir``, not ``HOME``, not any
+other caller-controlled environment variable, and not the invoking process's
+own effective-UID account) and lives outside any git checkout, copying the
+manifest/integrity pair anywhere -- including into a different clone or
+worktree on the same host, under a caller-controlled ``HOME``, or run as a
+different local account on the same host -- resolves to the exact same
+registry entry and is denied. ``enforce_approved_execution_account`` fails
+closed before any of this runner's other work if the invoking account is not
+``APPROVED_EXECUTION_ACCOUNT``, so a different account cannot even reach a
+registry lookup, let alone a different one. This is host-local, not
+cross-host: every checkout run by the approved account on the approved host
+shares it; a different host has its own account database and does not.
 """
 
 import argparse
@@ -86,6 +92,17 @@ RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
 # existing repo convention this reuses.
 APPROVED_EXECUTION_HOST = "gurkdb"
 
+# The single approved execution account on ``APPROVED_EXECUTION_HOST`` for
+# this frozen #593 C1 final-holdout run -- see
+# ``enforce_approved_execution_account`` for why this is required in addition
+# to (not instead of) the approved-host check and the registry itself, and
+# ``docs/architecture/native_short_fib_context_snapshot_contract_v1.md`` for
+# the existing repo convention that the production ``gurkdb`` deployment
+# account is ``gurk``. A fixed username is used (not a numeric UID): nothing
+# in this repo's host convention pins a stable numeric UID for this account,
+# whereas the username is the documented, stable identity.
+APPROVED_EXECUTION_ACCOUNT = "gurk"
+
 # Committed, pre-registered expected implementation fingerprint for the
 # frozen C1 candidate spec + replay implementation. No CLI/env override.
 IMPLEMENTATION_FINGERPRINT_DOC_PATH = (
@@ -98,7 +115,8 @@ SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 def default_registry_root() -> Path:
     """Durable, host-level authoritative state root -- independent of any git
-    checkout/worktree, and independent of any caller-controlled environment.
+    checkout/worktree, and independent of any caller-controlled environment
+    OR caller-controlled effective account.
 
     A prior version derived this from ``Path(__file__).resolve().parents[2]``,
     i.e. checkout-local: a second clone or worktree of this same repository
@@ -114,10 +132,26 @@ def default_registry_root() -> Path:
     frozen holdout inputs there. That defeats the entire point of the
     authoritative registry.
 
-    This now resolves the invoking account's home directory from trusted
-    account metadata instead of any environment variable: the effective UID
-    (``os.geteuid()``, which is fixed by the OS process, not by the caller's
-    shell environment) is looked up via ``pwd.getpwuid`` to obtain the
+    A third version resolved the *invoking* account's home directory from
+    trusted account metadata keyed by the current effective UID
+    (``pwd.getpwuid(os.geteuid()).pw_dir``). That fixed the ``HOME``-spoofing
+    problem but introduced a different one: the registry is authoritative
+    *per effective UID*, not per fixed approved identity. A different local
+    account on the approved host (e.g. a second Linux user, not
+    ``APPROVED_EXECUTION_ACCOUNT``) resolves its OWN passwd entry and its OWN,
+    empty registry root under its own home directory, and could reopen the
+    identical frozen holdout content there -- the one-shot gate was again not
+    actually shared, this time across accounts on the same host rather than
+    across checkouts.
+
+    This now resolves the registry root from the FIXED approved execution
+    account's trusted passwd entry (``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT)``)
+    rather than from whatever account happens to be invoking the process.
+    ``enforce_approved_execution_account`` independently fails closed before
+    any of this runner's other work if the invoking account is not
+    ``APPROVED_EXECUTION_ACCOUNT``; this function then binds the registry
+    itself to that same fixed identity, so the registry root can never be a
+    function of the caller's own account -- only of the single approved
     account's registered home directory (``pw_dir``) from the host's user
     database (``/etc/passwd`` or equivalent NSS source). This is the same
     trusted-identity approach already used elsewhere in this repository for
@@ -126,35 +160,37 @@ def default_registry_root() -> Path:
     ``src/operations/run_native_short_snapshot_filesystem_preflight_v1.py``).
 
     Because the key is derived purely from frozen content and the registry
-    root is derived purely from trusted OS account metadata, every
-    clone/worktree for the SAME effective user on the SAME host resolves to
-    the exact same registry root regardless of ``HOME``, ``XDG_STATE_HOME``,
-    current working directory, or checkout/worktree path -- this is
-    genuinely durable and shared across checkouts, and it cannot be
-    redirected by the caller. It is deliberately host-local, not
-    cross-host: a different host has its own account database and its own,
-    independent copy of this state. There is no single shared authoritative
-    DB/state store for research-only artifacts in the current topology, so
+    root is derived purely from the fixed approved account's trusted OS
+    metadata, every clone/worktree -- run by the approved account, on the
+    approved host -- resolves to the exact same registry root regardless of
+    ``HOME``, ``XDG_STATE_HOME``, current working directory, or
+    checkout/worktree path, and regardless of which effective UID/account
+    actually invoked the process (that is separately denied before this is
+    ever reached). It is deliberately host-local, not cross-host: a
+    different host has its own account database and its own, independent
+    copy of this state. There is no single shared authoritative DB/state
+    store for research-only artifacts in the current topology, so
     filesystem-local (per-host) durable state is the correct choice here,
     not a DB table.
 
     There is deliberately no CLI/env override for this path: the entire
     point of the authoritative registry is that the caller cannot select a
-    different location for it. If trusted account metadata cannot be
+    different location for it. If the approved account's metadata cannot be
     resolved, this fails closed (raises) rather than silently falling back
-    to ``HOME`` or any other caller-controlled value.
+    to ``HOME``, the caller's own account, or any other value.
     """
     try:
-        trusted_home = pwd.getpwuid(os.geteuid()).pw_dir
+        trusted_home = pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT).pw_dir
     except KeyError as exc:
         raise RuntimeError(
             "cannot resolve authoritative registry root: no passwd entry for "
-            f"effective UID {os.geteuid()}"
+            f"approved execution account {APPROVED_EXECUTION_ACCOUNT!r}"
         ) from exc
     if not trusted_home:
         raise RuntimeError(
             "cannot resolve authoritative registry root: passwd entry for "
-            f"effective UID {os.geteuid()} has no home directory"
+            f"approved execution account {APPROVED_EXECUTION_ACCOUNT!r} has no "
+            "home directory"
         )
     return (
         Path(trusted_home)
@@ -225,6 +261,76 @@ def enforce_approved_execution_host() -> None:
             f"final holdout may only execute on the approved host "
             f"{APPROVED_EXECUTION_HOST!r}; actual host is {actual!r}. Refusing "
             "to create any registry entry or replay any holdout data on this host."
+        )
+
+
+def current_trusted_execution_account() -> str:
+    """Trusted OS-reported account name for the current process's effective
+    UID -- ``pwd.getpwuid(os.geteuid()).pw_name`` -- never ``USER``,
+    ``LOGNAME``, ``HOME``, or any other caller-controlled environment
+    variable. The effective UID itself is fixed by the OS process, not by
+    the caller's shell environment, so this cannot be spoofed by setting an
+    environment variable before invoking the runner."""
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as exc:
+        raise RuntimeError(
+            "cannot resolve trusted execution account: no passwd entry for "
+            f"effective UID {os.geteuid()}"
+        ) from exc
+
+
+def enforce_approved_execution_account() -> None:
+    """Fail closed unless this process is running as the single approved
+    execution account, ``APPROVED_EXECUTION_ACCOUNT``.
+
+    This is the fix for the exact-head Codex blocker on this frozen #593
+    final-holdout builder: the authoritative registry
+    (``default_registry_root``) used to be keyed purely by the invoking
+    process's effective UID (``pwd.getpwuid(os.geteuid())``). That is
+    per-effective-UID, not per-approved-identity -- a different local
+    account on ``APPROVED_EXECUTION_HOST`` resolves its OWN passwd entry and
+    its OWN, distinct (and empty) registry root under its own home
+    directory, and could reopen the identical frozen holdout manifest and
+    source-integrity content there even though the host itself is approved.
+
+    Exactly-once ownership of the holdout is therefore now the CONJUNCTION of
+    THREE independent controls, not any one or two of them alone:
+
+        approved-host-only + approved-account-only + trusted host-local registry
+
+    This function enforces the middle one: the holdout may only ever be
+    opened/resumed/replayed by ``APPROVED_EXECUTION_ACCOUNT``. Any other
+    account -- even on the approved host -- fails closed here, before any
+    manifest is loaded, before any database connection, before any
+    source-integrity work, before any registry entry is created, before any
+    checkpoint is written, and before any holdout replay.
+
+    The approved account is read from trusted OS account metadata
+    (``current_trusted_execution_account``, backed by
+    ``pwd.getpwuid(os.geteuid())``), never from ``USER``, ``LOGNAME``,
+    ``HOME``, or any other caller-controlled environment variable -- so a
+    caller cannot spoof approval by setting those variables. There is
+    deliberately no CLI/env override for the approved account itself, which
+    is a fixed constant matching the documented production ``gurkdb``
+    deployment account (see
+    ``docs/architecture/native_short_fib_context_snapshot_contract_v1.md``).
+
+    ``default_registry_root`` additionally binds the registry root itself to
+    this same fixed approved account (via ``pwd.getpwnam``, not
+    ``pwd.getpwuid`` of whichever account is actually invoking the process),
+    so even if this enforcement function were somehow bypassed, the registry
+    root a denied account would resolve is not derived from that denied
+    account's own home directory at all.
+    """
+    actual = current_trusted_execution_account()
+    if actual != APPROVED_EXECUTION_ACCOUNT:
+        raise ValueError(
+            f"final holdout may only execute as the approved account "
+            f"{APPROVED_EXECUTION_ACCOUNT!r}; actual effective account is "
+            f"{actual!r} (uid={os.geteuid()}). Refusing to load any manifest, "
+            "connect to the database, create any registry entry, write any "
+            "checkpoint, or replay any holdout data under this account."
         )
 
 
@@ -934,6 +1040,11 @@ def main(argv: list[str] | None = None) -> int:
         emit(
             f"HOST_APPROVED host={current_trusted_hostname()} "
             f"approved_host={APPROVED_EXECUTION_HOST}"
+        )
+        enforce_approved_execution_account()
+        emit(
+            f"ACCOUNT_APPROVED account={current_trusted_execution_account()} "
+            f"approved_account={APPROVED_EXECUTION_ACCOUNT}"
         )
         manifest_path = Path(args.split_manifest)
         integrity_path = Path(args.source_integrity)
