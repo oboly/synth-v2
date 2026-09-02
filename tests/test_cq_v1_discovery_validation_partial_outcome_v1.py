@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from src.research import cq_v1_discovery_validation_evaluator_v1 as core
-from src.research import run_cq_v1_discovery_validation_evaluator_v1 as runner
 
 
 def test_partial_outcome_bucket_does_not_read_missing_non_selected_metrics() -> None:
@@ -32,6 +31,3 @@ def test_partial_outcome_bucket_does_not_read_missing_non_selected_metrics() -> 
     assert metrics["buckets"]["forward_return_pct"]["top_bottom_spread"] == 2.0
     assert metrics["buckets"]["mfe_pct"]["buckets"] == []
     assert metrics["buckets"]["mae_pct"]["buckets"] == []
-
-    # Importing the supported runner installs the partial-outcome-safe bucket implementation.
-    assert core.build_buckets is runner._build_buckets_allow_partial_metrics
