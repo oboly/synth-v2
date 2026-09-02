@@ -140,10 +140,10 @@ snapshot (`build_json_snapshot`) are both views over the same
 |---|---|---|
 | Actionable PPP | `symbols[i].actionable_ppp_pct`, `.actionable_ppp_available` | `data-actionable-ppp`, `data-sort-ppp` |
 | Planning PPP + provenance | `symbols[i].planning_ppp_pct`, `.planning_provenance` | `data-planning-ppp`, `data-planning-reference-source`, `data-planning-entry-source`, `data-planning-target-source`, `data-planning-hybrid-reference-only` |
-| Action/wait state | `symbols[i].action_label`, `.actionability_state` | displayed action text, `data-filter-action`, `data-filter-action-label` |
+| Action/wait state | `symbols[i].action_label`, `.actionability_state` | `data-filter-action`, `data-filter-action-label` — both derived from the single canonical `_effective_workflow_action()` |
 | Freshness/unavailable state | `symbols[i].current_price_status`, `.evidence.price_freshness_state` | `data-price-freshness-state` |
 | Lifecycle/map state | `symbols[i].evidence.lifecycle_state`, `.evidence.selected_map_tier`, `.evidence.native_map_status` | `data-map-lifecycle-state`, `data-selected-map-tier`, `data-native-map-status` |
-| Re-entry/target levels | `symbols[i].reload_reentry_zone`, `.target_exit_zone`, `.target_level_statuses` | rendered ladder/fib-section price text |
+| Re-entry/target levels | `symbols[i].reload_reentry_zone_display`, `.target_exit_zone_display` (no discrete HTML attribute carries this list; proven by exact display-string presence in the rendered fib-section text) | rendered ladder/fib-section price text |
 | No-action reason | `symbols[i].reasons` | `<ul class='reasons'>` list items |
 
 `tests/test_manual_trader_dashboard_v1_golden.py::test_html_json_agreement_core_fields`
@@ -237,11 +237,13 @@ This is **Manual Trader Dashboard V1** (contract version `1.0`).
 ## Accepted baseline
 
 ```text
-manual_trader_dashboard_v1_baseline_parent_sha=7e760316efa8d504fbdef94e5affaf95a075436e
+manual_trader_dashboard_v1_baseline_parent_sha=5ae73df9b534f578acecccabf4c2b6e15caf63de
 ```
 
 This is the exact `origin/main` SHA the freeze branch
-(`freeze/558-manual-trader-dashboard-v1`) was branched from. If this PR is
+(`freeze/558-manual-trader-dashboard-v1`) is rebased onto (superseding the
+prior `7e760316...` baseline after the branch was rebased past the merge of
+PR #710). If this PR is
 merged via a merge commit, the resulting merge SHA on `origin/main` becomes
 the canonical accepted Manual Trader Dashboard V1 baseline going forward; this
 document intentionally does not self-reference that not-yet-created SHA to

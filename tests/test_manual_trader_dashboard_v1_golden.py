@@ -527,41 +527,103 @@ def _json_row_for(card: ProfitPlanCard) -> dict:
     return snapshot["symbols"][0]
 
 
+def _require_attr(html: str, attr: str) -> str:
+    """Extract a single-quoted HTML data-attribute value, failing loudly if
+    the attribute is absent (a missing attribute is never treated as a pass)."""
+    match = re.search(rf"{re.escape(attr)}='([^']*)'", html)
+    assert match is not None, f"{attr} attribute not found in rendered HTML"
+    return match.group(1)
+
+
 @pytest.mark.parametrize("name", list(GOLDEN_SCENARIOS.keys()))
 def test_html_json_agreement_core_fields(name: str) -> None:
     card = GOLDEN_SCENARIOS[name]()
     html = render_plan_card(card)
     row = _json_row_for(card)
 
-    # Actionable PPP
+    # --- Actionable PPP: JSON actionable_ppp_pct/actionable_ppp_available
+    # must map exactly onto data-actionable-ppp/data-sort-ppp, using the same
+    # canonical formatting (_pct) and unavailable sentinel ("-999999" sort /
+    # "--" display) the renderer itself uses -- not a substring/presence check.
     actionable_ppp = pp._actionable_ppp(card)
+    actionable_attr = _require_attr(html, "data-actionable-ppp")
+    sort_attr = _require_attr(html, "data-sort-ppp")
     if actionable_ppp is not None:
+        assert row["actionable_ppp_pct"] == str(actionable_ppp)
         assert row["actionable_ppp_available"] is True
-        assert f"data-actionable-ppp='{pp._pct_display(actionable_ppp)}'" in html or "data-actionable-ppp='" in html
+        assert actionable_attr == pp._pct(actionable_ppp)
+        assert sort_attr == str(actionable_ppp)
     else:
+        assert row["actionable_ppp_pct"] is None
         assert row["actionable_ppp_available"] is False
+        assert actionable_attr == "—"
+        assert sort_attr == "-999999"
 
-    # action/wait state
+    # --- Planning PPP + provenance: JSON planning_ppp_pct/planning_provenance
+    # must map exactly onto data-planning-ppp and the four
+    # data-planning-*-source/hybrid attributes.
+    planning_ppp = pp._planning_ppp(card)
+    planning_attr = _require_attr(html, "data-planning-ppp")
+    if planning_ppp is not None:
+        assert row["planning_ppp_pct"] == str(planning_ppp)
+        assert planning_attr == pp._pct(planning_ppp)
+    else:
+        assert row["planning_ppp_pct"] is None
+        assert planning_attr == "—"
+    provenance = row["planning_provenance"]
+    assert _require_attr(html, "data-planning-reference-source") == provenance["reference_source"]
+    assert _require_attr(html, "data-planning-entry-source") == provenance["entry_source"]
+    assert _require_attr(html, "data-planning-target-source") == provenance["target_source"]
+    assert _require_attr(html, "data-planning-hybrid-reference-only") == str(provenance["is_hybrid_reference_only"]).lower()
+
+    # --- action/wait state: data-filter-action/data-filter-action-label are
+    # rendered from the single canonical _effective_workflow_action() (see
+    # its docstring); assert the HTML attributes equal that exact function's
+    # output run through the same display-label/value derivation the
+    # renderer uses, not merely that the attributes are present.
     assert row["action_label"] == card.action_label
-    assert f"data-filter-action-label=" in html or True  # presence checked via displayed text below
+    assert row["actionability_state"] == card.actionability_state
+    if card.presentation_mode in pp._NO_ACCOUNT_STATE_MODES:
+        expected_filter_label = ""
+        expected_filter_value = ""
+    else:
+        expected_displayed_action = pp._effective_workflow_action(card)
+        expected_filter_label = pp._filter_display_label(expected_displayed_action)
+        expected_filter_value = pp._filter_value_from_label(expected_filter_label)
+    assert _require_attr(html, "data-filter-action") == expected_filter_value
+    assert _require_attr(html, "data-filter-action-label") == expected_filter_label
 
-    # freshness/unavailable state
+    # --- freshness/unavailable state
     assert row["current_price_status"] == card.current_price_status
     assert row["evidence"]["price_freshness_state"] == card.evidence.price_freshness_state
-    assert f"data-price-freshness-state='{pp.esc(card.evidence.price_freshness_state)}'" in html
+    assert _require_attr(html, "data-price-freshness-state") == row["evidence"]["price_freshness_state"]
 
-    # lifecycle/map state
+    # --- lifecycle/map state: JSON evidence.{lifecycle_state,selected_map_tier,
+    # native_map_status} against the corresponding data-* attributes.
+    # data-native-map-status is rendered via _native_map_status() (a
+    # normalizing projection, not a raw field echo), so compare against that
+    # same canonical function rather than the raw evidence field.
     assert row["evidence"]["lifecycle_state"] == card.evidence.lifecycle_state
-    assert f"data-map-lifecycle-state='{pp.esc(card.evidence.lifecycle_state)}'" in html
+    assert row["evidence"]["selected_map_tier"] == card.evidence.selected_map_tier
+    assert row["evidence"]["native_map_status"] == card.evidence.native_map_status
+    assert _require_attr(html, "data-map-lifecycle-state") == row["evidence"]["lifecycle_state"]
+    assert _require_attr(html, "data-selected-map-tier") == row["evidence"]["selected_map_tier"]
+    assert _require_attr(html, "data-native-map-status") == pp._native_map_status(card)
 
-    # re-entry/target labels+levels: every reload/target level rendered in
-    # JSON must appear somewhere in the HTML display text.
-    for level in card.reload_reentry_zone:
-        assert pp._price_display(level) in html
-    for level in card.target_exit_zone:
-        assert pp._price_display(level) in html
+    # --- re-entry/target levels: no discrete HTML data-attribute carries the
+    # reload/target level list (they render as plain text in the fib
+    # section), so the strongest available proof is that every JSON display
+    # companion value (the same *_display string JSON exposes) appears
+    # verbatim in the rendered HTML -- not an independently recomputed value.
+    for level_display in row["reload_reentry_zone_display"]:
+        assert level_display in html
+    for level_display in row["target_exit_zone_display"]:
+        assert level_display in html
 
-    # no-action reason: reasons must agree between JSON and rendered HTML
+    # --- no-action/reasons: JSON reasons must equal the card's reasons
+    # exactly, and each reason's HTML-escaped form (the exact transform
+    # render_plan_card applies via esc()) must appear verbatim in the
+    # rendered <li> list.
     assert row["reasons"] == list(card.reasons)
     for reason in card.reasons:
-        assert pp.esc(reason) in html or reason in html
+        assert f"<li>{pp.esc(reason)}</li>" in html
