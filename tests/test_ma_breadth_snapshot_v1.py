@@ -23,18 +23,48 @@ def test_all_evaluable_uses_shared_sma50_and_evaluated_denominator():
     assert result.universe_above_sma50_pct == Decimal("50")
     assert result.coverage_pct == Decimal("100")
 
-def test_insufficient_history_is_not_below_and_zero_evaluable_fails_closed():
-    result = build_snapshot(members=MEMBERS, candles=_frame(_candles(1, 49, 2), _candles(2, 49, 1)), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+def test_exact_asof_series_with_50_observations_is_evaluated():
+    candles = _candles(1, 50, 1)[:-1] + _candles(1, 1, 2)
+    result = build_snapshot(
+        members=[MEMBERS[0]], candles=_frame(candles), asof_ts_utc=ASOF,
+        venue="bitvavo", interval_code="4h",
+    )
+    assert (result.evaluated_count, result.stale_constituent_count, result.insufficient_history_count) == (1, 0, 0)
+
+
+def test_zero_exact_asof_rows_are_stale_not_insufficient_history():
+    result = build_snapshot(
+        members=[MEMBERS[0]], candles=pd.DataFrame(), asof_ts_utc=ASOF,
+        venue="bitvavo", interval_code="4h",
+    )
+    assert (result.stale_constituent_count, result.insufficient_history_count) == (1, 0)
+
+
+def test_exact_asof_series_with_less_than_50_observations_is_insufficient_history():
+    result = build_snapshot(
+        members=[MEMBERS[0]], candles=_frame(_candles(1, 49, 2)), asof_ts_utc=ASOF,
+        venue="bitvavo", interval_code="4h",
+    )
     assert result.data_status == "INSUFFICIENT_DATA"
-    assert result.evaluated_count == result.universe_above_sma50_count == 0
-    assert result.insufficient_history_count == 2
+    assert (result.evaluated_count, result.stale_constituent_count, result.insufficient_history_count) == (0, 0, 1)
     assert result.universe_above_sma50_pct is None
 
-def test_partial_coverage_and_exact_asof_stale_semantics_are_deterministic():
-    result = build_snapshot(members=MEMBERS, candles=_frame(_candles(1, 50, 1), _candles(2, 50, 1, at_asof=False)), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
-    assert (result.evaluated_count, result.stale_constituent_count, result.insufficient_history_count) == (1, 1, 0)
-    assert result.coverage_pct == Decimal("50")
-    assert result.universe_hash == universe_identity(reversed(MEMBERS))
+def test_mixed_stale_insufficient_and_evaluated_coverage_is_deterministic():
+    members = [
+        UniverseMember(1, "AAA-EUR", "AAA"),
+        UniverseMember(2, "BBB-EUR", "BBB"),
+        UniverseMember(3, "CCC-EUR", "CCC"),
+    ]
+    insufficient = _candles(2, 49, 1, market="BBB-EUR")
+    evaluated = _candles(3, 50, 1, market="CCC-EUR")[:-1] + _candles(3, 1, 2, market="CCC-EUR")
+    result = build_snapshot(
+        members=members, candles=_frame(insufficient, evaluated), asof_ts_utc=ASOF,
+        venue="bitvavo", interval_code="4h",
+    )
+    assert (result.eligible_count, result.evaluated_count) == (3, 1)
+    assert (result.stale_constituent_count, result.insufficient_history_count) == (1, 1)
+    assert result.coverage_pct == Decimal(100) / Decimal(3)
+    assert result.universe_hash == universe_identity(reversed(members))
     assert result.model_id == "ma_breadth_snapshot" and result.model_version == "1.0"
 
 def test_wrong_interval_fails_closed():
