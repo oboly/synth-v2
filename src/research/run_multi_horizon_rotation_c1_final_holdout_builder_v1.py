@@ -13,14 +13,19 @@ be reopened in a second location by pointing the runner somewhere else.
 
 That per-directory checkpoint is a convenience, not the security boundary: a
 caller could copy a byte-identical ``split_manifest_v1.json`` +
-``source_integrity_v1.json`` pair into a second directory and try to "open" a
-fresh checkpoint namespace there. The actual one-shot gate is a trusted,
-non-caller-selectable **opened-state registry** under the repository's
-canonical research state hierarchy (``REGISTRY_ROOT`` below), keyed by a
-SHA-256 fingerprint of ``(manifest_sha256, source_integrity_composite_sha256,
-venue, candidate_id, phase)``. Because the key is derived purely from frozen
-content, not from any caller-supplied path, copying the manifest/integrity
-pair anywhere resolves to the exact same registry entry and is denied.
+``source_integrity_v1.json`` pair into a second directory -- including a
+second git clone or worktree entirely -- and try to "open" a fresh checkpoint
+namespace there. The actual one-shot gate is a trusted, non-caller-selectable
+**opened-state registry** under a durable, host-level state root
+(``REGISTRY_ROOT`` below, see ``default_registry_root``), keyed by a SHA-256
+fingerprint of ``(manifest_sha256, source_integrity_composite_sha256, venue,
+candidate_id, phase)``. Because the key is derived purely from frozen
+content, and the registry root itself lives outside any git checkout, copying
+the manifest/integrity pair anywhere -- including into a different clone or
+worktree on the same host -- resolves to the exact same registry entry and is
+denied. This is host-local, not cross-host: two clones for the SAME user on
+the SAME host share it; a different host has its own home directory and does
+not.
 """
 
 import argparse
@@ -30,6 +35,7 @@ import os
 import signal
 import socket
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +53,6 @@ from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
     fetch_asset_coverage,
     fetch_candles_for_chunk,
     fetch_rotation_v1_points,
-    finalize_artifact_bundle,
     json_default,
     manifest_fingerprint,
     parse_ts,
@@ -69,12 +74,53 @@ MANIFEST_BASENAME = "split_manifest_v1.json"
 INTEGRITY_BASENAME = "source_integrity_v1.json"
 RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
 
+def default_registry_root() -> Path:
+    """Durable, host-level authoritative state root -- independent of any git
+    checkout/worktree.
+
+    A prior version derived this from ``Path(__file__).resolve().parents[2]``,
+    i.e. checkout-local: a second clone or worktree of this same repository
+    got its OWN ``data/research/...`` directory, so byte-identical frozen
+    manifest/integrity inputs opened in two different checkouts on the same
+    host could each open their own "one-shot" holdout -- the one-shot gate
+    was not actually shared.
+
+    This now follows the same convention already used for other durable,
+    non-checkout-local Synth runtime state
+    (see ``docs/ops/synth_runtime_runners_v1.md`` and
+    ``src/exit_policy/run_automatic_exit_policy_once_v1.py::default_lock_path``):
+    the XDG-style state root under the invoking user's home directory,
+    ``~/.local/state/synth/...``. Because it is keyed off ``Path.home()``
+    rather than the repository checkout path, every clone/worktree for the
+    SAME user on the SAME host resolves to the exact same registry root --
+    this is genuinely durable and shared across checkouts. It is
+    deliberately host-local, not cross-host: a different host has its own
+    home directory and its own, independent copy of this state. There is no
+    single shared authoritative DB/state store for research-only artifacts
+    in the current topology, so filesystem-local (per-host) durable state is
+    the correct choice here, not a DB table.
+
+    There is deliberately no CLI/env override for this path: the entire
+    point of the authoritative registry is that the caller cannot select a
+    different location for it.
+    """
+    return (
+        Path.home()
+        / ".local"
+        / "state"
+        / "synth"
+        / "research"
+        / "multi_horizon_rotation_c1_final_holdout_registry_v1"
+    )
+
+
 # Trusted, non-caller-selectable authoritative opened-state registry. This is
 # NOT the canonical run directory (which is caller-supplied via --split-manifest)
 # and it is never overridable from the CLI or the environment: it is the only
 # thing that makes the holdout genuinely one-shot even if the frozen manifest
-# and source-integrity artifact are copied byte-for-byte into a second directory.
-REGISTRY_ROOT = Path(__file__).resolve().parents[2] / "data" / "research" / "multi_horizon_rotation_c1_final_holdout_registry_v1"
+# and source-integrity artifact are copied byte-for-byte into a second directory,
+# a second worktree, or a second clone on the same host.
+REGISTRY_ROOT = default_registry_root()
 
 
 class RunnerInterrupted(Exception):
@@ -479,6 +525,131 @@ def install_interrupt_handlers() -> dict[int, Any]:
     return previous
 
 
+def finalize_c1_holdout_bundle(
+    *,
+    partial_path: Path,
+    artifact_path: Path,
+    summary_path: Path,
+    summary: dict[str, Any],
+    cp_path: Path,
+    registry_path: Path,
+    registry_identity: dict[str, str],
+    run_lease_held_path: Path | None,
+    venue: str,
+    manifest_sha: str,
+    composite_sha: str,
+    phase_start: datetime,
+    phase_end: datetime,
+    last_completed_asof: datetime | None,
+    asofs_completed: int,
+    row_count: int,
+    source_query_count: int,
+    source_rows_read: int,
+) -> tuple[int, int | None]:
+    """Publish the final artifact bundle and commit the FINISHED terminal state
+    as one signal-safe, forward-only critical section.
+
+    Renaming ``partial_path`` into ``artifact_path`` is the point of no
+    return: replay is fully done, and unlike an ordinary pre-finalize
+    failure (which still has an intact resumable RUNNING checkpoint), there
+    is no generically safe way to roll a checkpoint back to its exact prior
+    RUNNING content once the final artifact has actually been published. So
+    once that rename has genuinely happened, every remaining step here --
+    writing the summary, the FINISHED checkpoint, the FINISHED registry
+    entry, and releasing the run lease -- always runs to completion, even if
+    a SIGINT/SIGTERM (or, in tests, a directly-raised ``RunnerInterrupted``)
+    arrives partway through. Real OS signals are masked for the duration of
+    this section so the outer interrupt-raising handlers cannot unwind the
+    stack mid-step; a ``RunnerInterrupted`` raised synchronously from inside
+    one step (as tests do, since a real signal cannot be timed to an exact
+    line of code) is instead caught and deferred by that step's guard. The
+    caller only learns whether a signal was deferred after every step has
+    completed and the terminal state is durably FINISHED, so it can never
+    observe a published final artifact/summary next to a checkpoint/registry
+    that is still RUNNING or has been overwritten to INTERRUPTED, and can
+    never reach FINISHED without both final files durably published.
+
+    If the rename itself is interrupted BEFORE it actually completes (i.e.
+    ``artifact_path`` does not yet exist), nothing has been published: this
+    is an ordinary pre-finalize interrupt, and the exception is re-raised
+    unchanged so the caller's existing INTERRUPTED/resumable handling runs.
+    """
+    deferred_signum: int | None = None
+
+    def record_real_signal(signum: int, _frame: Any) -> None:
+        nonlocal deferred_signum
+        if deferred_signum is None:
+            deferred_signum = signum
+
+    # signal.signal() only works on the main thread of the main interpreter.
+    # Real OS-signal masking is only meaningful there anyway (a runner process
+    # only ever receives SIGINT/SIGTERM on its main thread); concurrency
+    # regression tests that drive main() from worker threads simulate
+    # interruption by directly raising RunnerInterrupted instead, which the
+    # per-step guards below still catch and defer regardless of this masking.
+    on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handlers: dict[int, Any] = {}
+    if on_main_thread:
+        previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        for sig in previous_handlers:
+            signal.signal(sig, record_real_signal)
+    try:
+        try:
+            partial_path.replace(artifact_path)
+        except RunnerInterrupted as exc:
+            if not artifact_path.exists():
+                raise
+            # The rename itself completed before/while this was raised: past
+            # the point of no return, so defer rather than propagate.
+            deferred_signum = exc.signum
+        final_bytes = artifact_path.stat().st_size
+
+        try:
+            write_json_atomic(summary_path, summary)
+        except RunnerInterrupted as exc:
+            if deferred_signum is None:
+                deferred_signum = exc.signum
+
+        try:
+            write_checkpoint(
+                cp_path,
+                venue=venue,
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                phase_start=phase_start,
+                phase_end=phase_end,
+                last_completed_asof=last_completed_asof,
+                asofs_completed=asofs_completed,
+                row_count=row_count,
+                partial_bytes=final_bytes,
+                source_query_count=source_query_count,
+                source_rows_read=source_rows_read,
+                terminal_state="FINISHED",
+            )
+        except RunnerInterrupted as exc:
+            if deferred_signum is None:
+                deferred_signum = exc.signum
+
+        try:
+            mark_registry_terminal(registry_path, terminal_state="FINISHED", identity=registry_identity)
+        except RunnerInterrupted as exc:
+            if deferred_signum is None:
+                deferred_signum = exc.signum
+
+        if run_lease_held_path is not None:
+            try:
+                release_run_lease(run_lease_held_path)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+    finally:
+        if on_main_thread:
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+
+    return final_bytes, deferred_signum
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_dotenv(dotenv_path=".env", override=False)
@@ -830,39 +1001,46 @@ def main(argv: list[str] | None = None) -> int:
             "resume_supported": True,
         }
 
-        def persist_finished_checkpoint(final_bytes: int) -> None:
-            write_checkpoint(
-                cp_path,
-                venue=args.venue,
-                manifest_sha256=manifest_sha,
-                source_integrity_composite_sha256=composite_sha,
-                phase_start=phase_start,
-                phase_end=phase_end,
-                last_completed_asof=last_completed_asof,
-                asofs_completed=asofs_completed,
-                row_count=row_count,
-                partial_bytes=final_bytes,
-                source_query_count=source_query_count,
-                source_rows_read=source_rows_read,
-                terminal_state="FINISHED",
-            )
-            assert registry_path is not None and registry_identity is not None
-            mark_registry_terminal(registry_path, terminal_state="FINISHED", identity=registry_identity)
-            if run_lease_held_path is not None:
-                release_run_lease(run_lease_held_path)
-
-        finalize_artifact_bundle(
+        assert registry_path is not None and registry_identity is not None
+        final_bytes, deferred_signum = finalize_c1_holdout_bundle(
             partial_path=partial_path,
             artifact_path=artifact_path,
             summary_path=summary_path,
             summary=summary,
-            persist_finished_checkpoint=persist_finished_checkpoint,
+            cp_path=cp_path,
+            registry_path=registry_path,
+            registry_identity=registry_identity,
+            run_lease_held_path=run_lease_held_path,
+            venue=args.venue,
+            manifest_sha=manifest_sha,
+            composite_sha=composite_sha,
+            phase_start=phase_start,
+            phase_end=phase_end,
+            last_completed_asof=last_completed_asof,
+            asofs_completed=asofs_completed,
+            row_count=row_count,
+            source_query_count=source_query_count,
+            source_rows_read=source_rows_read,
         )
         partial_path = None
         emit(
             f"PHASE_FINISHED name=build_final_holdout_c1_artifact rows={row_count} asofs={asofs_completed} "
-            f"elapsed_s={time.perf_counter() - build_started:.3f}"
+            f"final_bytes={final_bytes} elapsed_s={time.perf_counter() - build_started:.3f}"
         )
+        if deferred_signum is not None:
+            # A SIGINT/SIGTERM (or, in tests, a directly-injected RunnerInterrupted)
+            # arrived after the point of no return during finalization. The
+            # terminal state is already durably FINISHED -- both final files are
+            # published and the checkpoint/registry/lease are all committed --
+            # so this reports FINISHED, not INTERRUPTED, and does not re-open or
+            # touch that already-committed state.
+            emit(
+                f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
+                f"rows={row_count} c2_access=DENY c3_access=DENY database_writes=0 live_orders=0 "
+                f"deferred_signal={signal.Signals(deferred_signum).name} "
+                f"elapsed_s={time.perf_counter() - started:.3f}"
+            )
+            return 0
         emit(
             f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
             f"rows={row_count} c2_access=DENY c3_access=DENY database_writes=0 live_orders=0 "
@@ -870,6 +1048,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except RunnerInterrupted as exc:
+        # finalize_c1_holdout_bundle only re-raises RunnerInterrupted when the
+        # artifact rename never actually completed (i.e. nothing has been
+        # published yet); once that rename succeeds, every remaining commit
+        # step is deferred/absorbed internally and this handler is never
+        # reached. So a RunnerInterrupted seen here always means: no final
+        # artifact was ever published, and marking checkpoint/registry
+        # INTERRUPTED here can never race a published FINISHED bundle.
         if opened:
             if cp_path is not None and partial_path is not None and partial_path.exists() and cp_path.exists():
                 try:

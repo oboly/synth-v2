@@ -20,6 +20,8 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     canonical_run_dir,
     checkpoint_path,
     create_registry_entry_exclusive,
+    default_registry_root,
+    finalize_c1_holdout_bundle,
     load_checkpoint,
     load_manifest,
     load_registry_entry,
@@ -448,11 +450,17 @@ class _FakeConnection:
 
 
 def _install_fake_pipeline(
-    monkeypatch: pytest.MonkeyPatch, module: object, *, phase_start: datetime, registry_root: Path
+    monkeypatch: pytest.MonkeyPatch,
+    module: object,
+    *,
+    phase_start: datetime,
+    registry_root: Path | None,
 ) -> None:
     """Stub every DB-touching function so main() can run end-to-end deterministically,
     and point the trusted registry at an isolated test directory (never the real repo
-    data/research tree)."""
+    data/research tree). Pass ``registry_root=None`` to leave ``module.REGISTRY_ROOT``
+    untouched -- used by tests that set it themselves (e.g. by deriving it from a
+    monkeypatched ``Path.home()``) to exercise the real default-registry-root wiring."""
 
     def fake_get_db_connection() -> _FakeConnection:
         return _FakeConnection()
@@ -516,7 +524,8 @@ def _install_fake_pipeline(
     monkeypatch.setattr(module, "fetch_rotation_v1_points", fake_fetch_rotation_v1_points)
     monkeypatch.setattr(module, "fetch_candles_for_chunk", fake_fetch_candles_for_chunk)
     monkeypatch.setattr(module, "evaluate_candidate", fake_evaluate_candidate)
-    monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)
+    if registry_root is not None:
+        monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)
 
 
 def test_fresh_run_completes_and_publishes_exactly_one_canonical_artifact(
@@ -1605,3 +1614,417 @@ def test_resume_racing_active_fresh_run_fails_closed_with_zero_mutation(
     # after the fresh winner reaches terminal completion.
     assert not run_lease_path(registry_key).exists()
     assert not partial_path.exists()
+
+
+# --- Durable, checkout-independent authoritative registry root -----------
+
+
+def test_default_registry_root_is_home_based_and_checkout_independent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: REGISTRY_ROOT used to be derived from
+    Path(__file__), i.e. checkout-local. It must now be a pure function of the
+    invoking user's home directory only, so it never depends on the checkout
+    path, worktree path, or current working directory."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    fake_home = tmp_path / "fake_home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    root = module.default_registry_root()
+    assert root == (
+        fake_home
+        / ".local"
+        / "state"
+        / "synth"
+        / "research"
+        / "multi_horizon_rotation_c1_final_holdout_registry_v1"
+    )
+
+    # Changing the working directory (simulating a different checkout root)
+    # must not change the resolved registry root.
+    other_cwd = tmp_path / "unrelated_checkout" / "some" / "deep" / "path"
+    other_cwd.mkdir(parents=True)
+    monkeypatch.chdir(other_cwd)
+    assert module.default_registry_root() == root
+
+
+def test_two_checkout_roots_with_identical_inputs_share_registry_and_second_cannot_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the Codex BLOCK: two different checkout/worktree
+    directories with byte-identical frozen manifest/integrity content must
+    resolve to the SAME authoritative registry entry, using the real default
+    registry-root computation (only ``Path.home()`` is faked, to avoid
+    touching the actual host state) -- not a registry root manually shared
+    between the two invocations by the test itself."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    fake_home = tmp_path / "fake_home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
+
+    manifest = _two_asof_manifest()
+    checkout_a = tmp_path / "checkout_a" / "run_dir"
+    checkout_b = tmp_path / "checkout_b" / "run_dir"
+    manifest_path_a, integrity_path_a = _write_run_files(checkout_a, manifest=manifest)
+    manifest_path_b, integrity_path_b = _write_run_files(checkout_b, manifest=manifest)
+
+    exit_a = module.main(
+        ["--split-manifest", str(manifest_path_a), "--source-integrity", str(integrity_path_a)]
+    )
+    assert exit_a == 0
+    assert load_checkpoint(checkpoint_path(checkout_a))["terminal_state"] == "FINISHED"
+
+    # Second "checkout" with byte-identical frozen inputs is denied: it shares
+    # the SAME authoritative registry entry as the first, resolved purely from
+    # frozen content + the durable host-level registry root, independent of
+    # which directory each checkout supplied its manifest from.
+    exit_b = module.main(
+        ["--split-manifest", str(manifest_path_b), "--source-integrity", str(integrity_path_b)]
+    )
+    assert exit_b == 1
+    assert not checkpoint_path(checkout_b).exists()
+    assert not (checkout_b / "final_holdout_c1_rows_v1.jsonl").exists()
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    registry_root = module.default_registry_root()
+    entries = list(registry_root.glob(f"{registry_key}.json"))
+    assert len(entries) == 1
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+
+
+def test_two_checkout_roots_racing_fresh_runs_share_run_lease_exactly_one_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same durable-registry-root regression as above, but proving the run
+    lease itself -- not just the registry entry -- is shared across two
+    checkout/worktree directories: a second "checkout" racing a fresh run
+    against the same frozen inputs must be unable to acquire the run lease
+    while the first still owns it, using the real default registry-root
+    computation."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    fake_home = tmp_path / "fake_home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setattr(module, "REGISTRY_ROOT", module.default_registry_root())
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
+    monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})  # threads can't signal.signal()
+
+    manifest = _two_asof_manifest()
+    checkout_a = tmp_path / "checkout_a" / "run_dir"
+    checkout_b = tmp_path / "checkout_b" / "run_dir"
+    manifest_path_a, integrity_path_a = _write_run_files(checkout_a, manifest=manifest)
+    manifest_path_b, integrity_path_b = _write_run_files(checkout_b, manifest=manifest)
+
+    barrier = threading.Barrier(2, timeout=5)
+    real_build_integrity_payload = module.build_integrity_payload
+
+    def synced_build_integrity_payload(conn, *, venue, split_manifest):
+        result = real_build_integrity_payload(conn, venue=venue, split_manifest=split_manifest)
+        barrier.wait()  # both threads reach the exclusive-create call together
+        return result
+
+    monkeypatch.setattr(module, "build_integrity_payload", synced_build_integrity_payload)
+
+    def run(manifest_path: Path, integrity_path: Path) -> int:
+        return module.main(
+            ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(run, manifest_path_a, integrity_path_a)
+        future_b = executor.submit(run, manifest_path_b, integrity_path_b)
+        exit_a = future_a.result()
+        exit_b = future_b.result()
+
+    assert {exit_a, exit_b} == {0, 1}, f"expected exactly one winner: exit_a={exit_a} exit_b={exit_b}"
+    winner_dir = checkout_a if exit_a == 0 else checkout_b
+    loser_dir = checkout_b if exit_a == 0 else checkout_a
+
+    registry_root = module.default_registry_root()
+    entries = list(registry_root.glob("*.json"))
+    assert len(entries) == 1
+    assert json.loads(entries[0].read_text(encoding="utf-8"))["terminal_state"] == "FINISHED"
+
+    assert (winner_dir / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert not checkpoint_path(loser_dir).exists()
+    assert not (loser_dir / "final_holdout_c1_rows_v1.jsonl").exists()
+
+
+# --- Signal-safe transactional finalization -------------------------------
+
+
+def _finalize_kwargs(tmp_path: Path, **overrides: object) -> dict[str, object]:
+    partial_path = tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial"
+    partial_path.write_bytes(b'{"row":1}\n{"row":2}\n')
+    registry_path = tmp_path / "registry_entry.json"
+    write_registry_entry(
+        registry_path,
+        venue="bitvavo",
+        manifest_sha256="m-sha",
+        source_integrity_composite_sha256="i-sha",
+        terminal_state="RUNNING",
+        opened_run_dir=str(tmp_path),
+    )
+    lease_path = tmp_path / "run_lease.json"
+    assert acquire_run_lease_exclusive(lease_path, registry_key="k")
+
+    kwargs: dict[str, object] = dict(
+        partial_path=partial_path,
+        artifact_path=tmp_path / "final_holdout_c1_rows_v1.jsonl",
+        summary_path=tmp_path / "final_holdout_c1_summary_v1.json",
+        summary={"row_count": 2},
+        cp_path=tmp_path / ".final_holdout_c1_checkpoint_v1.json",
+        registry_path=registry_path,
+        registry_identity={
+            "venue": "bitvavo",
+            "candidate_id": "C1",
+            "phase": "final_holdout",
+            "manifest_sha256": "m-sha",
+            "source_integrity_composite_sha256": "i-sha",
+        },
+        run_lease_held_path=lease_path,
+        venue="bitvavo",
+        manifest_sha="m-sha",
+        composite_sha="i-sha",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=BASE + timedelta(minutes=15),
+        asofs_completed=2,
+        row_count=2,
+        source_query_count=1,
+        source_rows_read=2,
+    )
+    write_checkpoint(
+        kwargs["cp_path"],
+        venue="bitvavo",
+        manifest_sha256="m-sha",
+        source_integrity_composite_sha256="i-sha",
+        phase_start=BASE,
+        phase_end=BASE + timedelta(minutes=30),
+        last_completed_asof=BASE + timedelta(minutes=15),
+        asofs_completed=2,
+        row_count=2,
+        partial_bytes=len(b'{"row":1}\n{"row":2}\n'),
+        source_query_count=1,
+        source_rows_read=2,
+        terminal_state="RUNNING",
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _assert_finished_state(tmp_path: Path, kwargs: dict[str, object]) -> None:
+    assert kwargs["artifact_path"].exists()
+    assert kwargs["summary_path"].exists()
+    assert not kwargs["partial_path"].exists()
+    assert load_checkpoint(kwargs["cp_path"])["terminal_state"] == "FINISHED"
+    assert load_registry_entry(kwargs["registry_path"])["terminal_state"] == "FINISHED"
+    assert not kwargs["run_lease_held_path"].exists()
+
+
+def test_finalize_completes_cleanly_with_no_interrupt(tmp_path: Path) -> None:
+    kwargs = _finalize_kwargs(tmp_path)
+    final_bytes, deferred_signum = finalize_c1_holdout_bundle(**kwargs)
+    assert final_bytes == len(b'{"row":1}\n{"row":2}\n')
+    assert deferred_signum is None
+    _assert_finished_state(tmp_path, kwargs)
+
+
+def test_finalize_interrupted_before_rename_completes_stays_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case A: an interrupt that fires before the rename ever touches disk
+    must be re-raised unchanged (nothing published, partial untouched)."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    kwargs = _finalize_kwargs(tmp_path)
+
+    def raising_replace(self, target):
+        raise RunnerInterrupted(signal.SIGINT)
+
+    monkeypatch.setattr(Path, "replace", raising_replace)
+
+    with pytest.raises(RunnerInterrupted):
+        finalize_c1_holdout_bundle(**kwargs)
+
+    assert kwargs["partial_path"].exists()
+    assert not kwargs["artifact_path"].exists()
+    assert not kwargs["summary_path"].exists()
+    assert load_checkpoint(kwargs["cp_path"])["terminal_state"] == "RUNNING"
+    assert load_registry_entry(kwargs["registry_path"])["terminal_state"] == "RUNNING"
+    assert kwargs["run_lease_held_path"].exists()
+
+
+@pytest.mark.parametrize(
+    "inject",
+    [
+        "after_rename",
+        "after_summary",
+        "after_checkpoint",
+        "after_registry",
+        "after_lease_release",
+    ],
+)
+def test_finalize_interrupted_at_every_post_rename_step_still_reaches_finished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inject: str
+) -> None:
+    """Case B for every required injection point at/after the point of no
+    return: interrupt right after the artifact rename, between artifact and
+    summary publication, before the FINISHED checkpoint write, before the
+    FINISHED registry write, and before the lease release. In every case the
+    run must still reach exactly FINISHED with both final files durably
+    published and no resumable partial -- never a mix of published output
+    with RUNNING/INTERRUPTED state, and the deferred signal must be reported
+    back to the caller."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    kwargs = _finalize_kwargs(tmp_path)
+
+    if inject == "after_rename":
+        real_replace = Path.replace
+        target_artifact = kwargs["artifact_path"]
+
+        def raising_replace(self, target):
+            result = real_replace(self, target)
+            if Path(target) == target_artifact:
+                raise RunnerInterrupted(signal.SIGINT)
+            return result
+
+        monkeypatch.setattr(Path, "replace", raising_replace)
+    elif inject == "after_summary":
+        real_write_json_atomic = module.write_json_atomic
+
+        def raising_write_json_atomic(path, payload):
+            real_write_json_atomic(path, payload)
+            raise RunnerInterrupted(signal.SIGTERM)
+
+        monkeypatch.setattr(module, "write_json_atomic", raising_write_json_atomic)
+    elif inject == "after_checkpoint":
+        real_write_checkpoint = module.write_checkpoint
+
+        def raising_write_checkpoint(*args, **kw):
+            real_write_checkpoint(*args, **kw)
+            if kw.get("terminal_state") == "FINISHED":
+                raise RunnerInterrupted(signal.SIGINT)
+
+        monkeypatch.setattr(module, "write_checkpoint", raising_write_checkpoint)
+    elif inject == "after_registry":
+        real_mark_registry_terminal = module.mark_registry_terminal
+
+        def raising_mark_registry_terminal(*args, **kw):
+            real_mark_registry_terminal(*args, **kw)
+            raise RunnerInterrupted(signal.SIGTERM)
+
+        monkeypatch.setattr(module, "mark_registry_terminal", raising_mark_registry_terminal)
+    elif inject == "after_lease_release":
+        real_release_run_lease = module.release_run_lease
+
+        def raising_release_run_lease(path):
+            real_release_run_lease(path)
+            raise RunnerInterrupted(signal.SIGINT)
+
+        monkeypatch.setattr(module, "release_run_lease", raising_release_run_lease)
+    else:
+        raise AssertionError(inject)
+
+    final_bytes, deferred_signum = finalize_c1_holdout_bundle(**kwargs)
+    assert deferred_signum is not None
+    assert final_bytes == len(b'{"row":1}\n{"row":2}\n')
+    _assert_finished_state(tmp_path, kwargs)
+
+
+def test_finalize_reports_only_the_first_deferred_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If interrupts land at more than one step, only the first is reported,
+    and every step still runs -- the outcome is still exactly FINISHED."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    kwargs = _finalize_kwargs(tmp_path)
+
+    real_write_json_atomic = module.write_json_atomic
+
+    def raising_write_json_atomic(path, payload):
+        real_write_json_atomic(path, payload)
+        raise RunnerInterrupted(signal.SIGINT)
+
+    monkeypatch.setattr(module, "write_json_atomic", raising_write_json_atomic)
+
+    real_mark_registry_terminal = module.mark_registry_terminal
+
+    def raising_mark_registry_terminal(*args, **kw):
+        real_mark_registry_terminal(*args, **kw)
+        raise RunnerInterrupted(signal.SIGTERM)
+
+    monkeypatch.setattr(module, "mark_registry_terminal", raising_mark_registry_terminal)
+
+    final_bytes, deferred_signum = finalize_c1_holdout_bundle(**kwargs)
+    assert deferred_signum == signal.SIGINT
+    _assert_finished_state(tmp_path, kwargs)
+
+
+def test_main_reports_finished_not_interrupted_when_signal_deferred_during_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End-to-end: a signal delivered exactly at the artifact-rename boundary
+    during main()'s own finalization call must produce exit code 0, a single
+    FINISHED line (never INTERRUPTED), and a durable FINISHED checkpoint +
+    registry with no resumable partial left behind."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+
+    real_replace = Path.replace
+    target_artifact = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+
+    def raising_replace(self, target):
+        result = real_replace(self, target)
+        if Path(target) == target_artifact:
+            raise RunnerInterrupted(signal.SIGINT)
+        return result
+
+    monkeypatch.setattr(Path, "replace", raising_replace)
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 0
+
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert not any(line.startswith("INTERRUPTED") for line in lines)
+    finished_lines = [line for line in lines if line.startswith("FINISHED runner=")]
+    assert len(finished_lines) == 1
+    assert "deferred_signal=SIGINT" in finished_lines[0]
+
+    artifact = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+    summary = tmp_path / "final_holdout_c1_summary_v1.json"
+    cp_path = checkpoint_path(tmp_path)
+    assert artifact.exists()
+    assert summary.exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+    assert not run_lease_path(registry_key).exists()
