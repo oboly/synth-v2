@@ -364,6 +364,7 @@ def _compute_recompute_transition_state(
     map_lifecycle_state: NativeShortScopeMapLifecycleState,
     observation_freshness_state: NativeShortObservationFreshnessState,
     source_state: NativeShortScopeSourceState,
+    latest_observation_status: str | None,
 ) -> NativeShortScopeRecomputeTransitionState:
     """Issue #681 Amendment 2: orthogonal healthy-wait vs overdue evidence.
 
@@ -375,12 +376,17 @@ def _compute_recompute_transition_state(
     Only meaningful when the selected map is currently terminal. The
     materializer always attempts recompute every cadence cycle regardless of
     terminal state (see `native_short_scope_status_materializer_v1.evaluate_scope`),
-    so `observation_freshness_state` is sufficient evidence of whether that
-    attempt happened recently: `OBSERVATION_CURRENT` means the most recent
-    cycle already evaluated current market structure and found it
-    insufficient for a fresh map (healthy, bounded wait); `OBSERVATION_OVERDUE`
-    or `NO_OBSERVATION` means no such recent evaluation exists (fail closed to
-    overdue, eligible for operator Attention under #688).
+    so `observation_freshness_state` is evidence of whether that attempt
+    happened recently, but freshness alone is not proof the attempt
+    *succeeded*: a fresh observation can still be `FAILED` (the materializer
+    ran but errored before it could evaluate structure), which must not be
+    presented as a healthy wait. `WAITING_FOR_NEW_STRUCTURE` therefore
+    additionally requires the latest observation to have `observation_status
+    == EVALUATED`: the most recent cycle actually evaluated current market
+    structure and found it insufficient for a fresh map (healthy, bounded
+    wait). `OBSERVATION_OVERDUE`, `NO_OBSERVATION`, or a fresh non-EVALUATED
+    (e.g. `FAILED`) observation all fail closed to `RECOMPUTE_OVERDUE`
+    (eligible for operator Attention under #688).
     """
     if map_lifecycle_state not in _TERMINAL_MAP_LIFECYCLE_STATES:
         return NativeShortScopeRecomputeTransitionState.NOT_APPLICABLE
@@ -389,7 +395,10 @@ def _compute_recompute_transition_state(
         # status codes in Status Precedence; recompute-transition evidence is
         # only meaningful once source itself is not the blocking condition.
         return NativeShortScopeRecomputeTransitionState.NOT_APPLICABLE
-    if observation_freshness_state == NativeShortObservationFreshnessState.OBSERVATION_CURRENT:
+    if (
+        observation_freshness_state == NativeShortObservationFreshnessState.OBSERVATION_CURRENT
+        and latest_observation_status == "EVALUATED"
+    ):
         return NativeShortScopeRecomputeTransitionState.WAITING_FOR_NEW_STRUCTURE
     return NativeShortScopeRecomputeTransitionState.RECOMPUTE_OVERDUE
 
@@ -534,6 +543,9 @@ def project_native_short_scope_status(
         map_lifecycle_state=map_lifecycle_state,
         observation_freshness_state=observation_freshness_state,
         source_state=source_state,
+        latest_observation_status=(
+            latest_observation.observation_status if latest_observation is not None else None
+        ),
     )
 
     return NativeShortScopeStatusRecord(
