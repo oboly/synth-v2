@@ -447,3 +447,86 @@ def test_tie_case_breaks_by_lower_fraction_then_family_order() -> None:
     # PRO_3X4X precedes SUPERCYCLE in CANDIDATE_FAMILIES.
     seventy_fraction_rows = [item for item in ranked if item[0][1] == Decimal("0.70")]
     assert seventy_fraction_rows[0][0] == ("PRO_3X4X", Decimal("0.70"))
+
+
+def _wave2_confirmation_edge_series(
+    *,
+    first_confirmation_day: int | None,
+    second_wave2_day: int | None = None,
+    second_confirmation_day: int | None = None,
+) -> list[ladder_bt.Candle]:
+    """Series whose reclaim before day17 must not affect day17 wave2."""
+    candles = [_candle(0, "1.00", "1.05", "1.00", "1.00")]
+    candles += _flat_run(1, 14, "1.20")
+    candles.append(_candle(14, "1.30", "2.50", "1.25", "1.30"))
+    candles.append(_candle(15, "2.00", "2.05", "2.00", "2.00"))
+    candles.append(_candle(16, "2.00", "2.65", "2.00", "2.60"))  # reclaim before wave2
+    candles.append(_candle(17, "1.55", "1.60", "1.50", "1.55"))  # valid wave2
+    for day in range(18, 31):
+        if day == first_confirmation_day or day == second_confirmation_day:
+            candles.append(_candle(day, "2.05", "2.65", "2.00", "2.60"))
+        elif day == second_wave2_day:
+            candles.append(_candle(day, "1.55", "1.60", "1.50", "1.55"))
+        else:
+            candles.append(_candle(day, "2.00", "2.05", "2.00", "2.00"))
+    return candles
+
+
+def test_reclaim_before_valid_wave2_does_not_block_later_confirmation() -> None:
+    candles = _wave2_confirmation_edge_series(first_confirmation_day=20)
+    anchor = engine.find_pit_anchor(candles)
+
+    assert anchor is not None
+    assert anchor.wave1_high_ts == candles[14].open_ts_utc
+    assert anchor.wave2_low_ts == candles[17].open_ts_utc
+    assert anchor.confirmation_idx == 20
+    assert anchor.entry_idx == 21
+
+
+def test_multiple_valid_wave2_candidates_have_independent_confirmation_searches() -> None:
+    candles = _wave2_confirmation_edge_series(
+        first_confirmation_day=18,
+        second_wave2_day=20,
+        second_confirmation_day=21,
+    )
+
+    assert engine.pit_contract.find_confirmation_index(candles, Decimal("2.50"), 17) == 18
+    assert engine.pit_contract.find_confirmation_index(candles, Decimal("2.50"), 20) == 21
+    anchor = engine.find_pit_anchor(candles)
+    assert anchor is not None
+    assert anchor.wave2_low_ts == candles[17].open_ts_utc
+    assert anchor.confirmation_idx == 18
+    assert anchor.entry_idx == 19
+
+
+def test_valid_wave2_without_later_confirmation_is_not_an_anchor() -> None:
+    candles = _wave2_confirmation_edge_series(first_confirmation_day=None)
+    assert engine.find_pit_anchor(candles) is None
+
+
+def test_rejects_fib_standard_and_invalid_frozen_fraction() -> None:
+    full = _confirmed_series()
+    with pytest.raises(ValueError, match="frozen target_family"):
+        engine.evaluate_pit_symbol_window_config("LINK", "SELECTION_WINDOW", full, "FIB_STANDARD", Decimal("0.80"))
+    with pytest.raises(ValueError, match="max_ladder_sell_fraction"):
+        engine.evaluate_pit_symbol_window_config("LINK", "SELECTION_WINDOW", full, "PRO_3X4X", Decimal("0.90"))
+
+
+def test_selection_has_no_caller_grid_override_path() -> None:
+    import inspect
+
+    params = inspect.signature(engine.select_policy_on_selection_window).parameters
+    assert "families" not in params
+    assert "fractions" not in params
+
+
+def test_oos_rejects_forged_non_frozen_selected_policy() -> None:
+    forged = engine.SelectedPolicy(
+        symbol="LINK",
+        target_family="FIB_STANDARD",
+        max_ladder_sell_fraction=Decimal("0.80"),
+        selection_metric_value=Decimal("0"),
+        selection_sample_count=1,
+    )
+    with pytest.raises(ValueError, match="frozen target_family"):
+        engine.evaluate_oos_window(forged, "OOS_WINDOW_1", _confirmed_series())

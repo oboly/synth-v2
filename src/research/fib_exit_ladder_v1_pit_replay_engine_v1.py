@@ -52,7 +52,6 @@ from src.research.run_fib_exit_ladder_backtest_v1 import (
     Candle,
     Fill,
     Rung,
-    TARGET_FAMILIES,
     build_rungs,
     build_targets,
     parse_datetime,
@@ -116,24 +115,24 @@ class PitAnchor:
     entry_price: Decimal
 
 
-def _earliest_valid_wave2_idx(
+def _valid_wave2_indices(
     candles: list[Candle],
     high_idx: int,
-    confirmation_idx: int,
     anchor_low: Decimal,
     wave1_high: Decimal,
     wave1_range: Decimal,
     min_wave2_days_after_high: int,
     wave2_min_retrace: Decimal,
     wave2_max_retrace: Decimal,
-) -> Optional[int]:
-    """The earliest wave2_idx strictly between high_idx and confirmation_idx
-    that is a geometrically valid retracement low for this (anchor_low,
-    wave1_high) pair, per contract § 5.1. Bounded to
-    `range(high_idx + 1, confirmation_idx)`, so this never reads a candle at
-    or after `confirmation_idx` — the confirmation candle and everything
-    after it stay structurally unreachable from this function."""
-    for wave2_idx in range(high_idx + 1, confirmation_idx):
+) -> list[int]:
+    """All geometrically valid wave2 indices for one low/high pair.
+
+    Confirmation is deliberately not part of this validation. Each valid
+    candidate must find its own first reclaim strictly after its own wave2_idx;
+    a reclaim before the candidate cannot confirm or eliminate it.
+    """
+    valid_indices: list[int] = []
+    for wave2_idx in range(high_idx + 1, len(candles) - 1):
         wave2_days_after_high = (candles[wave2_idx].open_ts_utc - candles[high_idx].open_ts_utc).days
         if wave2_days_after_high < min_wave2_days_after_high:
             continue
@@ -145,8 +144,8 @@ def _earliest_valid_wave2_idx(
         retrace = (wave1_high - wave2_low) / wave1_range
         if retrace < wave2_min_retrace or retrace > wave2_max_retrace:
             continue
-        return wave2_idx
-    return None
+        valid_indices.append(wave2_idx)
+    return valid_indices
 
 
 def find_pit_anchor(
@@ -158,42 +157,19 @@ def find_pit_anchor(
     wave2_min_retrace: Decimal = DEFAULT_WAVE2_MIN_RETRACE,
     wave2_max_retrace: Decimal = DEFAULT_WAVE2_MAX_RETRACE,
 ) -> Optional[PitAnchor]:
-    """The single PIT-confirmed anchor for this candle series, per contract
-    § 5, or None if no candidate confirms and becomes observable within the
-    series.
+    """The earliest observable PIT-confirmed anchor, or None.
 
-    No future access, by construction:
-      - The (anchor_low, wave1_high) outer loop only reads `candles[low_idx]`
-        and `candles[high_idx]` for `low_idx < high_idx < len(candles) - 1`;
-        it never derives eligibility from any candle after `high_idx`
-        (unlike `#270`'s `find_anchor_set`, there is no suffix-max array and
-        no `future_high` read here at all).
-      - `pit_contract.find_confirmation_index` (frozen, tested Phase A
-        helper) performs exactly one forward scan per (low_idx, high_idx)
-        pair, starting at `high_idx + 1`, to find the first candle whose
-        close reclaims `wave1_high`. This is the confirmation *event* the
-        contract explicitly allows to be discovered by scanning forward
-        (§ 5.2) — it is not a scoring or eligibility read of a specific
-        future candle chosen in advance, and it is never repeated per
-        wave2 candidate (§ 13 performance constraint).
-      - `_earliest_valid_wave2_idx` is bounded strictly below
-        `confirmation_idx`, so no wave2 candidate at or after the
-        confirmation candle can ever be selected.
-      - `pit_contract.entry_from_confirmation` (frozen, tested Phase A
-        helper) reads only `candles[confirmation_idx + 1]`'s own open
-        timestamp/price for the entry — never the confirmation candle's own
-        high/low/close (same-candle leakage rule, § 2).
-      - Candidates are compared only by `entry_idx` (ascending); the
-        (low_idx, high_idx) double loop itself runs in ascending order, so
-        ties (identical `entry_idx` from two different pairs) resolve
-        deterministically to whichever pair is encountered first in that
-        fixed iteration order — never by dict/set iteration order.
+    Every geometrically valid (low_idx, high_idx, wave2_idx) tuple is
+    evaluated independently. Its first valid reclaim is searched strictly
+    after its own wave2 candle, so an earlier reclaim cannot confirm or block
+    a later wave2 candidate. No candidate is scored by a future high or a
+    future return. The entry is only the next candle's open after the
+    confirmation close has become observable.
     """
     if len(candles) < MIN_CANDLES_REQUIRED:
         return None
 
     best: Optional[PitAnchor] = None
-
     for low_idx in range(0, len(candles) - 2):
         anchor_low = candles[low_idx].low_price
         if anchor_low <= 0:
@@ -203,7 +179,6 @@ def find_pit_anchor(
             anchor_low * (Decimal("1") + pivot_threshold_pct),
             anchor_low * (Decimal("1") + min_wave1_gain_pct),
         )
-
         for high_idx in range(low_idx + 1, len(candles) - 1):
             wave1_days = (candles[high_idx].open_ts_utc - candles[low_idx].open_ts_utc).days
             if wave1_days < min_wave1_days:
@@ -217,47 +192,42 @@ def find_pit_anchor(
             if wave1_range <= 0:
                 continue
 
-            confirmation_idx = pit_contract.find_confirmation_index(
-                candles, wave1_high=wave1_high, wave2_idx=high_idx
-            )
-            if confirmation_idx is None:
-                continue
-
-            wave2_idx = _earliest_valid_wave2_idx(
+            for wave2_idx in _valid_wave2_indices(
                 candles,
                 high_idx=high_idx,
-                confirmation_idx=confirmation_idx,
                 anchor_low=anchor_low,
                 wave1_high=wave1_high,
                 wave1_range=wave1_range,
                 min_wave2_days_after_high=min_wave2_days_after_high,
                 wave2_min_retrace=wave2_min_retrace,
                 wave2_max_retrace=wave2_max_retrace,
-            )
-            if wave2_idx is None:
-                continue
+            ):
+                confirmation_idx = pit_contract.find_confirmation_index(
+                    candles, wave1_high=wave1_high, wave2_idx=wave2_idx
+                )
+                if confirmation_idx is None:
+                    continue
 
-            entry = pit_contract.entry_from_confirmation(candles, confirmation_idx)
-            if entry is None:
-                continue
+                entry = pit_contract.entry_from_confirmation(candles, confirmation_idx)
+                if entry is None:
+                    continue
 
-            candidate = PitAnchor(
-                anchor_low=anchor_low,
-                anchor_low_ts=candles[low_idx].open_ts_utc,
-                wave1_high=wave1_high,
-                wave1_high_ts=candles[high_idx].open_ts_utc,
-                wave2_low=candles[wave2_idx].low_price,
-                wave2_low_ts=candles[wave2_idx].open_ts_utc,
-                wave1_range=wave1_range,
-                confirmation_idx=confirmation_idx,
-                confirmation_ts=candles[confirmation_idx].open_ts_utc,
-                entry_idx=entry.entry_idx,
-                entry_ts=entry.entry_ts,
-                entry_price=entry.entry_price,
-            )
-
-            if best is None or candidate.entry_idx < best.entry_idx:
-                best = candidate
+                candidate = PitAnchor(
+                    anchor_low=anchor_low,
+                    anchor_low_ts=candles[low_idx].open_ts_utc,
+                    wave1_high=wave1_high,
+                    wave1_high_ts=candles[high_idx].open_ts_utc,
+                    wave2_low=candles[wave2_idx].low_price,
+                    wave2_low_ts=candles[wave2_idx].open_ts_utc,
+                    wave1_range=wave1_range,
+                    confirmation_idx=confirmation_idx,
+                    confirmation_ts=candles[confirmation_idx].open_ts_utc,
+                    entry_idx=entry.entry_idx,
+                    entry_ts=entry.entry_ts,
+                    entry_price=entry.entry_price,
+                )
+                if best is None or candidate.entry_idx < best.entry_idx:
+                    best = candidate
 
     return best
 
@@ -339,8 +309,15 @@ def evaluate_pit_symbol_window_config(
     PIT replay, per contract § 6/§ 7/§ 8. `window_candles` must already be
     filtered to the caller's chosen window (§ 4: anchor detection/
     confirmation for a window uses only candles inside that window)."""
-    if target_family not in TARGET_FAMILIES:
-        raise ValueError(f"Unknown target_family {target_family!r}; expected one of {sorted(TARGET_FAMILIES)}.")
+    if target_family not in CANDIDATE_FAMILIES:
+        raise ValueError(
+            f"Invalid frozen target_family {target_family!r}; expected one of {CANDIDATE_FAMILIES}."
+        )
+    if max_ladder_sell_fraction not in SELL_FRACTION_GRID:
+        raise ValueError(
+            "Invalid frozen max_ladder_sell_fraction "
+            f"{max_ladder_sell_fraction!r}; expected one of {SELL_FRACTION_GRID}."
+        )
 
     if len(window_candles) < MIN_CANDLES_REQUIRED:
         return _empty_pit_result(symbol, window, target_family, max_ladder_sell_fraction, STATUS_INSUFFICIENT_CANDLES)
@@ -479,8 +456,6 @@ def _rank_grid_results(
 def select_policy_on_selection_window(
     symbol: str,
     selection_window_candles: list[Candle],
-    families: tuple[str, ...] = CANDIDATE_FAMILIES,
-    fractions: tuple[Decimal, ...] = SELL_FRACTION_GRID,
     **fib_and_ladder_kwargs: object,
 ) -> tuple[Optional[SelectedPolicy], dict[tuple[str, Decimal], PitSymbolResult]]:
     """§ 7 selection: evaluates the full frozen grid on SELECTION_WINDOW
@@ -491,8 +466,8 @@ def select_policy_on_selection_window(
     INSUFFICIENT_DATA — if no grid combination confirmed a PIT anchor in
     this window (§ 7 minimum sample requirement)."""
     grid_results: dict[tuple[str, Decimal], PitSymbolResult] = {}
-    for family in families:
-        for fraction in fractions:
+    for family in CANDIDATE_FAMILIES:
+        for fraction in SELL_FRACTION_GRID:
             grid_results[(family, fraction)] = evaluate_pit_symbol_window_config(
                 symbol=symbol,
                 window="SELECTION_WINDOW",
@@ -502,7 +477,7 @@ def select_policy_on_selection_window(
                 **fib_and_ladder_kwargs,  # type: ignore[arg-type]
             )
 
-    ranked = _rank_grid_results(grid_results, families)
+    ranked = _rank_grid_results(grid_results, CANDIDATE_FAMILIES)
     if not ranked:
         return None, grid_results
 
@@ -560,8 +535,6 @@ def run_pit_replay_for_symbol(
     selection_window_candles: list[Candle],
     oos_window_1_candles: list[Candle],
     oos_window_2_candles: list[Candle],
-    families: tuple[str, ...] = CANDIDATE_FAMILIES,
-    fractions: tuple[Decimal, ...] = SELL_FRACTION_GRID,
     **fib_and_ladder_kwargs: object,
 ) -> PitSymbolReplayResult:
     """Orchestrates § 7 selection followed by § 8 OOS evaluation for one
@@ -571,8 +544,6 @@ def run_pit_replay_for_symbol(
     selected, grid_results = select_policy_on_selection_window(
         symbol=symbol,
         selection_window_candles=selection_window_candles,
-        families=families,
-        fractions=fractions,
         **fib_and_ladder_kwargs,  # type: ignore[arg-type]
     )
 
