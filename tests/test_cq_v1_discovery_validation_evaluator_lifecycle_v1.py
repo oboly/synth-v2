@@ -89,7 +89,7 @@ def test_all_output_artifacts_carry_complete_safety_markers(tmp_path, monkeypatc
     evaluation = _synthetic_evaluation()
 
     monkeypatch.setattr(core, "load_population", lambda _path: population)
-    monkeypatch.setattr(core, "load_outcomes", lambda _path: outcomes)
+    monkeypatch.setattr(runner, "_load_outcomes_sealed", lambda _path, _splits: outcomes)
     monkeypatch.setattr(core, "validate_identity", lambda _population, _outcomes: None)
     monkeypatch.setattr(core, "filter_safe_rows", lambda p, o, _splits: (p, o))
     monkeypatch.setattr(core, "evaluate", lambda _p, _o, _splits: evaluation)
