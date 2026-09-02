@@ -360,6 +360,477 @@ def _golden_10_tao_like_contradiction() -> ProfitPlanCard:
     return _golden_contradiction_card("TAO")
 
 
+@dataclasses.dataclass(frozen=True)
+class GoldenExpected:
+    """A single frozen contract baseline for one golden scenario.
+
+    Every field here is a literal contract value captured once from a
+    reviewed run of the scenario builder below -- never recomputed via the
+    production formatting/action helpers under test (``_actionable_ppp``,
+    ``_effective_workflow_action``, ``_filter_display_label``,
+    ``_filter_value_from_label``, ``_native_map_status``, ``_pct``, or any
+    other production formatting/action helper). A coordinated regression in
+    those helpers must fail ``test_golden_frozen_baseline`` even though it
+    would not change the helpers' own internal self-consistency.
+    """
+
+    actionability_state: str
+    action_label: str
+    scenario_type: str | None
+    setup_state: str | None
+    all_sell_targets_completed: bool
+    current_price_status: str | None
+    reasons: tuple[str, ...]
+    invalidation_level: str
+    target_exit_zone_len: int
+    target_level_statuses_len: int
+    target_level_lifecycle_states: tuple[str, ...]
+    evidence_lifecycle_state: str
+    evidence_selected_map_tier: str
+    evidence_native_map_status: str
+    evidence_price_freshness_state: str
+    reload_reentry_zone_display: tuple[str, ...]
+    target_exit_zone_display: tuple[str, ...]
+    actionable_ppp_pct: str | None
+    actionable_ppp_available: bool
+    planning_ppp_pct: str | None
+    planning_provenance: dict
+    html_attrs: dict[str, str]
+    operator_text_snippets: tuple[str, ...] = ()
+
+
+_FET_REBUY_REASONS = (
+    "Last dip missed the main re-buy by 1.95% — tighten the ladder.",
+    "First-touch level (0.2142) would have caught the dip.",
+    "Main re-buy is at 0.205 — set a limit order there.",
+    "Pullback below previously passed sell level 0.25.",
+    "Pullback below previously passed sell level 0.45.",
+)
+
+_EXTENSION_RUNNER_REASONS = (
+    "First sell level at 1.272 extension (0.454438) is already in play.",
+    "Main target at 1.618 extension (0.5156).",
+    "Momentum supports continuation toward the target / sell zone at 0.5156.",
+)
+
+_ACTIVE_MAP_PLANNING_PROVENANCE = {
+    "reference_source": "NATIVE_SHORT_CANONICAL",
+    "entry_source": "NATIVE_SHORT_CANONICAL",
+    "target_source": "NATIVE_SHORT_CANONICAL",
+    "source_map_id": "DATA_UNAVAILABLE",
+    "source_map_cycle_id": "DATA_UNAVAILABLE",
+    "source_as_of_ts_utc": "DATA_UNAVAILABLE",
+    "is_coherent": True,
+    "is_hybrid_reference_only": False,
+}
+
+_UNAVAILABLE_PLANNING_PROVENANCE = {
+    "reference_source": "DATA_UNAVAILABLE",
+    "entry_source": "DATA_UNAVAILABLE",
+    "target_source": "DATA_UNAVAILABLE",
+    "source_map_id": "DATA_UNAVAILABLE",
+    "source_map_cycle_id": "DATA_UNAVAILABLE",
+    "source_as_of_ts_utc": "DATA_UNAVAILABLE",
+    "is_coherent": False,
+    "is_hybrid_reference_only": False,
+}
+
+
+def _native_map_planning_provenance(symbol: str) -> dict:
+    return {
+        "reference_source": "NATIVE_SHORT_CANONICAL",
+        "entry_source": "NATIVE_SHORT_CANONICAL",
+        "target_source": "NATIVE_SHORT_CANONICAL",
+        "source_map_id": f"nsctx-v1-test-snapshot:{symbol}:{symbol}|SHORT|4h|demo",
+        "source_map_cycle_id": f"{symbol}|SHORT|4h|demo",
+        "source_as_of_ts_utc": "2026-06-05T11:00:00Z",
+        "is_coherent": True,
+        "is_hybrid_reference_only": False,
+    }
+
+
+def _native_map_html_attrs(*, selected_map_tier: str) -> dict[str, str]:
+    return {
+        "data-actionable-ppp": "13.07%",
+        "data-sort-ppp": "13.07017543859649122807017544",
+        "data-planning-ppp": "—",
+        "data-planning-reference-source": "NATIVE_SHORT_CANONICAL",
+        "data-planning-entry-source": "NATIVE_SHORT_CANONICAL",
+        "data-planning-target-source": "NATIVE_SHORT_CANONICAL",
+        "data-planning-hybrid-reference-only": "false",
+        "data-filter-action": "wait_for_entry",
+        "data-filter-action-label": "Wait for entry",
+        "data-price-freshness-state": "DATA_UNAVAILABLE",
+        "data-map-lifecycle-state": "ACTIVE_4H_EXTENSION",
+        "data-selected-map-tier": selected_map_tier,
+        "data-native-map-status": "AVAILABLE",
+    }
+
+
+GOLDEN_EXPECTED: dict[str, GoldenExpected] = {
+    "01_valid_immediate_actionable": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="WAIT",
+        scenario_type="REENTRY_WAIT",
+        setup_state="REENTRY_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=(
+            "Re-entry ladder loaded: first touch 0.21, main 0.2.",
+            "Maintain the pre-planned re-entry ladder; no live wait signal is required.",
+            "Pullback below previously passed sell level 0.25.",
+            "Pullback below previously passed sell level 0.45.",
+        ),
+        invalidation_level="0.1400",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="TARGET_ACTIVE",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="FRESH",
+        reload_reentry_zone_display=("0.21", "0.2"),
+        target_exit_zone_display=("0.52",),
+        actionable_ppp_pct="225.00",
+        actionable_ppp_available=True,
+        planning_ppp_pct="160.0",
+        planning_provenance=_ACTIVE_MAP_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "225%",
+            "data-sort-ppp": "225.00",
+            "data-planning-ppp": "160%",
+            "data-planning-reference-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-entry-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-target-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "fix_ladder",
+            "data-filter-action-label": "Fix ladder",
+            "data-price-freshness-state": "FRESH",
+            "data-map-lifecycle-state": "TARGET_ACTIVE",
+            "data-selected-map-tier": "CURRENT_ACTIVE_MAP",
+            "data-native-map-status": "AVAILABLE",
+        },
+    ),
+    "02_wait_for_entry_numeric_ppp": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="REBUY_ZONE_NEAR",
+        scenario_type="REENTRY_WAIT",
+        setup_state="REENTRY_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=_FET_REBUY_REASONS,
+        invalidation_level="0.1827",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="TARGET_ACTIVE",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="FRESH",
+        reload_reentry_zone_display=("0.2142", "0.205"),
+        target_exit_zone_display=("0.52",),
+        actionable_ppp_pct="147.6190476190476190476190476",
+        actionable_ppp_available=True,
+        planning_ppp_pct="153.6585365853658536585365854",
+        planning_provenance=_ACTIVE_MAP_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "147.62%",
+            "data-sort-ppp": "147.6190476190476190476190476",
+            "data-planning-ppp": "153.66%",
+            "data-planning-reference-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-entry-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-target-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "fix_ladder",
+            "data-filter-action-label": "Fix ladder",
+            "data-price-freshness-state": "FRESH",
+            "data-map-lifecycle-state": "TARGET_ACTIVE",
+            "data-selected-map-tier": "CURRENT_ACTIVE_MAP",
+            "data-native-map-status": "AVAILABLE",
+        },
+    ),
+    "03_wait_for_reclaim_no_ppp": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="WAIT",
+        scenario_type="REENTRY_WAIT",
+        setup_state="REENTRY_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=(
+            "Re-entry ladder loaded: first touch 0.9, main 0.8.",
+            "Maintain the pre-planned re-entry ladder; no live wait signal is required.",
+        ),
+        invalidation_level="0.60",
+        target_exit_zone_len=3,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("UPCOMING",),
+        evidence_lifecycle_state="DATA_UNAVAILABLE",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="FRESH",
+        reload_reentry_zone_display=("0.9", "0.8"),
+        target_exit_zone_display=("0.95", "1.1", "1.3"),
+        actionable_ppp_pct=None,
+        actionable_ppp_available=False,
+        planning_ppp_pct="62.500",
+        planning_provenance=_ACTIVE_MAP_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "—",
+            "data-sort-ppp": "-999999",
+            "data-planning-ppp": "62.5%",
+            "data-planning-reference-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-entry-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-target-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "wait_for_entry",
+            "data-filter-action-label": "Wait for entry",
+            "data-price-freshness-state": "FRESH",
+            "data-map-lifecycle-state": "DATA_UNAVAILABLE",
+            "data-selected-map-tier": "CURRENT_ACTIVE_MAP",
+            "data-native-map-status": "AVAILABLE",
+        },
+        operator_text_snippets=("Entry above current — wait for reclaim",),
+    ),
+    "04_invalidated_setup": GoldenExpected(
+        actionability_state="INVALIDATED",
+        action_label="REBUY_ZONE_NEAR",
+        scenario_type="REENTRY_WAIT",
+        setup_state="REENTRY_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=_FET_REBUY_REASONS,
+        invalidation_level="0.1827",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="TARGET_ACTIVE",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="FRESH",
+        reload_reentry_zone_display=("0.2142", "0.205"),
+        target_exit_zone_display=("0.52",),
+        actionable_ppp_pct=None,
+        actionable_ppp_available=False,
+        planning_ppp_pct="153.6585365853658536585365854",
+        planning_provenance=_ACTIVE_MAP_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "—",
+            "data-sort-ppp": "-999999",
+            "data-planning-ppp": "153.66%",
+            "data-planning-reference-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-entry-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-target-source": "NATIVE_SHORT_CANONICAL",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "invalidated",
+            "data-filter-action-label": "Invalidated",
+            "data-price-freshness-state": "FRESH",
+            "data-map-lifecycle-state": "TARGET_ACTIVE",
+            "data-selected-map-tier": "CURRENT_ACTIVE_MAP",
+            "data-native-map-status": "AVAILABLE",
+        },
+        operator_text_snippets=("Invalidated",),
+    ),
+    "05_stale_evidence": GoldenExpected(
+        actionability_state="CONTEXT_UNAVAILABLE",
+        action_label="REVIEW_CONTEXT",
+        scenario_type="CONTEXT_UNAVAILABLE",
+        setup_state="MINIMAL_CONTEXT",
+        all_sell_targets_completed=False,
+        current_price_status="STALE_CURRENT_PRICE",
+        reasons=(
+            "Current public price snapshot is stale.",
+            "Do not use percentage distance, action labels, or scenario recommendation until price refresh succeeds.",
+        ),
+        invalidation_level="None",
+        target_exit_zone_len=0,
+        target_level_statuses_len=0,
+        target_level_lifecycle_states=(),
+        evidence_lifecycle_state="DATA_UNAVAILABLE",
+        evidence_selected_map_tier="DATA_UNAVAILABLE",
+        evidence_native_map_status="DATA_UNAVAILABLE",
+        evidence_price_freshness_state="STALE_CURRENT_PRICE",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=(),
+        actionable_ppp_pct=None,
+        actionable_ppp_available=False,
+        planning_ppp_pct=None,
+        planning_provenance=_UNAVAILABLE_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "—",
+            "data-sort-ppp": "-999999",
+            "data-planning-ppp": "—",
+            "data-planning-reference-source": "DATA_UNAVAILABLE",
+            "data-planning-entry-source": "DATA_UNAVAILABLE",
+            "data-planning-target-source": "DATA_UNAVAILABLE",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "review_context",
+            "data-filter-action-label": "Review context",
+            "data-price-freshness-state": "STALE_CURRENT_PRICE",
+            "data-map-lifecycle-state": "DATA_UNAVAILABLE",
+            "data-selected-map-tier": "DATA_UNAVAILABLE",
+            "data-native-map-status": "DATA_UNAVAILABLE",
+        },
+        operator_text_snippets=("Current public price snapshot is stale.",),
+    ),
+    "06_unavailable_evidence": GoldenExpected(
+        actionability_state="CONTEXT_UNAVAILABLE",
+        action_label="REVIEW_CONTEXT",
+        scenario_type="CONTEXT_UNAVAILABLE",
+        setup_state="MINIMAL_CONTEXT",
+        all_sell_targets_completed=False,
+        current_price_status="MISSING_CURRENT_PRICE",
+        reasons=(
+            "Current public price snapshot is missing.",
+            "Do not use percentage distance, action labels, or scenario recommendation until price refresh succeeds.",
+        ),
+        invalidation_level="None",
+        target_exit_zone_len=0,
+        target_level_statuses_len=0,
+        target_level_lifecycle_states=(),
+        evidence_lifecycle_state="DATA_UNAVAILABLE",
+        evidence_selected_map_tier="DATA_UNAVAILABLE",
+        evidence_native_map_status="DATA_UNAVAILABLE",
+        evidence_price_freshness_state="MISSING_CURRENT_PRICE",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=(),
+        actionable_ppp_pct=None,
+        actionable_ppp_available=False,
+        planning_ppp_pct=None,
+        planning_provenance=_UNAVAILABLE_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "—",
+            "data-sort-ppp": "-999999",
+            "data-planning-ppp": "—",
+            "data-planning-reference-source": "DATA_UNAVAILABLE",
+            "data-planning-entry-source": "DATA_UNAVAILABLE",
+            "data-planning-target-source": "DATA_UNAVAILABLE",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "review_context",
+            "data-filter-action-label": "Review context",
+            "data-price-freshness-state": "MISSING_CURRENT_PRICE",
+            "data-map-lifecycle-state": "DATA_UNAVAILABLE",
+            "data-selected-map-tier": "DATA_UNAVAILABLE",
+            "data-native-map-status": "DATA_UNAVAILABLE",
+        },
+        operator_text_snippets=("Current public price snapshot is missing.",),
+    ),
+    "07_active_map_complete_levels": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="TAKE_PROFIT_NEAR",
+        scenario_type="EXTENSION_RUNNER",
+        setup_state="EXTENSION_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=_EXTENSION_RUNNER_REASONS,
+        invalidation_level="0.454438",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="ACTIVE_4H_EXTENSION",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="DATA_UNAVAILABLE",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=("0.5156",),
+        actionable_ppp_pct="13.07017543859649122807017544",
+        actionable_ppp_available=True,
+        planning_ppp_pct=None,
+        planning_provenance=_native_map_planning_provenance("SOL"),
+        html_attrs=_native_map_html_attrs(selected_map_tier="CURRENT_ACTIVE_MAP"),
+    ),
+    "08_map_completed_reference": GoldenExpected(
+        actionability_state="NEEDS_RECOMPUTE",
+        action_label="WAIT_FOR_NEW_MAP",
+        scenario_type="CONTEXT_UNAVAILABLE",
+        setup_state="MAP_COMPLETED",
+        all_sell_targets_completed=True,
+        current_price_status=None,
+        reasons=(
+            "Canonical native SHORT map and scope-status truth is unavailable. No map lifecycle or successor state is inferred.",
+            "Displayed bridge levels are transient non-canonical reference context only.",
+        ),
+        invalidation_level="None",
+        target_exit_zone_len=0,
+        target_level_statuses_len=0,
+        target_level_lifecycle_states=(),
+        evidence_lifecycle_state="MAP_EXPIRED",
+        evidence_selected_map_tier="CURRENT_ACTIVE_MAP",
+        evidence_native_map_status="DATA_UNAVAILABLE",
+        evidence_price_freshness_state="FRESH",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=(),
+        actionable_ppp_pct=None,
+        actionable_ppp_available=False,
+        planning_ppp_pct=None,
+        planning_provenance=_UNAVAILABLE_PLANNING_PROVENANCE,
+        html_attrs={
+            "data-actionable-ppp": "—",
+            "data-sort-ppp": "-999999",
+            "data-planning-ppp": "—",
+            "data-planning-reference-source": "DATA_UNAVAILABLE",
+            "data-planning-entry-source": "DATA_UNAVAILABLE",
+            "data-planning-target-source": "DATA_UNAVAILABLE",
+            "data-planning-hybrid-reference-only": "false",
+            "data-filter-action": "review_context",
+            "data-filter-action-label": "Review context",
+            "data-price-freshness-state": "FRESH",
+            "data-map-lifecycle-state": "MAP_EXPIRED",
+            "data-selected-map-tier": "CURRENT_ACTIVE_MAP",
+            "data-native-map-status": "DATA_UNAVAILABLE",
+        },
+        operator_text_snippets=("MAP_COMPLETED", "REVIEW CONTEXT"),
+    ),
+    "09_fet_like_contradiction": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="TAKE_PROFIT_NEAR",
+        scenario_type="EXTENSION_RUNNER",
+        setup_state="EXTENSION_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=_EXTENSION_RUNNER_REASONS,
+        invalidation_level="0.454438",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="ACTIVE_4H_EXTENSION",
+        evidence_selected_map_tier="DATA_UNAVAILABLE",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="DATA_UNAVAILABLE",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=("0.5156",),
+        actionable_ppp_pct="13.07017543859649122807017544",
+        actionable_ppp_available=True,
+        planning_ppp_pct=None,
+        planning_provenance=_native_map_planning_provenance("FET"),
+        html_attrs=_native_map_html_attrs(selected_map_tier="DATA_UNAVAILABLE"),
+    ),
+    "10_tao_like_contradiction": GoldenExpected(
+        actionability_state="ACTIVE_TRADE_SETUP",
+        action_label="TAKE_PROFIT_NEAR",
+        scenario_type="EXTENSION_RUNNER",
+        setup_state="EXTENSION_SETUP",
+        all_sell_targets_completed=False,
+        current_price_status=None,
+        reasons=_EXTENSION_RUNNER_REASONS,
+        invalidation_level="0.454438",
+        target_exit_zone_len=1,
+        target_level_statuses_len=3,
+        target_level_lifecycle_states=("PASSED", "UPCOMING"),
+        evidence_lifecycle_state="ACTIVE_4H_EXTENSION",
+        evidence_selected_map_tier="DATA_UNAVAILABLE",
+        evidence_native_map_status="AVAILABLE",
+        evidence_price_freshness_state="DATA_UNAVAILABLE",
+        reload_reentry_zone_display=(),
+        target_exit_zone_display=("0.5156",),
+        actionable_ppp_pct="13.07017543859649122807017544",
+        actionable_ppp_available=True,
+        planning_ppp_pct=None,
+        planning_provenance=_native_map_planning_provenance("TAO"),
+        html_attrs=_native_map_html_attrs(selected_map_tier="DATA_UNAVAILABLE"),
+    ),
+}
+
+
 GOLDEN_SCENARIOS: dict[str, Callable[[], ProfitPlanCard]] = {
     "01_valid_immediate_actionable": _golden_01_valid_immediate_actionable,
     "02_wait_for_entry_numeric_ppp": _golden_02_wait_for_entry_numeric_ppp,
@@ -458,6 +929,70 @@ def test_golden_09_10_contradiction_regression(symbol_key: str) -> None:
 
 def test_all_ten_golden_scenarios_registered() -> None:
     assert len(GOLDEN_SCENARIOS) == 10
+
+
+def test_all_ten_golden_scenarios_have_frozen_expectations() -> None:
+    assert set(GOLDEN_EXPECTED) == set(GOLDEN_SCENARIOS)
+
+
+# ---------------------------------------------------------------------------
+# B2. Real golden-output freeze gate (Codex P1, PR #712)
+#
+# Unlike the supplemental parity checks above and below -- which compare the
+# renderer/JSON writer against *each other*, and therefore cannot detect a
+# coordinated regression that changes the shared production formatting/action
+# helpers themselves -- this test compares the card/HTML/JSON contract
+# against hard-coded ``GoldenExpected`` literals in this file. Those literals
+# are frozen contract values, not derived at test time from
+# ``_actionable_ppp``, ``_effective_workflow_action``, ``_filter_display_label``,
+# ``_filter_value_from_label``, ``_native_map_status``, ``_pct``, or any other
+# production formatting/action helper. Only identity/non-semantic fields
+# (render_id / writer_instance_id / UUID4 identity) are normalized; nothing
+# semantic (labels, PPP formatting, lifecycle, freshness, reasons, map
+# status, presentation wording) is normalized away.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", list(GOLDEN_SCENARIOS.keys()))
+def test_golden_frozen_baseline(name: str) -> None:
+    card = GOLDEN_SCENARIOS[name]()
+    expected = GOLDEN_EXPECTED[name]
+
+    assert card.actionability_state == expected.actionability_state
+    assert card.action_label == expected.action_label
+    assert card.scenario_type == expected.scenario_type
+    assert card.setup_state == expected.setup_state
+    assert card.all_sell_targets_completed == expected.all_sell_targets_completed
+    assert card.current_price_status == expected.current_price_status
+    assert tuple(card.reasons) == expected.reasons
+    assert str(card.invalidation_level) == expected.invalidation_level
+    assert len(card.target_exit_zone) == expected.target_exit_zone_len
+    assert len(card.target_level_statuses) == expected.target_level_statuses_len
+    actual_lifecycle_states = tuple(sorted({level.lifecycle_state for level in card.target_level_statuses}))
+    assert actual_lifecycle_states == expected.target_level_lifecycle_states
+    assert card.evidence.lifecycle_state == expected.evidence_lifecycle_state
+    assert card.evidence.selected_map_tier == expected.evidence_selected_map_tier
+    assert card.evidence.native_map_status == expected.evidence_native_map_status
+    assert card.evidence.price_freshness_state == expected.evidence_price_freshness_state
+
+    html = render_plan_card(card)
+    row = build_json_snapshot([card], snapshot_ts="2026-06-05T12:00:00Z")["symbols"][0]
+
+    assert row["reload_reentry_zone_display"] == list(expected.reload_reentry_zone_display)
+    assert row["target_exit_zone_display"] == list(expected.target_exit_zone_display)
+    assert row["actionable_ppp_pct"] == expected.actionable_ppp_pct
+    assert row["actionable_ppp_available"] is expected.actionable_ppp_available
+    assert row["planning_ppp_pct"] == expected.planning_ppp_pct
+    assert row["planning_provenance"] == expected.planning_provenance
+    assert row["action_label"] == expected.action_label
+    assert row["actionability_state"] == expected.actionability_state
+    assert row["current_price_status"] == expected.current_price_status
+    assert row["reasons"] == list(expected.reasons)
+
+    for attr, value in expected.html_attrs.items():
+        assert _require_attr(html, attr) == value, f"{name}: unexpected {attr}"
+
+    for snippet in expected.operator_text_snippets:
+        assert snippet in html, f"{name}: missing expected operator text {snippet!r}"
 
 
 _UUID4_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")

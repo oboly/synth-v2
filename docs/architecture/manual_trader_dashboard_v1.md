@@ -290,7 +290,23 @@ carry a deterministic, non-blank formatted reason
 `test_html_json_agreement_core_fields` (parametrized over all ten scenarios)
 proves Actionable PPP, action/wait state, freshness/unavailable state,
 lifecycle/map state, re-entry/target levels, and no-action reasons all agree
-between the JSON read-model and the rendered HTML.
+between the JSON read-model and the rendered HTML. This is supplemental
+parity coverage: it compares the renderer and JSON writer against each
+other, so it cannot by itself detect a coordinated regression in the shared
+formatting/action helpers both paths call.
+
+### Frozen golden baseline (independent of production helpers)
+
+`test_golden_frozen_baseline` (parametrized over all ten scenarios) is the
+actual freeze gate: it compares the card/HTML/JSON contract against
+hard-coded `GoldenExpected` literals recorded in the test file, not values
+recomputed at test time via `_actionable_ppp`, `_effective_workflow_action`,
+`_filter_display_label`, `_filter_value_from_label`, `_native_map_status`,
+`_pct`, or any other production formatting/action helper. Only
+identity/non-semantic fields (`render_id`, `writer_instance_id`, UUID4
+identity) are normalized before comparison; labels, PPP formatting,
+lifecycle, freshness, reasons, map status, and presentation wording are
+compared verbatim against the frozen literals.
 
 ## Safety markers
 
