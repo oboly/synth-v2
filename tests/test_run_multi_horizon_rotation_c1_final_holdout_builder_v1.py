@@ -16,7 +16,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     CANDIDATE_ID,
     PHASE,
     RunnerInterrupted,
-    acquire_resume_lease_exclusive,
+    acquire_run_lease_exclusive,
     canonical_run_dir,
     checkpoint_path,
     create_registry_entry_exclusive,
@@ -30,7 +30,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     reconcile_partial_to_checkpoint,
     registry_entry_path,
     registry_key_for,
-    resume_lease_path,
+    run_lease_path,
     select_c1_spec,
     validate_resume_checkpoint,
     write_checkpoint,
@@ -728,7 +728,7 @@ def test_running_registry_state_permits_exact_resume(tmp_path: Path, monkeypatch
     assert exit_code == 0
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
-    assert not resume_lease_path(registry_key).exists()
+    assert not run_lease_path(registry_key).exists()
 
 
 def test_failed_registry_state_denies_resume_forever(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -902,7 +902,7 @@ def test_sigint_interrupts_cleanly_and_resume_completes_without_duplicates(
     assert len(set(asofs)) == 2
     assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
-    assert not resume_lease_path(registry_key).exists()
+    assert not run_lease_path(registry_key).exists()
 
 
 def test_sigint_during_resume_releases_lease_and_leaves_interrupted(
@@ -972,7 +972,7 @@ def test_sigint_during_resume_releases_lease_and_leaves_interrupted(
 
     assert load_checkpoint(cp_path)["terminal_state"] == "INTERRUPTED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "INTERRUPTED"
-    lease_path = resume_lease_path(registry_key)
+    lease_path = run_lease_path(registry_key)
     assert not lease_path.exists()
 
     # A further explicit resume is allowed and completes.
@@ -1246,7 +1246,7 @@ def test_manifest_mismatch_denied_on_resume_and_marks_failed(
     assert exit_code == 1
     assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FAILED"
-    assert not resume_lease_path(registry_key).exists()
+    assert not run_lease_path(registry_key).exists()
 
 
 def test_c1_only_result_from_replay_enforced_marks_failed(
@@ -1315,10 +1315,10 @@ def test_c1_only_result_from_replay_enforced_marks_failed(
     assert exit_code_resume_retry == 1
 
 
-# --- Resume lease: exclusivity, release, and no-mutation-on-loss ---------
+# --- Run lease: exclusivity, release, and no-mutation-on-loss -----------
 
 
-def test_existing_resume_lease_denies_resume_before_any_partial_mutation(
+def test_existing_run_lease_denies_resume_before_any_partial_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
@@ -1364,8 +1364,8 @@ def test_existing_resume_lease_denies_resume_before_any_partial_mutation(
     )
 
     # Simulate another resume already holding the lease.
-    lease_path = resume_lease_path(registry_key)
-    won = acquire_resume_lease_exclusive(lease_path, registry_key=registry_key)
+    lease_path = run_lease_path(registry_key)
+    won = acquire_run_lease_exclusive(lease_path, registry_key=registry_key)
     assert won is True
     lease_bytes_before = lease_path.read_bytes()
     checkpoint_before = load_checkpoint(cp_path)
@@ -1443,13 +1443,13 @@ def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
     )
 
     barrier = threading.Barrier(2, timeout=5)
-    real_acquire = module.acquire_resume_lease_exclusive
+    real_acquire = module.acquire_run_lease_exclusive
 
     def synced_acquire(path: Path, *, registry_key: str) -> bool:
         barrier.wait()  # both threads reach the exclusive lease-acquire together
         return real_acquire(path, registry_key=registry_key)
 
-    monkeypatch.setattr(module, "acquire_resume_lease_exclusive", synced_acquire)
+    monkeypatch.setattr(module, "acquire_run_lease_exclusive", synced_acquire)
 
     def run() -> int:
         return module.main(
@@ -1484,4 +1484,124 @@ def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
     assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
 
     # Lease absent once the winner has finished.
-    assert not resume_lease_path(registry_key).exists()
+    assert not run_lease_path(registry_key).exists()
+
+
+def test_resume_racing_active_fresh_run_fails_closed_with_zero_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the exact-head Codex BLOCK: a fresh runner did not hold the
+    run lease until after it had already written its RUNNING checkpoint, so a
+    concurrent --resume against that same checkpoint could acquire a
+    (previously resume-only) lease and run alongside the still-active fresh
+    process. Now fresh and resumed execution share ONE run lease, acquired by
+    the fresh runner immediately after it wins authoritative registry creation
+    and held continuously through replay/checkpoint/finalization. A --resume
+    that observes the RUNNING registry/checkpoint while the fresh runner still
+    owns that lease must fail closed -- before any reconciliation or replay --
+    and the still-active fresh runner must be left free to finish alone."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    monkeypatch.setattr(module, "install_interrupt_handlers", lambda: {})  # threads can't signal.signal()
+
+    reconcile_calls = {"n": 0}
+    real_reconcile = module.reconcile_partial_to_checkpoint
+
+    def counting_reconcile(*args, **kwargs):
+        reconcile_calls["n"] += 1
+        return real_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(module, "reconcile_partial_to_checkpoint", counting_reconcile)
+
+    fresh_mid_replay = threading.Event()
+    allow_fresh_to_finish = threading.Event()
+    real_evaluate_candidate = module.evaluate_candidate
+    call_count = {"n": 0}
+
+    def blocking_evaluate_candidate(*, candles_by_asset, asof_ts, spec, venue):
+        # By the time this is called at least once, the fresh runner has already
+        # won registry creation, acquired the run lease, and written its initial
+        # RUNNING local checkpoint -- exactly the "registry + local RUNNING
+        # checkpoint exist while fresh still owns the run lease" window the
+        # required regression scenario targets.
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            fresh_mid_replay.set()
+            assert allow_fresh_to_finish.wait(timeout=5), "test deadlocked waiting for resume attempt"
+        return real_evaluate_candidate(
+            candles_by_asset=candles_by_asset, asof_ts=asof_ts, spec=spec, venue=venue
+        )
+
+    monkeypatch.setattr(module, "evaluate_candidate", blocking_evaluate_candidate)
+
+    def run_fresh() -> int:
+        return module.main(
+            ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+        )
+
+    def run_resume() -> int:
+        assert fresh_mid_replay.wait(timeout=5), "test deadlocked waiting for fresh run to open the holdout"
+        try:
+            return module.main(
+                [
+                    "--split-manifest",
+                    str(manifest_path),
+                    "--source-integrity",
+                    str(integrity_path),
+                    "--resume",
+                ]
+            )
+        finally:
+            allow_fresh_to_finish.set()
+
+    cp_path = checkpoint_path(tmp_path)
+    partial_path = tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_fresh = executor.submit(run_fresh)
+        future_resume = executor.submit(run_resume)
+        exit_fresh = future_fresh.result()
+        exit_resume = future_resume.result()
+
+    # The fresh winner is allowed to continue and finish; the racing resume
+    # fails closed.
+    assert exit_fresh == 0
+    assert exit_resume != 0
+
+    # The denied resume never reached partial reconciliation/replay: it failed
+    # at the shared run-lease acquisition, which happens before source
+    # integrity is even reverified and strictly before reconcile_partial_to_checkpoint
+    # is ever called.
+    assert reconcile_calls["n"] == 0
+
+    manifest_sha = module.manifest_fingerprint(manifest)
+    registry_key = registry_key_for(
+        manifest_sha256=manifest_sha,
+        source_integrity_composite_sha256="fixed",
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+
+    # Exactly one final artifact/summary, no duplicate rows: the denied resume
+    # performed zero output mutation of its own.
+    artifact = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+    summary = tmp_path / "final_holdout_c1_summary_v1.json"
+    assert artifact.exists()
+    assert summary.exists()
+    lines = artifact.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    asofs = [json.loads(line)["asof_ts"] for line in lines]
+    assert len(asofs) == len(set(asofs)) == 2
+
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_entry_path(registry_key))["terminal_state"] == "FINISHED"
+
+    # The run lease -- shared by fresh and resumed execution -- is removed only
+    # after the fresh winner reaches terminal completion.
+    assert not run_lease_path(registry_key).exists()
+    assert not partial_path.exists()
