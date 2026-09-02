@@ -13,6 +13,7 @@ from src.features.rotation_evidence_contract_v1 import (
     INPUT_INTERVAL,
     LOOKBACK_HORIZON,
     MODEL_ID,
+    ROTATION_STALE_AFTER,
     build_rotation_pressure_evidence,
 )
 
@@ -50,6 +51,10 @@ def test_valid_evidence_maps_family_component_and_horizon():
     assert evidence.effective_horizon == EffectiveHorizon.REGIME
     assert evidence.observed_lifecycle.status == LifecycleStatus.UNMEASURED
     assert evidence.asof_ts == ASOF_AWARE
+
+
+def test_rotation_stale_after_is_90_minutes():
+    assert ROTATION_STALE_AFTER == timedelta(minutes=90)
 
 
 def test_raw_score_and_state_preserved_exactly():
@@ -123,37 +128,88 @@ def test_asof_after_evaluation_is_explicit_not_silently_fresh():
     assert ReasonCode.ASOF_AFTER_EVALUATION_TS in evidence.reason_codes
 
 
-def test_freshness_is_unknown_without_a_reviewed_producer_owned_rule():
-    """No producer-owned staleness rule has been reviewed/adopted for this
-    lane (the dashboard's 2h30 rule is consumer-owned only, per the #676
-    owner decision). Freshness must stay UNKNOWN and the evidence must fail
-    closed, even for a row that is only minutes old."""
+def test_fresh_at_recent_asof_and_active_when_otherwise_valid():
+    """A recent, valid row (well inside 90m, valid model_version) resolves
+    to FRESH and VALID -- i.e. it may become active/available downstream
+    once all other canonical requirements pass, per the #547 Phase C owner
+    decision."""
     evidence = build_rotation_pressure_evidence(
         _row(), evaluated_at=ASOF_AWARE + timedelta(minutes=5)
     )
-    assert evidence.freshness == FreshnessState.UNKNOWN
-    assert ReasonCode.FRESHNESS_NOT_OWNER_DEFINED in evidence.reason_codes
-    assert evidence.status == EvidenceStatus.INSUFFICIENT_DATA
+    assert evidence.freshness == FreshnessState.FRESH
+    assert ReasonCode.STALE_EVIDENCE not in evidence.reason_codes
+    assert evidence.status == EvidenceStatus.VALID
+
+
+def test_exact_90_minute_boundary_is_fresh():
+    evidence = build_rotation_pressure_evidence(
+        _row(), evaluated_at=ASOF_AWARE + ROTATION_STALE_AFTER
+    )
+    assert evidence.freshness == FreshnessState.FRESH
+    assert evidence.status == EvidenceStatus.VALID
+
+
+def test_90_minutes_plus_epsilon_is_stale():
+    evidence = build_rotation_pressure_evidence(
+        _row(),
+        evaluated_at=ASOF_AWARE + ROTATION_STALE_AFTER + timedelta(microseconds=1),
+    )
+    assert evidence.freshness == FreshnessState.STALE
+    assert ReasonCode.STALE_EVIDENCE in evidence.reason_codes
+    assert evidence.status == EvidenceStatus.STALE
 
 
 def test_freshness_cannot_be_supplied_by_arbitrary_caller_override():
     """`build_rotation_pressure_evidence` exposes no threshold/override
-    parameter -- freshness is derived solely from `compute_freshness`,
-    which has no caller-configurable staleness knob."""
+    parameter -- freshness is derived solely from the module's own
+    `ROTATION_STALE_AFTER`, which has no caller-configurable staleness
+    knob."""
     import inspect
 
     signature = inspect.signature(build_rotation_pressure_evidence)
     assert "stale_after_multiplier" not in signature.parameters
     assert "freshness" not in signature.parameters
     assert "freshness_override" not in signature.parameters
+    assert "rotation_stale_after" not in signature.parameters
 
 
 def test_replay_uses_supplied_row_not_current_wallclock():
+    """A very old asof relative to the supplied `evaluated_at` resolves to
+    STALE deterministically from the two supplied timestamps -- never from
+    any internal wall-clock read (`evaluated_at` is a required argument
+    with no default and no internal `now()` call exists in this module)."""
     evidence = build_rotation_pressure_evidence(
         _row(), evaluated_at=ASOF_AWARE + timedelta(days=400)
     )
-    assert evidence.freshness == FreshnessState.UNKNOWN
+    assert evidence.freshness == FreshnessState.STALE
     assert evidence.asof_ts == ASOF_AWARE
+    assert evidence.status == EvidenceStatus.STALE
+
+
+def test_aware_utc_asof_input_is_accepted_directly():
+    """A row whose `as_of_ts_utc` already carries tzinfo (a hypothetical
+    aware-UTC producer input, unlike the real naive-UTC column) must
+    normalize and classify identically to the naive-UTC case."""
+    evidence = build_rotation_pressure_evidence(
+        _row(as_of_ts_utc=ASOF_AWARE), evaluated_at=ASOF_AWARE + timedelta(minutes=5)
+    )
+    assert evidence.asof_ts == ASOF_AWARE
+    assert evidence.freshness == FreshnessState.FRESH
+    assert evidence.status == EvidenceStatus.VALID
+
+
+def test_no_wall_clock_read_in_module_source():
+    """No implicit wall-clock fallback: this module must never call
+    `datetime.now()`/`datetime.utcnow()` internally -- freshness is always
+    derived solely from the caller-supplied `evaluated_at`."""
+    import inspect
+
+    import src.features.rotation_evidence_contract_v1 as module
+
+    source = inspect.getsource(module)
+    assert "datetime.now(" not in source
+    assert ".utcnow()" not in source
+    assert "utcnow(" not in source
 
 
 def test_reason_codes_are_deterministic_across_calls():
