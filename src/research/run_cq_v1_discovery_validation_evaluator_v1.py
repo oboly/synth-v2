@@ -25,7 +25,6 @@ import json
 import re
 import signal
 from pathlib import Path
-from statistics import mean
 from typing import Any
 
 from src.research import cq_v1_discovery_validation_evaluator_v1 as core
@@ -63,40 +62,6 @@ class _RunnerInterrupted(Exception):
     def __init__(self, signum: int) -> None:
         super().__init__(f"signal={signum}")
         self.signum = signum
-
-
-def _build_buckets_allow_partial_metrics(rows: list[dict[str, Any]], score: str) -> list[dict[str, Any]]:
-    """Preserve rank buckets while tolerating missing non-selected outcomes."""
-    ordered = sorted(rows, key=lambda row: (float(row["scores"][score]), str(row["observation_id"])))
-    n = len(ordered)
-    bucket_count = core._bucket_count_for(n)
-    buckets: list[dict[str, Any]] = []
-    for bucket_index in range(bucket_count):
-        bucket_rows = [
-            row
-            for rank, row in enumerate(ordered)
-            if min(bucket_count - 1, (rank * bucket_count) // n) == bucket_index
-        ]
-        score_vals = [float(row["scores"][score]) for row in bucket_rows]
-        bucket: dict[str, Any] = {
-            "bucket": bucket_index + 1,
-            "n": len(bucket_rows),
-            "score_min": min(score_vals) if score_vals else None,
-            "score_max": max(score_vals) if score_vals else None,
-            "score_mean": mean(score_vals) if score_vals else None,
-        }
-        for outcome_metric in core.OUTCOME_METRICS:
-            values = [
-                float(row[outcome_metric])
-                for row in bucket_rows
-                if core._number(row.get(outcome_metric)) is not None
-            ]
-            bucket[outcome_metric] = core._stats(values)
-        buckets.append(bucket)
-    return buckets
-
-
-core.build_buckets = _build_buckets_allow_partial_metrics
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -142,7 +107,6 @@ def _extract_json_int_field(raw: str, key: str) -> int:
 
 
 def _holdout_identity_only(raw: str) -> dict[str, Any]:
-    """Extract holdout identity without deserializing analytical metric fields."""
     return {
         "outcome_id": _extract_json_string_field(raw, "outcome_id"),
         "observation_id": _extract_json_string_field(raw, "observation_id"),
@@ -154,14 +118,6 @@ def _holdout_identity_only(raw: str) -> dict[str, Any]:
 
 
 def _load_outcomes_sealed(path: Path, eval_splits: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Validate all outcome identities while materializing analytics only for open splits.
-
-    Holdout lines are never passed wholesale to ``json.loads``. Only the frozen
-    identity fields are extracted from their raw JSONL text. Discovery and/or
-    validation rows requested by the evaluator are fully deserialized after
-    the split gate, so downstream analytical code never receives holdout
-    metric values.
-    """
     actual_sha = core._sha256_path(path)
     if actual_sha != core.PINNED_OUTCOMES_SHA256:
         raise ValueError(
@@ -184,8 +140,6 @@ def _load_outcomes_sealed(path: Path, eval_splits: tuple[str, ...]) -> list[dict
         elif split == "holdout":
             rows.append(_holdout_identity_only(raw))
         else:
-            # A closed non-holdout split (e.g. validation during discovery-only)
-            # is also identity-only so analytics are read only for requested splits.
             rows.append(
                 {
                     "outcome_id": _extract_json_string_field(raw, "outcome_id"),
