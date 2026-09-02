@@ -17,10 +17,13 @@ In particular, generic Market Breath is not MA breadth:
 MARKET_BREATH_EQUIVALENT_TO_MA_BREADTH=0
 ```
 
-Current main has no SMA50/SMA150/SMA200 computation or persisted aggregate
-measurement for the required participation percentages. The nearest live path
-is a reporting-side, on-demand per-asset Market Breath calculation that imports
-research code; it cannot be promoted merely because it is used by a live
+Current main has reusable **per-series** SMA20/SMA50 computation in
+`src/features/candle_feat_builder.py`, including `close_above_sma50`. It does
+not have a canonical persisted **aggregate** MA-breadth measurement for the
+required participation percentages, and it has no shared SMA150/SMA200
+primitive established by this audit. The nearest live path is a reporting-side,
+on-demand per-asset Market Breath calculation that imports research code; it
+cannot be promoted merely because it is used by a live
 readout. The next #310 phase must define and validate a minimal, persisted,
 production-safe market-only MA-breadth producer before #315 or #617 consumes
 any MA-breadth evidence.
@@ -56,10 +59,13 @@ universe_above_sma200_pct
 universe_bullish_ma_stack_pct
 ```
 
-None is calculated, persisted, or consumed on current main. There is no
-SMA50/SMA150/SMA200 calculation in `src/`, no matching migration/table, and
-no runner, timer, or test. Consequently, none of the following can currently
-be truthfully supplied: an MA-breadth universe/cohort version, coverage
+None is calculated, persisted, or consumed as an aggregate MA-breadth output
+on current main. `src/features/candle_feat_builder.py` already computes
+per-series SMA20/SMA50 and `close_above_sma50`; these are reusable upstream
+primitive evidence, not cross-sectional breadth. No SMA150/SMA200 primitive,
+aggregate output, matching aggregate migration/table, aggregate runner, timer,
+or aggregate test was found. Consequently, none of the following can currently
+be truthfully supplied for canonical aggregate breadth: a universe/cohort version, coverage
 numerator/denominator, missing-history denominator policy, MA model identity,
 or a persisted as-of/freshness record.
 
@@ -81,30 +87,41 @@ or a persisted as-of/freshness record.
 
 ### 2. `feat_candle`: production feature primitives, not MA breadth
 
+`src/features/candle_feat_builder.py` is a shared per-series feature builder.
+Its default `CandleFeatureConfig` computes SMA20/SMA50 separately for each
+`(market, interval)` final-candle series, and its breakout stage emits
+`close_above_sma50` (as well as `close_above_sma20`). This is reusable upstream
+market-only primitive evidence. It has no aggregate universe definition,
+aggregate snapshot, or breadth coverage contract, so it is not itself market
+breadth. A future owner must consume this accepted SMA50 primitive where
+suitable rather than duplicate its calculation; it must separately audit
+whether SMA150/SMA200 require an extension of this shared primitive layer
+before adding any aggregate breadth.
+
 `src/features/etl_candle_feat.py`, invoked by
 `src.features.run_feat_candle`, is the existing market-only feature-chain
 owner of persisted per-asset measurements in `feat_candle`. The 4h runtime
 chain refreshes it before downstream signal work. It persists `close_ts_utc`,
 `interval_code`, EMA20/EMA50, RSI/ATR, and volume primitives. It does not
-calculate SMA50, SMA150, SMA200, MA stack state, or any aggregate percentage.
+persist the shared builder's SMA50/`close_above_sma50` outputs, calculate
+SMA150/SMA200, MA stack state, or any aggregate percentage.
 
 The feature writer has a 300-bar warmup default, but that implementation
 detail is not an MA-breadth contract and does not establish a future
-aggregate's cohort policy. Per-asset EMA output cannot be silently aggregated
-into SMA breadth: that would introduce new production semantics, including
-different indicator definitions, eligibility, denominator, and snapshot
-alignment.
+aggregate's cohort policy. Per-series MA primitives cannot be silently
+aggregated into MA breadth: that would introduce production semantics for
+eligibility, denominator, snapshot alignment, and coverage.
 
 | contract item | current `feat_candle` evidence |
 | --- | --- |
 | owner / boundary | `features`; market-only persisted primitive measurement |
 | universe | per enabled asset; no retained aggregate cohort identity/version |
 | input interval | per row (`interval_code`); active chain commonly uses `4h` |
-| lookback | EMA20/EMA50 and volume 20-bar windows; not SMA50/150/200 |
+| lookback | persisted EMA20/EMA50 and volume 20-bar windows; shared builder supplies per-series SMA20/SMA50, not SMA150/200 |
 | effective horizon / lifecycle | not emitted for MA breadth; lifecycle unmeasured |
 | as-of / freshness | `close_ts_utc` exists; no aggregate MA-breadth freshness owner |
 | coverage / missing history | null per primitive as warmup/history requires; no aggregate accounting |
-| model/version / classifications | no MA-breadth model or classifications |
+| model/version / classifications | `close_above_sma50` is per-series feature truth; no aggregate MA-breadth model or classifications |
 | validation / replay | per-asset deterministic feature computation; no MA-breadth validation or replay artifact |
 | consumers | signal, structure/fib and chart paths consume primitives; no MA-breadth consumer |
 
@@ -209,7 +226,8 @@ market-only, production-safe MA-breadth snapshot owner. Before it may supply
 #315/#617, that owner must define and validate:
 
 1. a reproducible, versioned eligible universe/cohort and its inclusion rules;
-2. interval and SMA50/SMA150/SMA200 computation/history semantics;
+2. interval and SMA50/SMA150/SMA200 history semantics, consuming the accepted
+   per-series SMA50 primitive where suitable rather than duplicating it;
 3. explicit eligible, excluded-missing-history, and stale counts plus the
    denominator used by each raw percentage;
 4. `asof_ts`, producer-owned freshness, `model_id`, `model_version`, and
@@ -217,7 +235,9 @@ market-only, production-safe MA-breadth snapshot owner. Before it may supply
 5. append-safe/persisted snapshot identity and point-in-time replay behavior;
 6. focused validation of raw MA participation measurements, separate from the
    existing Market Breath phase validation; and
-7. only after validation, any secondary labels/reason codes. Gauge bands or
+7. an explicit shared-primitive-layer decision for SMA150/SMA200 before those
+   aggregate metrics are added; and
+8. only after validation, any secondary labels/reason codes. Gauge bands or
    thresholds are intentionally not specified here.
 
 The future owner may reuse accepted market-data/feature infrastructure, but
