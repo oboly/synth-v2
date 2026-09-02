@@ -73,10 +73,12 @@ def test_parse_weekly_payload_sets_close_to_plus_seven_days() -> None:
     rows = etl.parse_bitvavo_payload(
         asset_id=1,
         venue="bitvavo",
+        market="WLD-EUR",
         interval_code="1W",
         payload=[[1748822400000, "1.0", "2.0", "0.5", "1.5", "12.0"]],
     )
     assert rows[0].interval_code == "1w"
+    assert rows[0].market == "WLD-EUR"
     assert rows[0].open_ts_utc == datetime(2025, 6, 2, 0, 0)
     assert rows[0].close_ts_utc == datetime(2025, 6, 9, 0, 0)
 
@@ -148,6 +150,7 @@ def _week_gap_rows() -> list[etl.CandleRow]:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
+            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 5, 19, 0, 0),
             close_ts_utc=datetime(2025, 5, 26, 0, 0),
@@ -160,6 +163,7 @@ def _week_gap_rows() -> list[etl.CandleRow]:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
+            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 6, 2, 0, 0),
             close_ts_utc=datetime(2025, 6, 9, 0, 0),
@@ -218,6 +222,7 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
+            market="WLD-EUR",
             interval_code="1w",
             open_ts_utc=datetime(2025, 5, 19, 0, 0),
             close_ts_utc=datetime(2025, 5, 26, 0, 0),
@@ -233,6 +238,7 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
     sql, payload = conn.cursor_instance.executemany_calls[0]
     assert "ON DUPLICATE KEY UPDATE" in sql
     assert payload[0]["interval_code"] == "1w"
+    assert payload[0]["market"] == "WLD-EUR"
     assert payload[0]["volume_quote_eur"] == str(Decimal("15.00"))
 
 

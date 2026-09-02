@@ -80,6 +80,7 @@ class CandleRow:
     low: Decimal
     close: Decimal
     volume: Decimal
+    market: str = ""
 
 
 def build_requests_session() -> requests.Session:
@@ -229,6 +230,7 @@ def parse_bitvavo_payload(
     *,
     asset_id: int,
     venue: str,
+    market: str,
     interval_code: str,
     payload: list[list[Any]],
 ) -> list[CandleRow]:
@@ -247,6 +249,7 @@ def parse_bitvavo_payload(
             CandleRow(
                 asset_id=asset_id,
                 venue=venue,
+                market=market,
                 interval_code=interval_code,
                 open_ts_utc=open_ts.replace(tzinfo=None),
                 close_ts_utc=close_ts.replace(tzinfo=None),
@@ -392,11 +395,14 @@ def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) ->
     require_writer_mutation_authorization(authorization, "public_candle_freshness")
     if not rows:
         return 0
+    if any(not row.market for row in rows):
+        raise ValueError("candle market identity is required")
 
     sql = """
     INSERT INTO obs_market_candle (
         asset_id,
         venue,
+        market,
         interval_code,
         open_ts_utc,
         close_ts_utc,
@@ -409,6 +415,7 @@ def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) ->
     ) VALUES (
         %(asset_id)s,
         %(venue)s,
+        %(market)s,
         %(interval_code)s,
         %(open_ts_utc)s,
         %(close_ts_utc)s,
@@ -433,6 +440,7 @@ def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) ->
         {
             "asset_id": row.asset_id,
             "venue": row.venue,
+            "market": row.market,
             "interval_code": row.interval_code,
             "open_ts_utc": row.open_ts_utc,
             "close_ts_utc": row.close_ts_utc,
@@ -531,6 +539,7 @@ def run_market_interval(
         parsed_rows = parse_bitvavo_payload(
             asset_id=asset_id,
             venue=venue,
+            market=market,
             interval_code=interval_code,
             payload=raw_payload,
         )
