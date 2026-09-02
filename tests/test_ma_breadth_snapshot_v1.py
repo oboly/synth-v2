@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import pandas as pd
 import pytest
-from src.features.ma_breadth_snapshot_v1 import MABreadthInputError, UniverseMember, build_snapshot, fetch_candles_at_or_before, universe_identity
+from src.features.ma_breadth_snapshot_v1 import MABreadthInputError, UniverseMember, build_snapshot, fetch_candles_at_or_before, persist_snapshot, universe_identity
 
 ASOF = datetime(2026, 9, 1, tzinfo=UTC)
 MEMBERS = [UniverseMember(1, "BTC-EUR", "BTC"), UniverseMember(2, "ETH-EUR", "ETH")]
@@ -173,3 +173,57 @@ def test_stale_and_insufficient_history_have_distinct_exact_asof_provenance():
     assert result.universe_above_sma50_count == 1
     assert result.universe_above_sma50_pct == Decimal("50")
     assert result.coverage_pct == Decimal("50")
+
+
+
+class _PersistenceCursor:
+    def __init__(self, identities):
+        self.identities = identities
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, _sql, values):
+        identity = (values[0], values[1], values[2], values[3], values[4], values[5], values[9], values[10])
+        if identity in self.identities:
+            return 0
+        self.identities.add(identity)
+        return 1
+
+
+class _PersistenceConn:
+    def __init__(self):
+        self.identities = set()
+        self.commits = 0
+
+    def cursor(self):
+        return _PersistenceCursor(self.identities)
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_persistence_identity_distinguishes_same_hash_universe_versions(monkeypatch):
+    monkeypatch.setattr(
+        "src.operations.writer_capability_authorization_v1.require_writer_mutation_authorization",
+        lambda *_args: None,
+    )
+    conn = _PersistenceConn()
+    snapshot = build_snapshot(
+        members=[MEMBERS[0]], candles=_frame(_candles(1, 50, 1)),
+        asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h",
+    )
+    changed_version = type(snapshot)(**{**snapshot.__dict__, "universe_version": "asset_publication_cohort_v2"})
+
+    assert persist_snapshot(conn, snapshot, authorization=object()) == "CREATED"
+    assert persist_snapshot(conn, changed_version, authorization=object()) == "CREATED"
+    assert persist_snapshot(conn, changed_version, authorization=object()) == "NOOP_ALREADY_EXISTS"
+    assert conn.commits == 3
+
+
+def test_migration_keys_snapshot_idempotency_by_universe_contract():
+    migration = open("db/migrations/20260902_ma_breadth_snapshot_v1.sql", encoding="utf-8").read()
+    assert "(asof_ts_utc, venue, universe_id, universe_version, universe_hash, input_interval, model_id, model_version)" in migration

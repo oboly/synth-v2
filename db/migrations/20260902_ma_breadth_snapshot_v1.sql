@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS ma_breadth_snapshot_v1 (
     universe_above_sma50_pct DECIMAL(7,4) NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (ma_breadth_snapshot_id),
-    UNIQUE KEY uq_ma_breadth_identity (asof_ts_utc, venue, universe_hash, input_interval, model_id, model_version),
+    UNIQUE KEY uq_ma_breadth_identity (asof_ts_utc, venue, universe_id, universe_version, universe_hash, input_interval, model_id, model_version),
     KEY idx_ma_breadth_latest (venue, model_id, model_version, asof_ts_utc),
     CONSTRAINT chk_ma_breadth_coverage CHECK (coverage_pct BETWEEN 0 AND 100),
     CONSTRAINT chk_ma_breadth_pct CHECK (universe_above_sma50_pct IS NULL OR universe_above_sma50_pct BETWEEN 0 AND 100),
