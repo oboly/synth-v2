@@ -49,8 +49,6 @@ PINNED_SPLIT_OUTCOME_ROW_COUNTS = {
     "holdout": 12012,
 }
 
-# CLI-facing evaluation scopes. "holdout" and "all" are intentionally absent:
-# this evaluator implementation does not enable holdout analytics.
 ALLOWED_EVAL_SPLITS = ("discovery", "validation", "discovery_validation")
 
 CQ_V0 = "cq_v0"
@@ -67,10 +65,6 @@ BASELINE_SCORES = (
     CQ_V1_ANCHOR,
 )
 
-# Frozen candidate formulas (issue #684 task contract):
-#   cq_v1_balanced = 0.50 * cq_v0 + 0.50 * normalized_mrp_aggregate
-#   cq_v1_anchor   = 0.75 * cq_v0 + 0.25 * normalized_mrp_aggregate
-#   normalized_mrp_aggregate = (mrp_aggregate.market_score + 100) / 200
 CQ_V1_BALANCED_CQ_V0_WEIGHT = Decimal("0.50")
 CQ_V1_BALANCED_MRP_WEIGHT = Decimal("0.50")
 CQ_V1_ANCHOR_CQ_V0_WEIGHT = Decimal("0.75")
@@ -86,7 +80,7 @@ PAIRWISE = (
     (CQ_V1_ANCHOR, SELECTION_SCORE),
 )
 
-BUCKET_COUNT = 10  # deciles; see docstring on `_bucket_count_for`
+BUCKET_COUNT = 10
 
 
 def resolve_eval_splits(split_arg: str) -> tuple[str, ...]:
@@ -204,12 +198,6 @@ def load_outcomes(path: Path) -> list[dict[str, Any]]:
 
 
 def validate_identity(population: list[dict[str, Any]], outcomes: list[dict[str, Any]]) -> None:
-    """Cross-check population/outcome identity using only counts and IDs.
-
-    This step reads outcome `split`, `horizon`, `status`, `observation_id`
-    identity fields only. It never reads `forward_return_pct`, `mfe_pct`, or
-    `mae_pct`, so it is safe to run before the holdout evaluation gate.
-    """
     population_ids = {str(row["observation_id"]) for row in population}
     outcome_observation_ids = {str(row["observation_id"]) for row in outcomes}
     missing = outcome_observation_ids - population_ids
@@ -239,12 +227,6 @@ def filter_safe_rows(
     outcomes: list[dict[str, Any]],
     eval_splits: tuple[str, ...],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return population/outcome rows restricted to `eval_splits`.
-
-    Holdout rows are excluded entirely -- not merely masked -- so no
-    downstream metric, bucket, or pairwise function ever receives a holdout
-    analytical outcome value.
-    """
     allowed = set(eval_splits)
     if not allowed.issubset({"discovery", "validation"}):
         raise ValueError("filter_safe_rows only supports discovery/validation splits")
@@ -277,11 +259,6 @@ def _normalized_mrp_aggregate(row: Mapping[str, Any]) -> Decimal | None:
 
 
 def compute_candidate_scores(row: Mapping[str, Any]) -> dict[str, float | None]:
-    """Compute frozen CQ v1 candidate scores for one population row.
-
-    No imputation, no weight renormalization: if either input is
-    unavailable/non-numeric, the candidate score is unavailable (None).
-    """
     cq_v0 = _cq_v0_value(row)
     mrp = _normalized_mrp_aggregate(row)
     balanced: Decimal | None = None
@@ -376,14 +353,6 @@ def eligible_rows(rows: list[dict[str, Any]], score: str, outcome_metric: str) -
 
 
 def _bucket_count_for(n: int) -> int:
-    """Deterministic decile scheme; shrinks to N buckets only when N < 10.
-
-    No canonical bucket-count convention exists elsewhere in the repo for
-    this evaluator's row volumes, so this evaluator freezes deciles as its
-    own scheme (`BUCKET_COUNT = 10`). The shrink rule is a pure function of
-    N applied identically to every score, so it never "silently" changes
-    the comparison basis between models on the same eligible sample.
-    """
     if n <= 0:
         return 0
     return min(BUCKET_COUNT, n)
@@ -398,6 +367,13 @@ def _stats(values: list[float]) -> dict[str, Any]:
 
 
 def build_buckets(rows: list[dict[str, Any]], score: str) -> list[dict[str, Any]]:
+    """Build deterministic score buckets without requiring unrelated outcomes.
+
+    Rows are supplied from a metric-specific eligibility set. A row eligible
+    for forward return may legitimately have missing MFE/MAE (and vice versa),
+    so each metric summary uses only values actually present in that bucket.
+    This does not impute missing values and does not alter rank assignment.
+    """
     ordered = sorted(rows, key=lambda row: (float(row["scores"][score]), str(row["observation_id"])))
     n = len(ordered)
     bucket_count = _bucket_count_for(n)
@@ -409,18 +385,21 @@ def build_buckets(rows: list[dict[str, Any]], score: str) -> list[dict[str, Any]
             if min(bucket_count - 1, (rank * bucket_count) // n) == bucket_index
         ]
         score_vals = [float(row["scores"][score]) for row in bucket_rows]
-        buckets.append(
-            {
-                "bucket": bucket_index + 1,
-                "n": len(bucket_rows),
-                "score_min": min(score_vals) if score_vals else None,
-                "score_max": max(score_vals) if score_vals else None,
-                "score_mean": mean(score_vals) if score_vals else None,
-                "forward_return_pct": _stats([float(row["forward_return_pct"]) for row in bucket_rows]),
-                "mfe_pct": _stats([float(row["mfe_pct"]) for row in bucket_rows]),
-                "mae_pct": _stats([float(row["mae_pct"]) for row in bucket_rows]),
-            }
-        )
+        bucket: dict[str, Any] = {
+            "bucket": bucket_index + 1,
+            "n": len(bucket_rows),
+            "score_min": min(score_vals) if score_vals else None,
+            "score_max": max(score_vals) if score_vals else None,
+            "score_mean": mean(score_vals) if score_vals else None,
+        }
+        for outcome_metric in OUTCOME_METRICS:
+            values = [
+                float(row[outcome_metric])
+                for row in bucket_rows
+                if _number(row.get(outcome_metric)) is not None
+            ]
+            bucket[outcome_metric] = _stats(values)
+        buckets.append(bucket)
     return buckets
 
 
