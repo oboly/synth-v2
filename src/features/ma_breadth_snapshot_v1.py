@@ -94,8 +94,8 @@ def build_snapshot(
     asof = _utc(asof_ts_utc)
     universe = tuple(sorted(members, key=lambda item: (item.asset_id, item.market)))
     if candles.empty:
-        candles = pd.DataFrame(columns=["asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"])
-    required = {"asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"}
+        candles = pd.DataFrame(columns=["venue", "asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"])
+    required = {"venue", "asset_id", "market", "interval_code", "close_ts_utc", "open_price", "high_price", "low_price", "close_price", "volume_base"}
     missing = required.difference(candles.columns)
     if missing:
         raise MABreadthInputError(f"candle input missing columns: {sorted(missing)}")
@@ -104,25 +104,41 @@ def build_snapshot(
     if not source.empty and set(source["interval_code"].astype(str)) != {INPUT_INTERVAL}:
         raise MABreadthInputError("candle input contains wrong interval")
     source = source[source["close_ts_utc"] <= pd.Timestamp(asof)].copy()
-    source = source[source["asset_id"].isin([member.asset_id for member in universe])].copy()
+    source = source[source["venue"].astype(str) == venue].copy()
+    member_keys = {(member.asset_id, member.market) for member in universe}
+    source = source[source.apply(lambda row: (int(row["asset_id"]), str(row["market"])) in member_keys, axis=1)].copy()
     if source.empty:
         featured = source
     else:
         featured = build_candle_features(pd.DataFrame({
-            "market": source["market"], "interval": source["interval_code"],
+            "venue": source["venue"], "market": source["market"], "interval": source["interval_code"],
             "start_ts": source["close_ts_utc"], "end_ts": source["close_ts_utc"] + pd.Timedelta(hours=4),
             "open": source["open_price"], "high": source["high_price"], "low": source["low_price"],
             "close": source["close_price"], "volume": source["volume_base"], "is_final": True,
             "asset_id": source["asset_id"], "close_ts_utc": source["close_ts_utc"],
-        }), CandleFeatureConfig(sma_windows=(20, 50)))
+        }), CandleFeatureConfig(group_cols=("venue", "asset_id", "market", "interval"), sma_windows=(20, 50)))
     evaluated = above = insufficient = stale = 0
     exact_asof = pd.Timestamp(asof)
     for member in universe:
-        rows = featured[featured["asset_id"] == member.asset_id] if not featured.empty else featured
-        if rows.empty or exact_asof not in set(rows["close_ts_utc"]):
+        rows = featured[
+            (featured["venue"].astype(str) == venue)
+            & (featured["asset_id"] == member.asset_id)
+            & (featured["market"].astype(str) == member.market)
+        ] if not featured.empty else featured
+        if rows.empty:
+            insufficient += 1
+            continue
+        exact_rows = rows.loc[rows["close_ts_utc"] == exact_asof]
+        if exact_rows.empty:
             stale += 1
             continue
-        row = rows.loc[rows["close_ts_utc"] == exact_asof].iloc[-1]
+        if len(exact_rows) != 1:
+            raise MABreadthInputError(
+                "duplicate exact-asof candle rows for "
+                f"venue={venue} asset_id={member.asset_id} market={member.market} "
+                f"interval={INPUT_INTERVAL} asof={asof.isoformat()}"
+            )
+        row = exact_rows.iloc[0]
         if pd.isna(row["sma_50"]):
             insufficient += 1
             continue
@@ -163,7 +179,7 @@ def fetch_candles_at_or_before(conn: Any, *, members: Iterable[UniverseMember], 
         return pd.DataFrame()
     placeholders = ",".join(["%s"] * len(member_list))
     sql = f"""
-    SELECT c.asset_id, vm.market, c.interval_code, c.close_ts_utc, c.open_price, c.high_price,
+    SELECT c.venue, c.asset_id, vm.market, c.interval_code, c.close_ts_utc, c.open_price, c.high_price,
            c.low_price, c.close_price, c.volume_base
     FROM obs_market_candle c JOIN venue_market vm ON vm.base_asset_id=c.asset_id AND vm.venue=c.venue
     WHERE c.venue=%s AND c.interval_code=%s AND c.close_ts_utc<=%s

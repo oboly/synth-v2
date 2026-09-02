@@ -19,6 +19,8 @@ account-agnostic `asset.is_publication_cohort`, `asset.is_enabled`,
 snapshot saves a deterministic SHA-256 of sorted `(asset_id, market, symbol)`;
 that hash is part of its idempotent identity.
 
+Candle/feature evaluation preserves `(venue, asset_id, market, interval)` end-to-end. A missing market-specific row is insufficient history and never borrows a sibling market row. Duplicate exact-asof rows for that identity fail closed; dataframe order is not a tie-breaker.
+
 `asof_ts_utc` is an exact caller-supplied final-candle close timestamp.  The
 producer never falls back to a later/latest row during replay.  An eligible
 constituent with no exact-asof candle is `stale`; one with exact-asof data but

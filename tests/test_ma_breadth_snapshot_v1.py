@@ -7,9 +7,10 @@ from src.features.ma_breadth_snapshot_v1 import MABreadthInputError, UniverseMem
 ASOF = datetime(2026, 9, 1, tzinfo=UTC)
 MEMBERS = [UniverseMember(1, "BTC-EUR", "BTC"), UniverseMember(2, "ETH-EUR", "ETH")]
 
-def _candles(asset_id: int, count: int, close: float, *, at_asof: bool = True) -> list[dict]:
+def _candles(asset_id: int, count: int, close: float, *, market: str | None = None, at_asof: bool = True) -> list[dict]:
     end = ASOF if at_asof else ASOF - timedelta(hours=4)
-    return [{"asset_id": asset_id, "market": "BTC-EUR" if asset_id == 1 else "ETH-EUR", "interval_code": "4h", "close_ts_utc": end - timedelta(hours=4 * (count - i - 1)), "open_price": close, "high_price": close, "low_price": close, "close_price": close, "volume_base": 1} for i in range(count)]
+    market = market or ("BTC-EUR" if asset_id == 1 else "ETH-EUR")
+    return [{"venue": "bitvavo", "asset_id": asset_id, "market": market, "interval_code": "4h", "close_ts_utc": end - timedelta(hours=4 * (count - i - 1)), "open_price": close, "high_price": close, "low_price": close, "close_price": close, "volume_base": 1} for i in range(count)]
 
 def _frame(*rows): return pd.DataFrame([item for group in rows for item in group])
 
@@ -39,3 +40,33 @@ def test_partial_coverage_and_exact_asof_stale_semantics_are_deterministic():
 def test_wrong_interval_fails_closed():
     with pytest.raises(MABreadthInputError):
         build_snapshot(members=MEMBERS, candles=_frame(_candles(1, 50, 1)), asof_ts_utc=ASOF, venue="bitvavo", interval_code="1h")
+
+
+def test_same_asset_two_markets_keep_market_specific_sma50_truth():
+    members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
+    eur = _candles(1, 50, 1, market="AAA-EUR")[:-1] + _candles(1, 1, 2, market="AAA-EUR")
+    usdc = _candles(1, 50, 2, market="AAA-USDC")
+    result = build_snapshot(members=members, candles=_frame(eur, usdc), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+    assert (result.eligible_count, result.evaluated_count, result.universe_above_sma50_count) == (2, 2, 1)
+    assert result.universe_above_sma50_pct == Decimal("50")
+
+
+def test_missing_market_specific_rows_are_insufficient_and_not_reused():
+    members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
+    result = build_snapshot(members=members, candles=_frame(_candles(1, 50, 1, market="AAA-EUR")), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+    assert (result.eligible_count, result.evaluated_count, result.insufficient_history_count) == (2, 1, 1)
+    assert result.coverage_pct == Decimal("50")
+
+
+def test_duplicate_exact_asof_constituent_rows_fail_closed():
+    rows = _candles(1, 50, 1) + [_candles(1, 1, 1)[0]]
+    with pytest.raises(MABreadthInputError, match="duplicate exact-asof candle rows"):
+        build_snapshot(members=[MEMBERS[0]], candles=_frame(rows), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+
+
+def test_reversed_source_order_has_same_market_specific_result():
+    members = [UniverseMember(1, "AAA-EUR", "AAA"), UniverseMember(1, "AAA-USDC", "AAA")]
+    rows = _candles(1, 50, 1, market="AAA-EUR")[:-1] + _candles(1, 1, 2, market="AAA-EUR") + _candles(1, 50, 2, market="AAA-USDC")
+    forward = build_snapshot(members=members, candles=_frame(rows), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+    reverse = build_snapshot(members=members, candles=_frame(list(reversed(rows))), asof_ts_utc=ASOF, venue="bitvavo", interval_code="4h")
+    assert forward == reverse
