@@ -208,7 +208,37 @@ def default_registry_root() -> Path:
 # thing that makes the holdout genuinely one-shot even if the frozen manifest
 # and source-integrity artifact are copied byte-for-byte into a second directory,
 # a second worktree, or a second clone on the same host.
-REGISTRY_ROOT = default_registry_root()
+#
+# Deliberately NOT resolved at import time (i.e. NOT ``REGISTRY_ROOT =
+# default_registry_root()`` at module scope): ``default_registry_root()``
+# calls ``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT)``, which raises on any
+# host with no local ``APPROVED_EXECUTION_ACCOUNT`` account -- including
+# GitHub-hosted CI runners. Resolving it at import time would make importing
+# this module (needed for ``--help`` and for every test that only exercises
+# an unrelated pure function) fail before argument parsing, before the
+# approved-host check, and before the approved-account check ever run. It is
+# instead resolved lazily, exactly once, by ``resolve_runtime_registry_root``,
+# which ``main()`` calls only after both authorization checks pass.
+REGISTRY_ROOT: Path | None = None
+
+
+def resolve_runtime_registry_root() -> Path:
+    """Resolve and cache the authoritative registry root at runtime.
+
+    Must only be called after ``enforce_approved_execution_host`` and
+    ``enforce_approved_execution_account`` have both already passed --
+    calling it earlier (or on an unapproved host/account) would raise
+    ``pwd.getpwnam``'s ``KeyError``-derived ``RuntimeError`` before the
+    caller-facing host/account error messages ever get a chance to run.
+    Idempotent: once resolved, the cached module-level ``REGISTRY_ROOT`` is
+    returned on every subsequent call rather than re-resolving, so tests
+    that pre-set ``REGISTRY_ROOT`` directly (to an isolated test directory)
+    are respected rather than overwritten.
+    """
+    global REGISTRY_ROOT
+    if REGISTRY_ROOT is None:
+        REGISTRY_ROOT = default_registry_root()
+    return REGISTRY_ROOT
 
 
 def current_trusted_hostname() -> str:
@@ -652,6 +682,12 @@ def registry_key_for(
 
 
 def registry_entry_path(key: str) -> Path:
+    if REGISTRY_ROOT is None:
+        raise RuntimeError(
+            "authoritative registry root not yet resolved; "
+            "resolve_runtime_registry_root() must run (after approved "
+            "host/account authorization) before any registry path is used"
+        )
     return REGISTRY_ROOT / f"{key}.json"
 
 
@@ -785,6 +821,12 @@ def run_lease_path(registry_key: str) -> Path:
     This is what prevents a fresh runner and a concurrent --resume of the
     checkpoint it just created from ever running at the same time.
     """
+    if REGISTRY_ROOT is None:
+        raise RuntimeError(
+            "authoritative registry root not yet resolved; "
+            "resolve_runtime_registry_root() must run (after approved "
+            "host/account authorization) before any lease path is used"
+        )
     return REGISTRY_ROOT / f"{registry_key}.run_lease.json"
 
 
@@ -1046,6 +1088,11 @@ def main(argv: list[str] | None = None) -> int:
             f"ACCOUNT_APPROVED account={current_trusted_execution_account()} "
             f"approved_account={APPROVED_EXECUTION_ACCOUNT}"
         )
+        # Only resolved now, after both authorization checks pass -- see
+        # ``resolve_runtime_registry_root`` and the module-level
+        # ``REGISTRY_ROOT`` comment for why this must never happen at import
+        # time or before host/account authorization.
+        resolve_runtime_registry_root()
         manifest_path = Path(args.split_manifest)
         integrity_path = Path(args.source_integrity)
         canonical_dir = canonical_run_dir(manifest_path, integrity_path)

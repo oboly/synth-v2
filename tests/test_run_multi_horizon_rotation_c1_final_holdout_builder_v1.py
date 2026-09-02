@@ -25,6 +25,7 @@ from src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 import 
     current_trusted_execution_account,
     default_registry_root,
     enforce_approved_execution_account,
+    resolve_runtime_registry_root,
     finalize_c1_holdout_bundle,
     load_checkpoint,
     load_manifest,
@@ -2670,3 +2671,179 @@ def test_approved_account_still_resolves_same_registry_across_home_cwd_worktrees
     monkeypatch.chdir(other_cwd)
 
     assert module.default_registry_root() == baseline
+
+
+# --- Lazy registry-root resolution (exact-head Codex blocker fix) --------
+#
+# REGISTRY_ROOT used to be resolved at module import time
+# (``REGISTRY_ROOT = default_registry_root()``), which calls
+# ``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT)`` and raises on any host with no
+# local approved account -- including GitHub-hosted CI runners -- breaking
+# module import (and therefore ``--help`` and every unrelated test) before
+# argument parsing or either authorization check ever runs. These tests
+# cover the fix: REGISTRY_ROOT starts as ``None`` at import time and is only
+# resolved lazily, by ``resolve_runtime_registry_root``, after both
+# authorization checks pass.
+
+
+def test_module_import_does_not_call_getpwnam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Importing the module must not touch account metadata at all -- a
+    module already imported in this test process cannot be re-imported to
+    prove this directly, so this instead proves the invariant that actually
+    matters: REGISTRY_ROOT is None immediately after (re)confirming no
+    resolution has happened, i.e. it is not eagerly bound to a resolved
+    Path at module scope."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    calls: list[str] = []
+
+    def spy_getpwnam(name: str) -> object:
+        calls.append(name)
+        raise KeyError(f"getpwnam(): name not found: {name!r}")
+
+    monkeypatch.setattr(module.pwd, "getpwnam", spy_getpwnam)
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+
+    # Merely importing/using unrelated pure functions must never call
+    # getpwnam -- only resolve_runtime_registry_root/default_registry_root do.
+    module.select_c1_spec()
+    module.registry_key_for(
+        manifest_sha256="a" * 64,
+        source_integrity_composite_sha256="b" * 64,
+        venue="bitvavo",
+        candidate_id="C1",
+        phase="final_holdout",
+    )
+    assert calls == []
+
+
+def test_import_and_help_succeed_without_approved_account_passwd_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--help must exit normally before any host/account/passwd runtime gate
+    executes, even on a machine with no local approved-account passwd
+    entry -- this is exactly the GitHub-hosted-CI scenario the exact-head
+    Codex blocker identified."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    def raising_getpwnam(name: str) -> object:
+        raise KeyError(f"getpwnam(): name not found: {name!r}")
+
+    monkeypatch.setattr(module.pwd, "getpwnam", raising_getpwnam)
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.main(["--help"])
+    assert exc_info.value.code == 0
+
+
+def test_resolve_runtime_registry_root_is_lazy_and_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resolve_runtime_registry_root() must call default_registry_root()
+    exactly once (caching the result), not on every call, and must not be
+    resolved merely by importing the module."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+    fake_home = tmp_path / "fake_home"
+    calls: list[str] = []
+
+    def fake_getpwnam(name: str) -> object:
+        calls.append(name)
+        return _fake_pwent(fake_home)
+
+    monkeypatch.setattr(module.pwd, "getpwnam", fake_getpwnam)
+
+    assert module.REGISTRY_ROOT is None
+    first = module.resolve_runtime_registry_root()
+    second = module.resolve_runtime_registry_root()
+    assert first == second == module.REGISTRY_ROOT
+    assert calls == [module.APPROVED_EXECUTION_ACCOUNT]  # resolved exactly once
+
+
+def test_registry_entry_path_and_run_lease_path_fail_closed_before_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A path helper called before resolve_runtime_registry_root() has ever
+    run must fail closed with a clear error, not silently operate on a None
+    root (which would raise an opaque TypeError deep inside Path.__truediv__)."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+    with pytest.raises(RuntimeError, match="registry root not yet resolved"):
+        module.registry_entry_path("some-key")
+    with pytest.raises(RuntimeError, match="registry root not yet resolved"):
+        module.run_lease_path("some-key")
+
+
+def test_fresh_run_resolves_registry_root_lazily_after_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal approved-host/approved-account run must resolve the registry
+    root lazily via resolve_runtime_registry_root(), only after both
+    authorization checks pass, and must complete successfully."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+    fake_registry_home = tmp_path / "_registry_home"
+
+    def fake_getpwnam(name: str) -> object:
+        assert name == module.APPROVED_EXECUTION_ACCOUNT
+        return _fake_pwent(fake_registry_home)
+
+    monkeypatch.setattr(module.pwd, "getpwnam", fake_getpwnam)
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
+
+    assert module.REGISTRY_ROOT is None
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+    assert exit_code == 0
+    assert module.REGISTRY_ROOT == module.default_registry_root()
+    assert load_checkpoint(checkpoint_path(tmp_path))["terminal_state"] == "FINISHED"
+
+
+def test_missing_approved_account_passwd_entry_fails_closed_before_db_and_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the approved account has no resolvable passwd entry at actual
+    execution time (registry-root resolution), the run must fail closed
+    before any DB connection, registry entry, checkpoint, or replay -- the
+    account-identity check itself already passed (this simulates a host
+    where the account is approved by name but its passwd entry vanished or
+    was never fully provisioned)."""
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+
+    monkeypatch.setattr(module, "REGISTRY_ROOT", None)
+
+    def raising_getpwnam(name: str) -> object:
+        raise KeyError(f"getpwnam(): name not found: {name!r}")
+
+    monkeypatch.setattr(module.pwd, "getpwnam", raising_getpwnam)
+
+    db_calls: list[int] = []
+
+    def denied_get_db_connection() -> _FakeConnection:
+        db_calls.append(1)
+        raise AssertionError("must not connect to the database before the registry root resolves")
+
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=None)
+    monkeypatch.setattr(module, "get_db_connection", denied_get_db_connection)
+
+    exit_code = module.main(
+        ["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]
+    )
+
+    assert exit_code == 1
+    assert db_calls == []
+    assert module.REGISTRY_ROOT is None
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
