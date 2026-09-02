@@ -114,6 +114,14 @@ def main(argv: list[str] | None = None) -> int:
         print("broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0", flush=True)
         print("selection_engine=none decision_gate=none execution_planner=none executor=none", flush=True)
         return 0
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        print(
+            f"FAILED runner={RUNNER_NAME} error_type=SystemExit exit_code={exit_code} "
+            f"elapsed={_elapsed(started)}",
+            flush=True,
+        )
+        return exit_code
     except KeyboardInterrupt as exc:
         print(
             f"INTERRUPTED runner={RUNNER_NAME} signal={_interruption_signal(exc)} elapsed={_elapsed(started)}",
