@@ -21,12 +21,12 @@ This runner does not reopen C2 or C3.
 
 Before any final-holdout candidate replay or forward-label construction, the runner:
 
-1. loads the frozen split manifest and requires `final_holdout_inspected=false`;
+1. loads the frozen split manifest, requires `final_holdout_inspected=false`, and verifies its canonical-JSON SHA-256 against the committed `approved_split_manifest_sha256`;
 2. recomputes `multi_horizon_rotation_source_integrity_v1` against the canonical DB sources;
 3. verifies equality with the frozen write-once `source_integrity_v1.json`;
 4. fails closed on any drift.
 
-Only after successful verification may holdout rows be built. On `--resume`, this
+Only after successful verification may holdout rows be built. Execution identity is: approved frozen manifest SHA → frozen C1 implementation fingerprint → verified source integrity → approved host + authoritative one-shot registry/run lease. On resume, the committed approved SHA, supplied SHA, checkpoint SHA, and registry SHA must agree; manifest drift becomes `FAILED` with zero replay continuation. On `--resume`, this
 recompute-and-verify step runs again, before any further row is replayed.
 
 ## Canonical one-time holdout opening

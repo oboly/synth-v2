@@ -465,6 +465,7 @@ def _install_fake_pipeline(
     *,
     phase_start: datetime,
     registry_root: Path | None,
+    approve_test_manifest: bool = True,
 ) -> None:
     """Stub every DB-touching function so main() can run end-to-end deterministically,
     and point the trusted registry at an isolated test directory (never the real repo
@@ -538,6 +539,8 @@ def _install_fake_pipeline(
     monkeypatch.setattr(module, "fetch_rotation_v1_points", fake_fetch_rotation_v1_points)
     monkeypatch.setattr(module, "fetch_candles_for_chunk", fake_fetch_candles_for_chunk)
     monkeypatch.setattr(module, "evaluate_candidate", fake_evaluate_candidate)
+    if approve_test_manifest:
+        monkeypatch.setattr(module, "verify_approved_split_manifest", lambda manifest: module.manifest_fingerprint(manifest))
     if registry_root is not None:
         monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)
 
@@ -2393,3 +2396,94 @@ def test_resume_denied_and_marked_failed_on_implementation_fingerprint_mismatch(
     )
     assert exit_code_2 == 1
     assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+
+
+# --- Approved frozen split manifest ---------------------------------------
+
+def test_verify_approved_split_manifest_passes_exact_committed_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    approved_sha = "e5f00d7f1903f071a33a30eb91ac1f7a510c1b92e251d42059fc40f7ccc86c0f"
+    monkeypatch.setattr(module, "manifest_fingerprint", lambda manifest: approved_sha)
+    assert module.verify_approved_split_manifest(_manifest()) == approved_sha
+
+@pytest.mark.parametrize("field", ["final_holdout", "discovery", "validation"])
+def test_changed_schema_valid_manifest_is_denied_before_db_registry_or_replay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    manifest = _two_asof_manifest()
+    manifest["splits"][field]["end"] = "2026-08-22T06:45:00Z"
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root, approve_test_manifest=False)
+    calls = {"db": 0, "registry": 0, "replay": 0}
+    def forbidden_db():
+        calls["db"] += 1
+        raise AssertionError("DB must not run")
+    def forbidden_registry(*args, **kwargs):
+        calls["registry"] += 1
+        raise AssertionError("registry must not run")
+    def forbidden_replay(**kwargs):
+        calls["replay"] += 1
+        raise AssertionError("replay must not run")
+    monkeypatch.setattr(module, "get_db_connection", forbidden_db)
+    monkeypatch.setattr(module, "create_registry_entry_exclusive", forbidden_registry)
+    monkeypatch.setattr(module, "evaluate_candidate", forbidden_replay)
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    assert calls == {"db": 0, "registry": 0, "replay": 0}
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+
+def test_altered_manifest_with_self_consistent_integrity_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    manifest = _two_asof_manifest()
+    manifest["splits"]["final_holdout"]["end"] = "2026-08-22T06:45:00Z"
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=tmp_path / "_registry", approve_test_manifest=False)
+    integrity_calls = {"n": 0}
+    def forbidden_integrity(*args, **kwargs):
+        integrity_calls["n"] += 1
+        raise AssertionError("integrity must not run")
+    monkeypatch.setattr(module, "build_integrity_payload", forbidden_integrity)
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    assert integrity_calls["n"] == 0
+
+def test_approved_split_manifest_has_no_environment_or_cli_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=_two_asof_manifest())
+    monkeypatch.setenv("APPROVED_SPLIT_MANIFEST_SHA256", "0" * 64)
+    with pytest.raises(SystemExit):
+        module.parse_args(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--approved-split-manifest-sha256", "0" * 64])
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+
+def test_resume_caller_manifest_drift_fails_checkpoint_registry_and_releases_lease(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    approved = _two_asof_manifest()
+    approved_sha = module.manifest_fingerprint(approved)
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=approved)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    monkeypatch.setattr(module, "load_frozen_c1_implementation_fingerprint", lambda: {"approved_split_manifest_sha256": approved_sha})
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(cp_path, venue="bitvavo", manifest_sha256=approved_sha, source_integrity_composite_sha256="fixed", phase_start=BASE, phase_end=BASE + timedelta(minutes=30), last_completed_asof=None, asofs_completed=0, row_count=0, partial_bytes=0, source_query_count=0, source_rows_read=0, terminal_state="RUNNING", implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT)
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    key = registry_key_for(manifest_sha256=approved_sha, source_integrity_composite_sha256="fixed", venue="bitvavo", candidate_id="C1", phase="final_holdout")
+    registry_path = registry_entry_path(key)
+    write_registry_entry(registry_path, venue="bitvavo", manifest_sha256=approved_sha, source_integrity_composite_sha256="fixed", terminal_state="RUNNING", opened_run_dir=str(tmp_path), implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT)
+    drifted = _two_asof_manifest()
+    drifted["splits"]["final_holdout"]["end"] = "2026-08-22T06:45:00Z"
+    manifest_path.write_text(json.dumps(drifted), encoding="utf-8")
+    replay_calls = {"n": 0}
+    monkeypatch.setattr(module, "evaluate_candidate", lambda **kwargs: replay_calls.__setitem__("n", replay_calls["n"] + 1))
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]) == 1
+    assert replay_calls["n"] == 0
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_checkpoint(cp_path)["row_count"] == 0
+    assert load_registry_entry(registry_path)["terminal_state"] == "FAILED"
+    assert not run_lease_path(key).exists()
+
+@pytest.mark.parametrize("frozen", [{}, {"approved_split_manifest_sha256": "not-a-sha"}])
+def test_missing_or_malformed_approved_split_manifest_sha_fails_closed(monkeypatch: pytest.MonkeyPatch, frozen: dict[str, object]) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+    monkeypatch.setattr(module, "load_frozen_c1_implementation_fingerprint", lambda: frozen)
+    with pytest.raises(ValueError, match="approved_split_manifest_sha256"):
+        module.verify_approved_split_manifest(_manifest())

@@ -6,6 +6,8 @@ research_only: true
 phase:
   name: final_holdout
   split_source: split_manifest_v1.json
+  approved_split_manifest_sha256_source: docs/research/multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json
+  approved_split_manifest_sha256_override: DENY
   candidate_allowlist: [C1]
   c2_access: DENY
   c3_access: DENY
@@ -32,6 +34,9 @@ authoritative_opened_state_registry:
   resume_allowed_registry_states: [RUNNING, INTERRUPTED]
   resume_denied_registry_states: [FAILED, FINISHED]
   silent_reset_or_refreeze: DENY
+
+execution_identity:
+  ordered_gates: [approved_frozen_manifest_sha256, frozen_c1_implementation_fingerprint, verified_source_integrity, approved_execution_host, authoritative_one_shot_registry_and_run_lease]
 
 integrity_gate:
   required: true

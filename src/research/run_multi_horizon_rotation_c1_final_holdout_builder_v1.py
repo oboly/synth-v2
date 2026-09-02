@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import signal
 import socket
 import tempfile
@@ -93,6 +94,7 @@ IMPLEMENTATION_FINGERPRINT_DOC_PATH = (
     / "research"
     / "multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json"
 )
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 def default_registry_root() -> Path:
     """Durable, host-level authoritative state root -- independent of any git
@@ -290,6 +292,30 @@ def load_frozen_c1_implementation_fingerprint() -> dict[str, Any]:
     return raw
 
 
+def verify_approved_split_manifest(manifest: dict[str, Any]) -> str:
+    """Verify the supplied manifest is the one committed frozen #593 split.
+
+    The manifest fingerprint is intentionally delegated to the canonical
+    dataset-builder owner. It is canonical JSON SHA-256, not a raw-file hash,
+    so whitespace or key ordering cannot create a competing identity.
+    """
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen.get("approved_split_manifest_sha256")
+    if not isinstance(expected, str) or SHA256_HEX_RE.fullmatch(expected) is None:
+        raise ValueError(
+            "frozen C1 implementation fingerprint doc has missing or malformed "
+            "approved_split_manifest_sha256; cannot verify final-holdout split identity"
+        )
+    actual = manifest_fingerprint(manifest)
+    if actual != expected:
+        raise ValueError(
+            "approved frozen split manifest mismatch: supplied manifest does not match "
+            f"the committed #593 final-holdout split (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return actual
+
+
 def verify_c1_implementation_fingerprint(spec: Any) -> str:
     """Recompute the current C1 implementation fingerprint and fail closed
     unless it exactly matches the committed frozen expected value.
@@ -465,6 +491,15 @@ def validate_resume_checkpoint(
     for key in ("asofs_completed", "row_count", "partial_bytes"):
         if int(checkpoint.get(key, -1)) < 0:
             raise ValueError(f"checkpoint {key} must be non-negative")
+
+
+def validate_resume_registry_entry(
+    registry_entry: dict[str, Any], *, identity: dict[str, str]
+) -> None:
+    """Require the authoritative registry to match the opened checkpoint."""
+    for field, expected in identity.items():
+        if registry_entry.get(field) != expected:
+            raise ValueError(f"authoritative registry {field} mismatch")
 
 
 def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
@@ -909,10 +944,25 @@ def main(argv: list[str] | None = None) -> int:
         cp_path = checkpoint_path(canonical_dir)
 
         manifest = load_manifest(manifest_path, venue=args.venue)
-        manifest_sha = manifest_fingerprint(manifest)
-        split = manifest["splits"][PHASE]
-        phase_start = parse_ts(split["start"])
-        phase_end = parse_ts(split["end"])
+        manifest_approval_error: ValueError | None = None
+        try:
+            # This is the first final-holdout content gate: it must finish
+            # before DB access, source-integrity work, registry creation,
+            # checkpoint/partial creation, or replay.
+            manifest_sha = verify_approved_split_manifest(manifest)
+        except ValueError as exc:
+            if not args.resume:
+                raise
+            # An already-opened run must be failed rather than left resumable
+            # when its caller-supplied manifest drifts. Continue only far
+            # enough to locate its checkpoint-owned registry and acquire the
+            # existing lease; no DB or replay work is allowed on this path.
+            manifest_sha = manifest_fingerprint(manifest)
+            manifest_approval_error = exc
+        else:
+            split = manifest["splits"][PHASE]
+            phase_start = parse_ts(split["start"])
+            phase_end = parse_ts(split["end"])
 
         checkpoint: dict[str, Any] | None = None
         if args.resume:
@@ -954,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
                     "authoritative opened-state registry entry is missing or not resumable; "
                     "refuses to resume"
                 )
+            validate_resume_registry_entry(registry_entry, identity=registry_identity)
 
             # Exclusive per-registry-entry run lease: at most one concurrent
             # execution (fresh OR resumed) of the same opened holdout may proceed.
@@ -977,6 +1028,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             run_lease_held_path = lease_path
             opened = True
+            if manifest_approval_error is not None:
+                raise manifest_approval_error
         else:
             if artifact_path.exists() or summary_path.exists() or cp_path.exists() or partial_path.exists():
                 raise ValueError(
