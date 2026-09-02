@@ -33,6 +33,78 @@ plan; PR A2 materializer/projection implementation must not begin until PR A1b
 merges. This amendment is documentation-only: it defines no migration and no
 runtime code.
 
+### Amendment 2 — Recompute Transition Evidence (Issue #681)
+
+Issue #681 traced a residual V1 lifecycle gap: once a scope's selected map
+reaches a terminal lifecycle state (`MAP_COMPLETED` / `MAP_INVALIDATED` /
+`MAP_EXPIRED`), `actionability_state=TERMINAL_MAP` carries no evidence of
+whether the materializer has recently attempted recompute and found current
+market structure insufficient for a fresh map (a healthy, bounded wait) or
+whether no such recent attempt exists at all (overdue/stuck, needing operator
+attention). Both cases previously produced an identical projection row.
+
+Audit finding: recompute itself is not missing. `evaluate_scope` in
+`native_short_scope_status_materializer_v1.py` unconditionally calls
+`native_short_map_materializer_v1.materialize_scope_symbol` every cadence
+cycle for every SUPPORTED, source-current scope, regardless of whether the
+currently selected map is terminal. When current market structure has not
+produced a new confirmed anchor pair, `materialize_scope_symbol` correctly
+declines to fabricate a new map (`REASON_STRUCTURE_UNCHANGED` /
+`NO_MAP_AVAILABLE` / `REJECTED_CONTEXT`) rather than reactivating the terminal
+map. The gap is that this correct "attempted, insufficient structure" outcome
+and an actually-stuck/overdue outcome were indistinguishable downstream: both
+land on `map_lifecycle_state=MAP_COMPLETED` (or `INVALIDATED`/`EXPIRED`) with
+`actionability_state=TERMINAL_MAP` forever, matching category
+`NORMAL_WAITING_STATE_NOT_REPRESENTED_TRUTHFULLY`.
+
+This amendment adds one new orthogonal, additive field to
+`native_short_scope_status_v1`:
+
+```text
+recompute_transition_state: NOT_APPLICABLE | WAITING_FOR_NEW_STRUCTURE | RECOMPUTE_OVERDUE
+```
+
+Deterministic derivation (pure function of already-computed projection
+facts, no new DB reads):
+
+- `NOT_APPLICABLE` when the selected map is not terminal, when no eligible
+  cadence config exists (`CONFIGURATION_UNAVAILABLE`), or when source data
+  itself is not current (`SOURCE_UNAVAILABLE` / `SOURCE_STALE` already
+  outrank the terminal-map status codes in Status Precedence).
+- `WAITING_FOR_NEW_STRUCTURE` when the selected map is terminal and the
+  latest scope observation is `OBSERVATION_CURRENT` under the cadence/grace
+  contract: the materializer evaluated current structure this cycle and
+  found it insufficient. Healthy and bounded; must not by itself become
+  operator Attention (see #688).
+- `RECOMPUTE_OVERDUE` when the selected map is terminal and the latest scope
+  observation is `OBSERVATION_OVERDUE` or `NO_OBSERVATION`: no recent
+  recompute evidence exists. Fails closed to overdue; eligible for operator
+  Attention under #688.
+
+This field is deliberately orthogonal (see
+`docs/ops/state_model_discipline_v1.md`, "Prefer composition over state
+explosion"):
+
+- `scope_status_code` and `actionability_state` precedence, values, and
+  existing meanings are unchanged. In particular `actionability_state`
+  continues to emit `TERMINAL_MAP` under exactly the same conditions as
+  before, because `native_short_map_level_status_v1` /
+  `native_short_map_level_status_materializer_v1` already gate terminal
+  level-status handling on `actionability_state == TERMINAL_MAP` and must not
+  be affected by this amendment.
+- No new lifecycle model is introduced. `map_lifecycle_state` (the structural
+  terminal-map truth) is untouched; `recompute_transition_state` only adds
+  truthful evidence about the temporary runtime-cadence dimension.
+- Reporting (`native_short_map_ledger_health_report_v1.py`) forwards the
+  persisted value verbatim into `LedgerHealthReport.recompute_transition_state`
+  and performs no recomputation of it.
+
+Migration: `db/migrations/20260902_native_short_scope_status_recompute_transition_v1.sql`
+adds a nullable `recompute_transition_state VARCHAR(32)` column plus a `CHECK`
+constraint and index to the existing `native_short_scope_status_v1` table.
+Existing rows keep `NULL` until the next projection rebuild repopulates them
+deterministically; no data manipulation is included.
+
 ## Ownership And Boundaries
 
 This contract belongs to the market-data/native SHORT runtime lane.
@@ -382,6 +454,7 @@ Fields:
 | `projection_as_of_utc` | `DATETIME(6)` | yes | projection rebuild process | Explicit semantic clock used for projection calculations | rebuildable |
 | `status_payload_json` | `JSON` | no | projection rebuild process | Bounded deterministic diagnostics for reporting; when `scope_status_code=CONFIGURATION_UNAVAILABLE`, must contain enough detail to explain which exact full-key config version window was expected and absent | rebuildable |
 | `rebuilt_at_utc` | `DATETIME(6)` | yes | projection rebuild process | Operational projection rebuild timestamp; not semantic input | rebuildable |
+| `recompute_transition_state` | `VARCHAR(32)` | no | projection rebuild process | Amendment 2 (Issue #681): `NOT_APPLICABLE`, `WAITING_FOR_NEW_STRUCTURE`, or `RECOMPUTE_OVERDUE`; orthogonal to `actionability_state`, see Amendment 2 above | rebuildable |
 
 ### Conditional Nullability: `CONFIGURATION_UNAVAILABLE`
 

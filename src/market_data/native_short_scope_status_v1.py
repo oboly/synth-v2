@@ -31,6 +31,7 @@ __all__ = [
     "NativeShortScopeMapLifecycleState",
     "NativeShortScopeObservationRecord",
     "NativeShortScopeObservationStatus",
+    "NativeShortScopeRecomputeTransitionState",
     "NativeShortScopeSourceState",
     "NativeShortScopeStatusCode",
     "NativeShortScopeStatusRecord",
@@ -105,6 +106,34 @@ class NativeShortScopeActionabilityState(StrEnum):
     BLOCKED_SOURCE = "BLOCKED_SOURCE"
     BLOCKED_OBSERVATION = "BLOCKED_OBSERVATION"
     BLOCKED_SCOPE = "BLOCKED_SCOPE"
+
+
+class NativeShortScopeRecomputeTransitionState(StrEnum):
+    """Orthogonal evidence field (Amendment 2, Issue #681).
+
+    Distinguishes, only for a scope whose selected map is currently terminal
+    (`MAP_COMPLETED` / `MAP_INVALIDATED` / `MAP_EXPIRED`), a healthy bounded
+    recompute wait from an overdue/stuck one. This is deliberately additive
+    and orthogonal to `actionability_state`: it must never change
+    `actionability_state`'s existing `TERMINAL_MAP` semantics, which
+    `native_short_map_level_status_*` already gates on.
+
+    NOT_APPLICABLE: the selected map is not terminal (or no cadence config /
+    map exists), so no recompute-transition evidence applies.
+    WAITING_FOR_NEW_STRUCTURE: the selected map is terminal and the latest
+    scope observation is within the cadence/grace contract (recompute has
+    been evaluated recently and current market structure is not yet
+    sufficient for a fresh map). Healthy, bounded, not an operator Attention
+    condition by itself.
+    RECOMPUTE_OVERDUE: the selected map is terminal and the latest scope
+    observation is overdue or missing under the cadence/grace contract
+    (recompute has not been evaluated recently). Eligible for operator
+    Attention.
+    """
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    WAITING_FOR_NEW_STRUCTURE = "WAITING_FOR_NEW_STRUCTURE"
+    RECOMPUTE_OVERDUE = "RECOMPUTE_OVERDUE"
 
 
 class NativeShortObservationFreshnessState(StrEnum):
@@ -367,9 +396,16 @@ class NativeShortScopeStatusRecord:
     primary_latest_candle_ts_utc: datetime | None = None
     supporting_latest_candle_ts_utc: datetime | None = None
     status_payload_json: str | None = None
+    recompute_transition_state: NativeShortScopeRecomputeTransitionState | str | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
+        if self.recompute_transition_state is not None:
+            _coerce_enum(
+                self.recompute_transition_state,
+                NativeShortScopeRecomputeTransitionState,
+                "recompute_transition_state",
+            )
         scope_support_state = _coerce_enum(
             self.scope_support_state,
             NativeShortScopeSupportEventState,

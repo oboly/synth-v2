@@ -144,6 +144,12 @@ class LedgerHealthReport:
     projection_rebuilt_at_utc: datetime | None = None
     status_payload_json: str | None = None
 
+    # Issue #681 Amendment 2: orthogonal healthy-wait vs overdue evidence for
+    # a terminal selected map. NOT_APPLICABLE when the selected map is not
+    # terminal. Forwarded verbatim, never recomputed here; #688 attention
+    # triage may consume this without adding reporting-side lifecycle logic.
+    recompute_transition_state: str | None = None
+
     overall_health_status: str = OVERALL_HEALTH_NEEDS_REVIEW
     overall_health_reason_codes: list[str] = field(default_factory=list)
 
@@ -209,6 +215,7 @@ def parse_scope_status_row(row: dict[str, Any], key: NativeShortMapScopeKey) -> 
         projection_as_of_utc=_ensure_utc(row["projection_as_of_utc"]),
         rebuilt_at_utc=_ensure_utc(row["rebuilt_at_utc"]),
         status_payload_json=row.get("status_payload_json"),
+        recompute_transition_state=row.get("recompute_transition_state"),
     )
 
 
@@ -299,6 +306,11 @@ def build_ledger_health_report(
                     "projection_as_of_utc": record.projection_as_of_utc,
                     "projection_rebuilt_at_utc": record.rebuilt_at_utc,
                     "status_payload_json": record.status_payload_json,
+                    "recompute_transition_state": (
+                        str(record.recompute_transition_state)
+                        if record.recompute_transition_state is not None
+                        else None
+                    ),
                 }
                 scope_status_code_value = str(record.scope_status_code)
                 if scope_status_code_value != "CURRENT_EVALUATION":
@@ -396,7 +408,8 @@ def fetch_scope_status_row(
         next_expected_evaluation_at_utc, observation_overdue_after_utc,
         primary_latest_candle_ts_utc, supporting_latest_candle_ts_utc,
         primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
-        cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc
+        cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc,
+        recompute_transition_state
     FROM native_short_scope_status_v1
     WHERE venue = %s AND symbol = %s AND quote_currency = %s
       AND fib_trading_horizon = %s AND primary_interval = %s AND supporting_interval = %s

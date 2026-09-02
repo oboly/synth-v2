@@ -27,6 +27,7 @@ from src.market_data.native_short_scope_status_v1 import (
     NativeShortObservationFreshnessState,
     NativeShortScopeActionabilityState,
     NativeShortScopeMapLifecycleState,
+    NativeShortScopeRecomputeTransitionState,
     NativeShortScopeSourceState,
     NativeShortScopeStatusCode,
     NativeShortScopeStatusRecord,
@@ -46,6 +47,12 @@ __all__ = [
     "select_current_map",
     "select_eligible_cadence_config",
 ]
+
+_TERMINAL_MAP_LIFECYCLE_STATES = (
+    NativeShortScopeMapLifecycleState.MAP_INVALIDATED,
+    NativeShortScopeMapLifecycleState.MAP_COMPLETED,
+    NativeShortScopeMapLifecycleState.MAP_EXPIRED,
+)
 
 _LIFECYCLE_EVENT_TYPE_TO_MAP_STATE = {
     "ACTIVATED": NativeShortScopeMapLifecycleState.MAP_ACTIVE,
@@ -341,11 +348,7 @@ def _compute_actionability_state(
         NativeShortScopeStatusCode.SOURCE_STALE,
     ):
         return NativeShortScopeActionabilityState.BLOCKED_SOURCE
-    if map_lifecycle_state in (
-        NativeShortScopeMapLifecycleState.MAP_INVALIDATED,
-        NativeShortScopeMapLifecycleState.MAP_COMPLETED,
-        NativeShortScopeMapLifecycleState.MAP_EXPIRED,
-    ):
+    if map_lifecycle_state in _TERMINAL_MAP_LIFECYCLE_STATES:
         return NativeShortScopeActionabilityState.TERMINAL_MAP
     if scope_status_code == NativeShortScopeStatusCode.SCOPE_RECENTLY_ADDED:
         return NativeShortScopeActionabilityState.BLOCKED_SCOPE
@@ -354,6 +357,41 @@ def _compute_actionability_state(
     if current_map_id is not None:
         return NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP
     return NativeShortScopeActionabilityState.NO_ACTIONABLE_MAP
+
+
+def _compute_recompute_transition_state(
+    *,
+    map_lifecycle_state: NativeShortScopeMapLifecycleState,
+    observation_freshness_state: NativeShortObservationFreshnessState,
+    source_state: NativeShortScopeSourceState,
+) -> NativeShortScopeRecomputeTransitionState:
+    """Issue #681 Amendment 2: orthogonal healthy-wait vs overdue evidence.
+
+    Deliberately additive and independent of `actionability_state`/
+    `scope_status_code` precedence: those fields, and the `TERMINAL_MAP`
+    actionability value they can produce, are unchanged by this function and
+    keep their existing meaning for `native_short_map_level_status_*` gating.
+
+    Only meaningful when the selected map is currently terminal. The
+    materializer always attempts recompute every cadence cycle regardless of
+    terminal state (see `native_short_scope_status_materializer_v1.evaluate_scope`),
+    so `observation_freshness_state` is sufficient evidence of whether that
+    attempt happened recently: `OBSERVATION_CURRENT` means the most recent
+    cycle already evaluated current market structure and found it
+    insufficient for a fresh map (healthy, bounded wait); `OBSERVATION_OVERDUE`
+    or `NO_OBSERVATION` means no such recent evaluation exists (fail closed to
+    overdue, eligible for operator Attention under #688).
+    """
+    if map_lifecycle_state not in _TERMINAL_MAP_LIFECYCLE_STATES:
+        return NativeShortScopeRecomputeTransitionState.NOT_APPLICABLE
+    if source_state != NativeShortScopeSourceState.SOURCE_CURRENT:
+        # SOURCE_UNAVAILABLE/SOURCE_STALE already outrank the terminal-map
+        # status codes in Status Precedence; recompute-transition evidence is
+        # only meaningful once source itself is not the blocking condition.
+        return NativeShortScopeRecomputeTransitionState.NOT_APPLICABLE
+    if observation_freshness_state == NativeShortObservationFreshnessState.OBSERVATION_CURRENT:
+        return NativeShortScopeRecomputeTransitionState.WAITING_FOR_NEW_STRUCTURE
+    return NativeShortScopeRecomputeTransitionState.RECOMPUTE_OVERDUE
 
 
 def _configuration_unavailable_payload(key: NativeShortMapScopeKey, as_of_utc: datetime) -> str:
@@ -453,6 +491,7 @@ def project_native_short_scope_status(
             next_expected_evaluation_at_utc=None,
             observation_overdue_after_utc=None,
             status_payload_json=_configuration_unavailable_payload(key, as_of_utc),
+            recompute_transition_state=NativeShortScopeRecomputeTransitionState.NOT_APPLICABLE,
         )
 
     primary_latest_ts = _latest_candle_ts(primary_candle_close_timestamps, as_of_utc)
@@ -491,6 +530,11 @@ def project_native_short_scope_status(
         if latest_observation is not None and latest_observation.observation_status == "FAILED"
         else None
     )
+    recompute_transition_state = _compute_recompute_transition_state(
+        map_lifecycle_state=map_lifecycle_state,
+        observation_freshness_state=observation_freshness_state,
+        source_state=source_state,
+    )
 
     return NativeShortScopeStatusRecord(
         **common_fields,
@@ -507,4 +551,5 @@ def project_native_short_scope_status(
         next_expected_evaluation_at_utc=next_expected_evaluation_at_utc,
         observation_overdue_after_utc=observation_overdue_after_utc,
         status_payload_json=None,
+        recompute_transition_state=recompute_transition_state,
     )

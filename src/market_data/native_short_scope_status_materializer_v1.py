@@ -820,7 +820,8 @@ def upsert_scope_status_projection(
         next_expected_evaluation_at_utc, observation_overdue_after_utc,
         primary_latest_candle_ts_utc, supporting_latest_candle_ts_utc,
         primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
-        cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc
+        cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc,
+        recompute_transition_state
     ) VALUES (
         %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s,
@@ -831,7 +832,8 @@ def upsert_scope_status_projection(
         %s, %s,
         %s, %s,
         %s, %s,
-        %s, %s, %s, %s
+        %s, %s, %s, %s,
+        %s
     )
     ON DUPLICATE KEY UPDATE
         scope_support_state = VALUES(scope_support_state),
@@ -860,7 +862,8 @@ def upsert_scope_status_projection(
         cadence_contract_version = VALUES(cadence_contract_version),
         projection_as_of_utc = VALUES(projection_as_of_utc),
         status_payload_json = VALUES(status_payload_json),
-        rebuilt_at_utc = VALUES(rebuilt_at_utc)
+        rebuilt_at_utc = VALUES(rebuilt_at_utc),
+        recompute_transition_state = VALUES(recompute_transition_state)
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -899,6 +902,11 @@ def upsert_scope_status_projection(
                 record.projection_as_of_utc,
                 record.status_payload_json,
                 record.rebuilt_at_utc,
+                (
+                    str(record.recompute_transition_state)
+                    if record.recompute_transition_state is not None
+                    else None
+                ),
             ),
         )
 
