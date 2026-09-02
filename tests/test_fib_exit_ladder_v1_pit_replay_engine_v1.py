@@ -256,12 +256,23 @@ def test_oos_evaluator_accepts_only_a_frozen_selected_policy() -> None:
     import inspect
 
     params = inspect.signature(engine.evaluate_oos_window).parameters
-    assert "selected" in params
-    # No parameter exists that could carry a candidate grid or competing
-    # configs into the OOS evaluator.
-    assert "families" not in params
-    assert "fractions" not in params
-    assert "grid_results" not in params
+    assert tuple(params) == ("selected", "oos_window_label", "oos_window_candles")
+    # No parameter exists that could carry a candidate grid, alternate
+    # policy, Fib setting, or ladder setting into the OOS evaluator.
+    for forbidden in (
+        "families",
+        "fractions",
+        "grid_results",
+        "target_family",
+        "max_ladder_sell_fraction",
+        "target_zone_low_pct",
+        "target_zone_high_pct",
+        "front_run_pct",
+        "end_pct_of_zone_high",
+        "rungs_per_target",
+        "distribution",
+    ):
+        assert forbidden not in params
 
 
 def test_changing_competing_config_outcomes_cannot_alter_selected_config() -> None:
@@ -529,4 +540,40 @@ def test_oos_rejects_forged_non_frozen_selected_policy() -> None:
         selection_sample_count=1,
     )
     with pytest.raises(ValueError, match="frozen target_family"):
+        engine.evaluate_oos_window(forged, "OOS_WINDOW_1", _confirmed_series())
+
+
+def test_oos_callers_cannot_override_frozen_policy_or_ladder_settings() -> None:
+    selected, _ = engine.select_policy_on_selection_window("LINK", _confirmed_series())
+    assert selected is not None
+    oos = _confirmed_series(confirmation_day=30)
+
+    for kwargs in (
+        {"target_family": "SUPERCYCLE"},
+        {"max_ladder_sell_fraction": Decimal("0.40")},
+        {"target_zone_low_pct": Decimal("0.99")},
+        {"rungs_per_target": 1},
+    ):
+        with pytest.raises(TypeError):
+            engine.evaluate_oos_window(selected, "OOS_WINDOW_1", oos, **kwargs)
+
+
+def test_selection_callers_cannot_override_frozen_fib_or_ladder_settings() -> None:
+    with pytest.raises(TypeError):
+        engine.select_policy_on_selection_window(
+            "LINK",
+            _confirmed_series(),
+            target_zone_low_pct=Decimal("0.99"),
+        )
+
+
+def test_oos_rejects_forged_non_frozen_sell_fraction() -> None:
+    forged = engine.SelectedPolicy(
+        symbol="LINK",
+        target_family="PRO_3X4X",
+        max_ladder_sell_fraction=Decimal("0.90"),
+        selection_metric_value=Decimal("0"),
+        selection_sample_count=1,
+    )
+    with pytest.raises(ValueError, match="max_ladder_sell_fraction"):
         engine.evaluate_oos_window(forged, "OOS_WINDOW_1", _confirmed_series())

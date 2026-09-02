@@ -292,18 +292,6 @@ def evaluate_pit_symbol_window_config(
     window_candles: list[Candle],
     target_family: str,
     max_ladder_sell_fraction: Decimal,
-    pivot_threshold_pct: Decimal = DEFAULT_PIVOT_THRESHOLD_PCT,
-    min_wave1_gain_pct: Decimal = DEFAULT_MIN_WAVE1_GAIN_PCT,
-    min_wave1_days: int = DEFAULT_MIN_WAVE1_DAYS,
-    min_wave2_days_after_high: int = DEFAULT_MIN_WAVE2_DAYS_AFTER_HIGH,
-    wave2_min_retrace: Decimal = DEFAULT_WAVE2_MIN_RETRACE,
-    wave2_max_retrace: Decimal = DEFAULT_WAVE2_MAX_RETRACE,
-    target_zone_low_pct: Decimal = DEFAULT_TARGET_ZONE_LOW_PCT,
-    target_zone_high_pct: Decimal = DEFAULT_TARGET_ZONE_HIGH_PCT,
-    front_run_pct: Decimal = DEFAULT_FRONT_RUN_PCT,
-    end_pct_of_zone_high: Decimal = DEFAULT_END_PCT_OF_ZONE_HIGH,
-    rungs_per_target: int = DEFAULT_RUNGS_PER_TARGET,
-    distribution: str = DEFAULT_DISTRIBUTION,
 ) -> PitSymbolResult:
     """Pure single (asset, window, target_family, max_ladder_sell_fraction)
     PIT replay, per contract § 6/§ 7/§ 8. `window_candles` must already be
@@ -324,12 +312,6 @@ def evaluate_pit_symbol_window_config(
 
     anchor = find_pit_anchor(
         window_candles,
-        pivot_threshold_pct=pivot_threshold_pct,
-        min_wave1_gain_pct=min_wave1_gain_pct,
-        min_wave1_days=min_wave1_days,
-        min_wave2_days_after_high=min_wave2_days_after_high,
-        wave2_min_retrace=wave2_min_retrace,
-        wave2_max_retrace=wave2_max_retrace,
     )
     if anchor is None:
         return _empty_pit_result(symbol, window, target_family, max_ladder_sell_fraction, STATUS_NO_ANCHOR_SET_FOUND)
@@ -356,15 +338,15 @@ def evaluate_pit_symbol_window_config(
         anchor=anchor_set,
         target_family=target_family,
         max_ladder_sell_fraction=max_ladder_sell_fraction,
-        target_zone_low_pct=target_zone_low_pct,
-        target_zone_high_pct=target_zone_high_pct,
+        target_zone_low_pct=DEFAULT_TARGET_ZONE_LOW_PCT,
+        target_zone_high_pct=DEFAULT_TARGET_ZONE_HIGH_PCT,
     )
     rungs: list[Rung] = build_rungs(
         targets=targets,
-        rungs_per_target=rungs_per_target,
-        front_run_pct=front_run_pct,
-        end_pct_of_zone_high=end_pct_of_zone_high,
-        distribution=distribution,
+        rungs_per_target=DEFAULT_RUNGS_PER_TARGET,
+        front_run_pct=DEFAULT_FRONT_RUN_PCT,
+        end_pct_of_zone_high=DEFAULT_END_PCT_OF_ZONE_HIGH,
+        distribution=DEFAULT_DISTRIBUTION,
     )
     fills = simulate_fills(candles=future_candles, start_ts=anchor.entry_ts, rungs=rungs)
 
@@ -456,7 +438,6 @@ def _rank_grid_results(
 def select_policy_on_selection_window(
     symbol: str,
     selection_window_candles: list[Candle],
-    **fib_and_ladder_kwargs: object,
 ) -> tuple[Optional[SelectedPolicy], dict[tuple[str, Decimal], PitSymbolResult]]:
     """§ 7 selection: evaluates the full frozen grid on SELECTION_WINDOW
     candles only (the caller passes already-window-filtered candles; this
@@ -474,7 +455,6 @@ def select_policy_on_selection_window(
                 window_candles=selection_window_candles,
                 target_family=family,
                 max_ladder_sell_fraction=fraction,
-                **fib_and_ladder_kwargs,  # type: ignore[arg-type]
             )
 
     ranked = _rank_grid_results(grid_results, CANDIDATE_FAMILIES)
@@ -505,7 +485,6 @@ def evaluate_oos_window(
     selected: SelectedPolicy,
     oos_window_label: str,
     oos_window_candles: list[Candle],
-    **fib_and_ladder_kwargs: object,
 ) -> PitSymbolResult:
     """§ 8 OOS evaluation for one already-selected, frozen policy. Takes no
     `families`/`fractions` grid argument and no other symbol's or window's
@@ -517,7 +496,6 @@ def evaluate_oos_window(
         window_candles=oos_window_candles,
         target_family=selected.target_family,
         max_ladder_sell_fraction=selected.max_ladder_sell_fraction,
-        **fib_and_ladder_kwargs,  # type: ignore[arg-type]
     )
 
 
@@ -535,7 +513,6 @@ def run_pit_replay_for_symbol(
     selection_window_candles: list[Candle],
     oos_window_1_candles: list[Candle],
     oos_window_2_candles: list[Candle],
-    **fib_and_ladder_kwargs: object,
 ) -> PitSymbolReplayResult:
     """Orchestrates § 7 selection followed by § 8 OOS evaluation for one
     symbol. Selection is computed exactly once, before either OOS window is
@@ -544,7 +521,6 @@ def run_pit_replay_for_symbol(
     selected, grid_results = select_policy_on_selection_window(
         symbol=symbol,
         selection_window_candles=selection_window_candles,
-        **fib_and_ladder_kwargs,  # type: ignore[arg-type]
     )
 
     if selected is None:
@@ -556,12 +532,8 @@ def run_pit_replay_for_symbol(
             oos_window_2_result=None,
         )
 
-    oos1 = evaluate_oos_window(
-        selected, "OOS_WINDOW_1", oos_window_1_candles, **fib_and_ladder_kwargs  # type: ignore[arg-type]
-    )
-    oos2 = evaluate_oos_window(
-        selected, "OOS_WINDOW_2", oos_window_2_candles, **fib_and_ladder_kwargs  # type: ignore[arg-type]
-    )
+    oos1 = evaluate_oos_window(selected, "OOS_WINDOW_1", oos_window_1_candles)
+    oos2 = evaluate_oos_window(selected, "OOS_WINDOW_2", oos_window_2_candles)
 
     return PitSymbolReplayResult(
         symbol=symbol,
