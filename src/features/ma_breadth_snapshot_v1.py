@@ -181,7 +181,7 @@ def fetch_candles_at_or_before(conn: Any, *, members: Iterable[UniverseMember], 
     sql = f"""
     SELECT c.venue, c.asset_id, c.market, c.interval_code, c.close_ts_utc, c.open_price, c.high_price,
            c.low_price, c.close_price, c.volume_base
-    FROM obs_market_candle c
+    FROM obs_market_candle_market_identity_v1 c
     WHERE c.venue=%s AND c.interval_code=%s AND c.close_ts_utc<=%s
       AND (c.asset_id, c.market) IN ({member_placeholders})
     ORDER BY c.asset_id, c.market, c.close_ts_utc

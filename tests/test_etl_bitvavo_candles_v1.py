@@ -238,7 +238,9 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
     sql, payload = conn.cursor_instance.executemany_calls[0]
     assert "ON DUPLICATE KEY UPDATE" in sql
     assert payload[0]["interval_code"] == "1w"
-    assert payload[0]["market"] == "WLD-EUR"
+    identity_sql, identity_payload = conn.cursor_instance.executemany_calls[1]
+    assert "obs_market_candle_market_identity_v1" in identity_sql
+    assert identity_payload[0]["market"] == "WLD-EUR"
     assert payload[0]["volume_quote_eur"] == str(Decimal("15.00"))
 
 

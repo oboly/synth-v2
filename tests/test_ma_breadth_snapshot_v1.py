@@ -144,6 +144,7 @@ def test_fetch_candles_preserves_persisted_market_identity_for_same_asset():
     )
     assert set(result["market"]) == {"AAA-EUR", "AAA-USDC"}
     assert "c.market" in conn.cursor_instance.sql
+    assert "obs_market_candle_market_identity_v1" in conn.cursor_instance.sql
     assert "JOIN venue_market" not in conn.cursor_instance.sql
     assert conn.cursor_instance.params[-4:] == (1, "AAA-EUR", 1, "AAA-USDC")
 
