@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import signal
 from pathlib import Path
 from statistics import mean
@@ -65,15 +66,7 @@ class _RunnerInterrupted(Exception):
 
 
 def _build_buckets_allow_partial_metrics(rows: list[dict[str, Any]], score: str) -> list[dict[str, Any]]:
-    """Preserve rank buckets while tolerating missing non-selected outcomes.
-
-    `score_horizon_split_metrics` constructs an eligible set independently for
-    each outcome metric. A row eligible for forward return can therefore have
-    missing MFE or MAE. The core bucket schema contains all three metrics, so
-    compute each metric's bucket stats only from values actually present.
-    The caller reads only the selected metric, whose eligibility set is
-    unchanged. No imputation or weight renormalization is introduced.
-    """
+    """Preserve rank buckets while tolerating missing non-selected outcomes."""
     ordered = sorted(rows, key=lambda row: (float(row["scores"][score]), str(row["observation_id"])))
     n = len(ordered)
     bucket_count = core._bucket_count_for(n)
@@ -103,8 +96,6 @@ def _build_buckets_allow_partial_metrics(rows: list[dict[str, Any]], score: str)
     return buckets
 
 
-# The CLI is the supported evaluator entry point. Install the partial-outcome
-# safe bucket implementation before any evaluation path runs.
 core.build_buckets = _build_buckets_allow_partial_metrics
 
 
@@ -136,8 +127,106 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(_jsonable(payload), sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _extract_json_string_field(raw: str, key: str) -> str:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*("(?:\\.|[^"\\])*")', raw)
+    if match is None:
+        raise ValueError(f"outcome row missing string field {key}")
+    return str(json.loads(match.group(1)))
+
+
+def _extract_json_int_field(raw: str, key: str) -> int:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*(-?\d+)', raw)
+    if match is None:
+        raise ValueError(f"outcome row missing integer field {key}")
+    return int(match.group(1))
+
+
+def _holdout_identity_only(raw: str) -> dict[str, Any]:
+    """Extract holdout identity without deserializing analytical metric fields."""
+    return {
+        "outcome_id": _extract_json_string_field(raw, "outcome_id"),
+        "observation_id": _extract_json_string_field(raw, "observation_id"),
+        "asset_id": _extract_json_int_field(raw, "asset_id"),
+        "split": "holdout",
+        "horizon": _extract_json_string_field(raw, "horizon"),
+        "status": _extract_json_string_field(raw, "status"),
+    }
+
+
+def _load_outcomes_sealed(path: Path, eval_splits: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Validate all outcome identities while materializing analytics only for open splits.
+
+    Holdout lines are never passed wholesale to ``json.loads``. Only the frozen
+    identity fields are extracted from their raw JSONL text. Discovery and/or
+    validation rows requested by the evaluator are fully deserialized after
+    the split gate, so downstream analytical code never receives holdout
+    metric values.
+    """
+    actual_sha = core._sha256_path(path)
+    if actual_sha != core.PINNED_OUTCOMES_SHA256:
+        raise ValueError(
+            f"outcomes SHA256 mismatch expected={core.PINNED_OUTCOMES_SHA256} actual={actual_sha}"
+        )
+
+    allowed_analytics = set(eval_splits)
+    rows: list[dict[str, Any]] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        split = _extract_json_string_field(raw, "split")
+        if split not in core.ALL_SPLITS:
+            raise ValueError(f"unexpected outcome split names: {[split]}")
+        if split in allowed_analytics:
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                raise ValueError("JSONL row must be an object")
+            rows.append(row)
+        elif split == "holdout":
+            rows.append(_holdout_identity_only(raw))
+        else:
+            # A closed non-holdout split (e.g. validation during discovery-only)
+            # is also identity-only so analytics are read only for requested splits.
+            rows.append(
+                {
+                    "outcome_id": _extract_json_string_field(raw, "outcome_id"),
+                    "observation_id": _extract_json_string_field(raw, "observation_id"),
+                    "asset_id": _extract_json_int_field(raw, "asset_id"),
+                    "split": split,
+                    "horizon": _extract_json_string_field(raw, "horizon"),
+                    "status": _extract_json_string_field(raw, "status"),
+                }
+            )
+
+    if len(rows) != core.PINNED_OUTCOMES_ROW_COUNT:
+        raise ValueError(
+            f"outcomes row count mismatch expected={core.PINNED_OUTCOMES_ROW_COUNT} actual={len(rows)}"
+        )
+    ids = [str(row["outcome_id"]) for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate outcome_id")
+    horizons = {str(row["horizon"]) for row in rows}
+    if horizons != set(core.HORIZONS):
+        raise ValueError(f"outcomes must contain exactly horizons {core.HORIZONS}, found {sorted(horizons)}")
+    unexpected_statuses = {str(row["status"]) for row in rows} - set(core.OUTCOME_STATUSES)
+    if unexpected_statuses:
+        raise ValueError(f"unexpected outcome statuses: {sorted(unexpected_statuses)}")
+    pair_keys = [(str(row["observation_id"]), str(row["horizon"])) for row in rows]
+    if len(pair_keys) != len(set(pair_keys)):
+        raise ValueError("duplicate (observation_id, horizon) outcome pair")
+    split_counts: dict[str, int] = {}
+    for row in rows:
+        split = str(row["split"])
+        split_counts[split] = split_counts.get(split, 0) + 1
+    for split_name, expected in core.PINNED_SPLIT_OUTCOME_ROW_COUNTS.items():
+        actual = split_counts.get(split_name, 0)
+        if actual != expected:
+            raise ValueError(
+                f"outcome split row count mismatch split={split_name} expected={expected} actual={actual}"
+            )
+    return rows
+
+
 def _with_safety_markers(row: dict[str, Any]) -> dict[str, Any]:
-    """Append the complete frozen safety marker set in deterministic order."""
     return {**row, **SAFETY_MARKERS}
 
 
@@ -245,7 +334,6 @@ def _phase(name: str, **counts: Any) -> None:
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     eval_splits = core.resolve_eval_splits(args.split)
-
     output_dir = Path(args.output_dir)
     if output_dir.exists():
         raise ValueError(f"immutable output directory already exists: {output_dir}")
@@ -255,7 +343,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     _phase("verify_inputs", split=args.split)
     population = core.load_population(population_path)
-    outcomes = core.load_outcomes(outcomes_path)
+    outcomes = _load_outcomes_sealed(outcomes_path, eval_splits)
     _phase("load_identity_metadata", population_rows=len(population), outcome_rows=len(outcomes))
     core.validate_identity(population, outcomes)
 
@@ -337,7 +425,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "",
     ]
     (output_dir / OUTPUT_SUMMARY_MD).write_text("\n".join(summary_lines), encoding="utf-8")
-
     return manifest
 
 
@@ -357,10 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         f"population={args.population} outcomes={args.outcomes} output_dir={args.output_dir}",
         flush=True,
     )
-    print(
-        "SAFETY " + " ".join(f"{key}={value}" for key, value in SAFETY_MARKERS.items()),
-        flush=True,
-    )
+    print("SAFETY " + " ".join(f"{key}={value}" for key, value in SAFETY_MARKERS.items()), flush=True)
 
     try:
         manifest = run(args)
