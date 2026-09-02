@@ -426,7 +426,32 @@ def test_terminal_completed_map_with_fresh_evaluated_observation_is_waiting_for_
     assert record.current_map_structure_hash == "h1"
 
 
-def test_terminal_completed_map_with_fresh_failed_observation_is_not_waiting_for_new_structure() -> None:
+def test_terminal_completed_map_with_evaluated_observation_at_terminal_event_is_waiting_for_new_structure() -> None:
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    terminal_at = _AS_OF - timedelta(hours=1)
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", terminal_at)]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, terminal_at, "EVALUATED")],
+    )
+    assert record.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+
+
+def test_terminal_completed_map_with_evaluated_observation_before_terminal_event_is_overdue() -> None:
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    terminal_at = _AS_OF - timedelta(hours=1)
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", terminal_at)]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, terminal_at - timedelta(minutes=1), "EVALUATED")],
+    )
+    assert record.observation_freshness_state == "OBSERVATION_CURRENT"
+    assert record.recompute_transition_state == "RECOMPUTE_OVERDUE"
+
+
+def test_terminal_completed_map_with_fresh_failed_observation_after_terminal_event_is_overdue() -> None:
     """Codex-flagged correction: a fresh (OBSERVATION_CURRENT) but FAILED
     observation must never be classified WAITING_FOR_NEW_STRUCTURE -- that
     would falsely present a recompute failure as healthy waiting. It must

@@ -235,6 +235,19 @@ def _select_latest_observation(
     return max(eligible, key=lambda item: (item.observed_at_utc, item.scope_observation_id))
 
 
+def _select_latest_evaluated_observation(
+    observations: Sequence[ObservationFact],
+    as_of_utc: datetime,
+) -> ObservationFact | None:
+    eligible = [
+        item for item in observations
+        if item.observed_at_utc <= as_of_utc and item.observation_status == "EVALUATED"
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda item: (item.observed_at_utc, item.scope_observation_id))
+
+
 def _latest_candle_ts(
     candle_close_timestamps: Sequence[datetime],
     as_of_utc: datetime,
@@ -365,6 +378,8 @@ def _compute_recompute_transition_state(
     observation_freshness_state: NativeShortObservationFreshnessState,
     source_state: NativeShortScopeSourceState,
     latest_observation_status: str | None,
+    terminal_lifecycle_event_ts_utc: datetime | None,
+    latest_evaluated_observation_ts_utc: datetime | None,
 ) -> NativeShortScopeRecomputeTransitionState:
     """Issue #681 Amendment 2: orthogonal healthy-wait vs overdue evidence.
 
@@ -380,7 +395,7 @@ def _compute_recompute_transition_state(
     happened recently, but freshness alone is not proof the attempt
     *succeeded*: a fresh observation can still be `FAILED` (the materializer
     ran but errored before it could evaluate structure), which must not be
-    presented as a healthy wait. `WAITING_FOR_NEW_STRUCTURE` therefore
+    presented as a healthy wait. A successful evaluation must also be at or after the selected terminal lifecycle event; an earlier evaluation is not evidence of a post-terminal recompute attempt. `WAITING_FOR_NEW_STRUCTURE` therefore
     additionally requires the latest observation to have `observation_status
     == EVALUATED`: the most recent cycle actually evaluated current market
     structure and found it insufficient for a fresh map (healthy, bounded
@@ -398,6 +413,9 @@ def _compute_recompute_transition_state(
     if (
         observation_freshness_state == NativeShortObservationFreshnessState.OBSERVATION_CURRENT
         and latest_observation_status == "EVALUATED"
+        and terminal_lifecycle_event_ts_utc is not None
+        and latest_evaluated_observation_ts_utc is not None
+        and latest_evaluated_observation_ts_utc >= terminal_lifecycle_event_ts_utc
     ):
         return NativeShortScopeRecomputeTransitionState.WAITING_FOR_NEW_STRUCTURE
     return NativeShortScopeRecomputeTransitionState.RECOMPUTE_OVERDUE
@@ -451,6 +469,7 @@ def project_native_short_scope_status(
     )
     latest_generation_event = _select_latest_generation_event(generation_events, as_of_utc)
     latest_observation = _select_latest_observation(observations, as_of_utc)
+    latest_evaluated_observation = _select_latest_evaluated_observation(observations, as_of_utc)
 
     common_fields: dict[str, object] = dict(
         key=key,
@@ -545,6 +564,16 @@ def project_native_short_scope_status(
         source_state=source_state,
         latest_observation_status=(
             latest_observation.observation_status if latest_observation is not None else None
+        ),
+        terminal_lifecycle_event_ts_utc=(
+            latest_lifecycle_event.event_ts_utc
+            if latest_lifecycle_event is not None
+            and map_lifecycle_state in _TERMINAL_MAP_LIFECYCLE_STATES
+            else None
+        ),
+        latest_evaluated_observation_ts_utc=(
+            latest_evaluated_observation.observed_at_utc
+            if latest_evaluated_observation is not None else None
         ),
     )
 
