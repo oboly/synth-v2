@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import json
 import os
+import signal
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -32,6 +33,27 @@ WINDOWS = (
     ("OOS_WINDOW_1", contract.OOS_WINDOW_1),
     ("OOS_WINDOW_2", contract.OOS_WINDOW_2),
 )
+
+
+class RunnerInterrupted(RuntimeError):
+    """Raised by bounded signal handlers so the runner can emit one terminal line."""
+
+
+def _raise_interrupted(signum: int, _frame: Any) -> None:
+    raise RunnerInterrupted(signal.Signals(signum).name)
+
+
+def _install_signal_handlers() -> dict[int, Any]:
+    previous: dict[int, Any] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, _raise_interrupted)
+    return previous
+
+
+def _restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
 
 
 def parse_args() -> argparse.Namespace:
@@ -267,8 +289,18 @@ def write_evidence(path: Path, evidence: dict[str, Any]) -> str:
 
 def main() -> int:
     print("STARTED phase=#707_PHASE_C_PIT_REPLAY")
+    previous_handlers = _install_signal_handlers()
     try:
-        args = parse_args()
+        try:
+            args = parse_args()
+        except SystemExit as exc:
+            exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+            if exit_code == 0:
+                print("FINISHED phase=#707_PHASE_C_PIT_REPLAY status=HELP")
+                return 0
+            print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY status=ARGPARSE exit_code={exit_code}")
+            return exit_code
+
         evidence = build_evidence(args)
         print("PROGRESS phase=WRITE_EVIDENCE")
         out_path = Path(args.out_json)
@@ -278,9 +310,15 @@ def main() -> int:
         print("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
         print("FINISHED phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS")
         return 0
+    except (RunnerInterrupted, KeyboardInterrupt) as exc:
+        reason = str(exc) or type(exc).__name__
+        print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY status=INTERRUPTED reason={reason}")
+        return 130
     except Exception as exc:
         print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY error={type(exc).__name__}:{exc}")
         return 1
+    finally:
+        _restore_signal_handlers(previous_handlers)
 
 
 if __name__ == "__main__":
