@@ -27,6 +27,10 @@ from src.research import run_fib_exit_ladder_backtest_v1 as ladder_bt
 from src.research import run_fib_exit_ladder_scoreboard_v1 as scoreboard
 
 METHODOLOGY_VERSION = "FIB_EXIT_LADDER_V1_PIT_REPLAY_CONTRACT_V1"
+RUNNER_NAME = "run_fib_exit_ladder_v1_pit_replay_phase_c_v1"
+RUN_MODE = "RESEARCH_READ_ONLY"
+RUN_SCOPE = "LINK,XLM,SOL,XRP,HOT"
+RUN_WORKER = "single"
 DEFAULT_SYMBOLS = tuple(contract.REQUIRED_ASSET_UNIVERSE)
 WINDOWS = (
     ("SELECTION_WINDOW", contract.SELECTION_WINDOW),
@@ -37,6 +41,10 @@ WINDOWS = (
 
 class RunnerInterrupted(RuntimeError):
     """Raised by bounded signal handlers so the runner can emit one terminal line."""
+
+
+def _emit(message: str) -> None:
+    print(message, flush=True)
 
 
 def _raise_interrupted(signum: int, _frame: Any) -> None:
@@ -89,16 +97,63 @@ def _decision_provenance(window_candles: list[ladder_bt.Candle]) -> dict[str, An
     anchor = engine.find_pit_anchor(window_candles)
     if anchor is None:
         return {
+            "anchor_low": None,
+            "anchor_low_ts": None,
+            "wave1_high": None,
+            "wave1_high_ts": None,
+            "wave2_low": None,
+            "wave2_low_ts": None,
             "confirmation_idx": None,
             "confirmation_ts": None,
             "observable_ts": None,
         }
     return {
+        "anchor_low": _jsonable(anchor.anchor_low),
+        "anchor_low_ts": _jsonable(anchor.anchor_low_ts),
+        "wave1_high": _jsonable(anchor.wave1_high),
+        "wave1_high_ts": _jsonable(anchor.wave1_high_ts),
+        "wave2_low": _jsonable(anchor.wave2_low),
+        "wave2_low_ts": _jsonable(anchor.wave2_low_ts),
         "confirmation_idx": anchor.confirmation_idx,
         "confirmation_ts": _jsonable(anchor.confirmation_ts),
         # Under frozen contract §5.2, observable_ts is the next candle open and
         # equals the engine's tradeable entry_ts.
         "observable_ts": _jsonable(anchor.entry_ts),
+    }
+
+
+def _outcome_components(
+    result: engine.PitSymbolResult,
+    window_candles: list[ladder_bt.Candle],
+) -> dict[str, Any]:
+    filled_fraction = sum((fill.sell_fraction for fill in result.fills), Decimal("0"))
+    if filled_fraction > Decimal("1"):
+        filled_fraction = Decimal("1")
+    remaining_fraction = Decimal("1") - filled_fraction
+    avg_exit_price = ladder_bt.weighted_avg_exit_price(list(result.fills))
+
+    realized_return = None
+    remaining_return = None
+    if result.status == engine.STATUS_OK and result.entry_price is not None and window_candles:
+        realized_return = sum(
+            (
+                fill.sell_fraction * ladder_bt.return_pct(fill.limit_price, result.entry_price)
+                for fill in result.fills
+            ),
+            Decimal("0"),
+        )
+        remaining_return = remaining_fraction * ladder_bt.return_pct(
+            window_candles[-1].close_price,
+            result.entry_price,
+        )
+
+    return {
+        "fill_count": len(result.fills),
+        "filled_fraction": _jsonable(filled_fraction),
+        "remaining_fraction": _jsonable(remaining_fraction),
+        "avg_exit_price": _jsonable(avg_exit_price),
+        "realized_return_pct_on_full_position": _jsonable(realized_return),
+        "remaining_return_pct_on_full_position": _jsonable(remaining_return),
     }
 
 
@@ -109,6 +164,7 @@ def _result_row(
     row = _jsonable(result)
     row["fills"] = [_jsonable(fill) for fill in result.fills]
     row.update(_decision_provenance(window_candles))
+    row.update(_outcome_components(result, window_candles))
     return row
 
 
@@ -222,7 +278,7 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
         asset_rows: list[dict[str, Any]] = []
 
         for index, symbol in enumerate(symbols, start=1):
-            print(f"PROGRESS phase=REPLAY asset={symbol} index={index}/{len(symbols)}")
+            _emit(f"PROGRESS runner={RUNNER_NAME} phase=REPLAY asset={symbol} index={index}/{len(symbols)}")
             asset_id = ladder_bt.fetch_asset_id(conn, symbol)
             if asset_id is None:
                 asset_rows.append({"symbol": symbol, "status": "ASSET_NOT_FOUND"})
@@ -288,7 +344,11 @@ def write_evidence(path: Path, evidence: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    print("STARTED phase=#707_PHASE_C_PIT_REPLAY")
+    _emit(
+        "STARTED "
+        f"runner={RUNNER_NAME} mode={RUN_MODE} scope={RUN_SCOPE} worker={RUN_WORKER} "
+        "phase=#707_PHASE_C_PIT_REPLAY"
+    )
     previous_handlers = _install_signal_handlers()
     try:
         try:
@@ -296,26 +356,35 @@ def main() -> int:
         except SystemExit as exc:
             exit_code = int(exc.code) if isinstance(exc.code, int) else 1
             if exit_code == 0:
-                print("FINISHED phase=#707_PHASE_C_PIT_REPLAY status=HELP")
+                _emit(f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY status=HELP")
                 return 0
-            print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY status=ARGPARSE exit_code={exit_code}")
+            _emit(
+                f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
+                f"status=ARGPARSE exit_code={exit_code}"
+            )
             return exit_code
 
         evidence = build_evidence(args)
-        print("PROGRESS phase=WRITE_EVIDENCE")
+        _emit(f"PROGRESS runner={RUNNER_NAME} phase=WRITE_EVIDENCE")
         out_path = Path(args.out_json)
         digest = write_evidence(out_path, evidence)
-        print(f"PIT_EVIDENCE_JSON={out_path}")
-        print(f"PIT_EVIDENCE_SHA256={digest}")
-        print("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
-        print("FINISHED phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS")
+        _emit(f"PIT_EVIDENCE_JSON={out_path}")
+        _emit(f"PIT_EVIDENCE_SHA256={digest}")
+        _emit("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
+        _emit(f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS")
         return 0
     except (RunnerInterrupted, KeyboardInterrupt) as exc:
         reason = str(exc) or type(exc).__name__
-        print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY status=INTERRUPTED reason={reason}")
+        _emit(
+            f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
+            f"status=INTERRUPTED reason={reason}"
+        )
         return 130
     except Exception as exc:
-        print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY error={type(exc).__name__}:{exc}")
+        _emit(
+            f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
+            f"error={type(exc).__name__}:{exc}"
+        )
         return 1
     finally:
         _restore_signal_handlers(previous_handlers)
