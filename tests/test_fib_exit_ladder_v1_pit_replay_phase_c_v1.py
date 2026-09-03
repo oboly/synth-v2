@@ -140,6 +140,48 @@ def test_phase_c_main_emits_single_failure_terminal_line(
     assert sum(line.startswith("FINISHED ") for line in lines) == 0
 
 
+def test_phase_c_main_help_has_one_terminal_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    monkeypatch.setattr(module, "parse_args", lambda: (_ for _ in ()).throw(SystemExit(0)))
+
+    assert module.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert sum(line.startswith("FINISHED ") for line in lines) == 1
+    assert lines[-1] == "FINISHED phase=#707_PHASE_C_PIT_REPLAY status=HELP"
+    assert sum(line.startswith("FAILED ") for line in lines) == 0
+
+
+def test_phase_c_main_interruption_has_one_failed_terminal_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda: (_ for _ in ()).throw(module.RunnerInterrupted("SIGTERM")),
+    )
+
+    assert module.main() == 130
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert sum(line.startswith("FAILED ") for line in lines) == 1
+    assert lines[-1] == "FAILED phase=#707_PHASE_C_PIT_REPLAY status=INTERRUPTED reason=SIGTERM"
+    assert sum(line.startswith("FINISHED ") for line in lines) == 0
+
+
+def test_phase_c_runner_installs_sigint_and_sigterm_handlers() -> None:
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    assert "signal.SIGINT" in source
+    assert "signal.SIGTERM" in source
+    assert "_install_signal_handlers()" in source
+    assert "_restore_signal_handlers(previous_handlers)" in source
+
+
 def test_phase_c_runner_has_no_production_layer_imports() -> None:
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
     imported = []
