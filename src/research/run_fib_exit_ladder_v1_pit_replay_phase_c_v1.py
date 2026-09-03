@@ -315,7 +315,8 @@ def _asset_evidence_row(
 ) -> dict[str, Any]:
     if replay.selected_policy is None:
         selection_statuses = {
-            result.status for result in replay.selection_grid_results.values()
+            result.status
+            for result in getattr(replay, "selection_grid_results", {}).values()
         }
         status = (
             engine.STATUS_INSUFFICIENT_CANDLES
