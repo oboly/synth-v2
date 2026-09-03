@@ -39,6 +39,61 @@ WINDOWS = (
     ("OOS_WINDOW_1", contract.OOS_WINDOW_1),
     ("OOS_WINDOW_2", contract.OOS_WINDOW_2),
 )
+SAFETY_MARKERS = (
+    "broker_private_calls=0",
+    "broker_writes=0",
+    "order_submission=0",
+    "live_orders=0",
+    "decision_gate=none",
+    "execution_planner=none",
+    "executor=none",
+)
+ASSET_EVIDENCE_KEYS = frozenset(
+    {
+        "symbol",
+        "asset_id",
+        "status",
+        "candle_row_counts",
+        "selected_policy",
+        "selection_grid_rows",
+        "oos_window_1",
+        "oos_window_2",
+    }
+)
+RESULT_EVIDENCE_KEYS = frozenset(
+    {
+        "symbol",
+        "window",
+        "target_family",
+        "max_ladder_sell_fraction",
+        "status",
+        "anchor_low_ts",
+        "wave1_high_ts",
+        "wave2_low_ts",
+        "confirmation_ts",
+        "entry_ts",
+        "entry_price",
+        "total_return_pct_with_remaining",
+        "hold_return_pct",
+        "alpha_vs_hold_pct",
+        "filled_rung_count",
+        "sample_count",
+        "peak_oracle_return_pct",
+        "top_capture_ratio",
+        "fills",
+        "anchor_low",
+        "wave1_high",
+        "wave2_low",
+        "confirmation_idx",
+        "observable_ts",
+        "fill_count",
+        "filled_fraction",
+        "remaining_fraction",
+        "avg_exit_price",
+        "realized_return_pct_on_full_position",
+        "remaining_return_pct_on_full_position",
+    }
+)
 
 
 class RunnerInterrupted(RuntimeError):
@@ -260,6 +315,87 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _validate_result_evidence_row(row: Any, *, context: str) -> None:
+    if not isinstance(row, dict):
+        raise ValueError(f"checkpoint {context} must be an object")
+    missing = RESULT_EVIDENCE_KEYS - row.keys()
+    if missing:
+        raise ValueError(
+            f"checkpoint {context} missing evidence fields: {','.join(sorted(missing))}"
+        )
+    if not isinstance(row["fills"], list):
+        raise ValueError(f"checkpoint {context} fills must be a list")
+    if not isinstance(row["fill_count"], int) or row["fill_count"] < 0:
+        raise ValueError(f"checkpoint {context} fill_count must be a non-negative integer")
+    if row["fill_count"] != len(row["fills"]):
+        raise ValueError(f"checkpoint {context} fill_count does not match fills")
+    if not isinstance(row["sample_count"], int) or row["sample_count"] < 0:
+        raise ValueError(f"checkpoint {context} sample_count must be a non-negative integer")
+
+
+def _validate_resume_asset_row(row: Any, *, expected_symbol: str) -> None:
+    if not isinstance(row, dict):
+        raise ValueError(f"checkpoint asset {expected_symbol} must be an object")
+    missing = ASSET_EVIDENCE_KEYS - row.keys()
+    if missing:
+        raise ValueError(
+            f"checkpoint asset {expected_symbol} missing evidence fields: {','.join(sorted(missing))}"
+        )
+    if row["symbol"] != expected_symbol:
+        raise ValueError(f"checkpoint asset symbol mismatch: expected {expected_symbol}")
+
+    counts = row["candle_row_counts"]
+    expected_labels = {label for label, _ in WINDOWS}
+    if not isinstance(counts, dict) or set(counts) != expected_labels:
+        raise ValueError(f"checkpoint asset {expected_symbol} candle_row_counts schema mismatch")
+    if any(not isinstance(value, int) or value < 0 for value in counts.values()):
+        raise ValueError(f"checkpoint asset {expected_symbol} candle_row_counts must be non-negative integers")
+
+    grid_rows = row["selection_grid_rows"]
+    if not isinstance(grid_rows, list):
+        raise ValueError(f"checkpoint asset {expected_symbol} selection_grid_rows must be a list")
+
+    status = row["status"]
+    if status == "ASSET_NOT_FOUND":
+        if row["asset_id"] is not None:
+            raise ValueError(f"checkpoint asset {expected_symbol} ASSET_NOT_FOUND requires asset_id=null")
+        if any(counts.values()):
+            raise ValueError(f"checkpoint asset {expected_symbol} ASSET_NOT_FOUND requires zero candle counts")
+        if row["selected_policy"] is not None or grid_rows:
+            raise ValueError(f"checkpoint asset {expected_symbol} ASSET_NOT_FOUND has selection evidence")
+        if row["oos_window_1"] is not None or row["oos_window_2"] is not None:
+            raise ValueError(f"checkpoint asset {expected_symbol} ASSET_NOT_FOUND has OOS evidence")
+        return
+
+    if not isinstance(row["asset_id"], int):
+        raise ValueError(f"checkpoint asset {expected_symbol} requires integer asset_id")
+
+    expected_grid_count = len(engine.CANDIDATE_FAMILIES) * len(engine.SELL_FRACTION_GRID)
+    if len(grid_rows) != expected_grid_count:
+        raise ValueError(
+            f"checkpoint asset {expected_symbol} selection_grid_rows count mismatch"
+        )
+    for index, grid_row in enumerate(grid_rows):
+        _validate_result_evidence_row(
+            grid_row,
+            context=f"asset {expected_symbol} selection_grid_rows[{index}]",
+        )
+
+    if status in {engine.STATUS_INSUFFICIENT_CANDLES, engine.STATUS_INSUFFICIENT_DATA}:
+        if row["selected_policy"] is not None:
+            raise ValueError(f"checkpoint asset {expected_symbol} no-selection status has selected_policy")
+        if row["oos_window_1"] is not None or row["oos_window_2"] is not None:
+            raise ValueError(f"checkpoint asset {expected_symbol} no-selection status has OOS evidence")
+        return
+
+    if status != engine.STATUS_OK:
+        raise ValueError(f"checkpoint asset {expected_symbol} has unsupported status {status!r}")
+    if not isinstance(row["selected_policy"], dict):
+        raise ValueError(f"checkpoint asset {expected_symbol} OK status requires selected_policy")
+    _validate_result_evidence_row(row["oos_window_1"], context=f"asset {expected_symbol} oos_window_1")
+    _validate_result_evidence_row(row["oos_window_2"], context=f"asset {expected_symbol} oos_window_2")
+
+
 def _load_resume_checkpoint(path: Path, expected: dict[str, Any]) -> list[dict[str, Any]]:
     if not path.exists():
         raise ValueError(f"resume requested but checkpoint does not exist: {path}")
@@ -280,9 +416,13 @@ def _load_resume_checkpoint(path: Path, expected: dict[str, Any]) -> list[dict[s
     asset_rows = checkpoint.get("assets")
     if not isinstance(asset_rows, list):
         raise ValueError("checkpoint assets must be a list")
-    completed_symbols = [row.get("symbol") for row in asset_rows]
+    if len(asset_rows) > len(expected["symbols"]):
+        raise ValueError("checkpoint contains more assets than frozen universe")
+    completed_symbols = [row.get("symbol") if isinstance(row, dict) else None for row in asset_rows]
     if completed_symbols != expected["symbols"][: len(completed_symbols)]:
         raise ValueError("checkpoint assets must be an ordered frozen-universe prefix")
+    for expected_symbol, row in zip(expected["symbols"], asset_rows):
+        _validate_resume_asset_row(row, expected_symbol=expected_symbol)
     return asset_rows
 
 
@@ -495,6 +635,7 @@ def main() -> int:
         f"runner={RUNNER_NAME} mode={RUN_MODE} scope={RUN_SCOPE} worker={RUN_WORKER} "
         "phase=#707_PHASE_C_PIT_REPLAY"
     )
+    _emit("SAFETY " + " ".join(SAFETY_MARKERS))
     previous_handlers = _install_signal_handlers()
     try:
         try:
