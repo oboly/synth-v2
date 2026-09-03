@@ -13,6 +13,7 @@ executor, runtime activation, or #657 promotion/binding.
 import argparse
 import hashlib
 import json
+import os
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -40,6 +41,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", default="1d")
     parser.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     parser.add_argument("--out-json", required=True)
+    parser.add_argument(
+        "--code-commit-sha",
+        default=os.getenv("SYNTH_RESEARCH_CODE_COMMIT_SHA"),
+        help="Exact reviewed commit SHA backing this run; may also be supplied via SYNTH_RESEARCH_CODE_COMMIT_SHA.",
+    )
     return parser.parse_args()
 
 
@@ -57,17 +63,46 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _result_row(result: engine.PitSymbolResult) -> dict[str, Any]:
+def _decision_provenance(window_candles: list[ladder_bt.Candle]) -> dict[str, Any]:
+    anchor = engine.find_pit_anchor(window_candles)
+    if anchor is None:
+        return {
+            "confirmation_idx": None,
+            "confirmation_ts": None,
+            "observable_ts": None,
+        }
+    return {
+        "confirmation_idx": anchor.confirmation_idx,
+        "confirmation_ts": _jsonable(anchor.confirmation_ts),
+        # Under frozen contract §5.2, observable_ts is the next candle open and
+        # equals the engine's tradeable entry_ts.
+        "observable_ts": _jsonable(anchor.entry_ts),
+    }
+
+
+def _result_row(
+    result: engine.PitSymbolResult,
+    window_candles: list[ladder_bt.Candle],
+) -> dict[str, Any]:
     row = _jsonable(result)
     row["fills"] = [_jsonable(fill) for fill in result.fills]
+    row.update(_decision_provenance(window_candles))
     return row
 
 
-def _grid_rows(replay: engine.PitSymbolReplayResult) -> list[dict[str, Any]]:
+def _grid_rows(
+    replay: engine.PitSymbolReplayResult,
+    selection_window_candles: list[ladder_bt.Candle],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for family in engine.CANDIDATE_FAMILIES:
         for fraction in engine.SELL_FRACTION_GRID:
-            rows.append(_result_row(replay.selection_grid_results[(family, fraction)]))
+            rows.append(
+                _result_row(
+                    replay.selection_grid_results[(family, fraction)],
+                    selection_window_candles,
+                )
+            )
     return rows
 
 
@@ -78,6 +113,13 @@ def _parse_symbols(text: str) -> list[str]:
             "Phase C frozen universe mismatch; expected exactly " + ",".join(DEFAULT_SYMBOLS)
         )
     return symbols
+
+
+def _require_code_commit_sha(value: str | None) -> str:
+    sha = (value or "").strip().lower()
+    if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
+        raise ValueError("code_commit_sha must be an exact 40-character hexadecimal commit SHA")
+    return sha
 
 
 def _fetch_window_candles(
@@ -99,18 +141,66 @@ def _fetch_window_candles(
     )
 
 
+def _asset_evidence_row(
+    *,
+    symbol: str,
+    asset_id: int,
+    row_counts: dict[str, int],
+    candles_by_window: dict[str, list[ladder_bt.Candle]],
+    replay: engine.PitSymbolReplayResult,
+) -> dict[str, Any]:
+    if replay.selected_policy is None:
+        return {
+            "symbol": symbol,
+            "asset_id": asset_id,
+            "status": engine.STATUS_INSUFFICIENT_DATA,
+            "candle_row_counts": row_counts,
+            "selected_policy": None,
+            "selection_grid_rows": _grid_rows(
+                replay,
+                candles_by_window["SELECTION_WINDOW"],
+            ),
+            "oos_window_1": None,
+            "oos_window_2": None,
+        }
+
+    assert replay.oos_window_1_result is not None
+    assert replay.oos_window_2_result is not None
+    return {
+        "symbol": symbol,
+        "asset_id": asset_id,
+        "status": "OK",
+        "candle_row_counts": row_counts,
+        "selected_policy": _jsonable(replay.selected_policy),
+        "selection_grid_rows": _grid_rows(
+            replay,
+            candles_by_window["SELECTION_WINDOW"],
+        ),
+        "oos_window_1": _result_row(
+            replay.oos_window_1_result,
+            candles_by_window["OOS_WINDOW_1"],
+        ),
+        "oos_window_2": _result_row(
+            replay.oos_window_2_result,
+            candles_by_window["OOS_WINDOW_2"],
+        ),
+    }
+
+
 def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
     if args.venue != "bitvavo" or args.interval != "1d":
         raise ValueError("Frozen #707 contract requires venue=bitvavo and interval=1d")
 
     symbols = _parse_symbols(args.symbols)
+    code_commit_sha = _require_code_commit_sha(args.code_commit_sha)
     scoreboard.load_env(args.env_file)
     conn = scoreboard.connect_read_only()
     try:
         columns = ladder_bt.detect_candle_columns(conn)
         asset_rows: list[dict[str, Any]] = []
 
-        for symbol in symbols:
+        for index, symbol in enumerate(symbols, start=1):
+            print(f"PROGRESS phase=REPLAY asset={symbol} index={index}/{len(symbols)}")
             asset_id = ladder_bt.fetch_asset_id(conn, symbol)
             if asset_id is None:
                 asset_rows.append({"symbol": symbol, "status": "ASSET_NOT_FOUND"})
@@ -137,15 +227,13 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 oos_window_2_candles=candles_by_window["OOS_WINDOW_2"],
             )
             asset_rows.append(
-                {
-                    "symbol": symbol,
-                    "asset_id": asset_id,
-                    "candle_row_counts": row_counts,
-                    "selected_policy": _jsonable(replay.selected_policy),
-                    "selection_grid_rows": _grid_rows(replay),
-                    "oos_window_1": _jsonable(replay.oos_window_1_result),
-                    "oos_window_2": _jsonable(replay.oos_window_2_result),
-                }
+                _asset_evidence_row(
+                    symbol=symbol,
+                    asset_id=asset_id,
+                    row_counts=row_counts,
+                    candles_by_window=candles_by_window,
+                    replay=replay,
+                )
             )
 
         return {
@@ -153,6 +241,7 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
             "methodology_version": METHODOLOGY_VERSION,
             "methodology_promotion_grade": 0,
             "promotion_eligible": False,
+            "code_commit_sha": code_commit_sha,
             "venue": args.venue,
             "interval": args.interval,
             "symbols": symbols,
@@ -177,14 +266,21 @@ def write_evidence(path: Path, evidence: dict[str, Any]) -> str:
 
 
 def main() -> int:
-    args = parse_args()
-    evidence = build_evidence(args)
-    out_path = Path(args.out_json)
-    digest = write_evidence(out_path, evidence)
-    print(f"PIT_EVIDENCE_JSON={out_path}")
-    print(f"PIT_EVIDENCE_SHA256={digest}")
-    print("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
-    return 0
+    print("STARTED phase=#707_PHASE_C_PIT_REPLAY")
+    try:
+        args = parse_args()
+        evidence = build_evidence(args)
+        print("PROGRESS phase=WRITE_EVIDENCE")
+        out_path = Path(args.out_json)
+        digest = write_evidence(out_path, evidence)
+        print(f"PIT_EVIDENCE_JSON={out_path}")
+        print(f"PIT_EVIDENCE_SHA256={digest}")
+        print("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
+        print("FINISHED phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS")
+        return 0
+    except Exception as exc:
+        print(f"FAILED phase=#707_PHASE_C_PIT_REPLAY error={type(exc).__name__}:{exc}")
+        return 1
 
 
 if __name__ == "__main__":
