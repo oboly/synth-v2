@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import importlib
 from argparse import Namespace
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,14 +39,23 @@ def test_phase_c_runner_requires_exact_code_commit_sha() -> None:
         module._require_code_commit_sha("abc")
 
 
-def test_phase_c_result_row_contains_frozen_decision_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_phase_c_result_row_contains_frozen_anchor_and_decision_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module = importlib.import_module(MODULE_NAME)
     result = SimpleNamespace(fills=())
     monkeypatch.setattr(module, "_jsonable", lambda value: {"status": "OK"} if value is result else str(value))
+    monkeypatch.setattr(module, "_outcome_components", lambda result, candles: {})
     monkeypatch.setattr(
         module.engine,
         "find_pit_anchor",
         lambda candles: SimpleNamespace(
+            anchor_low=Decimal("1"),
+            anchor_low_ts="anchor-low-ts",
+            wave1_high=Decimal("2"),
+            wave1_high_ts="wave1-high-ts",
+            wave2_low=Decimal("1.5"),
+            wave2_low_ts="wave2-low-ts",
             confirmation_idx=17,
             confirmation_ts="confirmation-ts",
             entry_ts="observable-ts",
@@ -52,10 +63,34 @@ def test_phase_c_result_row_contains_frozen_decision_provenance(monkeypatch: pyt
     )
 
     row = module._result_row(result, [object()])
+    assert row["anchor_low"] == "1"
+    assert row["wave1_high"] == "2"
+    assert row["wave2_low"] == "1.5"
     assert row["confirmation_idx"] == 17
     assert row["confirmation_ts"] == "confirmation-ts"
     assert row["observable_ts"] == "observable-ts"
     assert row["fills"] == []
+
+
+def test_phase_c_outcome_components_emit_frozen_section_11_fields() -> None:
+    module = importlib.import_module(MODULE_NAME)
+    fill = SimpleNamespace(sell_fraction=Decimal("0.25"), limit_price=Decimal("120"))
+    result = SimpleNamespace(
+        fills=(fill,),
+        status=module.engine.STATUS_OK,
+        entry_price=Decimal("100"),
+    )
+    candle = SimpleNamespace(close_price=Decimal("110"))
+
+    components = module._outcome_components(result, [candle])
+    assert components == {
+        "fill_count": 1,
+        "filled_fraction": "0.25",
+        "remaining_fraction": "0.75",
+        "avg_exit_price": "120",
+        "realized_return_pct_on_full_position": "5.00",
+        "remaining_return_pct_on_full_position": "7.50",
+    }
 
 
 def test_phase_c_asset_without_selection_is_explicit_insufficient_data(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,7 +143,7 @@ def test_phase_c_build_evidence_records_commit_sha_and_mocked_db_status(
     assert [row["status"] for row in evidence["assets"]] == ["ASSET_NOT_FOUND"] * 5
 
 
-def test_phase_c_main_emits_single_success_terminal_line(
+def test_phase_c_main_emits_flushed_startup_metadata_and_single_success_terminal_line(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -120,10 +155,22 @@ def test_phase_c_main_emits_single_success_terminal_line(
 
     assert module.main() == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
-    assert "PROGRESS phase=WRITE_EVIDENCE" in lines
+    assert lines[0].startswith("STARTED ")
+    assert f"runner={module.RUNNER_NAME}" in lines[0]
+    assert f"mode={module.RUN_MODE}" in lines[0]
+    assert f"scope={module.RUN_SCOPE}" in lines[0]
+    assert f"worker={module.RUN_WORKER}" in lines[0]
+    assert any("phase=WRITE_EVIDENCE" in line for line in lines)
     assert sum(line.startswith("FINISHED ") for line in lines) == 1
     assert sum(line.startswith("FAILED ") for line in lines) == 0
+
+
+def test_phase_c_emit_is_unbuffered(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(module, "print", lambda message, flush=False: calls.append((message, flush)), raising=False)
+    module._emit("hello")
+    assert calls == [("hello", True)]
 
 
 def test_phase_c_main_emits_single_failure_terminal_line(
@@ -135,7 +182,7 @@ def test_phase_c_main_emits_single_failure_terminal_line(
 
     assert module.main() == 1
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert lines[0].startswith("STARTED ")
     assert sum(line.startswith("FAILED ") for line in lines) == 1
     assert sum(line.startswith("FINISHED ") for line in lines) == 0
 
@@ -149,9 +196,9 @@ def test_phase_c_main_help_has_one_terminal_summary(
 
     assert module.main() == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert lines[0].startswith("STARTED ")
     assert sum(line.startswith("FINISHED ") for line in lines) == 1
-    assert lines[-1] == "FINISHED phase=#707_PHASE_C_PIT_REPLAY status=HELP"
+    assert lines[-1].endswith("status=HELP")
     assert sum(line.startswith("FAILED ") for line in lines) == 0
 
 
@@ -168,9 +215,9 @@ def test_phase_c_main_interruption_has_one_failed_terminal_summary(
 
     assert module.main() == 130
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert lines[0].startswith("STARTED ")
     assert sum(line.startswith("FAILED ") for line in lines) == 1
-    assert lines[-1] == "FAILED phase=#707_PHASE_C_PIT_REPLAY status=INTERRUPTED reason=SIGTERM"
+    assert lines[-1].endswith("status=INTERRUPTED reason=SIGTERM")
     assert sum(line.startswith("FINISHED ") for line in lines) == 0
 
 
