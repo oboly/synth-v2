@@ -314,10 +314,18 @@ def _asset_evidence_row(
     replay: engine.PitSymbolReplayResult,
 ) -> dict[str, Any]:
     if replay.selected_policy is None:
+        selection_statuses = {
+            result.status for result in replay.selection_grid_results.values()
+        }
+        status = (
+            engine.STATUS_INSUFFICIENT_CANDLES
+            if selection_statuses == {engine.STATUS_INSUFFICIENT_CANDLES}
+            else engine.STATUS_INSUFFICIENT_DATA
+        )
         return {
             "symbol": symbol,
             "asset_id": asset_id,
-            "status": engine.STATUS_INSUFFICIENT_DATA,
+            "status": status,
             "candle_row_counts": row_counts,
             "selected_policy": None,
             "selection_grid_rows": _grid_rows(
@@ -348,6 +356,19 @@ def _asset_evidence_row(
             replay.oos_window_2_result,
             candles_by_window["OOS_WINDOW_2"],
         ),
+    }
+
+
+def _asset_not_found_evidence_row(symbol: str) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "asset_id": None,
+        "status": "ASSET_NOT_FOUND",
+        "candle_row_counts": {label: 0 for label, _ in WINDOWS},
+        "selected_policy": None,
+        "selection_grid_rows": [],
+        "oos_window_1": None,
+        "oos_window_2": None,
     }
 
 
@@ -403,7 +424,7 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 f"row_count={0 if asset_id is None else 1} elapsed_ms={_elapsed_ms(asset_id_started)}"
             )
             if asset_id is None:
-                evidence["assets"].append({"symbol": symbol, "status": "ASSET_NOT_FOUND"})
+                evidence["assets"].append(_asset_not_found_evidence_row(symbol))
             else:
                 candles_by_window: dict[str, list[ladder_bt.Candle]] = {}
                 row_counts: dict[str, int] = {}
