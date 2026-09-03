@@ -178,7 +178,7 @@ def test_phase_c_resume_validates_identity_and_skips_completed_prefix(
         interval="1d",
         code_commit_sha="b" * 40,
     )
-    expected["assets"] = [{"symbol": "LINK", "status": "ASSET_NOT_FOUND"}]
+    expected["assets"] = [module._asset_not_found_evidence_row("LINK")]
     module._atomic_write_json(Path(args.checkpoint_json), expected)
 
     class FakeConn:
@@ -201,6 +201,22 @@ def test_phase_c_resume_validates_identity_and_skips_completed_prefix(
     evidence = module.build_evidence(args)
     assert seen_symbols == ["XLM", "SOL", "XRP", "HOT"]
     assert [row["symbol"] for row in evidence["assets"]] == list(module.DEFAULT_SYMBOLS)
+
+
+def test_phase_c_resume_rejects_incomplete_completed_asset_row(tmp_path: Path) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    args = _args(tmp_path, resume=True)
+    checkpoint = module._base_evidence(
+        symbols=list(module.DEFAULT_SYMBOLS),
+        venue="bitvavo",
+        interval="1d",
+        code_commit_sha="b" * 40,
+    )
+    checkpoint["assets"] = [{"symbol": "LINK", "status": "ASSET_NOT_FOUND"}]
+    module._atomic_write_json(Path(args.checkpoint_json), checkpoint)
+
+    with pytest.raises(ValueError, match="missing evidence fields"):
+        module.build_evidence(args)
 
 
 def test_phase_c_resume_rejects_mismatched_checkpoint(tmp_path: Path) -> None:
@@ -251,6 +267,10 @@ def test_phase_c_main_emits_flushed_startup_metadata_and_single_success_terminal
     assert f"mode={module.RUN_MODE}" in lines[0]
     assert f"scope={module.RUN_SCOPE}" in lines[0]
     assert f"worker={module.RUN_WORKER}" in lines[0]
+    safety_lines = [line for line in lines if line.startswith("SAFETY ")]
+    assert len(safety_lines) == 1
+    for marker in module.SAFETY_MARKERS:
+        assert marker in safety_lines[0]
     assert any("phase=WRITE_EVIDENCE" in line and "row_count=0" in line and "elapsed_ms=" in line for line in lines)
     assert sum(line.startswith("FINISHED ") for line in lines) == 1
     assert sum(line.startswith("FAILED ") for line in lines) == 0
