@@ -4,7 +4,8 @@ from __future__ import annotations
 
 Research-only. Reads canonical 1d Bitvavo candles through a read-only
 transaction, executes the frozen Phase A contract through the merged Phase B
-engine, and writes only operator-requested local JSON evidence files.
+engine, and writes only operator-requested local JSON evidence/checkpoint
+files.
 
 No DB writes, account access, broker calls, decision_gate, execution_planner,
 executor, runtime activation, or #657 promotion/binding.
@@ -15,6 +16,7 @@ import hashlib
 import json
 import os
 import signal
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -47,6 +49,10 @@ def _emit(message: str) -> None:
     print(message, flush=True)
 
 
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
+
+
 def _raise_interrupted(signum: int, _frame: Any) -> None:
     raise RunnerInterrupted(signal.Signals(signum).name)
 
@@ -71,6 +77,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", default="1d")
     parser.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
     parser.add_argument("--out-json", required=True)
+    parser.add_argument(
+        "--checkpoint-json",
+        default=None,
+        help="Checkpoint path; defaults to <out-json>.checkpoint.json.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from an existing checkpoint after validating frozen run identity.",
+    )
     parser.add_argument(
         "--code-commit-sha",
         default=os.getenv("SYNTH_RESEARCH_CODE_COMMIT_SHA"),
@@ -116,8 +132,6 @@ def _decision_provenance(window_candles: list[ladder_bt.Candle]) -> dict[str, An
         "wave2_low_ts": _jsonable(anchor.wave2_low_ts),
         "confirmation_idx": anchor.confirmation_idx,
         "confirmation_ts": _jsonable(anchor.confirmation_ts),
-        # Under frozen contract §5.2, observable_ts is the next candle open and
-        # equals the engine's tradeable entry_ts.
         "observable_ts": _jsonable(anchor.entry_ts),
     }
 
@@ -200,6 +214,78 @@ def _require_code_commit_sha(value: str | None) -> str:
     return sha
 
 
+def _checkpoint_path(args: argparse.Namespace) -> Path:
+    explicit = getattr(args, "checkpoint_json", None)
+    if explicit:
+        return Path(explicit)
+    return Path(str(args.out_json) + ".checkpoint.json")
+
+
+def _base_evidence(
+    *,
+    symbols: list[str],
+    venue: str,
+    interval: str,
+    code_commit_sha: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "methodology_version": METHODOLOGY_VERSION,
+        "methodology_promotion_grade": 0,
+        "promotion_eligible": False,
+        "code_commit_sha": code_commit_sha,
+        "venue": venue,
+        "interval": interval,
+        "symbols": symbols,
+        "windows": {
+            label: {"from_ts": window[0], "to_ts": window[1]}
+            for label, window in WINDOWS
+        },
+        "candidate_families": list(engine.CANDIDATE_FAMILIES),
+        "sell_fraction_grid": [format(value, "f") for value in engine.SELL_FRACTION_GRID],
+        "assets": [],
+    }
+
+
+def _json_payload(value: dict[str, Any]) -> str:
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def _atomic_write_json(path: Path, value: dict[str, Any]) -> str:
+    payload = _json_payload(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    os.replace(tmp_path, path)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_resume_checkpoint(path: Path, expected: dict[str, Any]) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise ValueError(f"resume requested but checkpoint does not exist: {path}")
+    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    for key in (
+        "schema_version",
+        "methodology_version",
+        "code_commit_sha",
+        "venue",
+        "interval",
+        "symbols",
+        "windows",
+        "candidate_families",
+        "sell_fraction_grid",
+    ):
+        if checkpoint.get(key) != expected.get(key):
+            raise ValueError(f"checkpoint identity mismatch for {key}")
+    asset_rows = checkpoint.get("assets")
+    if not isinstance(asset_rows, list):
+        raise ValueError("checkpoint assets must be a list")
+    completed_symbols = [row.get("symbol") for row in asset_rows]
+    if completed_symbols != expected["symbols"][: len(completed_symbols)]:
+        raise ValueError("checkpoint assets must be an ordered frozen-universe prefix")
+    return asset_rows
+
+
 def _fetch_window_candles(
     conn: Any,
     columns: dict[str, str],
@@ -271,79 +357,117 @@ def build_evidence(args: argparse.Namespace) -> dict[str, Any]:
 
     symbols = _parse_symbols(args.symbols)
     code_commit_sha = _require_code_commit_sha(args.code_commit_sha)
+    evidence = _base_evidence(
+        symbols=symbols,
+        venue=args.venue,
+        interval=args.interval,
+        code_commit_sha=code_commit_sha,
+    )
+    checkpoint_path = _checkpoint_path(args)
+    if getattr(args, "resume", False):
+        evidence["assets"] = _load_resume_checkpoint(checkpoint_path, evidence)
+        _emit(
+            f"RESUMED runner={RUNNER_NAME} checkpoint={checkpoint_path} "
+            f"completed_assets={len(evidence['assets'])}"
+        )
+    elif checkpoint_path.exists():
+        raise ValueError(
+            f"checkpoint already exists: {checkpoint_path}; pass --resume or choose a new checkpoint path"
+        )
+
     scoreboard.load_env(args.env_file)
+    conn_started = time.monotonic()
     conn = scoreboard.connect_read_only()
+    _emit(
+        f"PHASE runner={RUNNER_NAME} phase=CONNECT_READ_ONLY elapsed_ms={_elapsed_ms(conn_started)}"
+    )
     try:
+        columns_started = time.monotonic()
         columns = ladder_bt.detect_candle_columns(conn)
-        asset_rows: list[dict[str, Any]] = []
+        _emit(
+            f"QUERY runner={RUNNER_NAME} phase=DETECT_CANDLE_COLUMNS row_count={len(columns)} "
+            f"elapsed_ms={_elapsed_ms(columns_started)}"
+        )
 
-        for index, symbol in enumerate(symbols, start=1):
-            _emit(f"PROGRESS runner={RUNNER_NAME} phase=REPLAY asset={symbol} index={index}/{len(symbols)}")
+        completed = len(evidence["assets"])
+        for index, symbol in enumerate(symbols[completed:], start=completed + 1):
+            asset_started = time.monotonic()
+            _emit(
+                f"PROGRESS runner={RUNNER_NAME} phase=REPLAY asset={symbol} "
+                f"index={index}/{len(symbols)}"
+            )
+            asset_id_started = time.monotonic()
             asset_id = ladder_bt.fetch_asset_id(conn, symbol)
+            _emit(
+                f"QUERY runner={RUNNER_NAME} phase=FETCH_ASSET_ID asset={symbol} "
+                f"row_count={0 if asset_id is None else 1} elapsed_ms={_elapsed_ms(asset_id_started)}"
+            )
             if asset_id is None:
-                asset_rows.append({"symbol": symbol, "status": "ASSET_NOT_FOUND"})
-                continue
+                evidence["assets"].append({"symbol": symbol, "status": "ASSET_NOT_FOUND"})
+            else:
+                candles_by_window: dict[str, list[ladder_bt.Candle]] = {}
+                row_counts: dict[str, int] = {}
+                for label, window in WINDOWS:
+                    query_started = time.monotonic()
+                    candles = _fetch_window_candles(
+                        conn,
+                        columns,
+                        asset_id,
+                        args.venue,
+                        args.interval,
+                        window,
+                    )
+                    candles_by_window[label] = candles
+                    row_counts[label] = len(candles)
+                    _emit(
+                        f"QUERY runner={RUNNER_NAME} phase=FETCH_CANDLES asset={symbol} "
+                        f"window={label} row_count={len(candles)} elapsed_ms={_elapsed_ms(query_started)}"
+                    )
 
-            candles_by_window: dict[str, list[ladder_bt.Candle]] = {}
-            row_counts: dict[str, int] = {}
-            for label, window in WINDOWS:
-                candles = _fetch_window_candles(
-                    conn,
-                    columns,
-                    asset_id,
-                    args.venue,
-                    args.interval,
-                    window,
-                )
-                candles_by_window[label] = candles
-                row_counts[label] = len(candles)
-
-            replay = engine.run_pit_replay_for_symbol(
-                symbol=symbol,
-                selection_window_candles=candles_by_window["SELECTION_WINDOW"],
-                oos_window_1_candles=candles_by_window["OOS_WINDOW_1"],
-                oos_window_2_candles=candles_by_window["OOS_WINDOW_2"],
-            )
-            asset_rows.append(
-                _asset_evidence_row(
+                replay_started = time.monotonic()
+                replay = engine.run_pit_replay_for_symbol(
                     symbol=symbol,
-                    asset_id=asset_id,
-                    row_counts=row_counts,
-                    candles_by_window=candles_by_window,
-                    replay=replay,
+                    selection_window_candles=candles_by_window["SELECTION_WINDOW"],
+                    oos_window_1_candles=candles_by_window["OOS_WINDOW_1"],
+                    oos_window_2_candles=candles_by_window["OOS_WINDOW_2"],
                 )
+                evidence["assets"].append(
+                    _asset_evidence_row(
+                        symbol=symbol,
+                        asset_id=asset_id,
+                        row_counts=row_counts,
+                        candles_by_window=candles_by_window,
+                        replay=replay,
+                    )
+                )
+                _emit(
+                    f"PHASE runner={RUNNER_NAME} phase=ENGINE_REPLAY asset={symbol} "
+                    f"row_count={sum(row_counts.values())} elapsed_ms={_elapsed_ms(replay_started)}"
+                )
+
+            checkpoint_started = time.monotonic()
+            digest = _atomic_write_json(checkpoint_path, evidence)
+            _emit(
+                f"CHECKPOINT runner={RUNNER_NAME} asset={symbol} completed_assets={len(evidence['assets'])} "
+                f"sha256={digest} elapsed_ms={_elapsed_ms(checkpoint_started)} path={checkpoint_path}"
+            )
+            _emit(
+                f"PROGRESS runner={RUNNER_NAME} phase=ASSET_COMPLETE asset={symbol} "
+                f"index={index}/{len(symbols)} elapsed_ms={_elapsed_ms(asset_started)}"
             )
 
-        return {
-            "schema_version": 1,
-            "methodology_version": METHODOLOGY_VERSION,
-            "methodology_promotion_grade": 0,
-            "promotion_eligible": False,
-            "code_commit_sha": code_commit_sha,
-            "venue": args.venue,
-            "interval": args.interval,
-            "symbols": symbols,
-            "windows": {
-                label: {"from_ts": window[0], "to_ts": window[1]}
-                for label, window in WINDOWS
-            },
-            "candidate_families": list(engine.CANDIDATE_FAMILIES),
-            "sell_fraction_grid": [format(value, "f") for value in engine.SELL_FRACTION_GRID],
-            "assets": asset_rows,
-        }
+        return evidence
     finally:
         conn.rollback()
         conn.close()
 
 
 def write_evidence(path: Path, evidence: dict[str, Any]) -> str:
-    payload = json.dumps(evidence, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return _atomic_write_json(path, evidence)
 
 
 def main() -> int:
+    run_started = time.monotonic()
     _emit(
         "STARTED "
         f"runner={RUNNER_NAME} mode={RUN_MODE} scope={RUN_SCOPE} worker={RUN_WORKER} "
@@ -356,34 +480,45 @@ def main() -> int:
         except SystemExit as exc:
             exit_code = int(exc.code) if isinstance(exc.code, int) else 1
             if exit_code == 0:
-                _emit(f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY status=HELP")
+                _emit(
+                    f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
+                    f"status=HELP elapsed_ms={_elapsed_ms(run_started)}"
+                )
                 return 0
             _emit(
                 f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
-                f"status=ARGPARSE exit_code={exit_code}"
+                f"status=ARGPARSE exit_code={exit_code} elapsed_ms={_elapsed_ms(run_started)}"
             )
             return exit_code
 
         evidence = build_evidence(args)
+        write_started = time.monotonic()
         _emit(f"PROGRESS runner={RUNNER_NAME} phase=WRITE_EVIDENCE")
         out_path = Path(args.out_json)
         digest = write_evidence(out_path, evidence)
+        _emit(
+            f"PHASE runner={RUNNER_NAME} phase=WRITE_EVIDENCE row_count={len(evidence['assets'])} "
+            f"elapsed_ms={_elapsed_ms(write_started)}"
+        )
         _emit(f"PIT_EVIDENCE_JSON={out_path}")
         _emit(f"PIT_EVIDENCE_SHA256={digest}")
         _emit("methodology_promotion_grade=0 pending committed raw evidence + verifier + all §10 gates")
-        _emit(f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS")
+        _emit(
+            f"FINISHED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY status=SUCCESS "
+            f"elapsed_ms={_elapsed_ms(run_started)}"
+        )
         return 0
     except (RunnerInterrupted, KeyboardInterrupt) as exc:
         reason = str(exc) or type(exc).__name__
         _emit(
-            f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
-            f"status=INTERRUPTED reason={reason}"
+            f"INTERRUPTED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
+            f"reason={reason} elapsed_ms={_elapsed_ms(run_started)}"
         )
         return 130
     except Exception as exc:
         _emit(
             f"FAILED runner={RUNNER_NAME} phase=#707_PHASE_C_PIT_REPLAY "
-            f"error={type(exc).__name__}:{exc}"
+            f"error={type(exc).__name__}:{exc} elapsed_ms={_elapsed_ms(run_started)}"
         )
         return 1
     finally:
