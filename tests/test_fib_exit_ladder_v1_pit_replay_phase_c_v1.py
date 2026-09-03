@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import importlib
+from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +29,117 @@ def test_phase_c_runner_rejects_unfrozen_symbol_scope() -> None:
         module._parse_symbols("LINK,XLM,SOL,XRP,HOT,SUI")
 
 
+def test_phase_c_runner_requires_exact_code_commit_sha() -> None:
+    module = importlib.import_module(MODULE_NAME)
+    expected = "a" * 40
+    assert module._require_code_commit_sha(expected) == expected
+    with pytest.raises(ValueError, match="exact 40-character hexadecimal"):
+        module._require_code_commit_sha("abc")
+
+
+def test_phase_c_result_row_contains_frozen_decision_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    result = SimpleNamespace(fills=())
+    monkeypatch.setattr(module, "_jsonable", lambda value: {"status": "OK"} if value is result else str(value))
+    monkeypatch.setattr(
+        module.engine,
+        "find_pit_anchor",
+        lambda candles: SimpleNamespace(
+            confirmation_idx=17,
+            confirmation_ts="confirmation-ts",
+            entry_ts="observable-ts",
+        ),
+    )
+
+    row = module._result_row(result, [object()])
+    assert row["confirmation_idx"] == 17
+    assert row["confirmation_ts"] == "confirmation-ts"
+    assert row["observable_ts"] == "observable-ts"
+    assert row["fills"] == []
+
+
+def test_phase_c_asset_without_selection_is_explicit_insufficient_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    replay = SimpleNamespace(selected_policy=None)
+    monkeypatch.setattr(module, "_grid_rows", lambda replay, candles: [{"status": "NO_ANCHOR_SET_FOUND"}])
+
+    row = module._asset_evidence_row(
+        symbol="LINK",
+        asset_id=1,
+        row_counts={"SELECTION_WINDOW": 100},
+        candles_by_window={"SELECTION_WINDOW": []},
+        replay=replay,
+    )
+    assert row["status"] == module.engine.STATUS_INSUFFICIENT_DATA
+    assert row["selected_policy"] is None
+    assert row["oos_window_1"] is None
+    assert row["oos_window_2"] is None
+
+
+def test_phase_c_build_evidence_records_commit_sha_and_mocked_db_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module(MODULE_NAME)
+
+    class FakeConn:
+        def rollback(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(module.scoreboard, "load_env", lambda env_file: None)
+    monkeypatch.setattr(module.scoreboard, "connect_read_only", lambda: FakeConn())
+    monkeypatch.setattr(module.ladder_bt, "detect_candle_columns", lambda conn: {})
+    monkeypatch.setattr(module.ladder_bt, "fetch_asset_id", lambda conn, symbol: None)
+
+    args = Namespace(
+        venue="bitvavo",
+        interval="1d",
+        symbols="LINK,XLM,SOL,XRP,HOT",
+        env_file=None,
+        out_json="unused.json",
+        code_commit_sha="b" * 40,
+    )
+    evidence = module.build_evidence(args)
+    assert evidence["code_commit_sha"] == "b" * 40
+    assert evidence["methodology_promotion_grade"] == 0
+    assert evidence["promotion_eligible"] is False
+    assert [row["status"] for row in evidence["assets"]] == ["ASSET_NOT_FOUND"] * 5
+
+
+def test_phase_c_main_emits_single_success_terminal_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    args = Namespace(out_json="evidence.json")
+    monkeypatch.setattr(module, "parse_args", lambda: args)
+    monkeypatch.setattr(module, "build_evidence", lambda args: {"ok": True})
+    monkeypatch.setattr(module, "write_evidence", lambda path, evidence: "c" * 64)
+
+    assert module.main() == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert "PROGRESS phase=WRITE_EVIDENCE" in lines
+    assert sum(line.startswith("FINISHED ") for line in lines) == 1
+    assert sum(line.startswith("FAILED ") for line in lines) == 0
+
+
+def test_phase_c_main_emits_single_failure_terminal_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module(MODULE_NAME)
+    monkeypatch.setattr(module, "parse_args", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert module.main() == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "STARTED phase=#707_PHASE_C_PIT_REPLAY"
+    assert sum(line.startswith("FAILED ") for line in lines) == 1
+    assert sum(line.startswith("FINISHED ") for line in lines) == 0
+
+
 def test_phase_c_runner_has_no_production_layer_imports() -> None:
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
     imported = []
@@ -44,6 +157,7 @@ def test_phase_c_runner_keeps_promotion_fail_closed_in_source() -> None:
     source = MODULE_PATH.read_text(encoding="utf-8")
     assert '"methodology_promotion_grade": 0' in source
     assert '"promotion_eligible": False' in source
+    assert '"code_commit_sha": code_commit_sha' in source
     assert "connect_read_only()" in source
     assert "conn.rollback()" in source
     assert "conn.close()" in source
