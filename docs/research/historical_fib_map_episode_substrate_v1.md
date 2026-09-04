@@ -218,6 +218,70 @@ instances -- and therefore `episode_id`, which serializes
 `map_creation_ts_utc` via `isoformat()` -- are always built from UTC-aware
 timestamps, independent of connector/session/host timezone.
 
+## Warmup: As-Of Feature Invariance to the Requested Window
+
+`--from-ts`/`--to-ts` is a **research output** bound, not a feature-input
+bound. Reconstructing the canonical PIT trend/EMA input and Fib-anchor
+window for an as-of candle near `--from-ts` needs the same
+`cfg.lookback_candles` (180 for both `1h` and `4h`) candles of history a run
+with an earlier `--from-ts` would have used for that identical as-of
+candle -- otherwise the same as-of candle could silently produce a
+different trend/anchor outcome depending only on what the caller asked for.
+
+The runner fixes this by fetching `cfg.lookback_candles - 1` extra candles
+strictly before `--from-ts` as **pre-bound warmup**
+(`fetch_warmup_candles`, a single bounded `LIMIT`-ed query, `ORDER BY
+open_ts_utc DESC` then reversed to ascending). Warmup candles are feature
+input only:
+
+- `build_episodes` still scans them to reconstruct window/EMA/ATR state
+  exactly as production would, via `emit_from_ts_utc` / `emit_to_ts_utc`
+- an episode is only ever **emitted** (appended to the result) when
+  `feature.map_creation_ts_utc` falls inside `[emit_from_ts_utc,
+  emit_to_ts_utc)` -- the requested `[--from-ts, --to-ts)` window
+- warmup never reads a candle at/after `--to-ts` (no future data) and never
+  reads from a current-state snapshot table (historical `obs_market_candle`
+  rows only)
+
+`max_episodes` is checked before building each candidate episode (not
+after appending), so `--max-episodes 0` deterministically yields zero
+episodes rather than one.
+
+## Bounded/Chunked Retrieval and Interruption
+
+`fetch_candles` retrieves the requested `[from_ts, to_ts)` range in bounded
+pages (`--chunk-size-candles`, default 5000) using deterministic
+`ORDER BY open_ts_utc ASC` keyset pagination: the first page uses
+`open_ts_utc >= from_ts`, every following page uses `open_ts_utc >
+<last row's open_ts_utc>` (strict), so no page can duplicate or skip a row
+at a page boundary and no single query is unbounded. `fetch_warmup_candles`
+is inherently bounded by its `LIMIT` and needs no pagination.
+
+The runner is single-process, single-worker (no worker pool) and prints an
+observable phase per stage: `STARTED`, `FETCHING` (warmup, then per-chunk
+progress on the requested window), `BUILDING`, `WRITING`, and exactly one
+terminal `FINISHED` or `INTERRUPTED` line. SIGINT/SIGTERM are caught by
+`_SignalState` (a single flag, no threads); the flag is polled between DB
+chunks and at each phase boundary (after asset/warmup/requested fetch and
+after build, before write). On interruption the runner prints `INTERRUPTED`
+with the signal and a non-zero exit code (130 for SIGINT, 143 for SIGTERM)
+and never calls `write_immutable_json` -- so a killed run never produces a
+partial `episodes_v1.json`/`manifest_v1.json`; the immutable files are only
+written after a fully successful build.
+
+## CLI Validation
+
+`validate_args` runs before any DB connection or query (before
+`fetch_asset_id`) and rejects:
+
+- `--episode-stride-candles <= 0`
+- `--max-episodes` present and `< 0`
+- `--chunk-size-candles <= 0`
+- `--from-ts` not strictly earlier than `--to-ts`
+
+An invalid CLI invocation prints a `FAILED reason=invalid_arguments` line
+and returns exit code 2 without ever calling `get_connection`.
+
 ## Determinism and Immutability
 
 - No wall-clock dependence: all "now" values used by the geometry engine
@@ -244,6 +308,13 @@ timestamps, independent of connector/session/host timezone.
   `ValueError`). The manifest also carries `run_id`, `episode_stride_candles`,
   and `max_episodes` directly, so a run's full identity is recoverable from
   the manifest alone.
+- `compute_run_id()` deliberately does **not** include warmup candle count
+  or `--chunk-size-candles`: for fixed dataset-defining parameters, the
+  emitted episode set is identical regardless of how the data was fetched.
+  The manifest still records `warmup_candle_count`,
+  `source_fetch_from_ts_utc` (the earliest candle timestamp actually
+  fetched, including warmup), and `chunk_size_candles` -- as provenance,
+  not identity.
 
 ## Scope Boundary
 
@@ -253,7 +324,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (39 tests, no DB)
+3. synthetic/unit tests (75 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

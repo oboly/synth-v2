@@ -5,7 +5,9 @@ Pure Python — no DB, no broker, no network. Synthetic candle series only.
 """
 from __future__ import annotations
 
+import argparse
 import inspect
+import signal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -824,3 +826,560 @@ class TestTimestampNormalization:
             )
 
         assert _episode_id_for(naive_ts) == _episode_id_for(aware_ts)
+
+
+# ---------------------------------------------------------------------------
+# Fake paginating DB harness for warmup/chunked-retrieval tests.
+# ---------------------------------------------------------------------------
+
+def _candle_to_row(candle: HistoricalCandle) -> dict[str, Any]:
+    return {
+        "venue": candle.venue,
+        "interval_code": candle.interval_code,
+        "open_ts_utc": candle.open_ts_utc.replace(tzinfo=None),
+        "close_ts_utc": candle.close_ts_utc.replace(tzinfo=None),
+        "open_price": candle.open_price,
+        "high_price": candle.high_price,
+        "low_price": candle.low_price,
+        "close_price": candle.close_price,
+        "volume_base": candle.volume,
+    }
+
+
+def _coerce_utc(value: Any) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    return runner.normalize_db_datetime_to_utc(value)
+
+
+class _PagingFakeCursor:
+    """Mimics MariaDB WHERE/ORDER BY/LIMIT semantics over an in-memory row list."""
+
+    def __init__(self, rows: list[dict[str, Any]], conn: "_PagingFakeConnection") -> None:
+        self._rows = rows
+        self._conn = conn
+        self._result: list[dict[str, Any]] = []
+
+    def __enter__(self) -> "_PagingFakeCursor":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: list[Any]) -> None:
+        self._conn.query_count += 1
+        normalized = " ".join(sql.split())
+        if "DESC" in normalized:
+            _asset_id, _venue, _interval_code, before_ts, limit = params
+            before = _coerce_utc(before_ts)
+            candidates = [r for r in self._rows if _coerce_utc(r["open_ts_utc"]) < before]
+            # Mirror the real SQL's ORDER BY open_ts_utc DESC: return the
+            # nearest-before-`before_ts` rows in descending order, matching
+            # what a real DB would hand back before fetch_warmup_candles
+            # itself reverses it to ascending.
+            candidates.sort(key=lambda r: r["open_ts_utc"], reverse=True)
+            self._result = candidates[:limit]
+        elif "open_ts_utc >= %s" in normalized:
+            _asset_id, _venue, _interval_code, lower, upper, limit = params
+            lower_dt, upper_dt = _coerce_utc(lower), _coerce_utc(upper)
+            candidates = [
+                r for r in self._rows if lower_dt <= _coerce_utc(r["open_ts_utc"]) < upper_dt
+            ]
+            candidates.sort(key=lambda r: r["open_ts_utc"])
+            self._result = candidates[:limit]
+        else:
+            _asset_id, _venue, _interval_code, lower, upper, limit = params
+            lower_dt, upper_dt = _coerce_utc(lower), _coerce_utc(upper)
+            candidates = [
+                r for r in self._rows if lower_dt < _coerce_utc(r["open_ts_utc"]) < upper_dt
+            ]
+            candidates.sort(key=lambda r: r["open_ts_utc"])
+            self._result = candidates[:limit]
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._result
+
+
+class _PagingFakeConnection:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.query_count = 0
+
+    def cursor(self) -> _PagingFakeCursor:
+        return _PagingFakeCursor(self._rows, self)
+
+    def close(self) -> None:
+        return None
+
+
+class TestBoundedChunkedRetrieval:
+    def test_fetch_candles_paginates_without_duplicates_or_gaps(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+        from_ts = start.strftime("%Y-%m-%d %H:%M:%S")
+        to_ts = (all_candles[-1].close_ts_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        fetched = runner.fetch_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            from_ts=from_ts,
+            to_ts=to_ts,
+            chunk_size=20,
+        )
+        assert len(fetched) == len(all_candles)
+        assert conn.query_count > 1  # proves pagination actually occurred
+        ts_list = [c.open_ts_utc for c in fetched]
+        assert ts_list == sorted(set(ts_list))  # strictly ascending, no duplicates
+        assert [c.close_ts_utc for c in fetched] == [c.close_ts_utc for c in all_candles]
+
+    def test_fetch_candles_single_chunk_when_range_smaller_than_chunk_size(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+        from_ts = start.strftime("%Y-%m-%d %H:%M:%S")
+        to_ts = (all_candles[-1].close_ts_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        fetched = runner.fetch_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            from_ts=from_ts,
+            to_ts=to_ts,
+            chunk_size=len(all_candles) + 100,
+        )
+        assert len(fetched) == len(all_candles)
+        assert conn.query_count == 1
+
+    def test_fetch_candles_respects_should_stop_between_chunks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+        from_ts = start.strftime("%Y-%m-%d %H:%M:%S")
+        to_ts = (all_candles[-1].close_ts_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+        progress_calls = {"n": 0}
+
+        def _progress(_count: int) -> None:
+            progress_calls["n"] += 1
+
+        def _stop_after_first_chunk() -> bool:
+            return progress_calls["n"] > 0
+
+        fetched = runner.fetch_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            from_ts=from_ts,
+            to_ts=to_ts,
+            chunk_size=20,
+            on_progress=_progress,
+            should_stop=_stop_after_first_chunk,
+        )
+        assert 0 < len(fetched) < len(all_candles)
+        assert len(fetched) == 20
+
+    def test_fetch_warmup_candles_bounded_and_ascending(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+        before_ts = all_candles[100].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
+        warmup = runner.fetch_warmup_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            before_ts=before_ts,
+            limit=30,
+        )
+        assert len(warmup) == 30
+        ts_list = [c.open_ts_utc for c in warmup]
+        assert ts_list == sorted(ts_list)
+        before_dt = runner.parse_ts_arg(before_ts, name="before_ts")
+        assert all(ts < before_dt for ts in ts_list)
+        assert warmup[-1].close_ts_utc == all_candles[99].close_ts_utc
+
+    def test_fetch_warmup_candles_limit_zero_or_negative_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom() -> Any:
+            raise AssertionError("must not query DB when limit <= 0")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        assert (
+            runner.fetch_warmup_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                before_ts="2026-01-01 00:00:00",
+                limit=0,
+            )
+            == []
+        )
+
+
+class TestWarmupInvariance:
+    """Regression coverage for the #727 PIT trend-feature warmup blocker."""
+
+    def _cfg(self) -> EpisodeConfig:
+        return EpisodeConfig(
+            interval_code="1h",
+            interval_seconds=3600,
+            min_window_candles=50,
+            lookback_candles=60,
+            forward_max_candles=50,
+        )
+
+    def test_same_asof_candle_invariant_to_requested_from_ts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        cfg = self._cfg()
+        rows = [_candle_to_row(c) for c in all_candles]
+
+        asof_index = cfg.min_window_candles + cfg.lookback_candles + 10
+        asof_ts = all_candles[asof_index].close_ts_utc
+
+        def _feature_for(from_ts: str, to_ts: str) -> EpisodeFeaturePayload:
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            warmup = runner.fetch_warmup_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                before_ts=from_ts,
+                limit=cfg.lookback_candles - 1,
+            )
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            requested = runner.fetch_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                from_ts=from_ts,
+                to_ts=to_ts,
+            )
+            candles = warmup + requested
+            records = build_episodes(
+                symbol="TST",
+                venue="bitvavo",
+                candles=candles,
+                cfg=cfg,
+                emit_from_ts_utc=runner.parse_ts_arg(from_ts, name="--from-ts"),
+                emit_to_ts_utc=runner.parse_ts_arg(to_ts, name="--to-ts"),
+            )
+            matches = [r for r in records if r.feature.map_creation_ts_utc == asof_ts]
+            assert len(matches) == 1, f"expected exactly one episode at {asof_ts}, got {len(matches)}"
+            return matches[0].feature
+
+        to_ts = (asof_ts + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        from_ts_near = (asof_ts - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        from_ts_far = (asof_ts - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
+
+        feature_near = _feature_for(from_ts_near, to_ts)
+        feature_far = _feature_for(from_ts_far, to_ts)
+
+        assert feature_near.direction == feature_far.direction
+        assert feature_near.anchor_low_price == feature_far.anchor_low_price
+        assert feature_near.anchor_high_price == feature_far.anchor_high_price
+        assert feature_near.anchor_low_ts_utc == feature_far.anchor_low_ts_utc
+        assert feature_near.anchor_high_ts_utc == feature_far.anchor_high_ts_utc
+        assert feature_near.target_t1 == feature_far.target_t1
+        assert feature_near.target_t2 == feature_far.target_t2
+        assert feature_near.invalidation_level == feature_far.invalidation_level
+        assert feature_near.map_state == feature_far.map_state
+        assert feature_near.atr_value == feature_far.atr_value
+        assert feature_near.episode_id == feature_far.episode_id
+
+    def test_without_warmup_narrow_window_diverges_from_full_history(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Negative control: proves the invariance above is actually exercising
+        # the warmup mechanism, not a coincidence of the synthetic series --
+        # skipping warmup entirely for the narrow window changes the outcome
+        # (fewer candles in the reconstructed window) versus fetching with
+        # full prior history from the start of the series.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        cfg = self._cfg()
+
+        asof_index = cfg.min_window_candles + cfg.lookback_candles + 10
+        asof_ts = all_candles[asof_index].close_ts_utc
+
+        window_full = all_candles[: asof_index + 1]
+        feature_full = build_episode_feature(
+            symbol="TST", venue="bitvavo", window=window_full, cfg=cfg
+        )
+        assert feature_full is not None
+
+        narrow_start = asof_index - 5
+        window_narrow = all_candles[narrow_start : asof_index + 1]
+        feature_narrow = build_episode_feature(
+            symbol="TST", venue="bitvavo", window=window_narrow, cfg=cfg
+        )
+
+        # Either admission itself differs (None vs a payload) or, if both
+        # admit, the reconstructed geometry differs -- either way this shows
+        # the un-warmed-up narrow window is not equivalent to the full one.
+        assert feature_narrow is None or feature_narrow.anchor_low_price != feature_full.anchor_low_price or feature_narrow.target_t1 != feature_full.target_t1
+
+
+class TestCliValidation:
+    def _args(self, **overrides: Any) -> argparse.Namespace:
+        base: dict[str, Any] = dict(
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="1h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-01-02 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+            output_dir=runner.DEFAULT_OUTPUT_DIR,
+            chunk_size_candles=runner.DEFAULT_CHUNK_CANDLES,
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_valid_args_pass(self) -> None:
+        runner.validate_args(self._args())  # no raise
+
+    def test_non_positive_stride_rejected(self) -> None:
+        with pytest.raises(ValueError, match="episode-stride-candles"):
+            runner.validate_args(self._args(episode_stride_candles=0))
+
+    def test_negative_stride_rejected(self) -> None:
+        with pytest.raises(ValueError, match="episode-stride-candles"):
+            runner.validate_args(self._args(episode_stride_candles=-3))
+
+    def test_negative_max_episodes_rejected(self) -> None:
+        with pytest.raises(ValueError, match="max-episodes"):
+            runner.validate_args(self._args(max_episodes=-1))
+
+    def test_max_episodes_zero_is_valid(self) -> None:
+        runner.validate_args(self._args(max_episodes=0))  # no raise
+
+    def test_max_episodes_none_is_valid(self) -> None:
+        runner.validate_args(self._args(max_episodes=None))  # no raise
+
+    def test_from_ts_after_to_ts_rejected(self) -> None:
+        with pytest.raises(ValueError, match="from-ts"):
+            runner.validate_args(
+                self._args(from_ts="2026-01-02 00:00:00", to_ts="2026-01-01 00:00:00")
+            )
+
+    def test_equal_from_ts_to_ts_rejected(self) -> None:
+        with pytest.raises(ValueError, match="from-ts"):
+            runner.validate_args(
+                self._args(from_ts="2026-01-01 00:00:00", to_ts="2026-01-01 00:00:00")
+            )
+
+    def test_non_positive_chunk_size_rejected(self) -> None:
+        with pytest.raises(ValueError, match="chunk-size-candles"):
+            runner.validate_args(self._args(chunk_size_candles=0))
+
+    def test_invalid_bounds_never_reach_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom() -> Any:
+            raise AssertionError("DB helper must not be called for invalid CLI args")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-02 00:00:00",
+                "--to-ts", "2026-01-01 00:00:00",
+            ]
+        )
+        assert exit_code == 2
+
+    def test_invalid_stride_never_reaches_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom() -> Any:
+            raise AssertionError("DB helper must not be called for invalid CLI args")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-01 00:00:00",
+                "--to-ts", "2026-01-02 00:00:00",
+                "--episode-stride-candles", "0",
+            ]
+        )
+        assert exit_code == 2
+
+    def test_invalid_max_episodes_never_reaches_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom() -> Any:
+            raise AssertionError("DB helper must not be called for invalid CLI args")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-01 00:00:00",
+                "--to-ts", "2026-01-02 00:00:00",
+                "--max-episodes", "-1",
+            ]
+        )
+        assert exit_code == 2
+
+
+class TestMaxEpisodesZero:
+    def test_max_episodes_zero_yields_no_episodes(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            max_episodes=0,
+        )
+        assert records == []
+
+    def test_max_episodes_one_yields_exactly_one_episode(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            max_episodes=1,
+        )
+        assert len(records) == 1
+
+
+class TestEmitWindowFilter:
+    def test_warmup_region_candles_participate_but_are_not_emitted(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+
+        all_records = build_episodes(
+            symbol="TST", venue="bitvavo", candles=candles, cfg=cfg, episode_stride_candles=5
+        )
+        assert len(all_records) > 2
+
+        # Cut the requested window at the midpoint of the unfiltered result
+        # set: everything before it becomes "warmup region" (candles that
+        # still feed window/EMA/ATR reconstruction for later as-of candles
+        # but must not themselves be emitted).
+        cutoff = all_records[len(all_records) // 2].feature.map_creation_ts_utc
+        emit_to = all_records[-1].feature.map_creation_ts_utc + timedelta(days=3650)
+
+        filtered_records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            emit_from_ts_utc=cutoff,
+            emit_to_ts_utc=emit_to,
+        )
+        expected = [r for r in all_records if r.feature.map_creation_ts_utc >= cutoff]
+        assert 0 < len(filtered_records) < len(all_records)
+        assert len(filtered_records) == len(expected)
+        assert [r.feature.episode_id for r in filtered_records] == [r.feature.episode_id for r in expected]
+        assert all(r.feature.map_creation_ts_utc >= cutoff for r in filtered_records)
+        assert all(r.feature.map_creation_ts_utc < emit_to for r in filtered_records)
+
+
+class TestSignalState:
+    def test_signal_state_tracks_signum(self) -> None:
+        state = runner._SignalState()
+        assert not state.triggered
+        assert state.signum is None
+
+        state.handle(signal.SIGINT, None)
+        assert state.triggered
+        assert state.signum == signal.SIGINT
+
+    def test_signal_state_sigterm(self) -> None:
+        state = runner._SignalState()
+        state.handle(signal.SIGTERM, None)
+        assert state.triggered
+        assert state.signum == signal.SIGTERM
+
+
+class TestRunIdentityExcludesOperationalParams:
+    def test_compute_run_id_signature_excludes_warmup_and_chunk_size(self) -> None:
+        params = inspect.signature(runner.compute_run_id).parameters
+        assert "chunk_size" not in params
+        assert "chunk_size_candles" not in params
+        assert "warmup_candle_count" not in params
+
+    def test_manifest_carries_warmup_and_chunk_provenance_without_affecting_run_id(self) -> None:
+        run_id = runner.compute_run_id(
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="4h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-06-01 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+        )
+        manifest_a = runner.build_manifest(
+            run_id=run_id,
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="4h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-06-01 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+            candle_count=100,
+            episode_count=1,
+            episodes_sha256="a" * 64,
+            warmup_candle_count=179,
+            chunk_size_candles=1000,
+        )
+        manifest_b = runner.build_manifest(
+            run_id=run_id,
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="4h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-06-01 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+            candle_count=100,
+            episode_count=1,
+            episodes_sha256="a" * 64,
+            warmup_candle_count=50,
+            chunk_size_candles=5000,
+        )
+        assert manifest_a["run_id"] == manifest_b["run_id"] == run_id
+        assert manifest_a["warmup_candle_count"] == 179
+        assert manifest_b["warmup_candle_count"] == 50
+        assert manifest_a["chunk_size_candles"] == 1000
+        assert manifest_b["chunk_size_candles"] == 5000

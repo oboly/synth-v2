@@ -664,6 +664,8 @@ def build_episodes(
     cfg: EpisodeConfig,
     episode_stride_candles: int = 1,
     max_episodes: int | None = None,
+    emit_from_ts_utc: datetime | None = None,
+    emit_to_ts_utc: datetime | None = None,
 ) -> list[EpisodeRecord]:
     """Build a deterministic list of episodes from a full historical candle series.
 
@@ -671,11 +673,32 @@ def build_episodes(
     ascending by close_ts_utc. `episode_stride_candles` bounds episode volume
     by only attempting map creation every N candles; it does not change the
     PIT boundary of any individual episode.
+
+    `candles` may include pre-bound warmup history before the caller's
+    requested research window (see the runner's warmup-fetch rule). Leading
+    candles are used as feature input (window/EMA/ATR reconstruction) for
+    as-of candles inside the requested window exactly as they would be if
+    the requested window had started earlier -- this is what makes an
+    as-of candle's feature output invariant to the caller's requested
+    `from_ts`. `emit_from_ts_utc` / `emit_to_ts_utc`, when given, restrict
+    *emission* only: an episode is appended to the result only when
+    `feature.map_creation_ts_utc` falls in `[emit_from_ts_utc,
+    emit_to_ts_utc)`. Warmup-region as-of candles (before
+    `emit_from_ts_utc`) are still scanned to build up window/stride state
+    identically to production, but never themselves produce an emitted
+    episode.
+
+    `max_episodes` bounds the emitted count and is checked before building
+    each candidate episode, so `max_episodes=0` deterministically yields an
+    empty list rather than one episode.
     """
     validate_candle_sequence(candles)
 
     records: list[EpisodeRecord] = []
     for i in range(cfg.min_window_candles - 1, len(candles)):
+        if max_episodes is not None and len(records) >= max_episodes:
+            break
+
         if (i - (cfg.min_window_candles - 1)) % episode_stride_candles != 0:
             continue
 
@@ -686,12 +709,15 @@ def build_episodes(
         if feature is None:
             continue
 
+        if emit_from_ts_utc is not None and feature.map_creation_ts_utc < emit_from_ts_utc:
+            continue
+        if emit_to_ts_utc is not None and feature.map_creation_ts_utc >= emit_to_ts_utc:
+            continue
+
         forward_candles = candles[i + 1 :]
         labels = build_episode_labels(feature=feature, forward_candles=forward_candles, cfg=cfg)
 
         records.append(EpisodeRecord(feature=feature, labels=labels))
-        if max_episodes is not None and len(records) >= max_episodes:
-            break
 
     return records
 
