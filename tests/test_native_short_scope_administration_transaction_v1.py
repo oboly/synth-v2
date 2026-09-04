@@ -236,11 +236,16 @@ def _legacy_supported(canonical: bool = True) -> ScopeStateSnapshot:
     )
 
 
-def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeStateSnapshot:
+def _managed_supported(
+    generation: int = 1,
+    activation_op: int = 50,
+    *,
+    operation_type: str = "PROMOTE_SCOPE",
+) -> ScopeStateSnapshot:
     if generation == 1:
         op = _admin_op(
             operation_id=activation_op,
-            operation_type="PROMOTE_SCOPE",
+            operation_type=operation_type,
             result_code="PROMOTED_NEW_SCOPE",
             generation_before=None,
             generation_after=1,
@@ -248,7 +253,7 @@ def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeSta
     else:
         op = _admin_op(
             operation_id=activation_op,
-            operation_type="PROMOTE_SCOPE",
+            operation_type=operation_type,
             result_code="PROMOTED_FROM_PRIOR_WITHDRAWAL",
             generation_before=generation - 1,
             generation_after=generation,
@@ -1036,6 +1041,8 @@ def test_supported_operation_generation_after_mismatch() -> None:
     (
         ("ADOPT_LEGACY_SCOPE", "PROMOTED_NEW_SCOPE"),
         ("PROMOTE_SCOPE", "ADOPTED_LEGACY_SCOPE"),
+        ("AUTO_ONBOARD_SCOPE", "ADOPTED_LEGACY_SCOPE"),
+        ("REMOVE_SCOPE", "PROMOTED_NEW_SCOPE"),
     ),
 )
 def test_supported_rejects_impossible_operation_cross_pairings(
@@ -1151,6 +1158,14 @@ def test_repromotion_requires_immediate_predecessor_generation() -> None:
         pytest.param(_managed_supported(1), id="promote-new-scope"),
         pytest.param(_managed_supported(3), id="promote-from-prior-withdrawal"),
         pytest.param(_managed_removed(2), id="remove-scope"),
+        pytest.param(
+            _managed_supported(1, operation_type="AUTO_ONBOARD_SCOPE"),
+            id="auto-onboard-new-scope",
+        ),
+        pytest.param(
+            _managed_supported(3, operation_type="AUTO_ONBOARD_SCOPE"),
+            id="auto-onboard-from-prior-withdrawal",
+        ),
     ),
 )
 def test_all_canonical_operation_tuples_are_valid(
@@ -1164,6 +1179,89 @@ def test_all_canonical_operation_tuples_are_valid(
     )
     assert classification == expected
     assert code is None
+
+
+def test_auto_onboard_scope_lineage_not_accepted_for_managed_removed_deactivation() -> None:
+    """AUTO_ONBOARD_SCOPE only shares canonical lineage identity with
+    PROMOTE_SCOPE for the MANAGED_SUPPORTED (activation) shapes it can
+    terminally produce via ``_decide_promote``. It has no removal/deactivation
+    branch (``decide_administration`` never routes AUTO_ONBOARD_SCOPE to
+    ``_decide_remove``), so a deactivation attributed to an AUTO_ONBOARD_SCOPE
+    operation must remain rejected exactly like every other non-REMOVE_SCOPE
+    type -- this fix must not broaden REMOVE_SCOPE lineage authority."""
+    snap = _managed_removed(2)
+    tampered_operations = tuple(
+        _admin_op(
+            operation_id=60,
+            operation_type="AUTO_ONBOARD_SCOPE",
+            result_code="REMOVED_SCOPE",
+            generation_before=1,
+            generation_after=2,
+        )
+        if op.scope_admin_operation_id == 60
+        else op
+        for op in snap.operations
+    )
+    tampered = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=snap.cadence_rows,
+        support_events=snap.support_events,
+        operations=tampered_operations,
+    )
+    _, code, _ = classify_scope_state(tampered)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_auto_onboard_scope_promotes_new_scope_from_empty() -> None:
+    decision = decide_administration(
+        OperationType.AUTO_ONBOARD_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=(),
+    )
+    assert decision.action == OperationAction.PROMOTE_NEW
+    assert decision.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert decision.support_generation_before is None
+    assert decision.support_generation_after == 1
+    assert decision.writes_ledger
+
+
+def test_auto_onboard_scope_reactivates_after_removal() -> None:
+    decision = decide_administration(
+        OperationType.AUTO_ONBOARD_SCOPE, _managed_removed(4), active_global_blockers=()
+    )
+    assert decision.action == OperationAction.PROMOTE_REACTIVATE
+    assert decision.result_code == ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL
+    assert decision.support_generation_before == 4
+    assert decision.support_generation_after == 5
+
+
+def test_auto_onboard_scope_already_supported_is_idempotent() -> None:
+    decision = decide_administration(
+        OperationType.AUTO_ONBOARD_SCOPE,
+        _managed_supported(generation=1, operation_type="AUTO_ONBOARD_SCOPE"),
+        active_global_blockers=(),
+    )
+    assert decision.action == OperationAction.NOOP
+    assert decision.result_code == ResultCode.SCOPE_ALREADY_SUPPORTED
+
+
+def test_auto_onboarded_scope_lineage_is_coherent_for_a_later_operation() -> None:
+    """End-to-end reproduction of the production incident this fix resolves:
+    a scope onboarded via AUTO_ONBOARD_SCOPE (operation_type=AUTO_ONBOARD_SCOPE,
+    result_code=PROMOTED_NEW_SCOPE) must classify MANAGED_SUPPORTED -- not
+    INCOHERENT -- so a later administration operation (e.g. REMOVE_SCOPE) can
+    still evaluate this scope's state."""
+    snap = _managed_supported(generation=1, operation_type="AUTO_ONBOARD_SCOPE")
+    classification, code, _ = classify_scope_state(snap)
+    assert classification == ScopeClassification.MANAGED_SUPPORTED
+    assert code is None
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE, snap, active_global_blockers=()
+    )
+    assert decision.action == OperationAction.REMOVE
+    assert decision.result_code == ResultCode.REMOVED_SCOPE
 
 
 def test_removed_event_operation_differs_from_cadence_deactivation() -> None:

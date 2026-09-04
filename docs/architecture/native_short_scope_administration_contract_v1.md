@@ -233,3 +233,64 @@ per-symbol approval, bootstrap manifest, removal-contract evidence, or manual
 `PROMOTE_SCOPE`. Historical `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and
 `REMOVE_SCOPE` tooling remains for repair/history only and has no authority
 over automatic onboarding.
+
+### Schema follow-up: `chk_native_short_scope_admin_operation_v1_type` (2026-09-04)
+
+The original `20260718_native_short_scope_administration_v1.sql`
+`chk_native_short_scope_admin_operation_v1_type` CHECK constraint predates
+Issue #539 and only permitted `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and
+`REMOVE_SCOPE`. Once `AUTO_ONBOARD_SCOPE` became the canonical, executed
+runtime operation type, every ledger INSERT it emitted failed in production
+with MariaDB error 4025 against that stale constraint.
+
+`db/migrations/20260904_native_short_scope_admin_operation_auto_onboard_type_v1.sql`
+is a forward-only follow-up (the historical `20260718` migration is not
+edited) that replaces only `chk_native_short_scope_admin_operation_v1_type`
+with a constraint additionally permitting `AUTO_ONBOARD_SCOPE`. Every other
+CHECK constraint on `native_short_scope_admin_operation_v1` (actor, trigger,
+test-provenance shape, required text, repository SHA, metadata digest,
+terminal shape, timestamps, generation) is independent of `operation_type` and
+already accepts every value `AUTO_ONBOARD_SCOPE` persists (`SERVICE_PRINCIPAL`
+/ `AUTOMATION` provenance, and the same result codes `PROMOTE_SCOPE` uses via
+`decide_administration`'s shared `_decide_promote` dispatch); none of them
+required a change for this fix.
+
+The migration uses `DROP CONSTRAINT IF EXISTS` followed by `ADD CONSTRAINT`
+(two statements), matching the explicitly labeled idempotent
+CHECK-constraint-replacement convention already established by
+`20260609_trading_account_credential_add_valid_private_read.sql`,
+`20260721_account_credential_binding_contract_v1.sql`, and
+`20260828_trading_account_account_mode_live_readonly_v1.sql`. Reapplying it
+against an already-migrated schema succeeds and leaves the accepted
+`operation_type` set unchanged (verified by
+`tests/test_native_short_scope_admin_operation_auto_onboard_type_migration_v1.py`).
+This is a reviewed, intentional choice of the idempotent sibling convention
+over the plain (non-`IF EXISTS`) `DROP CONSTRAINT` / `ADD COLUMN` /
+`DROP INDEX` single-application statements used elsewhere in this schema
+family (e.g. the original `20260718` migration's own `ALTER TABLE` statements,
+which are documented there as not re-runnable because they add/drop something
+that does not symmetrically restore itself on a second run).
+
+### Lineage-validation follow-up: `AUTO_ONBOARD_SCOPE` canonical tuples (2026-09-04)
+
+`decide_administration` routes `AUTO_ONBOARD_SCOPE` through the same
+`_decide_promote` dispatch as `PROMOTE_SCOPE`, so it can terminally commit an
+operation-ledger row with `operation_type=AUTO_ONBOARD_SCOPE` and
+`result_code=PROMOTED_NEW_SCOPE` (from `NO_SCOPE`) or
+`PROMOTED_FROM_PRIOR_WITHDRAWAL` (re-support from `MANAGED_REMOVED`) --
+exactly the same result shapes `PROMOTE_SCOPE` produces. `_validate_referenced_operation`'s
+`MANAGED_SUPPORTED` canonical-tuple allowlist, however, only recognized those
+result shapes when paired with `operation_type=PROMOTE_SCOPE` or
+`ADOPT_LEGACY_SCOPE`. A scope onboarded via `AUTO_ONBOARD_SCOPE` therefore
+classified `INCOHERENT` (`PARTIAL_SCOPE_STATE`) on every later administration
+operation against that scope -- a real correctness bug, not merely a
+documentation gap.
+
+Fixed by adding the two `AUTO_ONBOARD_SCOPE` / `PROMOTED_NEW_SCOPE` and
+`AUTO_ONBOARD_SCOPE` / `PROMOTED_FROM_PRIOR_WITHDRAWAL` tuples to the existing
+`MANAGED_SUPPORTED` canonical-tuple allowlist in `_validate_referenced_operation`
+(`src/market_data/native_short_scope_administration_transaction_v1.py`). This
+recognizes result shapes `decide_administration` already terminally commits
+for `AUTO_ONBOARD_SCOPE`; it adds no new decision path, and `AUTO_ONBOARD_SCOPE`
+remains absent from the `MANAGED_REMOVED` (deactivation/`REMOVE_SCOPE`)
+allowlist, so it gains no removal authority.
