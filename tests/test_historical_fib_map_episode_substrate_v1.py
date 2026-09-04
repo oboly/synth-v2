@@ -11,16 +11,19 @@ from decimal import Decimal
 
 import pytest
 
-from src.market_data import fib_navigation_map_v1 as canonical_geometry
+from src.market_data import canonical_fib_zone_map_v1 as canonical_projection
 from src.research import historical_fib_map_episode_substrate_v1 as substrate
 from src.research import run_historical_fib_map_episode_substrate_v1 as runner
 from src.research.historical_fib_map_episode_substrate_v1 import (
+    DIRECTION_BEARISH,
     DIRECTION_BULLISH,
+    LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE,
     LIFECYCLE_REASON_FORWARD_WINDOW_EXHAUSTED,
     LIFECYCLE_REASON_INVALIDATION_BREACHED,
     LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED,
     LIFECYCLE_REASON_TARGET1_REACHED,
     LIFECYCLE_REASON_TARGET2_REACHED,
+    NON_ATTRIBUTABLE_LIFECYCLE_REASONS,
     EpisodeConfig,
     EpisodeFeaturePayload,
     EpisodeSubstrateError,
@@ -60,13 +63,13 @@ def _synthetic_bullish_series(start: datetime, *, interval: str = "1h") -> list[
     for _ in range(10):
         price -= 1.0
         path.append(price)
-    for _ in range(60):
-        price += (200 - 90) / 60
+    for _ in range(120):
+        price += (250 - 90) / 120
         path.append(price)
     for _ in range(5):
         price -= 3
         path.append(price)
-    for _ in range(60):
+    for _ in range(80):
         price += 5
         path.append(price)
 
@@ -83,16 +86,14 @@ def _small_cfg(interval: str = "1h") -> EpisodeConfig:
     return EpisodeConfig(
         interval_code=interval,
         interval_seconds=3600 if interval == "1h" else 4 * 3600,
-        min_candles=10,
+        min_window_candles=50,
         lookback_candles=180,
         forward_max_candles=200,
-        ema_fast_span=5,
-        ema_slow_span=10,
     )
 
 
 def _first_admitted_feature(candles: list[HistoricalCandle], cfg: EpisodeConfig) -> tuple[int, EpisodeFeaturePayload]:
-    for i in range(cfg.min_candles - 1, len(candles)):
+    for i in range(cfg.min_window_candles - 1, len(candles)):
         window = candles[max(0, i - cfg.lookback_candles + 1) : i + 1]
         feature = build_episode_feature(symbol="TST", venue="bitvavo", window=window, cfg=cfg)
         if feature is not None and feature.direction == DIRECTION_BULLISH:
@@ -126,9 +127,9 @@ class TestPitTripwire:
     def test_feature_construction_rejects_out_of_order_future_candle(self) -> None:
         t = datetime(2026, 1, 1, tzinfo=UTC)
         cfg = _small_cfg()
-        window = [_candle(t + timedelta(hours=i), 100, 101, 99, 100) for i in range(cfg.min_candles)]
+        window = [_candle(t + timedelta(hours=i), 100, 101, 99, 100) for i in range(cfg.min_window_candles)]
         # Inject a candle timestamped after the nominal as-of (last element).
-        window[3] = _candle(t + timedelta(hours=999), 100, 101, 99, 100)
+        window[3] = _candle(t + timedelta(hours=9999), 100, 101, 99, 100)
         with pytest.raises(PitViolationError):
             build_episode_feature(symbol="TST", venue="bitvavo", window=window, cfg=cfg)
 
@@ -142,45 +143,54 @@ class TestPitTripwire:
             build_episode_labels(feature=feature, forward_candles=forward, cfg=cfg)
 
 
-class TestCanonicalGeometryReuse:
+class TestCanonicalProjectionReuse:
     def test_same_function_object_used_for_1h_and_4h(self) -> None:
-        assert substrate.build_fib_navigation_map is canonical_geometry.build_fib_navigation_map
+        assert substrate.build_row is canonical_projection.build_row
         cfg_1h = resolve_config("1h")
         cfg_4h = resolve_config("4h")
         assert cfg_1h.interval_code == "1h"
         assert cfg_4h.interval_code == "4h"
-        # Both configs are consumed by the exact same builder function; there
-        # is exactly one geometry engine reference in the module.
-        assert substrate.GEOMETRY_ENGINE_MODULE == "src.market_data.fib_navigation_map_v1"
-        assert substrate.GEOMETRY_ENGINE_FUNCTION == "build_fib_navigation_map"
+        assert substrate.PROJECTION_ENGINE_MODULE == "src.market_data.canonical_fib_zone_map_v1"
+        assert substrate.PROJECTION_ENGINE_FUNCTION == "build_row"
 
-    def test_no_second_fib_implementation_in_substrate_module(self) -> None:
+    def test_no_reimplemented_projection_glue_in_substrate_module(self) -> None:
         source = inspect.getsource(substrate)
-        # The substrate module must not define its own level-price computation;
-        # it may only look up labels already computed by the canonical engine.
-        assert "def _build_levels" not in source
+        # The substrate module must not reselect entry/target/invalidation
+        # fields or re-derive anchor timestamps itself; build_row owns that.
+        assert "_anchor_times" not in source
+        assert "_build_levels" not in source
         assert "RETRACE_LEVELS" not in source
         assert "EXTENSION_LEVELS" not in source
+        assert "r_0382" not in source
+        assert "ext_1272" not in source
 
-    def test_feature_levels_match_direct_canonical_call(self) -> None:
+    def test_feature_fields_pass_through_from_direct_canonical_call(self) -> None:
         start = datetime(2026, 1, 1, tzinfo=UTC)
         cfg = _small_cfg()
         candles = _synthetic_bullish_series(start)
         i, feature = _first_admitted_feature(candles, cfg)
         window = candles[max(0, i - cfg.lookback_candles + 1) : i + 1]
+
+        trend_row = substrate._reconstruct_trend_row(window)
         fib_candles = [c.to_fib_nav_candle() for c in window]
-        direct_map = canonical_geometry.build_fib_navigation_map(
+        direct_row = canonical_projection.build_row(
+            venue="bitvavo",
+            symbol="TST",
+            interval_code=cfg.interval_code,
             candles=fib_candles,
-            current_price=window[-1].close_price,
             now_utc=window[-1].close_ts_utc,
-            prior=None,
-            direction=DIRECTION_BULLISH,
-            pivot_span=cfg.pivot_span,
-            min_candles=cfg.min_candles,
+            trend_row=trend_row,
+            prior_row=None,
             stale_after=cfg.stale_after,
         )
-        assert feature.anchor_low_price == direct_map.anchor_low
-        assert feature.anchor_high_price == direct_map.anchor_high
+        assert feature.anchor_low_price == direct_row["anchor_low_price"]
+        assert feature.anchor_high_price == direct_row["anchor_high_price"]
+        assert feature.target_t1 == direct_row["target_t1"]
+        assert feature.target_t2 == direct_row["target_t2"]
+        assert feature.invalidation_level == direct_row["invalidation_level"]
+        assert feature.entry_zone_low == direct_row["entry_zone_low"]
+        assert feature.entry_zone_high == direct_row["entry_zone_high"]
+        assert feature.map_version == direct_row["map_version"]
 
 
 class TestDeterminism:
@@ -235,14 +245,13 @@ class TestLifecycleReasonExactness:
             builder_name=substrate.BUILDER_NAME,
             builder_version=substrate.BUILDER_VERSION,
             contract_version=substrate.CONTRACT_VERSION,
-            geometry_engine_module=substrate.GEOMETRY_ENGINE_MODULE,
-            geometry_engine_function=substrate.GEOMETRY_ENGINE_FUNCTION,
-            trend_engine_name="test",
-            trend_engine_version="0",
+            projection_engine_module=substrate.PROJECTION_ENGINE_MODULE,
+            projection_engine_function=substrate.PROJECTION_ENGINE_FUNCTION,
+            map_version="test",
             map_creation_ts_utc=ts,
             source_candle_first_ts_utc=ts,
             source_candle_last_ts_utc=ts,
-            source_candle_count=10,
+            source_candle_count=50,
             direction=direction,
             anchor_low_price=Decimal("90"),
             anchor_low_ts_utc=ts,
@@ -270,6 +279,25 @@ class TestLifecycleReasonExactness:
             map_state="FRESH",
             map_confidence="HIGH",
             rebuild_trigger="NONE",
+            canonical_provenance_payload={},
+        )
+
+    def _bearish_feature(self) -> EpisodeFeaturePayload:
+        # Mirror image: invalidation above anchor_high, targets below anchor_low.
+        ts = datetime(2026, 1, 1, tzinfo=UTC)
+        feature = self._feature(direction=DIRECTION_BEARISH)
+        return substrate.EpisodeFeaturePayload(
+            **{
+                **feature.__dict__,
+                "entry_zone_low": Decimal("102"),
+                "entry_zone_high": Decimal("104"),
+                "entry_zone_mid": Decimal("103"),
+                "target_t1": Decimal("87.28"),
+                "target_t2": Decimal("83.82"),
+                "target_extension": Decimal("73.82"),
+                "invalidation_level": Decimal("110"),
+                "reference_price": Decimal("100"),
+            }
         )
 
     def _forward(self, prices: list[float], *, feature: EpisodeFeaturePayload) -> list[HistoricalCandle]:
@@ -278,6 +306,16 @@ class TestLifecycleReasonExactness:
         for p in prices:
             t += timedelta(hours=1)
             candles.append(_candle(t, p, p + 0.5, p - 0.5, p))
+        return candles
+
+    def _forward_ohlc(
+        self, bars: list[tuple[float, float, float, float]], *, feature: EpisodeFeaturePayload
+    ) -> list[HistoricalCandle]:
+        t = feature.map_creation_ts_utc
+        candles = []
+        for o, h, l, c in bars:
+            t += timedelta(hours=1)
+            candles.append(_candle(t, o, h, l, c))
         return candles
 
     def test_target1_reached(self) -> None:
@@ -315,6 +353,51 @@ class TestLifecycleReasonExactness:
         forward = self._forward([100, 100.1], feature=feature)
         labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
         assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED
+
+    def test_bullish_same_candle_target_invalidation_collision_is_ambiguous(self) -> None:
+        feature = self._feature()
+        # Single candle whose range crosses both invalidation (90) and
+        # target1/target2 (112.72 / 116.18): low below invalidation, high
+        # above target2. OHLC alone cannot say which was touched first.
+        forward = self._forward_ohlc([(100, 120, 85, 110)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
+        assert labels.lifecycle_transition_reason in NON_ATTRIBUTABLE_LIFECYCLE_REASONS
+        assert labels.ambiguous_ts_utc == forward[0].close_ts_utc
+        # Must not be counted as either a target success or an invalidation success.
+        assert labels.target1_ts_utc is None
+        assert labels.target2_ts_utc is None
+        assert labels.invalidation_ts_utc is None
+        assert labels.time_to_target1_seconds is None
+        assert labels.time_to_target2_seconds is None
+        assert labels.time_to_invalidation_seconds is None
+
+    def test_bearish_same_candle_target_invalidation_collision_is_ambiguous(self) -> None:
+        feature = self._bearish_feature()
+        # Bearish mirror: invalidation is above (110), targets are below
+        # (87.28 / 83.82). A single candle whose high crosses invalidation
+        # and whose low crosses both targets is ambiguous.
+        forward = self._forward_ohlc([(100, 112, 80, 95)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
+        assert labels.ambiguous_ts_utc == forward[0].close_ts_utc
+        assert labels.target1_ts_utc is None
+        assert labels.target2_ts_utc is None
+        assert labels.invalidation_ts_utc is None
+
+    def test_ambiguous_collision_does_not_block_prior_entry_label(self) -> None:
+        feature = self._feature()
+        # Entry zone (96-98) touched on candle 1, ambiguous collision on candle 2.
+        forward = self._forward_ohlc(
+            [
+                (100, 100.5, 96.5, 97),
+                (100, 120, 85, 110),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc == forward[0].close_ts_utc
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
 
 
 class TestImmutableOutput:

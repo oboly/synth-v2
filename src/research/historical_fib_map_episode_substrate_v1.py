@@ -4,18 +4,35 @@ from __future__ import annotations
 
 Pure, deterministic, market-only. No DB access, no wall-clock dependence.
 
-Reuses the SAME canonical geometry/classification code paths as production:
+Reuses the SAME canonical projection/geometry code path as production:
 
+- src.market_data.canonical_fib_zone_map_v1.build_row
+    (canonical map eligibility, direction/map projection, anchor
+    timestamps, entry zone, targets, invalidation, map status/quality,
+    provenance -- the SAME function the production 4h writer calls)
 - src.market_data.fib_navigation_map_v1.build_fib_navigation_map
-    (canonical Fib anchor/level geometry engine)
-- src.structure.trend_state_v1.compute_trend_state
-    (canonical trend/direction classification)
-- src.features.indicators.ema / atr
-    (canonical EMA/ATR helpers used to build the trend-state input features)
+    (canonical Fib anchor/level geometry engine; called BY build_row, not
+    duplicated here)
+- src.features.indicators.ema
+    (canonical EMA helper used to reconstruct the PIT trend-feature input
+    build_row requires -- see _reconstruct_trend_row)
+- src.features.indicators.atr
+    (canonical ATR helper, used for the ATR-unit distance normalization
+    that build_row does not itself compute)
 
-This module does not reimplement Fibonacci math, pivot/swing detection, or
-trend classification. It adds only:
+This module does not reimplement Fibonacci math, pivot/swing detection,
+trend classification, anchor-timestamp selection, or entry/target/
+invalidation field selection. All of that is owned by `build_row` and the
+canonical modules it calls. This module adds only:
 
+- reconstruction of the PIT trend-feature input `build_row` requires, from
+  raw historical candles, using the canonical `ema()` primitive and the
+  exact formula `src/features/etl_candle_feat.py` persists into
+  `feat_candle` (price_vs_ema20/50, ema_spread_pct) -- not a second trend
+  classifier, `build_row` still owns the actual classification decision
+- ATR-unit distance normalization (research-only; build_row's own
+  distance_entry_to_target_pct / distance_entry_to_invalidation_pct fields
+  are always None -- not computed by production)
 - a PIT-safe feature/label split for historical replay
 - forward-scan lifecycle-label computation (does not exist as a production
   concept; production runs forward live, it does not label its own history)
@@ -44,36 +61,35 @@ import pandas as pd
 
 from src.features.indicators import atr as compute_atr_series
 from src.features.indicators import ema as compute_ema_series
+from src.market_data.canonical_fib_zone_map_v1 import build_row
 from src.market_data.fib_navigation_map_v1 import (
-    DEFAULT_ATR_PERIOD,
     DEFAULT_MIN_CANDLES,
-    DEFAULT_PIVOT_SPAN,
     DIRECTION_BEARISH,
     DIRECTION_BULLISH,
-    MAP_STATE_NO_DATA,
-    MAP_STATE_STALE,
     FibNavCandle,
-    FibNavigationMap,
-    build_fib_navigation_map,
-)
-from src.structure.trend_state_v1 import (
-    ENGINE_NAME as TREND_ENGINE_NAME,
-    ENGINE_VERSION as TREND_ENGINE_VERSION,
-    compute_trend_state,
 )
 
 BUILDER_NAME = "historical_fib_map_episode_substrate_v1"
-BUILDER_VERSION = "1.0.0"
-CONTRACT_VERSION = "1.0.0"
+BUILDER_VERSION = "2.0.0"
+CONTRACT_VERSION = "1.1.0"
 
-GEOMETRY_ENGINE_MODULE = "src.market_data.fib_navigation_map_v1"
-GEOMETRY_ENGINE_FUNCTION = "build_fib_navigation_map"
+PROJECTION_ENGINE_MODULE = "src.market_data.canonical_fib_zone_map_v1"
+PROJECTION_ENGINE_FUNCTION = "build_row"
 
-TREND_STATE_TO_DIRECTION: Mapping[str, str] = {
-    "UPTREND_STRONG": DIRECTION_BULLISH,
-    "UPTREND_WEAK": DIRECTION_BULLISH,
-    "DOWNTREND_STRONG": DIRECTION_BEARISH,
-    "DOWNTREND_WEAK": DIRECTION_BEARISH,
+# Exact formula this module reconstructs from raw historical candles, taken
+# verbatim from src/features/etl_candle_feat.py (feat_candle producer):
+#   ema_20 = close.ewm(span=20, adjust=False, min_periods=20).mean()
+#   ema_50 = close.ewm(span=50, adjust=False, min_periods=50).mean()
+#   price_vs_ema20 = (close / ema_20) - 1.0
+#   price_vs_ema50 = (close / ema_50) - 1.0
+#   ema_spread_pct = (ema_20 / ema_50) - 1.0
+TREND_FEATURE_SOURCE_FORMULA = "src.features.etl_candle_feat (price_vs_ema20/50, ema_spread_pct)"
+TREND_FEATURE_EMA_FAST_SPAN = 20
+TREND_FEATURE_EMA_SLOW_SPAN = 50
+
+DIRECTION_FROM_CURRENT_LEG: Mapping[str, str] = {
+    "UP": DIRECTION_BULLISH,
+    "DOWN": DIRECTION_BEARISH,
 }
 
 # ---------------------------------------------------------------------------
@@ -82,13 +98,24 @@ TREND_STATE_TO_DIRECTION: Mapping[str, str] = {
 # TARGET1_REACHED / TARGET2_REACHED / INVALIDATION_BREACHED reuse the same
 # semantic meaning as the canonical fib_navigation_map_v1 rebuild triggers
 # (TRIGGER_ALL_TARGETS_PASSED / TRIGGER_PRICE_BELOW_INVALIDATION). The
-# remaining two reasons are research-only concepts: production runs forward
-# live and never needs to say "the replay window ran out".
+# remaining reasons are research-only concepts: production runs forward
+# live and never needs to say "the replay window ran out" or "the source
+# candle for this bar touched both sides and OHLC cannot order them".
 LIFECYCLE_REASON_TARGET1_REACHED = "TARGET1_REACHED"
 LIFECYCLE_REASON_TARGET2_REACHED = "TARGET2_REACHED"
 LIFECYCLE_REASON_INVALIDATION_BREACHED = "INVALIDATION_BREACHED"
 LIFECYCLE_REASON_FORWARD_WINDOW_EXHAUSTED = "FORWARD_WINDOW_EXHAUSTED"
 LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED = "SOURCE_DATA_EXHAUSTED"
+
+# A single OHLC candle only records the high and low reached during the
+# bar, not the order in which they were touched. When a candle's range
+# crosses BOTH a target level and the invalidation level, there is no way
+# to determine from obs_market_candle whether the target or the
+# invalidation happened first. This reason makes that ambiguity an explicit,
+# first-class outcome rather than silently picking a side.
+LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE = (
+    "AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE"
+)
 
 TERMINAL_LIFECYCLE_REASONS = frozenset(
     {
@@ -97,7 +124,15 @@ TERMINAL_LIFECYCLE_REASONS = frozenset(
         LIFECYCLE_REASON_INVALIDATION_BREACHED,
         LIFECYCLE_REASON_FORWARD_WINDOW_EXHAUSTED,
         LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED,
+        LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE,
     }
+)
+
+# Reasons under which the episode must NOT be counted as a target success or
+# an invalidation success by downstream research (#664/#723) unless a later
+# frozen protocol explicitly decides how to resolve the ambiguity.
+NON_ATTRIBUTABLE_LIFECYCLE_REASONS = frozenset(
+    {LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE}
 )
 
 
@@ -117,12 +152,9 @@ class PitViolationError(EpisodeSubstrateError):
 class EpisodeConfig:
     interval_code: str
     interval_seconds: int
-    pivot_span: int = DEFAULT_PIVOT_SPAN
-    min_candles: int = DEFAULT_MIN_CANDLES
+    min_window_candles: int = DEFAULT_MIN_CANDLES
     lookback_candles: int = 180
-    atr_period: int = DEFAULT_ATR_PERIOD
-    ema_fast_span: int = 20
-    ema_slow_span: int = 50
+    atr_period: int = 14
     stale_after_multiple_candles: int = 6
     forward_max_candles: int = 500
 
@@ -207,10 +239,9 @@ class EpisodeFeaturePayload:
     builder_name: str
     builder_version: str
     contract_version: str
-    geometry_engine_module: str
-    geometry_engine_function: str
-    trend_engine_name: str
-    trend_engine_version: str
+    projection_engine_module: str
+    projection_engine_function: str
+    map_version: str
     map_creation_ts_utc: datetime
     source_candle_first_ts_utc: datetime
     source_candle_last_ts_utc: datetime
@@ -242,6 +273,7 @@ class EpisodeFeaturePayload:
     map_state: str
     map_confidence: str
     rebuild_trigger: str
+    canonical_provenance_payload: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -255,6 +287,7 @@ class EpisodeOutcomeLabels:
     time_to_target2_seconds: float | None
     invalidation_ts_utc: datetime | None
     time_to_invalidation_seconds: float | None
+    ambiguous_ts_utc: datetime | None
     terminal_ts_utc: datetime
     map_lifetime_seconds: float
     lifecycle_transition_reason: str
@@ -299,60 +332,38 @@ def compute_episode_id(
 
 
 # ---------------------------------------------------------------------------
-# Direction classification (reuses canonical trend_state_v1)
+# PIT trend-feature input reconstruction
 # ---------------------------------------------------------------------------
+# build_row requires a trend_row exactly aligned (by close_ts_utc) to the
+# latest candle, carrying price_vs_ema20 / price_vs_ema50 / ema_spread_pct.
+# In production these are read from the persisted `feat_candle` table. For
+# historical replay this reconstructs the identical formula directly from
+# obs_market_candle using the canonical ema() primitive, rather than
+# depending on feat_candle's historical retention. This is feature-input
+# reconstruction, not a second trend classifier: the actual classification
+# decision (UPTREND_STRONG / RANGE / etc.) is made exactly once, inside
+# build_row's own call to compute_trend_state.
 
-def classify_direction(window: Sequence[HistoricalCandle], cfg: EpisodeConfig) -> tuple[str | None, str, Decimal]:
-    """Return (direction_or_None, trend_state, trend_score) for the PIT window.
+def _reconstruct_trend_row(window: Sequence[HistoricalCandle]) -> dict[str, Any] | None:
+    if len(window) < TREND_FEATURE_EMA_SLOW_SPAN:
+        return None
 
-    direction is None when the trend state has no directional Fib map
-    (e.g. RANGE), mirroring the canonical producer's eligibility rule.
-    """
     closes = pd.Series([float(c.close_price) for c in window])
-    ema_fast = compute_ema_series(closes, cfg.ema_fast_span)
-    ema_slow = compute_ema_series(closes, cfg.ema_slow_span)
+    ema_fast = compute_ema_series(closes, TREND_FEATURE_EMA_FAST_SPAN)
+    ema_slow = compute_ema_series(closes, TREND_FEATURE_EMA_SLOW_SPAN)
 
     last_close = closes.iloc[-1]
     last_fast = ema_fast.iloc[-1]
     last_slow = ema_slow.iloc[-1]
+    if last_fast == 0 or last_slow == 0:
+        return None
 
-    price_vs_ema20 = (last_close - last_fast) / last_fast if last_fast else 0.0
-    price_vs_ema50 = (last_close - last_slow) / last_slow if last_slow else 0.0
-    ema_spread_pct = (last_fast - last_slow) / last_slow if last_slow else 0.0
-
-    trend_row = {
-        "price_vs_ema20": price_vs_ema20,
-        "price_vs_ema50": price_vs_ema50,
-        "ema_spread_pct": ema_spread_pct,
+    return {
+        "close_ts_utc": window[-1].close_ts_utc,
+        "price_vs_ema20": (last_close / last_fast) - 1.0,
+        "price_vs_ema50": (last_close / last_slow) - 1.0,
+        "ema_spread_pct": (last_fast / last_slow) - 1.0,
     }
-    trend_state, trend_score = compute_trend_state(trend_row)
-    direction = TREND_STATE_TO_DIRECTION.get(trend_state)
-    return direction, trend_state, trend_score
-
-
-# ---------------------------------------------------------------------------
-# Level lookup (bookkeeping only — not Fib math; reads the canonical
-# geometry engine's already-computed level tuples)
-# ---------------------------------------------------------------------------
-
-def _find_level(map_: FibNavigationMap, label: str) -> Decimal:
-    for level in (*map_.retracement_levels, *map_.extension_levels):
-        if level.label == label:
-            return level.price
-    raise EpisodeSubstrateError(f"canonical map is missing required level {label!r}")
-
-
-def _find_anchor_ts(window: Sequence[HistoricalCandle], *, low: Decimal, high: Decimal) -> tuple[datetime, datetime]:
-    low_ts: datetime | None = None
-    high_ts: datetime | None = None
-    for candle in window:
-        if low_ts is None and candle.low_price == low:
-            low_ts = candle.close_ts_utc
-        if high_ts is None and candle.high_price == high:
-            high_ts = candle.close_ts_utc
-    if low_ts is None or high_ts is None:
-        raise EpisodeSubstrateError("anchor price not found among PIT window candles")
-    return low_ts, high_ts
 
 
 # ---------------------------------------------------------------------------
@@ -369,9 +380,10 @@ def build_episode_feature(
     """Build a PIT-safe episode feature payload from a candle window ending at as-of.
 
     `window` must contain only candles observable at map-creation time (the
-    last candle in `window` IS the as-of candle). Returns None when no
-    admissible directional Fib map exists at this as-of point (RANGE state,
-    insufficient data, or a canonical MAP_STATE_NO_DATA/STALE result).
+    last candle in `window` IS the as-of candle). Returns None when the
+    canonical `build_row` projection is unavailable at this as-of point
+    (RANGE state, insufficient data, missing/misaligned trend input, or a
+    canonical MAP_STATE_NO_DATA/STALE result).
     """
     if not window:
         return None
@@ -381,48 +393,44 @@ def build_episode_feature(
         if candle.close_ts_utc > asof_ts_utc:
             raise PitViolationError("feature construction received a candle after as-of time")
 
-    if len(window) < cfg.min_candles:
+    if len(window) < cfg.min_window_candles:
         return None
 
-    direction, trend_state, _trend_score = classify_direction(window, cfg)
-    if direction is None:
-        return None
-
+    trend_row = _reconstruct_trend_row(window)
     fib_candles = [c.to_fib_nav_candle() for c in window]
-    reference_price = window[-1].close_price
 
-    map_ = build_fib_navigation_map(
+    row = build_row(
+        venue=venue,
+        symbol=symbol,
+        interval_code=cfg.interval_code,
         candles=fib_candles,
-        current_price=reference_price,
         now_utc=asof_ts_utc,
-        prior=None,
-        direction=direction,
-        pivot_span=cfg.pivot_span,
-        min_candles=cfg.min_candles,
+        trend_row=trend_row,
+        prior_row=None,
         stale_after=cfg.stale_after,
     )
 
-    if map_.map_state in {MAP_STATE_NO_DATA, MAP_STATE_STALE} or not map_.extension_levels:
+    if row.get("target_t1") is None:
         return None
-    if map_.direction != direction:
-        raise EpisodeSubstrateError(
-            f"{symbol}: canonical map direction {map_.direction} contradicts classified direction {direction}"
-        )
 
-    r382 = _find_level(map_, "r_0382")
-    r500 = _find_level(map_, "r_0500")
-    r618 = _find_level(map_, "r_0618")
-    invalidation = _find_level(map_, "r_1000")
-    t1 = _find_level(map_, "ext_1272")
-    t2 = _find_level(map_, "ext_1618")
-    extension = _find_level(map_, "ext_2618")
+    direction = DIRECTION_FROM_CURRENT_LEG.get(str(row.get("current_leg")))
+    if direction is None:
+        return None
 
-    low_ts, high_ts = _find_anchor_ts(window, low=map_.anchor_low, high=map_.anchor_high)
+    low_ts = row["anchor_low_ts_utc"]
+    high_ts = row["anchor_high_ts_utc"]
+    if not isinstance(low_ts, datetime) or not isinstance(high_ts, datetime):
+        return None
+
     anchor_span_candles = sum(
         1 for c in window if min(low_ts, high_ts) <= c.close_ts_utc <= max(low_ts, high_ts)
     )
     anchor_span_elapsed_seconds = abs((high_ts - low_ts).total_seconds())
-    swing_amplitude_pct = ((map_.anchor_high - map_.anchor_low) / map_.anchor_low) * Decimal("100")
+
+    reference_price = row["reference_price"]
+    target_t1 = row["target_t1"]
+    target_t2 = row["target_t2"]
+    invalidation = row["invalidation_level"]
 
     df = pd.DataFrame(
         {
@@ -450,9 +458,11 @@ def build_episode_feature(
         contract_version=CONTRACT_VERSION,
         map_creation_ts_utc=asof_ts_utc,
         direction=direction,
-        anchor_low_price=map_.anchor_low,
-        anchor_high_price=map_.anchor_high,
+        anchor_low_price=row["anchor_low_price"],
+        anchor_high_price=row["anchor_high_price"],
     )
+
+    provenance = row.get("provenance_payload") or {}
 
     return EpisodeFeaturePayload(
         episode_id=episode_id,
@@ -462,41 +472,41 @@ def build_episode_feature(
         builder_name=BUILDER_NAME,
         builder_version=BUILDER_VERSION,
         contract_version=CONTRACT_VERSION,
-        geometry_engine_module=GEOMETRY_ENGINE_MODULE,
-        geometry_engine_function=GEOMETRY_ENGINE_FUNCTION,
-        trend_engine_name=TREND_ENGINE_NAME,
-        trend_engine_version=TREND_ENGINE_VERSION,
+        projection_engine_module=PROJECTION_ENGINE_MODULE,
+        projection_engine_function=PROJECTION_ENGINE_FUNCTION,
+        map_version=str(row["map_version"]),
         map_creation_ts_utc=asof_ts_utc,
         source_candle_first_ts_utc=window[0].close_ts_utc,
         source_candle_last_ts_utc=asof_ts_utc,
         source_candle_count=len(window),
         direction=direction,
-        anchor_low_price=map_.anchor_low,
+        anchor_low_price=row["anchor_low_price"],
         anchor_low_ts_utc=low_ts,
-        anchor_high_price=map_.anchor_high,
+        anchor_high_price=row["anchor_high_price"],
         anchor_high_ts_utc=high_ts,
         anchor_span_candles=anchor_span_candles,
         anchor_span_elapsed_seconds=anchor_span_elapsed_seconds,
-        swing_amplitude_pct=swing_amplitude_pct,
+        swing_amplitude_pct=row["anchor_move_pct"],
         reference_price=reference_price,
-        entry_zone_low=min(r382, r618),
-        entry_zone_high=max(r382, r618),
-        entry_zone_mid=r500,
-        target_t1=t1,
-        target_t2=t2,
-        target_extension=extension,
+        entry_zone_low=row["entry_zone_low"],
+        entry_zone_high=row["entry_zone_high"],
+        entry_zone_mid=row["entry_zone_mid"],
+        target_t1=target_t1,
+        target_t2=target_t2,
+        target_extension=row["target_extension"],
         invalidation_level=invalidation,
         atr_value=atr_value,
         atr_period=cfg.atr_period,
-        target_t1_distance_pct=_distance_pct(t1),
-        target_t2_distance_pct=_distance_pct(t2),
+        target_t1_distance_pct=_distance_pct(target_t1),
+        target_t2_distance_pct=_distance_pct(target_t2),
         invalidation_distance_pct=_distance_pct(invalidation),
-        target_t1_distance_atr=_distance_atr(t1),
-        target_t2_distance_atr=_distance_atr(t2),
+        target_t1_distance_atr=_distance_atr(target_t1),
+        target_t2_distance_atr=_distance_atr(target_t2),
         invalidation_distance_atr=_distance_atr(invalidation),
-        map_state=map_.map_state,
-        map_confidence=map_.confidence,
-        rebuild_trigger=map_.rebuild_trigger,
+        map_state=str(row["map_status"]),
+        map_confidence=str(row["map_quality"]),
+        rebuild_trigger=str(provenance.get("rebuild_trigger")),
+        canonical_provenance_payload=provenance,
     )
 
 
@@ -515,6 +525,14 @@ def build_episode_labels(
     `forward_candles` must contain only candles strictly after
     `feature.map_creation_ts_utc`. This is the structural PIT tripwire: any
     candle at/before as-of raises PitViolationError.
+
+    When a single candle's OHLC range crosses both a target level and the
+    invalidation level, obs_market_candle cannot establish which happened
+    first. That candle is labeled
+    LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE and none of
+    target1_ts_utc / target2_ts_utc / invalidation_ts_utc are set for it --
+    the episode must not be counted as a target success or an invalidation
+    success from this candle.
     """
     for candle in forward_candles:
         if candle.close_ts_utc <= feature.map_creation_ts_utc:
@@ -528,6 +546,7 @@ def build_episode_labels(
     target1_ts: datetime | None = None
     target2_ts: datetime | None = None
     invalidation_ts: datetime | None = None
+    ambiguous_ts: datetime | None = None
 
     scanned = 0
     terminal_ts = feature.map_creation_ts_utc
@@ -552,20 +571,26 @@ def build_episode_labels(
             target1_hit = candle.low_price <= feature.target_t1
             target2_hit = candle.low_price <= feature.target_t2
 
-        if target1_ts is None and target1_hit:
-            target1_ts = candle.close_ts_utc
-        if target2_ts is None and target2_hit:
-            target2_ts = candle.close_ts_utc
-        if invalidation_ts is None and invalidation_hit:
-            invalidation_ts = candle.close_ts_utc
+        target_hit_this_candle = target1_hit or target2_hit
 
-        if invalidation_ts is not None:
+        if invalidation_hit and target_hit_this_candle:
+            # Cannot infer target-first or invalidation-first from OHLC.
+            # Do not attribute this candle to either outcome.
+            ambiguous_ts = candle.close_ts_utc
+            reason = LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
+            break
+        if invalidation_hit:
+            invalidation_ts = candle.close_ts_utc
             reason = LIFECYCLE_REASON_INVALIDATION_BREACHED
             break
-        if target2_ts is not None:
+        if target2_hit:
+            target2_ts = candle.close_ts_utc
+            if target1_ts is None:
+                target1_ts = candle.close_ts_utc
             reason = LIFECYCLE_REASON_TARGET2_REACHED
             break
-        if target1_ts is not None:
+        if target1_hit:
+            target1_ts = candle.close_ts_utc
             reason = LIFECYCLE_REASON_TARGET1_REACHED
             break
     else:
@@ -589,6 +614,7 @@ def build_episode_labels(
         time_to_target2_seconds=_seconds(target2_ts),
         invalidation_ts_utc=invalidation_ts,
         time_to_invalidation_seconds=_seconds(invalidation_ts),
+        ambiguous_ts_utc=ambiguous_ts,
         terminal_ts_utc=terminal_ts,
         map_lifetime_seconds=(terminal_ts - feature.map_creation_ts_utc).total_seconds(),
         lifecycle_transition_reason=reason,
@@ -620,8 +646,8 @@ def build_episodes(
     validate_candle_sequence(candles)
 
     records: list[EpisodeRecord] = []
-    for i in range(cfg.min_candles - 1, len(candles)):
-        if (i - (cfg.min_candles - 1)) % episode_stride_candles != 0:
+    for i in range(cfg.min_window_candles - 1, len(candles)):
+        if (i - (cfg.min_window_candles - 1)) % episode_stride_candles != 0:
             continue
 
         window_start = max(0, i - cfg.lookback_candles + 1)
