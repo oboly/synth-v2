@@ -65,14 +65,14 @@ No generic signal-history framework is introduced.
 Per #243, timing concepts remain distinct:
 
 ```text
-candidate_id         = C1
-rotation_model       = multi_horizon_rotation_relative_flow
+candidate_id           = C1
+rotation_model         = multi_horizon_rotation_relative_flow
 rotation_model_version = 1.0.0-c1
-input_interval       = 15m
-lookback_horizon     = current_15m_plus_previous_8_completed_15m_windows
-effective_horizon    = VERY_SHORT
-observed_lifecycle   = UNMEASURED
-source_provenance    = obs_market_candle:15m:close_price+volume_base;owner=public_candle_freshness_writer
+input_interval         = 15m
+lookback_horizon       = current_15m_plus_previous_8_completed_15m_windows
+effective_horizon      = VERY_SHORT
+observed_lifecycle     = UNMEASURED
+source_provenance      = obs_market_candle:15m:close_price+volume_base;owner=public_candle_freshness_writer
 ```
 
 `effective_horizon=VERY_SHORT` is the reviewed C1 producer declaration from
@@ -113,6 +113,8 @@ relative_return_unit
 signed_flow_unit
 relative_acceleration_unit
 cohort_size
+evaluated_universe_size
+coverage_ratio
 freshness_state
 data_quality
 reason_code
@@ -136,6 +138,31 @@ coverage/data-quality history remains replayable rather than being silently
 reconstructed from only successful rows. A `COMPLETE` row must carry all
 three primitive units plus the raw `rotation_score`; an
 `INSUFFICIENT_DATA` row may not carry a score.
+
+### 4.1 Immutable coverage semantics
+
+Coverage is persisted at evaluation time, not reconstructed later from the
+current tradeable universe:
+
+```text
+cohort_size             = count of assets with complete C1 window primitives
+evaluated_universe_size = exact canonical tradeable input universe evaluated at this as-of
+coverage_ratio           = cohort_size / evaluated_universe_size
+```
+
+The materialization batch must contain exactly one result for every member of
+that evaluated universe. `evaluated_universe_size <= 0`,
+`cohort_size > evaluated_universe_size`, or result-count/denominator mismatch
+fails closed.
+
+Persisting the denominator is required because the tradeable universe may
+change after the historical as-of. A later consumer can therefore replay the
+coverage that was actually evaluated rather than accidentally dividing an
+old cohort by today's universe size.
+
+This operational per-as-of coverage is distinct from the aggregate #593
+final-holdout `coverage=0.217125` validation statistic. The latter remains
+frozen research evidence and is not copied into every live history row.
 
 ## 5. Computation and persistence boundary
 
@@ -185,8 +212,8 @@ retention.
 fast_rotation_c1_observation_v1 -> #297 reporting
 ```
 
-#297 may render numeric history, freshness, and data quality. It may not
-recompute C1 or invent score thresholds/colors that alter market truth.
+#297 may render numeric history, freshness, coverage, and data quality. It may
+not recompute C1 or invent score thresholds/colors that alter market truth.
 
 ```text
 fast_rotation_c1_observation_v1 -> #591 horizon-aware interpretation
