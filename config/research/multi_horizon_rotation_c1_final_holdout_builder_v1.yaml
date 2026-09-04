@@ -1,0 +1,99 @@
+registry_name: multi_horizon_rotation_c1_final_holdout_builder_v1
+registry_version: 1.0.0
+issue: 593
+research_only: true
+
+phase:
+  name: final_holdout
+  split_source: split_manifest_v1.json
+  approved_split_manifest_sha256_source: docs/research/multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json
+  approved_split_manifest_sha256_override: DENY
+  candidate_allowlist: [C1]
+  c2_access: DENY
+  c3_access: DENY
+
+canonical_run_binding:
+  output_dir_argument: none
+  canonical_dir_rule: directory_containing_supplied_split_manifest_v1_json
+  required_colocated_files: [split_manifest_v1.json, source_integrity_v1.json]
+  opened_marker: local_checkpoint_running_state
+  reopen_after_finished: DENY
+  reopen_in_alternate_directory: DENY
+
+authoritative_opened_state_registry:
+  location: approved_account_passwd_home/.local/state/synth/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  caller_selectable: false
+  key_fields: [manifest_sha256, source_integrity_composite_sha256, venue, candidate_id, phase]
+  key_is_path_independent: true
+  created_after: integrity_verification_success
+  created_before: first_holdout_replay
+  creation_primitive: atomic_exclusive_create_tempfile_fsync_then_os_link
+  check_then_write_sequence: false
+  concurrent_fresh_run_winner_count: 1
+  fresh_run_denied_registry_states: [RUNNING, INTERRUPTED, FAILED, FINISHED]
+  resume_allowed_registry_states: [RUNNING, INTERRUPTED, FINALIZING_recovery_only]
+  resume_denied_registry_states: [FAILED, FINISHED_except_mixed_FINALIZING_recovery]
+  silent_reset_or_refreeze: DENY
+
+execution_identity:
+  ordered_gates: [approved_execution_host, approved_execution_account, authoritative_registry_root, canonical_paths, approved_frozen_manifest_sha256, approved_source_integrity_artifact_identity, frozen_c1_implementation_fingerprint, current_source_recompute_and_verify, authoritative_one_shot_registry_and_run_lease]
+
+integrity_gate:
+  required: true
+  artifact: source_integrity_v1.json
+  mode: approved_artifact_identity_before_db_then_recompute_and_verify_existing
+  verification_must_complete_before_candidate_replay: true
+  verification_must_complete_before_resumed_replay: true
+  drift_policy: fail_closed
+  refreeze_on_drift: false
+
+interruption_and_resume:
+  signals_handled: [SIGINT, SIGTERM]
+  sigint_exit_code: 130
+  sigterm_exit_code: 143
+  interrupted_lines_emitted: 1
+  traceback_on_interrupt: false
+  resume_argument: --resume
+  resume_allowed_terminal_states: [RUNNING, INTERRUPTED, FINALIZING_recovery_only]
+  resume_denied_terminal_states: [FINISHED, FAILED_except_mixed_FINALIZING_recovery]
+  post_open_ordinary_exception_terminal_state: FAILED_before_rows_publication_FINALIZING_after_rows_publication
+  post_open_failure_marks_both: [local_checkpoint, authoritative_registry]
+  pre_open_failure_creates_opened_state: false
+
+resume_lease:
+  location: approved_account_passwd_home/.local/state/synth/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  path_rule: "<registry_key>.resume_lease.json"
+  caller_selectable: false
+  key_is_path_independent: true
+  creation_primitive: atomic_exclusive_create_tempfile_fsync_then_os_link
+  check_then_create_sequence: false
+  concurrent_resume_winner_count: 1
+  acquired_before: [source_integrity_reverify, checkpoint_registry_identity_validation, partial_reconcile, replay]
+  released_on: [before_FINISHED_terminal_commit, INTERRUPTED, FAILED]
+  automatic_stale_lease_recovery: false
+  lease_identity_fields: [registry_key, runner, runner_version, pid, hostname, acquired_ts_utc]
+
+candidate:
+  implementation: src/research/multi_horizon_rotation_replay_v1.py
+  candidate_id: C1
+  formula_changes: false
+  sign_flip: false
+  threshold_changes: false
+
+output:
+  rows: final_holdout_c1_rows_v1.jsonl
+  summary: final_holdout_c1_summary_v1.json
+  overwrite: DENY
+  non_c1_rows: DENY
+
+safety:
+  database_reads: 1
+  database_writes: 0
+  account_awareness: 0
+  decision_gate: none
+  execution_planner: none
+  executor: none
+  broker_private_calls: 0
+  broker_writes: 0
+  order_submission: 0
+  live_orders: 0

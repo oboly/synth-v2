@@ -1,0 +1,1689 @@
+from __future__ import annotations
+
+"""Integrity-gated C1-only final-holdout dataset builder for Issue #593.
+
+This is deliberately separate from the discovery/validation builder. It can open
+only the frozen final-holdout split, only for preregistered candidate C1, and only
+after the frozen canonical source-content fingerprint verifies successfully.
+
+The holdout has exactly one canonical output location: the directory that
+already contains the frozen ``split_manifest_v1.json`` supplied on the command
+line. There is deliberately no ``--output-dir`` override, so the holdout cannot
+be reopened in a second location by pointing the runner somewhere else.
+
+That per-directory checkpoint is a convenience, not the security boundary: a
+caller could copy a byte-identical ``split_manifest_v1.json`` +
+``source_integrity_v1.json`` pair into a second directory -- including a
+second git clone or worktree entirely -- and try to "open" a fresh checkpoint
+namespace there. The actual one-shot gate is a trusted, non-caller-selectable
+**opened-state registry** under a durable, host-level state root
+(``REGISTRY_ROOT`` below, see ``default_registry_root``), keyed by a SHA-256
+fingerprint of ``(manifest_sha256, source_integrity_composite_sha256, venue,
+candidate_id, phase)``. Because the key is derived purely from frozen
+content, and the registry root itself is derived from the single fixed
+approved execution account's trusted OS account metadata
+(``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT).pw_dir``, not ``HOME``, not any
+other caller-controlled environment variable, and not the invoking process's
+own effective-UID account) and lives outside any git checkout, copying the
+manifest/integrity pair anywhere -- including into a different clone or
+worktree on the same host, under a caller-controlled ``HOME``, or run as a
+different local account on the same host -- resolves to the exact same
+registry entry and is denied. ``enforce_approved_execution_account`` fails
+closed before any of this runner's other work if the invoking account is not
+``APPROVED_EXECUTION_ACCOUNT``, so a different account cannot even reach a
+registry lookup, let alone a different one. This is host-local, not
+cross-host: every checkout run by the approved account on the approved host
+shares it; a different host has its own account database and does not.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import re
+import signal
+import socket
+import tempfile
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+from src.common.db import get_db_connection
+from src.research import multi_horizon_rotation_dataset_builder_v1 as c1_dataset_semantics_module
+from src.research import multi_horizon_rotation_replay_v1 as c1_replay_module
+from src.research import run_multi_horizon_rotation_dataset_builder_v1 as c1_dataset_runner_semantics_module
+from src.research import run_multi_horizon_rotation_source_integrity_v1 as c1_source_integrity_semantics_module
+from src.research.multi_horizon_rotation_dataset_builder_v1 import observed_asset_ids_at_asof
+from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, evaluate_candidate
+from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
+    asof_grid,
+    build_validation_row,
+    chunk_asof_grid_by_utc_day,
+    fetch_asset_coverage,
+    fetch_candles_for_chunk,
+    fetch_rotation_v1_points,
+    json_default,
+    manifest_fingerprint,
+    parse_ts,
+    reconcile_partial_to_checkpoint,
+    replay_candles_at_asof,
+    write_json_atomic,
+    write_row,
+)
+from src.research.run_multi_horizon_rotation_source_integrity_v1 import (
+    build_integrity_payload,
+    verify_existing,
+)
+
+RUNNER_NAME = "run_multi_horizon_rotation_c1_final_holdout_builder_v1"
+RUNNER_VERSION = "1.0.0"
+CANDIDATE_ID = "C1"
+PHASE = "final_holdout"
+MANIFEST_BASENAME = "split_manifest_v1.json"
+INTEGRITY_BASENAME = "source_integrity_v1.json"
+RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
+FINALIZATION_STATES = ("FINALIZING", "FINISHED")
+
+# The single approved execution host for this frozen #593 C1 final-holdout
+# run -- see ``enforce_approved_execution_host`` for why this is required in
+# addition to (not instead of) the host-local registry, and
+# ``src/operations/verify_agent_worktree_v1.py::CANONICAL_HOST`` for the
+# existing repo convention this reuses.
+APPROVED_EXECUTION_HOST = "gurkdb"
+
+# The single approved execution account on ``APPROVED_EXECUTION_HOST`` for
+# this frozen #593 C1 final-holdout run -- see
+# ``enforce_approved_execution_account`` for why this is required in addition
+# to (not instead of) the approved-host check and the registry itself, and
+# ``docs/architecture/native_short_fib_context_snapshot_contract_v1.md`` for
+# the existing repo convention that the production ``gurkdb`` deployment
+# account is ``gurk``. A fixed username is used (not a numeric UID): nothing
+# in this repo's host convention pins a stable numeric UID for this account,
+# whereas the username is the documented, stable identity.
+APPROVED_EXECUTION_ACCOUNT = "gurk"
+
+# Committed, pre-registered expected implementation fingerprint for the
+# frozen C1 candidate spec + replay implementation. No CLI/env override.
+IMPLEMENTATION_FINGERPRINT_DOC_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "research"
+    / "multi_horizon_rotation_c1_final_holdout_implementation_fingerprint_v1.json"
+)
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+def default_registry_root() -> Path:
+    """Durable, host-level authoritative state root -- independent of any git
+    checkout/worktree, and independent of any caller-controlled environment
+    OR caller-controlled effective account.
+
+    A prior version derived this from ``Path(__file__).resolve().parents[2]``,
+    i.e. checkout-local: a second clone or worktree of this same repository
+    got its OWN ``data/research/...`` directory, so byte-identical frozen
+    manifest/integrity inputs opened in two different checkouts on the same
+    host could each open their own "one-shot" holdout -- the one-shot gate
+    was not actually shared.
+
+    A second version derived this from ``Path.home()``. That is also wrong:
+    ``Path.home()`` (and the ``HOME`` environment variable it reads) is
+    caller-controlled -- a caller can set ``HOME`` to an arbitrary directory
+    and obtain a different, empty registry root, reopening the identical
+    frozen holdout inputs there. That defeats the entire point of the
+    authoritative registry.
+
+    A third version resolved the *invoking* account's home directory from
+    trusted account metadata keyed by the current effective UID
+    (``pwd.getpwuid(os.geteuid()).pw_dir``). That fixed the ``HOME``-spoofing
+    problem but introduced a different one: the registry is authoritative
+    *per effective UID*, not per fixed approved identity. A different local
+    account on the approved host (e.g. a second Linux user, not
+    ``APPROVED_EXECUTION_ACCOUNT``) resolves its OWN passwd entry and its OWN,
+    empty registry root under its own home directory, and could reopen the
+    identical frozen holdout content there -- the one-shot gate was again not
+    actually shared, this time across accounts on the same host rather than
+    across checkouts.
+
+    This now resolves the registry root from the FIXED approved execution
+    account's trusted passwd entry (``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT)``)
+    rather than from whatever account happens to be invoking the process.
+    ``enforce_approved_execution_account`` independently fails closed before
+    any of this runner's other work if the invoking account is not
+    ``APPROVED_EXECUTION_ACCOUNT``; this function then binds the registry
+    itself to that same fixed identity, so the registry root can never be a
+    function of the caller's own account -- only of the single approved
+    account's registered home directory (``pw_dir``) from the host's user
+    database (``/etc/passwd`` or equivalent NSS source). This is the same
+    trusted-identity approach already used elsewhere in this repository for
+    account-derived paths/ownership checks (see
+    ``src/common/synth_chain_4h_db_binding_v1.py`` and
+    ``src/operations/run_native_short_snapshot_filesystem_preflight_v1.py``).
+
+    Because the key is derived purely from frozen content and the registry
+    root is derived purely from the fixed approved account's trusted OS
+    metadata, every clone/worktree -- run by the approved account, on the
+    approved host -- resolves to the exact same registry root regardless of
+    ``HOME``, ``XDG_STATE_HOME``, current working directory, or
+    checkout/worktree path, and regardless of which effective UID/account
+    actually invoked the process (that is separately denied before this is
+    ever reached). It is deliberately host-local, not cross-host: a
+    different host has its own account database and its own, independent
+    copy of this state. There is no single shared authoritative DB/state
+    store for research-only artifacts in the current topology, so
+    filesystem-local (per-host) durable state is the correct choice here,
+    not a DB table.
+
+    There is deliberately no CLI/env override for this path: the entire
+    point of the authoritative registry is that the caller cannot select a
+    different location for it. If the approved account's metadata cannot be
+    resolved, this fails closed (raises) rather than silently falling back
+    to ``HOME``, the caller's own account, or any other value.
+    """
+    try:
+        trusted_home = pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT).pw_dir
+    except KeyError as exc:
+        raise RuntimeError(
+            "cannot resolve authoritative registry root: no passwd entry for "
+            f"approved execution account {APPROVED_EXECUTION_ACCOUNT!r}"
+        ) from exc
+    if not trusted_home:
+        raise RuntimeError(
+            "cannot resolve authoritative registry root: passwd entry for "
+            f"approved execution account {APPROVED_EXECUTION_ACCOUNT!r} has no "
+            "home directory"
+        )
+    return (
+        Path(trusted_home)
+        / ".local"
+        / "state"
+        / "synth"
+        / "research"
+        / "multi_horizon_rotation_c1_final_holdout_registry_v1"
+    )
+
+
+# Trusted, non-caller-selectable authoritative opened-state registry. This is
+# NOT the canonical run directory (which is caller-supplied via --split-manifest)
+# and it is never overridable from the CLI or the environment: it is the only
+# thing that makes the holdout genuinely one-shot even if the frozen manifest
+# and source-integrity artifact are copied byte-for-byte into a second directory,
+# a second worktree, or a second clone on the same host.
+#
+# Deliberately NOT resolved at import time (i.e. NOT ``REGISTRY_ROOT =
+# default_registry_root()`` at module scope): ``default_registry_root()``
+# calls ``pwd.getpwnam(APPROVED_EXECUTION_ACCOUNT)``, which raises on any
+# host with no local ``APPROVED_EXECUTION_ACCOUNT`` account -- including
+# GitHub-hosted CI runners. Resolving it at import time would make importing
+# this module (needed for ``--help`` and for every test that only exercises
+# an unrelated pure function) fail before argument parsing, before the
+# approved-host check, and before the approved-account check ever run. It is
+# instead resolved lazily, exactly once, by ``resolve_runtime_registry_root``,
+# which ``main()`` calls only after both authorization checks pass.
+REGISTRY_ROOT: Path | None = None
+
+
+def resolve_runtime_registry_root() -> Path:
+    """Resolve and cache the authoritative registry root at runtime.
+
+    Must only be called after ``enforce_approved_execution_host`` and
+    ``enforce_approved_execution_account`` have both already passed --
+    calling it earlier (or on an unapproved host/account) would raise
+    ``pwd.getpwnam``'s ``KeyError``-derived ``RuntimeError`` before the
+    caller-facing host/account error messages ever get a chance to run.
+    Idempotent: once resolved, the cached module-level ``REGISTRY_ROOT`` is
+    returned on every subsequent call rather than re-resolving, so tests
+    that pre-set ``REGISTRY_ROOT`` directly (to an isolated test directory)
+    are respected rather than overwritten.
+    """
+    global REGISTRY_ROOT
+    if REGISTRY_ROOT is None:
+        REGISTRY_ROOT = default_registry_root()
+    return REGISTRY_ROOT
+
+
+def current_trusted_hostname() -> str:
+    """Trusted OS-reported hostname -- ``gethostname(2)`` via
+    ``socket.gethostname()`` -- never a caller-controlled environment
+    variable such as ``HOSTNAME``, which a caller could set arbitrarily."""
+    return socket.gethostname()
+
+
+def enforce_approved_execution_host() -> None:
+    """Fail closed unless this process is running on the single approved
+    execution host for this frozen #593 C1 final-holdout run.
+
+    Current #593 topology has no shared cross-host authoritative state store
+    (and ``database_writes`` must remain 0 for this research-only runner, so
+    no DB-backed cross-host lock is introduced here). The authoritative
+    opened-state registry (``default_registry_root``) is therefore
+    deliberately host-local: two clones/worktrees for the SAME user on the
+    SAME host share one registry, but a different host has its own,
+    independent registry and could otherwise "open" the identical frozen
+    manifest/integrity content a second time. A host restriction alone would
+    likewise not stop a second process on the SAME host from reopening it.
+
+    Exactly-once ownership of the holdout is therefore the CONJUNCTION of
+    two independent controls, not either one alone:
+
+        approved-host-only + trusted host-local registry
+
+    This function enforces the first half: the holdout may only ever be
+    opened/resumed/replayed on ``APPROVED_EXECUTION_HOST``. Any other host
+    fails closed here, before any registry entry is created and before any
+    holdout replay -- so another host cannot execute or open this holdout at
+    all, regardless of whether it has a byte-identical copy of the frozen
+    manifest/integrity pair.
+
+    The approved host itself is a fixed constant, matching the actual
+    intended research execution host for this frozen #593 holdout run (the
+    same host already used as the canonical convention for gating sensitive
+    runtime operations in this repo; see
+    ``src/operations/verify_agent_worktree_v1.py::CANONICAL_HOST``). There is
+    deliberately no CLI/env override for it, and the current hostname is
+    read from the trusted ``gethostname(2)`` syscall
+    (``current_trusted_hostname``), not from any caller-controlled
+    environment variable, so a caller cannot spoof approval by setting
+    ``HOSTNAME`` or any other environment variable.
+    """
+    actual = current_trusted_hostname()
+    if actual != APPROVED_EXECUTION_HOST:
+        raise ValueError(
+            f"final holdout may only execute on the approved host "
+            f"{APPROVED_EXECUTION_HOST!r}; actual host is {actual!r}. Refusing "
+            "to create any registry entry or replay any holdout data on this host."
+        )
+
+
+def current_trusted_execution_account() -> str:
+    """Trusted OS-reported account name for the current process's effective
+    UID -- ``pwd.getpwuid(os.geteuid()).pw_name`` -- never ``USER``,
+    ``LOGNAME``, ``HOME``, or any other caller-controlled environment
+    variable. The effective UID itself is fixed by the OS process, not by
+    the caller's shell environment, so this cannot be spoofed by setting an
+    environment variable before invoking the runner."""
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as exc:
+        raise RuntimeError(
+            "cannot resolve trusted execution account: no passwd entry for "
+            f"effective UID {os.geteuid()}"
+        ) from exc
+
+
+def enforce_approved_execution_account() -> None:
+    """Fail closed unless this process is running as the single approved
+    execution account, ``APPROVED_EXECUTION_ACCOUNT``.
+
+    This is the fix for the exact-head Codex blocker on this frozen #593
+    final-holdout builder: the authoritative registry
+    (``default_registry_root``) used to be keyed purely by the invoking
+    process's effective UID (``pwd.getpwuid(os.geteuid())``). That is
+    per-effective-UID, not per-approved-identity -- a different local
+    account on ``APPROVED_EXECUTION_HOST`` resolves its OWN passwd entry and
+    its OWN, distinct (and empty) registry root under its own home
+    directory, and could reopen the identical frozen holdout manifest and
+    source-integrity content there even though the host itself is approved.
+
+    Exactly-once ownership of the holdout is therefore now the CONJUNCTION of
+    THREE independent controls, not any one or two of them alone:
+
+        approved-host-only + approved-account-only + trusted host-local registry
+
+    This function enforces the middle one: the holdout may only ever be
+    opened/resumed/replayed by ``APPROVED_EXECUTION_ACCOUNT``. Any other
+    account -- even on the approved host -- fails closed here, before any
+    manifest is loaded, before any database connection, before any
+    source-integrity work, before any registry entry is created, before any
+    checkpoint is written, and before any holdout replay.
+
+    The approved account is read from trusted OS account metadata
+    (``current_trusted_execution_account``, backed by
+    ``pwd.getpwuid(os.geteuid())``), never from ``USER``, ``LOGNAME``,
+    ``HOME``, or any other caller-controlled environment variable -- so a
+    caller cannot spoof approval by setting those variables. There is
+    deliberately no CLI/env override for the approved account itself, which
+    is a fixed constant matching the documented production ``gurkdb``
+    deployment account (see
+    ``docs/architecture/native_short_fib_context_snapshot_contract_v1.md``).
+
+    ``default_registry_root`` additionally binds the registry root itself to
+    this same fixed approved account (via ``pwd.getpwnam``, not
+    ``pwd.getpwuid`` of whichever account is actually invoking the process),
+    so even if this enforcement function were somehow bypassed, the registry
+    root a denied account would resolve is not derived from that denied
+    account's own home directory at all.
+    """
+    actual = current_trusted_execution_account()
+    if actual != APPROVED_EXECUTION_ACCOUNT:
+        raise ValueError(
+            f"final holdout may only execute as the approved account "
+            f"{APPROVED_EXECUTION_ACCOUNT!r}; actual effective account is "
+            f"{actual!r} (uid={os.geteuid()}). Refusing to load any manifest, "
+            "connect to the database, create any registry entry, write any "
+            "checkpoint, or replay any holdout data under this account."
+        )
+
+
+def _c1_spec_fingerprint_material(spec: Any) -> dict[str, Any]:
+    return {
+        "candidate_id": spec.candidate_id,
+        "model_version": spec.model_version,
+        "horizon_minutes": spec.horizon_minutes,
+        "effective_horizon": spec.effective_horizon,
+    }
+
+
+def _semantic_dependency_modules() -> dict[str, Any]:
+    """Return the minimal direct semantic closure for holdout evidence.
+
+    These modules own C1 replay scoring, PIT/forward-label primitives, the
+    imported row/candle reconstruction functions, and source-integrity
+    construction/verification. DB, CLI, logging, and path helpers are excluded
+    because they do not define evidence semantics.
+    """
+    return {
+        "multi_horizon_rotation_replay_v1": c1_replay_module,
+        "multi_horizon_rotation_dataset_builder_v1": c1_dataset_semantics_module,
+        "run_multi_horizon_rotation_dataset_builder_v1": c1_dataset_runner_semantics_module,
+        "run_multi_horizon_rotation_source_integrity_v1": c1_source_integrity_semantics_module,
+    }
+
+
+def compute_c1_implementation_fingerprint(spec: Any) -> dict[str, Any]:
+    """Deterministically bind C1 and its direct holdout evidence semantics.
+
+    Hashes exact source bytes for only the modules that directly determine C1
+    replay, PIT reconstruction, row/forward-label construction, and source
+    integrity. The canonical envelope is stable and contains no path or runtime
+    state.
+    """
+    spec_material = _c1_spec_fingerprint_material(spec)
+    spec_json = json.dumps(spec_material, sort_keys=True, separators=(",", ":"))
+    semantic_dependencies = {
+        name: hashlib.sha256(Path(module.__file__).resolve().read_bytes()).hexdigest()
+        for name, module in sorted(_semantic_dependency_modules().items())
+    }
+    envelope = {"c1_spec": spec_material, "semantic_dependencies": semantic_dependencies}
+    envelope_json = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(envelope_json.encode("utf-8")).hexdigest()
+    return {
+        "c1_spec_json": spec_json,
+        "replay_source_sha256": semantic_dependencies["multi_horizon_rotation_replay_v1"],
+        "semantic_dependencies": semantic_dependencies,
+        "implementation_fingerprint_sha256": fingerprint,
+    }
+
+
+def load_frozen_c1_implementation_fingerprint() -> dict[str, Any]:
+    """Load the committed, pre-registered expected implementation fingerprint
+    from ``IMPLEMENTATION_FINGERPRINT_DOC_PATH``.
+
+    There is no CLI/env override for this path or its content -- it must be
+    the fixed file committed alongside the frozen candidate definition. This
+    fails closed (raises) if the file is missing or malformed; there is no
+    fallback and no refreeze/update mechanism in this runner.
+    """
+    path = IMPLEMENTATION_FINGERPRINT_DOC_PATH
+    if not path.exists():
+        raise ValueError(
+            f"frozen C1 implementation fingerprint doc is missing at {path}; "
+            "cannot verify implementation identity before opening the holdout"
+        )
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("implementation_fingerprint_sha256"), str):
+        raise ValueError(f"frozen C1 implementation fingerprint doc at {path} is malformed")
+    return raw
+
+
+def verify_approved_split_manifest(manifest: dict[str, Any]) -> str:
+    """Verify the supplied manifest is the one committed frozen #593 split.
+
+    The manifest fingerprint is intentionally delegated to the canonical
+    dataset-builder owner. It is canonical JSON SHA-256, not a raw-file hash,
+    so whitespace or key ordering cannot create a competing identity.
+    """
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen.get("approved_split_manifest_sha256")
+    if not isinstance(expected, str) or SHA256_HEX_RE.fullmatch(expected) is None:
+        raise ValueError(
+            "frozen C1 implementation fingerprint doc has missing or malformed "
+            "approved_split_manifest_sha256; cannot verify final-holdout split identity"
+        )
+    actual = manifest_fingerprint(manifest)
+    if actual != expected:
+        raise ValueError(
+            "approved frozen split manifest mismatch: supplied manifest does not match "
+            f"the committed #593 final-holdout split (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return actual
+
+
+def verify_approved_source_integrity_artifact(path: Path) -> str:
+    """Require the supplied artifact to carry the pre-frozen #593 identity.
+
+    This runs before DB access; later recomputation still proves current source
+    content equals the approved artifact, so a regenerated artifact cannot open
+    a distinct registry identity after source drift.
+    """
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen.get("approved_source_integrity_composite_sha256")
+    if not isinstance(expected, str) or SHA256_HEX_RE.fullmatch(expected) is None:
+        raise ValueError(
+            "frozen C1 implementation fingerprint doc has missing or malformed "
+            "approved_source_integrity_composite_sha256; cannot verify final-holdout source identity"
+        )
+    if not path.exists():
+        raise ValueError("source integrity artifact missing; cannot verify approved frozen source identity")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("source integrity artifact must be a JSON object")
+    actual = raw.get("composite_sha256")
+    if not isinstance(actual, str) or SHA256_HEX_RE.fullmatch(actual) is None:
+        raise ValueError("source integrity artifact has missing or malformed composite_sha256")
+    if actual != expected:
+        raise ValueError(
+            "approved frozen source integrity mismatch: supplied artifact does not match "
+            f"the committed #593 source identity (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return expected
+
+
+def verify_c1_implementation_fingerprint(spec: Any) -> str:
+    """Recompute the current C1 implementation fingerprint and fail closed
+    unless it exactly matches the committed frozen expected value.
+
+    Must be called, on both a fresh run and a resumed run, before any
+    registry entry is created and before any holdout replay. Returns the
+    verified fingerprint so the caller can bind it into the
+    checkpoint/registry identity, which makes a later ``--resume`` under
+    changed code fail closed even if this function were somehow bypassed.
+    """
+    current = compute_c1_implementation_fingerprint(spec)
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen["implementation_fingerprint_sha256"]
+    actual = current["implementation_fingerprint_sha256"]
+    if actual != expected:
+        raise ValueError(
+            "C1 implementation fingerprint mismatch: the frozen candidate spec "
+            "and/or replay implementation has drifted since the expected "
+            f"fingerprint was frozen (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return actual
+
+
+class RunnerInterrupted(Exception):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+
+
+def emit(message: str) -> None:
+    print(message, flush=True)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="#593 integrity-gated C1-only final holdout builder")
+    parser.add_argument("--venue", default="bitvavo")
+    parser.add_argument("--split-manifest", required=True)
+    parser.add_argument("--source-integrity", required=True)
+    parser.add_argument("--resume", action="store_true")
+    return parser.parse_args(argv)
+
+
+def load_manifest(path: Path, *, venue: str) -> dict[str, Any]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("split manifest must be a JSON object")
+    if raw.get("venue") != venue:
+        raise ValueError("venue does not match frozen split manifest")
+    if raw.get("final_holdout_inspected") is not False:
+        raise ValueError("final holdout must still be unopened before this one-shot builder starts")
+    splits = raw.get("splits")
+    if not isinstance(splits, dict) or PHASE not in splits:
+        raise ValueError("split manifest missing final_holdout")
+    return raw
+
+
+def select_c1_spec() -> Any:
+    matches = [spec for spec in CANDIDATE_SPECS if spec.candidate_id == CANDIDATE_ID]
+    if len(matches) != 1:
+        raise ValueError("frozen C1 candidate spec missing or ambiguous")
+    return matches[0]
+
+
+def canonical_run_dir(manifest_path: Path, integrity_path: Path) -> Path:
+    """Derive the single canonical run directory and fail closed on any bypass attempt.
+
+    There is no ``--output-dir`` argument. The canonical directory is always
+    the directory that holds the frozen ``split_manifest_v1.json`` the caller
+    supplied, and the frozen ``source_integrity_v1.json`` must live in that
+    exact same directory. This removes the ability to reopen the holdout by
+    pointing an alternate output location at an otherwise-unopened manifest.
+    """
+    if manifest_path.name != MANIFEST_BASENAME:
+        raise ValueError(f"--split-manifest must be named {MANIFEST_BASENAME}")
+    if integrity_path.name != INTEGRITY_BASENAME:
+        raise ValueError(f"--source-integrity must be named {INTEGRITY_BASENAME}")
+    manifest_dir = manifest_path.resolve().parent
+    integrity_dir = integrity_path.resolve().parent
+    if integrity_dir != manifest_dir:
+        raise ValueError(
+            "source integrity artifact must live in the same canonical run directory "
+            "as the frozen split manifest"
+        )
+    return manifest_dir
+
+
+def checkpoint_path(canonical_dir: Path) -> Path:
+    return canonical_dir / ".final_holdout_c1_checkpoint_v1.json"
+
+
+def write_checkpoint(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    phase_start: datetime,
+    phase_end: datetime,
+    last_completed_asof: datetime | None,
+    asofs_completed: int,
+    row_count: int,
+    partial_bytes: int,
+    source_query_count: int,
+    source_rows_read: int,
+    terminal_state: str,
+    implementation_fingerprint_sha256: str = "",
+) -> None:
+    payload = {
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "venue": venue,
+        "candidate_id": CANDIDATE_ID,
+        "manifest_sha256": manifest_sha256,
+        "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "implementation_fingerprint_sha256": implementation_fingerprint_sha256,
+        "phase": PHASE,
+        "phase_start": json_default(phase_start),
+        "phase_end": json_default(phase_end),
+        "last_completed_asof": None if last_completed_asof is None else json_default(last_completed_asof),
+        "asofs_completed": asofs_completed,
+        "row_count": row_count,
+        "partial_bytes": partial_bytes,
+        "source_query_count": source_query_count,
+        "source_rows_read": source_rows_read,
+        "terminal_state": terminal_state,
+        "updated_ts_utc": json_default(datetime.now(UTC)),
+    }
+    write_json_atomic(path, payload)
+
+
+def load_checkpoint(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise ValueError("resume requested but checkpoint is missing")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("checkpoint must be a JSON object")
+    return raw
+
+
+def validate_resume_checkpoint(
+    checkpoint: dict[str, Any],
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    implementation_fingerprint_sha256: str | None = None,
+    allow_finalization_state: bool = False,
+) -> None:
+    if checkpoint.get("runner") != RUNNER_NAME or checkpoint.get("runner_version") != RUNNER_VERSION:
+        raise ValueError("checkpoint runner/version mismatch")
+    if checkpoint.get("venue") != venue:
+        raise ValueError("checkpoint venue mismatch")
+    if checkpoint.get("candidate_id") != CANDIDATE_ID:
+        raise ValueError("checkpoint candidate_id mismatch")
+    if checkpoint.get("phase") != PHASE:
+        raise ValueError("checkpoint phase mismatch")
+    if checkpoint.get("manifest_sha256") != manifest_sha256:
+        raise ValueError("checkpoint split manifest mismatch")
+    if checkpoint.get("source_integrity_composite_sha256") != source_integrity_composite_sha256:
+        raise ValueError("checkpoint source integrity mismatch")
+    if implementation_fingerprint_sha256 is not None:
+        if checkpoint.get("implementation_fingerprint_sha256") != implementation_fingerprint_sha256:
+            raise ValueError(
+                "checkpoint implementation fingerprint mismatch; the frozen C1 "
+                "candidate spec/replay implementation has drifted since this run "
+                "was opened; refuses to resume under changed code"
+            )
+    terminal_state = checkpoint.get("terminal_state")
+    allowed_states = RESUMABLE_TERMINAL_STATES + (FINALIZATION_STATES if allow_finalization_state else ())
+    if terminal_state not in allowed_states:
+        raise ValueError(
+            f"checkpoint terminal_state={terminal_state!r} is not resumable; "
+            "only RUNNING, INTERRUPTED, or authorized FINALIZING recovery may resume"
+        )
+    for key in ("asofs_completed", "row_count", "partial_bytes"):
+        if int(checkpoint.get(key, -1)) < 0:
+            raise ValueError(f"checkpoint {key} must be non-negative")
+
+
+def validate_resume_registry_entry(
+    registry_entry: dict[str, Any], *, identity: dict[str, str]
+) -> None:
+    """Require the authoritative registry to match the opened checkpoint."""
+    for field, expected in identity.items():
+        if registry_entry.get(field) != expected:
+            raise ValueError(f"authoritative registry {field} mismatch")
+
+
+def mark_checkpoint_terminal(path: Path, *, terminal_state: str) -> None:
+    checkpoint = load_checkpoint(path)
+    last_raw = checkpoint.get("last_completed_asof")
+    write_checkpoint(
+        path,
+        venue=str(checkpoint["venue"]),
+        manifest_sha256=str(checkpoint["manifest_sha256"]),
+        source_integrity_composite_sha256=str(checkpoint["source_integrity_composite_sha256"]),
+        phase_start=parse_ts(checkpoint["phase_start"]),
+        phase_end=parse_ts(checkpoint["phase_end"]),
+        last_completed_asof=None if last_raw is None else parse_ts(last_raw),
+        asofs_completed=int(checkpoint["asofs_completed"]),
+        row_count=int(checkpoint["row_count"]),
+        partial_bytes=int(checkpoint["partial_bytes"]),
+        source_query_count=int(checkpoint.get("source_query_count", 0)),
+        source_rows_read=int(checkpoint.get("source_rows_read", 0)),
+        terminal_state=terminal_state,
+        implementation_fingerprint_sha256=str(checkpoint.get("implementation_fingerprint_sha256", "")),
+    )
+
+
+def registry_key_for(
+    *,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    venue: str,
+    candidate_id: str,
+    phase: str,
+) -> str:
+    """Path-independent fingerprint: identical manifest+integrity content always
+    resolves to the same registry entry, regardless of which directory the
+    caller supplied them from."""
+    material = {
+        "manifest_sha256": manifest_sha256,
+        "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "venue": venue,
+        "candidate_id": candidate_id,
+        "phase": phase,
+    }
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def registry_entry_path(key: str) -> Path:
+    if REGISTRY_ROOT is None:
+        raise RuntimeError(
+            "authoritative registry root not yet resolved; "
+            "resolve_runtime_registry_root() must run (after approved "
+            "host/account authorization) before any registry path is used"
+        )
+    return REGISTRY_ROOT / f"{key}.json"
+
+
+def load_registry_entry(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("registry entry must be a JSON object")
+    return raw
+
+
+def _registry_payload(
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
+) -> dict[str, object]:
+    return {
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "venue": venue,
+        "candidate_id": CANDIDATE_ID,
+        "phase": PHASE,
+        "manifest_sha256": manifest_sha256,
+        "source_integrity_composite_sha256": source_integrity_composite_sha256,
+        "implementation_fingerprint_sha256": implementation_fingerprint_sha256,
+        "terminal_state": terminal_state,
+        # Informational only. The registry key above -- not this field -- is
+        # what makes reopening from a copied directory impossible.
+        "opened_run_dir": opened_run_dir,
+        "updated_ts_utc": json_default(datetime.now(UTC)),
+    }
+
+
+def write_registry_entry(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
+) -> None:
+    """Create-or-overwrite. Only safe for transitions on an entry this process
+    already knows it owns (terminal-state updates); never used for the initial
+    fresh-run open, which must use ``create_registry_entry_exclusive`` instead."""
+    write_json_atomic(
+        path,
+        _registry_payload(
+            venue=venue,
+            manifest_sha256=manifest_sha256,
+            source_integrity_composite_sha256=source_integrity_composite_sha256,
+            terminal_state=terminal_state,
+            opened_run_dir=opened_run_dir,
+            implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+        ),
+    )
+
+
+def create_registry_entry_exclusive(
+    path: Path,
+    *,
+    venue: str,
+    manifest_sha256: str,
+    source_integrity_composite_sha256: str,
+    terminal_state: str,
+    opened_run_dir: str,
+    implementation_fingerprint_sha256: str = "",
+) -> bool:
+    """Atomic exclusive-create: write a temp file, fsync it durable, then link it
+    into place. ``os.link`` either creates the target or raises ``FileExistsError``
+    atomically at the filesystem level -- there is no check-then-create window, so
+    two concurrent callers racing on the same fingerprint can never both "win".
+
+    Returns True if this call created the entry, False if another entry (from any
+    concurrent or prior caller) already occupies this exact fingerprint -- in which
+    case nothing is written or mutated here at all.
+    """
+    payload = _registry_payload(
+        venue=venue,
+        manifest_sha256=manifest_sha256,
+        source_integrity_composite_sha256=source_integrity_composite_sha256,
+        terminal_state=terminal_state,
+        opened_run_dir=opened_run_dir,
+        implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path = Path(temp_name)
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def run_lease_path(registry_key: str) -> Path:
+    """Deterministic, path-independent lease location derived purely from the
+    same authoritative registry key -- never caller-selectable, never derived
+    from --split-manifest/--source-integrity paths.
+
+    This is ONE authoritative exclusive run lease shared by both fresh and
+    resumed execution of the same opened holdout fingerprint. A fresh runner
+    acquires it immediately after winning authoritative registry creation and
+    holds it continuously through replay/checkpoint/finalization; a resume
+    must acquire the SAME lease before it may reconcile or replay anything.
+    This is what prevents a fresh runner and a concurrent --resume of the
+    checkpoint it just created from ever running at the same time.
+    """
+    if REGISTRY_ROOT is None:
+        raise RuntimeError(
+            "authoritative registry root not yet resolved; "
+            "resolve_runtime_registry_root() must run (after approved "
+            "host/account authorization) before any lease path is used"
+        )
+    return REGISTRY_ROOT / f"{registry_key}.run_lease.json"
+
+
+def acquire_run_lease_exclusive(path: Path, *, registry_key: str) -> bool:
+    """Atomic exclusive-create, identical primitive to registry creation: write a
+    temp file, fsync it durable, then ``os.link`` it into place. At most one
+    concurrent execution (fresh or resumed) of the same opened holdout can ever
+    hold the lease.
+
+    Deliberately has NO automatic staleness/timeout recovery: a lease left behind
+    by a hard-killed process (SIGKILL, not caught by our SIGINT/SIGTERM handling)
+    stays forever and permanently denies further fresh/--resume execution until a
+    human clears it. An unsafe automatic timeout could let two live executions run
+    concurrently, which is exactly the bug this lease exists to prevent.
+    """
+    payload = {
+        "registry_key": registry_key,
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "acquired_ts_utc": json_default(datetime.now(UTC)),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path = Path(temp_name)
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        if temp_name is not None:
+            try:
+                Path(temp_name).unlink()
+            except FileNotFoundError:
+                pass
+
+
+def release_run_lease(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def mark_registry_terminal(path: Path, *, terminal_state: str, identity: dict[str, str]) -> None:
+    """Create-or-update the registry entry into a terminal state.
+
+    Falls back to the caller-supplied identity fields when the entry does not
+    exist yet (e.g. it vanished independently of the local checkpoint), so a
+    FAILED/INTERRUPTED transition always leaves the fingerprint permanently
+    locked rather than silently no-op'ing.
+    """
+    existing = load_registry_entry(path)
+    opened_run_dir = str(existing.get("opened_run_dir", "")) if existing else identity.get("opened_run_dir", "")
+    implementation_fingerprint_sha256 = (
+        str(existing.get("implementation_fingerprint_sha256", ""))
+        if existing
+        else identity.get("implementation_fingerprint_sha256", "")
+    )
+    write_registry_entry(
+        path,
+        venue=identity["venue"],
+        manifest_sha256=identity["manifest_sha256"],
+        source_integrity_composite_sha256=identity["source_integrity_composite_sha256"],
+        terminal_state=terminal_state,
+        opened_run_dir=opened_run_dir,
+        implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+    )
+
+
+def install_interrupt_handlers() -> dict[int, Any]:
+    def handle_interrupt(signum: int, _frame: Any) -> None:
+        raise RunnerInterrupted(signum)
+
+    previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    for signum in previous:
+        signal.signal(signum, handle_interrupt)
+    return previous
+
+
+def build_final_holdout_summary(
+    *, venue: str, manifest_sha: str, composite_sha: str, implementation_fingerprint: str,
+    phase_start: datetime, phase_end: datetime, asofs_completed: int, row_count: int,
+    source_query_count: int, source_rows_read: int,
+) -> dict[str, Any]:
+    return {
+        "runner": RUNNER_NAME, "runner_version": RUNNER_VERSION, "phase": PHASE,
+        "candidate_id": CANDIDATE_ID, "venue": venue, "manifest_sha256": manifest_sha,
+        "source_integrity_composite_sha256": composite_sha,
+        "implementation_fingerprint_sha256": implementation_fingerprint,
+        "phase_start": phase_start.isoformat().replace("+00:00", "Z"),
+        "phase_end_exclusive": phase_end.isoformat().replace("+00:00", "Z"),
+        "asof_count": asofs_completed, "row_count": row_count,
+        "source_query_count": source_query_count, "source_rows_read": source_rows_read,
+        "final_holdout_access": "OPENED_FOR_PREREGISTERED_C1_ONLY",
+        "c2_access": "DENY", "c3_access": "DENY", "database_writes": 0,
+        "live_orders": 0, "resume_supported": True,
+    }
+
+
+def finalize_c1_holdout_bundle(
+    *,
+    partial_path: Path,
+    artifact_path: Path,
+    summary_path: Path,
+    summary: dict[str, Any],
+    cp_path: Path,
+    registry_path: Path,
+    registry_identity: dict[str, str],
+    run_lease_held_path: Path | None,
+    venue: str,
+    manifest_sha: str,
+    composite_sha: str,
+    phase_start: datetime,
+    phase_end: datetime,
+    last_completed_asof: datetime | None,
+    asofs_completed: int,
+    row_count: int,
+    source_query_count: int,
+    source_rows_read: int,
+    implementation_fingerprint_sha256: str = "",
+) -> tuple[int, int | None]:
+    """Forward-only, signal-safe finalization after holdout replay.
+
+    ``FINALIZING`` is durably recorded in checkpoint and registry before the
+    rows rename. A pre-rename ordinary failure still follows FAILED handling;
+    an ordinary failure after publication leaves FINALIZING for a lease-bound
+    resume that writes only missing finalization state and never replays rows.
+    """
+    deferred_signum: int | None = None
+
+    def record_real_signal(signum: int, _frame: Any) -> None:
+        nonlocal deferred_signum
+        if deferred_signum is None:
+            deferred_signum = signum
+
+    on_main_thread = threading.current_thread() is threading.main_thread()
+    previous_handlers: dict[int, Any] = {}
+    if on_main_thread:
+        previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        for sig in previous_handlers:
+            signal.signal(sig, record_real_signal)
+    try:
+        if not artifact_path.exists():
+            try:
+                write_checkpoint(
+                    cp_path, venue=venue, manifest_sha256=manifest_sha,
+                    source_integrity_composite_sha256=composite_sha, phase_start=phase_start,
+                    phase_end=phase_end, last_completed_asof=last_completed_asof,
+                    asofs_completed=asofs_completed, row_count=row_count,
+                    partial_bytes=int(partial_path.stat().st_size), source_query_count=source_query_count,
+                    source_rows_read=source_rows_read, terminal_state="FINALIZING",
+                    implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+                )
+            except RunnerInterrupted as exc:
+                deferred_signum = exc.signum
+            try:
+                mark_registry_terminal(registry_path, terminal_state="FINALIZING", identity=registry_identity)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+            try:
+                partial_path.replace(artifact_path)
+            except RunnerInterrupted as exc:
+                if not artifact_path.exists():
+                    raise
+                deferred_signum = exc.signum
+        final_bytes = artifact_path.stat().st_size
+
+        if not summary_path.exists():
+            try:
+                write_json_atomic(summary_path, summary)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+
+        # Release before terminal transitions: a release failure leaves both
+        # durable state records FINALIZING, so a subsequent authorized resume
+        # can finish safely without replay. No stale-lease recovery is added.
+        if run_lease_held_path is not None:
+            try:
+                release_run_lease(run_lease_held_path)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+
+        try:
+            write_checkpoint(
+                cp_path, venue=venue, manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha, phase_start=phase_start,
+                phase_end=phase_end, last_completed_asof=last_completed_asof,
+                asofs_completed=asofs_completed, row_count=row_count, partial_bytes=final_bytes,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+                terminal_state="FINISHED", implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+            )
+        except RunnerInterrupted as exc:
+            if deferred_signum is None:
+                deferred_signum = exc.signum
+
+        try:
+            mark_registry_terminal(registry_path, terminal_state="FINISHED", identity=registry_identity)
+        except RunnerInterrupted as exc:
+            if deferred_signum is None:
+                deferred_signum = exc.signum
+    finally:
+        if on_main_thread:
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+
+    return final_bytes, deferred_signum
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    load_dotenv(dotenv_path=".env", override=False)
+    started = time.perf_counter()
+    previous_handlers = install_interrupt_handlers()
+    emit(
+        f"STARTED runner={RUNNER_NAME} version={RUNNER_VERSION} phase={PHASE} candidate={CANDIDATE_ID} "
+        f"workers=1 resume={int(bool(args.resume))} final_holdout_access=GATED"
+    )
+    emit(
+        "SAFETY research_only=1 market_only=1 database_reads=1 database_writes=0 account_awareness=0 "
+        "decision_gate=none execution_planner=none executor=none broker_private_calls=0 broker_writes=0 "
+        "order_submission=0 live_orders=0"
+    )
+
+    conn = None
+    partial_path: Path | None = None
+    artifact_path: Path | None = None
+    cp_path: Path | None = None
+    registry_path: Path | None = None
+    registry_identity: dict[str, str] | None = None
+    run_lease_held_path: Path | None = None
+    opened = False
+    last_completed_asof: datetime | None = None
+    asofs_completed = 0
+    row_count = 0
+    source_query_count = 0
+    source_rows_read = 0
+    implementation_fingerprint = ""
+    approved_source_integrity_composite_sha = ""
+    try:
+        enforce_approved_execution_host()
+        emit(
+            f"HOST_APPROVED host={current_trusted_hostname()} "
+            f"approved_host={APPROVED_EXECUTION_HOST}"
+        )
+        enforce_approved_execution_account()
+        emit(
+            f"ACCOUNT_APPROVED account={current_trusted_execution_account()} "
+            f"approved_account={APPROVED_EXECUTION_ACCOUNT}"
+        )
+        # Only resolved now, after both authorization checks pass -- see
+        # ``resolve_runtime_registry_root`` and the module-level
+        # ``REGISTRY_ROOT`` comment for why this must never happen at import
+        # time or before host/account authorization.
+        resolve_runtime_registry_root()
+        manifest_path = Path(args.split_manifest)
+        integrity_path = Path(args.source_integrity)
+        canonical_dir = canonical_run_dir(manifest_path, integrity_path)
+        artifact_path = canonical_dir / "final_holdout_c1_rows_v1.jsonl"
+        partial_path = canonical_dir / ".final_holdout_c1_rows_v1.jsonl.partial"
+        summary_path = canonical_dir / "final_holdout_c1_summary_v1.json"
+        cp_path = checkpoint_path(canonical_dir)
+
+        manifest = load_manifest(manifest_path, venue=args.venue)
+        manifest_approval_error: ValueError | None = None
+        try:
+            # This is the first final-holdout content gate: it must finish
+            # before DB access, source-integrity work, registry creation,
+            # checkpoint/partial creation, or replay.
+            manifest_sha = verify_approved_split_manifest(manifest)
+        except ValueError as exc:
+            if not args.resume:
+                raise
+            # An already-opened run must be failed rather than left resumable
+            # when its caller-supplied manifest drifts. Continue only far
+            # enough to locate its checkpoint-owned registry and acquire the
+            # existing lease; no DB or replay work is allowed on this path.
+            manifest_sha = manifest_fingerprint(manifest)
+            manifest_approval_error = exc
+        else:
+            split = manifest["splits"][PHASE]
+            phase_start = parse_ts(split["start"])
+            phase_end = parse_ts(split["end"])
+
+        source_integrity_approval_error: ValueError | None = None
+        emit("PHASE_STARTED name=verify_approved_frozen_source_integrity_identity")
+        source_identity_gate_started = time.perf_counter()
+        try:
+            approved_source_integrity_composite_sha = verify_approved_source_integrity_artifact(integrity_path)
+        except ValueError as exc:
+            if not args.resume:
+                raise
+            source_integrity_approval_error = exc
+        else:
+            emit(
+                "PHASE_FINISHED name=verify_approved_frozen_source_integrity_identity state=VERIFIED "
+                f"composite_sha256={approved_source_integrity_composite_sha} "
+                f"elapsed_s={time.perf_counter() - source_identity_gate_started:.3f}"
+            )
+
+        c1_spec = select_c1_spec()
+        implementation_fingerprint_error: ValueError | None = None
+        if manifest_approval_error is None:
+            emit("PHASE_STARTED name=verify_frozen_c1_implementation_fingerprint")
+            fingerprint_gate_started = time.perf_counter()
+            try:
+                implementation_fingerprint = verify_c1_implementation_fingerprint(c1_spec)
+            except ValueError as exc:
+                if not args.resume:
+                    raise
+                implementation_fingerprint_error = exc
+            else:
+                emit(
+                    "PHASE_FINISHED name=verify_frozen_c1_implementation_fingerprint state=VERIFIED "
+                    f"implementation_fingerprint_sha256={implementation_fingerprint} "
+                    f"elapsed_s={time.perf_counter() - fingerprint_gate_started:.3f}"
+                )
+
+        checkpoint: dict[str, Any] | None = None
+        finalization_recovery = False
+        if args.resume:
+            if not cp_path.exists():
+                raise ValueError("resume requested but the canonical checkpoint is missing")
+            checkpoint = load_checkpoint(cp_path)
+            checkpoint_state = checkpoint.get("terminal_state")
+            if checkpoint_state in RESUMABLE_TERMINAL_STATES:
+                if not partial_path.exists():
+                    raise ValueError("resume requested but the canonical partial artifact is missing")
+            elif checkpoint_state not in FINALIZATION_STATES or not artifact_path.exists() or partial_path.exists():
+                raise ValueError(
+                    f"checkpoint terminal_state={checkpoint_state!r} is not resumable; "
+                    "FINALIZING recovery requires a published rows artifact and no partial artifact"
+                )
+            # The locking key is derived from the checkpoint's OWN recorded identity
+            # (not yet-recomputed values), so we can locate -- and if needed fail --
+            # the authoritative registry entry even if the DB/integrity step below
+            # never succeeds. From this point on the run is "opened": any ordinary
+            # failure must permanently lock this fingerprint as FAILED, not leave it
+            # silently resumable.
+            registry_identity = {
+                "venue": args.venue,
+                "candidate_id": CANDIDATE_ID,
+                "phase": PHASE,
+                "manifest_sha256": str(checkpoint["manifest_sha256"]),
+                "source_integrity_composite_sha256": str(checkpoint["source_integrity_composite_sha256"]),
+                "implementation_fingerprint_sha256": str(checkpoint.get("implementation_fingerprint_sha256", "")),
+            }
+            registry_key = registry_key_for(
+                manifest_sha256=registry_identity["manifest_sha256"],
+                source_integrity_composite_sha256=registry_identity["source_integrity_composite_sha256"],
+                venue=args.venue,
+                candidate_id=CANDIDATE_ID,
+                phase=PHASE,
+            )
+            registry_path = registry_entry_path(registry_key)
+            registry_entry = load_registry_entry(registry_path)
+            if registry_entry is None:
+                raise ValueError("authoritative opened-state registry entry is missing; refuses to resume")
+            registry_state = registry_entry.get("terminal_state")
+            finalization_recovery = (
+                artifact_path.exists()
+                and not partial_path.exists()
+                and checkpoint.get("terminal_state") in FINALIZATION_STATES
+                and registry_state in FINALIZATION_STATES
+                and "FINALIZING" in (checkpoint.get("terminal_state"), registry_state)
+            )
+            if not finalization_recovery and registry_state not in RESUMABLE_TERMINAL_STATES:
+                raise ValueError(
+                    "authoritative opened-state registry entry is not resumable; refuses to resume"
+                )
+            validate_resume_registry_entry(registry_entry, identity=registry_identity)
+
+            # Exclusive per-registry-entry run lease: at most one concurrent
+            # execution (fresh OR resumed) of the same opened holdout may proceed.
+            # This is the SAME lease a fresh runner acquires right after it wins
+            # authoritative registry creation, so a resume that sees a RUNNING
+            # registry/checkpoint while the fresh runner that created them is
+            # still active must fail closed right here -- before any partial
+            # reconciliation or replay. This is a single atomic exclusive-create
+            # (same primitive as registry creation), not a check-then-create
+            # sequence, so a second concurrent resume (or a resume racing the
+            # still-active fresh runner) can never slip through. It must be
+            # acquired BEFORE any partial reconciliation, BEFORE the
+            # checkpoint/registry are ever mutated by this process, and BEFORE
+            # "opened" is set -- a lost race leaves nothing behind to clean up
+            # and must not mark the checkpoint or registry FAILED.
+            lease_path = run_lease_path(registry_key)
+            if not acquire_run_lease_exclusive(lease_path, registry_key=registry_key):
+                raise ValueError(
+                    "the run lease for this opened holdout is already held by another "
+                    "execution (fresh or resumed); refuses to run concurrently"
+                )
+            run_lease_held_path = lease_path
+            opened = True
+            if manifest_approval_error is not None:
+                raise manifest_approval_error
+            if source_integrity_approval_error is not None:
+                raise source_integrity_approval_error
+            if implementation_fingerprint_error is not None:
+                raise implementation_fingerprint_error
+        else:
+            if artifact_path.exists() or summary_path.exists() or cp_path.exists() or partial_path.exists():
+                raise ValueError(
+                    "final holdout output already exists in the canonical run directory; "
+                    "runner is one-shot and refuses to reopen or overwrite it. Use --resume "
+                    "to continue an interrupted RUNNING checkpoint."
+                )
+
+        try:
+            conn = get_db_connection()
+        except Exception as exc:
+            # Sanitized re-raise only: the underlying DB-connect exception is
+            # never interpolated into any emit()/print() log line. pymysql
+            # connection-argument construction touches a local variable named
+            # ``password`` (see src/common/db_core_v1.py::get_connection), so
+            # a raw connection-failure exception is treated as carrying
+            # sensitive data and must never reach clear-text logging -- only
+            # the exception class name (never its message/args) is logged.
+            raise RuntimeError(f"database connection failed: {exc.__class__.__name__}") from exc
+
+        # Hard gate: recompute and verify frozen source content before any holdout
+        # candidate replay or forward-label construction is allowed. This must
+        # happen on both a fresh run and a resumed run.
+        emit("PHASE_STARTED name=verify_frozen_source_integrity")
+        gate_started = time.perf_counter()
+        current_integrity = build_integrity_payload(
+            conn,
+            venue=args.venue,
+            split_manifest=manifest,
+        )
+        verify_existing(integrity_path, current_integrity)
+        if current_integrity.get("composite_sha256") != approved_source_integrity_composite_sha:
+            raise ValueError("current source integrity does not match approved frozen source identity")
+        composite_sha = approved_source_integrity_composite_sha
+        emit(
+            "PHASE_FINISHED name=verify_frozen_source_integrity state=VERIFIED "
+            f"composite_sha256={composite_sha} "
+            f"elapsed_s={time.perf_counter() - gate_started:.3f}"
+        )
+
+        if args.resume and finalization_recovery:
+            assert checkpoint is not None and registry_path is not None and registry_identity is not None
+            validate_resume_checkpoint(
+                checkpoint, venue=args.venue, manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                implementation_fingerprint_sha256=implementation_fingerprint,
+                allow_finalization_state=True,
+            )
+            last_raw = checkpoint.get("last_completed_asof")
+            last_completed_asof = None if last_raw is None else parse_ts(last_raw)
+            asofs_completed = int(checkpoint["asofs_completed"])
+            row_count = int(checkpoint["row_count"])
+            source_query_count = int(checkpoint.get("source_query_count", 0))
+            source_rows_read = int(checkpoint.get("source_rows_read", 0))
+            summary = build_final_holdout_summary(
+                venue=args.venue, manifest_sha=manifest_sha, composite_sha=composite_sha,
+                implementation_fingerprint=implementation_fingerprint, phase_start=phase_start,
+                phase_end=phase_end, asofs_completed=asofs_completed, row_count=row_count,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+            )
+            final_bytes, deferred_signum = finalize_c1_holdout_bundle(
+                partial_path=partial_path, artifact_path=artifact_path, summary_path=summary_path, summary=summary,
+                cp_path=cp_path, registry_path=registry_path, registry_identity=registry_identity,
+                run_lease_held_path=run_lease_held_path, venue=args.venue, manifest_sha=manifest_sha,
+                composite_sha=composite_sha, phase_start=phase_start, phase_end=phase_end,
+                last_completed_asof=last_completed_asof, asofs_completed=asofs_completed, row_count=row_count,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+                implementation_fingerprint_sha256=implementation_fingerprint,
+            )
+            partial_path = None
+            emit(
+                f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
+                f"rows={row_count} finalization_recovery=1 final_bytes={final_bytes} "
+                f"database_writes=0 live_orders=0 elapsed_s={time.perf_counter() - started:.3f}"
+            )
+            return 0
+
+        source_span = manifest["source_span"]
+        coverage = fetch_asset_coverage(conn, venue=args.venue, through_ts=parse_ts(source_span["end"]))
+        pit_index = fetch_rotation_v1_points(conn, venue=args.venue, through_ts=phase_end)
+        spec_by_id = {CANDIDATE_ID: c1_spec}
+        full_grid = asof_grid(phase_start, phase_end)
+
+        if args.resume:
+            assert checkpoint is not None
+            validate_resume_checkpoint(
+                checkpoint,
+                venue=args.venue,
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                implementation_fingerprint_sha256=implementation_fingerprint,
+            )
+            reconcile_partial_to_checkpoint(partial_path, checkpoint)
+            last_raw = checkpoint.get("last_completed_asof")
+            last_completed_asof = None if last_raw is None else parse_ts(last_raw)
+            asofs_completed = int(checkpoint["asofs_completed"])
+            row_count = int(checkpoint["row_count"])
+            source_query_count = int(checkpoint.get("source_query_count", 0))
+            source_rows_read = int(checkpoint.get("source_rows_read", 0))
+            if last_completed_asof is not None:
+                if last_completed_asof not in full_grid:
+                    raise ValueError("checkpoint last_completed_asof is outside frozen final-holdout grid")
+                expected_completed = full_grid.index(last_completed_asof) + 1
+                if asofs_completed != expected_completed:
+                    raise ValueError(
+                        f"checkpoint asofs_completed mismatch: actual={asofs_completed} "
+                        f"expected={expected_completed}"
+                    )
+            elif asofs_completed != 0:
+                raise ValueError("checkpoint has completed as-of count without last_completed_asof")
+            emit(
+                f"RESUME checkpoint={cp_path} last_completed_asof={last_completed_asof} "
+                f"asofs_completed={asofs_completed} rows={row_count} partial_bytes={checkpoint['partial_bytes']}"
+            )
+        else:
+            # Authoritative fingerprint-keyed gate: identical manifest + source
+            # integrity content resolves to the same registry entry no matter what
+            # directory the caller supplied it from, so a byte-identical copy in a
+            # second directory cannot open a second checkpoint namespace.
+            registry_identity = {
+                "venue": args.venue,
+                "candidate_id": CANDIDATE_ID,
+                "phase": PHASE,
+                "manifest_sha256": manifest_sha,
+                "source_integrity_composite_sha256": composite_sha,
+                "implementation_fingerprint_sha256": implementation_fingerprint,
+            }
+            registry_key = registry_key_for(
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                venue=args.venue,
+                candidate_id=CANDIDATE_ID,
+                phase=PHASE,
+            )
+            registry_path = registry_entry_path(registry_key)
+
+            # Freeze the one-shot holdout-open state -- registry first (authoritative),
+            # then the local checkpoint -- immediately after integrity verification
+            # succeeds and immediately before the first holdout replay. This is a
+            # single atomic exclusive-create, not a check-then-write sequence: two
+            # concurrent fresh runners racing on the same fingerprint (e.g. a copied
+            # manifest/integrity pair) can never both win. The loser gets False back
+            # and creates or mutates nothing -- no local checkpoint, no replay.
+            won_registry_creation = create_registry_entry_exclusive(
+                registry_path,
+                venue=args.venue,
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                terminal_state="RUNNING",
+                opened_run_dir=str(canonical_dir),
+                implementation_fingerprint_sha256=implementation_fingerprint,
+            )
+            if not won_registry_creation:
+                raise ValueError(
+                    "final holdout is already opened for this frozen manifest/source-integrity "
+                    "fingerprint (registry entry exists); runner is one-shot and refuses to reopen "
+                    "it, including from a different directory holding a copy of the same manifest "
+                    "and integrity artifact, and including a concurrent fresh invocation racing on "
+                    "the same fingerprint"
+                )
+
+            # From here the run is "opened": any ordinary failure must permanently
+            # lock this fingerprint as FAILED. A lost race above never reaches here.
+            opened = True
+
+            # Acquire the SAME run lease a --resume would need, immediately after
+            # winning registry creation and BEFORE the local RUNNING checkpoint is
+            # ever created. This closes the concurrency window a --resume could
+            # otherwise exploit: --resume requires both the local checkpoint AND
+            # partial file to exist (checked above), so while this fresh runner
+            # holds the registry entry but has not yet written the local
+            # checkpoint, no --resume can find anything to resume. Once the local
+            # checkpoint exists, the lease is already held, so a concurrent
+            # --resume's own lease-acquire attempt fails closed before it ever
+            # reconciles or replays.
+            lease_path = run_lease_path(registry_key)
+            if not acquire_run_lease_exclusive(lease_path, registry_key=registry_key):
+                raise ValueError(
+                    "the run lease for this opened holdout fingerprint is already held by "
+                    "another execution; refuses to start a fresh run concurrently"
+                )
+            run_lease_held_path = lease_path
+
+            partial_path.touch(exist_ok=False)
+            write_checkpoint(
+                cp_path,
+                venue=args.venue,
+                manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                phase_start=phase_start,
+                phase_end=phase_end,
+                last_completed_asof=None,
+                asofs_completed=0,
+                row_count=0,
+                partial_bytes=0,
+                source_query_count=0,
+                source_rows_read=0,
+                terminal_state="RUNNING",
+                implementation_fingerprint_sha256=implementation_fingerprint,
+            )
+            emit(
+                f"OPENED registry={registry_path} checkpoint={cp_path} state=RUNNING "
+                f"composite_sha256={composite_sha}"
+            )
+
+        remaining_grid = [
+            asof for asof in full_grid
+            if last_completed_asof is None or asof > last_completed_asof
+        ]
+
+        emit("PHASE_STARTED name=build_final_holdout_c1_artifact")
+        build_started = time.perf_counter()
+        with partial_path.open("ab") as handle:
+            for chunk in chunk_asof_grid_by_utc_day(remaining_grid):
+                chunk_candles, close_maps, fetched = fetch_candles_for_chunk(
+                    conn,
+                    venue=args.venue,
+                    chunk_asofs=chunk,
+                    phase_end=phase_end,
+                )
+                source_query_count += 1
+                source_rows_read += fetched
+                for asof in chunk:
+                    observed_ids = observed_asset_ids_at_asof(coverage, asof_ts=asof)
+                    replay_candles = replay_candles_at_asof(
+                        chunk_candles=chunk_candles,
+                        observed_asset_ids=observed_ids,
+                        asof_ts=asof,
+                    )
+                    results = evaluate_candidate(
+                        candles_by_asset=replay_candles,
+                        asof_ts=asof,
+                        spec=c1_spec,
+                        venue=args.venue,
+                    )
+                    for result in results:
+                        if result.candidate_id != CANDIDATE_ID:
+                            raise ValueError("non-C1 result escaped C1-only holdout gate")
+                        row = build_validation_row(
+                            result=result,
+                            close_by_ts=close_maps.get(result.asset_id, {}),
+                            spec_by_id=spec_by_id,
+                            pit_index=pit_index,
+                            phase_end=phase_end,
+                        )
+                        write_row(handle, row)
+                        row_count += 1
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    asofs_completed += 1
+                    last_completed_asof = asof
+                    partial_bytes = handle.tell()
+                    write_checkpoint(
+                        cp_path,
+                        venue=args.venue,
+                        manifest_sha256=manifest_sha,
+                        source_integrity_composite_sha256=composite_sha,
+                        phase_start=phase_start,
+                        phase_end=phase_end,
+                        last_completed_asof=last_completed_asof,
+                        asofs_completed=asofs_completed,
+                        row_count=row_count,
+                        partial_bytes=partial_bytes,
+                        source_query_count=source_query_count,
+                        source_rows_read=source_rows_read,
+                        terminal_state="RUNNING",
+                        implementation_fingerprint_sha256=implementation_fingerprint,
+                    )
+                    if asofs_completed % 96 == 0:
+                        emit(
+                            f"HEARTBEAT phase={PHASE} candidate={CANDIDATE_ID} asofs_completed={asofs_completed} "
+                            f"rows_built={row_count} observed_assets={len(observed_ids)} "
+                            f"source_queries={source_query_count} source_rows_read={source_rows_read}"
+                        )
+
+        if asofs_completed != len(full_grid):
+            raise ValueError(f"as-of completion mismatch: {asofs_completed} != {len(full_grid)}")
+
+        summary = build_final_holdout_summary(
+            venue=args.venue, manifest_sha=manifest_sha, composite_sha=composite_sha,
+            implementation_fingerprint=implementation_fingerprint, phase_start=phase_start,
+            phase_end=phase_end, asofs_completed=asofs_completed, row_count=row_count,
+            source_query_count=source_query_count, source_rows_read=source_rows_read,
+        )
+
+        assert registry_path is not None and registry_identity is not None
+        final_bytes, deferred_signum = finalize_c1_holdout_bundle(
+            partial_path=partial_path,
+            artifact_path=artifact_path,
+            summary_path=summary_path,
+            summary=summary,
+            cp_path=cp_path,
+            registry_path=registry_path,
+            registry_identity=registry_identity,
+            run_lease_held_path=run_lease_held_path,
+            venue=args.venue,
+            manifest_sha=manifest_sha,
+            composite_sha=composite_sha,
+            phase_start=phase_start,
+            phase_end=phase_end,
+            last_completed_asof=last_completed_asof,
+            asofs_completed=asofs_completed,
+            row_count=row_count,
+            source_query_count=source_query_count,
+            source_rows_read=source_rows_read,
+            implementation_fingerprint_sha256=implementation_fingerprint,
+        )
+        partial_path = None
+        emit(
+            f"PHASE_FINISHED name=build_final_holdout_c1_artifact rows={row_count} asofs={asofs_completed} "
+            f"final_bytes={final_bytes} elapsed_s={time.perf_counter() - build_started:.3f}"
+        )
+        if deferred_signum is not None:
+            # A SIGINT/SIGTERM (or, in tests, a directly-injected RunnerInterrupted)
+            # arrived after the point of no return during finalization. The
+            # terminal state is already durably FINISHED -- both final files are
+            # published and the checkpoint/registry/lease are all committed --
+            # so this reports FINISHED, not INTERRUPTED, and does not re-open or
+            # touch that already-committed state.
+            emit(
+                f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
+                f"rows={row_count} c2_access=DENY c3_access=DENY database_writes=0 live_orders=0 "
+                f"deferred_signal={signal.Signals(deferred_signum).name} "
+                f"elapsed_s={time.perf_counter() - started:.3f}"
+            )
+            return 0
+        emit(
+            f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
+            f"rows={row_count} c2_access=DENY c3_access=DENY database_writes=0 live_orders=0 "
+            f"elapsed_s={time.perf_counter() - started:.3f}"
+        )
+        return 0
+    except RunnerInterrupted as exc:
+        # finalize_c1_holdout_bundle only re-raises RunnerInterrupted when the
+        # artifact rename never actually completed (i.e. nothing has been
+        # published yet); once that rename succeeds, every remaining commit
+        # step is deferred/absorbed internally and this handler is never
+        # reached. So a RunnerInterrupted seen here always means: no final
+        # artifact was ever published, and marking checkpoint/registry
+        # INTERRUPTED here can never race a published FINISHED bundle.
+        if opened:
+            if cp_path is not None and partial_path is not None and partial_path.exists() and cp_path.exists():
+                try:
+                    mark_checkpoint_terminal(cp_path, terminal_state="INTERRUPTED")
+                except Exception:
+                    pass
+            if registry_path is not None and registry_identity is not None:
+                try:
+                    mark_registry_terminal(registry_path, terminal_state="INTERRUPTED", identity=registry_identity)
+                except Exception:
+                    pass
+            if run_lease_held_path is not None:
+                release_run_lease(run_lease_held_path)
+        emit(
+            f"INTERRUPTED runner={RUNNER_NAME} signal={signal.Signals(exc.signum).name} "
+            f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
+            f"final_holdout_access=GATED database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+        )
+        return 128 + exc.signum
+    except Exception as exc:
+        # Pre-publication ordinary failures remain permanently FAILED. Once rows
+        # are published, FINALIZING is preserved for lease-bound recovery only.
+        # A failure before opening creates no opened state.
+        published_final_artifact = artifact_path is not None and artifact_path.exists()
+        if opened and not published_final_artifact:
+            if cp_path is not None and cp_path.exists():
+                try:
+                    mark_checkpoint_terminal(cp_path, terminal_state="FAILED")
+                except Exception:
+                    pass
+            if registry_path is not None and registry_identity is not None:
+                try:
+                    mark_registry_terminal(registry_path, terminal_state="FAILED", identity=registry_identity)
+                except Exception:
+                    pass
+            if run_lease_held_path is not None:
+                release_run_lease(run_lease_held_path)
+        elif opened and published_final_artifact and run_lease_held_path is not None:
+            # Preserve FINALIZING and allow only a future lease-bound recovery.
+            try:
+                release_run_lease(run_lease_held_path)
+            except Exception:
+                pass
+        emit(
+            f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
+            f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
+            f"final_holdout_access=GATED database_writes=0 elapsed_s={time.perf_counter() - started:.3f}"
+        )
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -96,6 +96,9 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT, UPDATE
     ON `synth`.`native_short_materializer_run_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_admin_operation_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT
     ON `synth`.`native_short_scope_cadence_config_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';

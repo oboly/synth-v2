@@ -82,6 +82,15 @@ deploy/systemd/synth-chain-4h.service
       -> src.operations.verify_writer_capability_authorization_v1
          (SQL=none)
       -> src.market_data.run_native_short_scope_status_chain_v1
+         -> src.market_data.native_short_auto_onboarding_v1.reconcile_ready_scopes
+            (AUTO_ONBOARD_SCOPES phase; runs unconditionally whenever the
+             entrypoint is called with no explicit symbols -- the scheduled
+             production path always omits symbols -- before the writer commit
+             fence and materializer transaction; see "Native SHORT Scope
+             Administration Ledger Gap" below)
+            -> src.market_data.native_short_multi_asset_audit_v1.run_audit
+            -> src.market_data.native_short_scope_administration_transaction_v1
+               .execute_scope_administration
          -> src.market_data.native_short_writer_commit_fence_v1
          -> src.market_data.native_short_scope_status_materializer_v1
             -> src.market_data.native_short_map_materializer_v1
@@ -203,6 +212,9 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | price freshness | `SELECT` latest rows from `market_price_snapshot` | `src/operations/persisted_market_price_freshness_v1.py:45-62` |
 | candle freshness | `START TRANSACTION READ ONLY` | `src/operations/run_persisted_market_candle_freshness_v1.py:76` |
 | candle freshness | `SELECT` latest close from `obs_market_candle` | `src/operations/persisted_market_candle_freshness_v1.py:36-55` |
+| scope admin idempotency read | `SELECT` from `native_short_scope_admin_operation_v1` (unconditional; `read_existing_operation` plus the operations projection in `read_scope_state_snapshot`) | `src/market_data/native_short_scope_administration_transaction_v1.py:680-711,751-772` via `src/market_data/native_short_auto_onboarding_v1.py:36-93` |
+| scope admin promote-operation audit read | `SELECT` from `native_short_scope_admin_operation_v1` (`PROMOTE_SCOPE` rows, reachable from every `run_audit` call inside `reconcile_ready_scopes`) | `src/market_data/native_short_multi_asset_audit_v1.py:814-822,830-832` |
+| scope admin ledger write | `INSERT` into `native_short_scope_admin_operation_v1` (only when a READY market is actually onboarded to `SUPPORTED`; append-only, never `UPDATE`/`DELETE`) | `src/market_data/native_short_scope_administration_transaction_v1.py:1629-1654` |
 | Native SHORT scope selection | `SELECT` supported rows from `native_short_map_scope_v1` | `src/market_data/run_native_short_scope_status_chain_v1.py:200-236` |
 | Native SHORT candles | `SELECT` from `obs_market_candle JOIN asset`, parameterized once per interval/scope | `src/market_data/run_native_short_scope_status_chain_v1.py:262-283` |
 | writer commit fence | `SELECT ... FOR UPDATE` from `native_short_map_scope_v1`, captured and revalidated | `src/market_data/native_short_writer_commit_fence_v1.py:76-103` |
@@ -282,6 +294,7 @@ sequences, DDL, or administrative statements.
 | `native_short_map_scope_v1` | yes | no | no | no | scope selection and row lock |
 | `native_short_map_v1` | yes | yes | no | no | map materialization/snapshot |
 | `native_short_materializer_run_v1` | yes | yes | yes | no | run insert/terminalize; `SELECT` required for compare-and-set `UPDATE ... WHERE run_id` |
+| `native_short_scope_admin_operation_v1` | yes | yes | no | no | AUTO_ONBOARD_SCOPES idempotency ledger read (unconditional); ledger row insert on genuine onboarding only |
 | `native_short_scope_cadence_config_v1` | yes | no | no | no | cadence fact and row lock |
 | `native_short_scope_observation_v1` | yes | yes | no | no | observation fact/append |
 | `native_short_scope_status_v1` | yes | yes | yes | no | projection upsert/read |
@@ -629,6 +642,75 @@ decision unrelated to this schema/grant fix):
 sudo systemctl start synth-chain-4h.service
 ```
 
+## Native SHORT Scope Administration Ledger Gap (corrected 2026-09-04)
+
+Confirmed production failure on gurkdb, preflight reported `required_objects=37`
+`status=PASS`, then runtime failed in the `AUTO_ONBOARD_SCOPES` phase:
+
+```text
+MariaDB error 1142: SELECT command denied to user
+'synth_chain_4h_writer'@'192.168.1.221' for table
+synth.native_short_scope_admin_operation_v1
+```
+
+Root cause: `run_native_short_scope_status_chain_v1.py` calls
+`native_short_auto_onboarding_v1.reconcile_ready_scopes` unconditionally
+whenever no explicit `symbols` are supplied -- the scheduled production
+entrypoint always omits `symbols`, so this is not a rare or opt-in path. That
+function calls `run_audit` (which reads `PROMOTE_SCOPE` rows from
+`native_short_scope_admin_operation_v1`) and, for every candidate market,
+`execute_scope_administration` with `operation_type=AUTO_ONBOARD_SCOPE`.
+`execute_scope_administration` unconditionally reads the same table twice
+before making any decision (`read_existing_operation`, then the operations
+projection inside `read_scope_state_snapshot`) -- this table is, per its own
+module docstring, "the sole idempotency authority" for every scope
+administration operation, write-capable or not. When this identity's grant
+was never extended past the 37-object manifest reviewed for the earlier
+target-event correction, the very first `SELECT` in this path failed closed.
+
+This is a distinct table and a distinct call path from the "Target-Event
+Coverage Gap" above (`native_short_map_level_target_event_coverage_v1`,
+reached only from the terminal-transition hook inside the materializer
+transaction); it was missed by that review because `AUTO_ONBOARD_SCOPES` is a
+separate phase, ahead of the writer commit fence and materializer, that the
+prior review's call-graph trace did not walk.
+
+`INSERT` is also required, not merely `SELECT`: `execute_scope_administration`
+commits exactly one immutable terminal ledger row
+(`_insert_operation`) atomically with its mutations whenever a decision
+actually `writes_ledger` -- which is exactly what happens the first time a
+READY market is onboarded to `SUPPORTED`. This is the entire purpose of
+`AUTO_ONBOARD_SCOPES`, not a hypothetical branch, so `INSERT` is granted
+alongside `SELECT`. No code path ever issues `UPDATE` or `DELETE` against this
+table (ledger rows are immutable once committed), so neither is granted.
+
+Correction, this change:
+
+```text
+native_short_scope_admin_operation_v1.SELECT = granted
+native_short_scope_admin_operation_v1.INSERT = granted
+native_short_scope_admin_operation_v1.UPDATE = not granted (no code path issues UPDATE)
+native_short_scope_admin_operation_v1.DELETE = not granted (no code path issues DELETE)
+required_objects: 37 -> 38
+```
+
+This correction does not rewrite any pre-existing row/entry in the "Complete
+Runtime Call Graph", "Executed SQL Inventory", or "Exact Object-Level
+Privilege Matrix" sections above -- it only adds the one new call-graph
+branch, three new SQL Inventory rows, and one new matrix row.
+
+Apply only the one new grant (host-side, not executed by this change):
+
+```sql
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_admin_operation_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+```
+
+Equivalently, re-running the complete, idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes this grant
+alongside the unchanged complete set) achieves the same end state.
+
 ## Operator Grant Procedure (host-side, not executed by this change)
 
 This repository change performs no database mutation, credential change, or
@@ -658,7 +740,7 @@ Verify with the existing read-only preflight, unchanged:
 python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
 ```
 
-It must report `required_objects=37` and `status=PASS`. Neither the grant nor
+It must report `required_objects=38` and `status=PASS`. Neither the grant nor
 any production restart is executed by this repository change; both remain
 separate, explicit host-side operator actions.
 
