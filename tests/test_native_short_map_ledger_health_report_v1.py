@@ -74,6 +74,7 @@ def _status_row(
     projection_as_of_utc: datetime = T3,
     rebuilt_at_utc: datetime = T3,
     status_payload_json: str | None = None,
+    recompute_transition_state: str | None = None,
 ) -> dict[str, Any]:
     return {
         "scope_status_id": 1,
@@ -109,6 +110,7 @@ def _status_row(
         "projection_as_of_utc": projection_as_of_utc,
         "status_payload_json": status_payload_json,
         "rebuilt_at_utc": rebuilt_at_utc,
+        "recompute_transition_state": recompute_transition_state,
     }
 
 
@@ -346,6 +348,36 @@ def test_map_completed() -> None:
     assert report.map_lifecycle_state == "MAP_COMPLETED"
     assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
     assert report.overall_health_reason_codes == ["SCOPE_STATUS_MAP_COMPLETED"]
+
+
+def test_map_completed_forwards_recompute_transition_state_verbatim() -> None:
+    """Issue #681 Amendment 2: the health report is a read-only forwarder of
+    the new recompute_transition_state evidence -- it must never recompute
+    healthy-wait-vs-overdue classification itself (that belongs to the
+    projection engine)."""
+    report = _build(
+        scope_rows=[_scope_row()],
+        scope_status_row=_status_row(
+            scope_status_code="MAP_COMPLETED",
+            map_lifecycle_state="MAP_COMPLETED",
+            actionability_state="TERMINAL_MAP",
+            recompute_transition_state="WAITING_FOR_NEW_STRUCTURE",
+        ),
+    )
+    assert report.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+    # actionability_state keeps its existing meaning unchanged.
+    assert report.actionability_state == "TERMINAL_MAP"
+
+    overdue_report = _build(
+        scope_rows=[_scope_row()],
+        scope_status_row=_status_row(
+            scope_status_code="MAP_COMPLETED",
+            map_lifecycle_state="MAP_COMPLETED",
+            actionability_state="TERMINAL_MAP",
+            recompute_transition_state="RECOMPUTE_OVERDUE",
+        ),
+    )
+    assert overdue_report.recompute_transition_state == "RECOMPUTE_OVERDUE"
 
 
 def test_missing_projection_row_is_not_fabricated_healthy() -> None:

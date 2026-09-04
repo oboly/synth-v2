@@ -383,6 +383,204 @@ def test_map_invalidated_and_completed_do_win_top_level_precedence() -> None:
 # --- idempotency --------------------------------------------------------------
 
 
+# --- Issue #681: recompute_transition_state (healthy wait vs overdue) ------
+#
+# The terminal selected map itself may be perfectly correct (the market
+# genuinely completed/expired/invalidated its swing). The gap traced for
+# #681 is that, once terminal, `actionability_state=TERMINAL_MAP` alone gives
+# no truthful, persisted evidence of whether the materializer already
+# attempted recompute this cadence cycle and found current structure
+# insufficient (healthy, bounded wait) versus recompute simply not having run
+# recently at all (overdue, eligible for #688 operator Attention). These
+# tests cover the additive `recompute_transition_state` field that carries
+# that evidence without changing `scope_status_code` or `actionability_state`
+# precedence/values (native_short_map_level_status_* still gates on the
+# unchanged `TERMINAL_MAP` value).
+
+
+def test_terminal_completed_map_with_fresh_evaluated_observation_is_waiting_for_new_structure() -> None:
+    """Regression case 2: map completes, no new confirmed structure exists
+    yet, but the materializer *successfully evaluated* current structure
+    this cycle (fresh observation, observation_status=EVALUATED). This must
+    be a truthful, healthy, bounded wait -- not an unexplained/
+    indistinguishable NEEDS_RECOMPUTE, and not a fabricated fresh map or
+    level. Freshness (OBSERVATION_CURRENT) alone is not enough evidence: it
+    must also be an actual successful evaluation, not merely a fresh
+    attempt that failed (see the FAILED-observation test below)."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5), structure_hash="h1")]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(minutes=30))]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5), "EVALUATED")],
+    )
+    assert record.map_lifecycle_state == "MAP_COMPLETED"
+    assert record.observation_freshness_state == "OBSERVATION_CURRENT"
+    # actionability_state (and its downstream map-level-status gating meaning)
+    # is unchanged by this fix.
+    assert record.actionability_state == "TERMINAL_MAP"
+    assert record.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+    # Old terminal map/levels never regain current authority (regression
+    # case 8): the terminal map stays selected, not replaced by anything.
+    assert record.current_map_id == 1
+    assert record.current_map_structure_hash == "h1"
+
+
+def test_terminal_completed_map_with_evaluated_observation_at_terminal_event_is_waiting_for_new_structure() -> None:
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    terminal_at = _AS_OF - timedelta(hours=1)
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", terminal_at)]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, terminal_at, "EVALUATED")],
+    )
+    assert record.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+
+
+def test_terminal_completed_map_with_evaluated_observation_before_terminal_event_is_overdue() -> None:
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    terminal_at = _AS_OF - timedelta(hours=1)
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", terminal_at)]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, terminal_at - timedelta(minutes=1), "EVALUATED")],
+    )
+    assert record.observation_freshness_state == "OBSERVATION_CURRENT"
+    assert record.recompute_transition_state == "RECOMPUTE_OVERDUE"
+
+
+def test_terminal_completed_map_with_fresh_failed_observation_after_terminal_event_is_overdue() -> None:
+    """Codex-flagged correction: a fresh (OBSERVATION_CURRENT) but FAILED
+    observation must never be classified WAITING_FOR_NEW_STRUCTURE -- that
+    would falsely present a recompute failure as healthy waiting. It must
+    fail closed to RECOMPUTE_OVERDUE instead."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5), structure_hash="h1")]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(minutes=30))]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5), "FAILED")],
+    )
+    assert record.map_lifecycle_state == "MAP_COMPLETED"
+    # Freshness alone (OBSERVATION_CURRENT) is not sufficient proof of a
+    # successful recompute evaluation.
+    assert record.observation_freshness_state == "OBSERVATION_CURRENT"
+    assert record.actionability_state == "TERMINAL_MAP"
+    assert record.recompute_transition_state != "WAITING_FOR_NEW_STRUCTURE"
+    assert record.recompute_transition_state == "RECOMPUTE_OVERDUE"
+
+
+def test_terminal_invalidated_map_with_overdue_observation_is_recompute_overdue() -> None:
+    """Regression case 10 (ARB-like fixture): a terminal map whose most
+    recent observation is stale under the cadence/grace contract must not
+    remain indistinguishable healthy waiting forever -- it must surface as
+    overdue/eligible for operator Attention (#688), distinct from the
+    healthy-wait case above."""
+    maps = [MapFact(map_id=7, published_at_utc=_AS_OF - timedelta(days=2))]
+    lifecycle = [LifecycleEventFact(1, 7, "INVALIDATED", _AS_OF - timedelta(days=1))]
+    # cadence: interval=1h + grace=900s => overdue after 75 minutes.
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(hours=3))],
+    )
+    assert record.map_lifecycle_state == "MAP_INVALIDATED"
+    assert record.actionability_state == "TERMINAL_MAP"
+    assert record.observation_freshness_state == "OBSERVATION_OVERDUE"
+    assert record.recompute_transition_state == "RECOMPUTE_OVERDUE"
+
+
+def test_terminal_map_never_observed_fails_closed_to_recompute_overdue() -> None:
+    """Regression case 6 (fail closed): a terminal map with no observation
+    evidence at all must never be silently treated as a healthy wait."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(hours=4))]
+    record = _project(maps=maps, lifecycle_events=lifecycle, observations=[])
+    assert record.observation_freshness_state == "NO_OBSERVATION"
+    assert record.recompute_transition_state == "RECOMPUTE_OVERDUE"
+
+
+def test_recompute_transition_state_not_applicable_when_map_not_terminal() -> None:
+    """A non-terminal (or absent) selected map carries no recompute-transition
+    evidence: the field is orthogonal and must not fire outside the terminal
+    case (regression case 4: a genuinely new active map is unaffected)."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=1))]
+    record = _project(maps=maps, lifecycle_events=[], observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5))])
+    assert record.map_lifecycle_state == "MAP_ACTIVE"
+    assert record.recompute_transition_state == "NOT_APPLICABLE"
+
+    record_no_map = _project(observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5))])
+    assert record_no_map.map_lifecycle_state == "NO_CURRENT_MAP"
+    assert record_no_map.recompute_transition_state == "NOT_APPLICABLE"
+
+
+def test_recompute_transition_state_not_applicable_when_configuration_unavailable() -> None:
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(hours=4))]
+    record = _project(cadence_configs=[], maps=maps, lifecycle_events=lifecycle)
+    assert record.scope_status_code == "CONFIGURATION_UNAVAILABLE"
+    assert record.recompute_transition_state == "NOT_APPLICABLE"
+
+
+def test_recompute_transition_state_not_applicable_when_source_blocks_precedence() -> None:
+    """Regression case 6: stale/missing source data must fail closed at its
+    own precedence level, never fabricating a waiting-for-structure state."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(hours=4))]
+    record = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5))],
+        primary_candle_close_timestamps=[],
+        supporting_candle_close_timestamps=[],
+    )
+    assert record.scope_status_code == "SOURCE_UNAVAILABLE"
+    assert record.recompute_transition_state == "NOT_APPLICABLE"
+
+
+def test_recompute_transition_state_is_per_scope_independent() -> None:
+    """Regression case 7 (per-symbol isolation): the pure projection function
+    carries no shared state between two independently evaluated scopes."""
+    terminal_maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    terminal_lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(hours=4))]
+
+    scope_a = _project(
+        key=_key("AAA"),
+        maps=terminal_maps,
+        lifecycle_events=terminal_lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(hours=3), "EVALUATED")],
+    )
+    scope_b = _project(
+        key=_key("BBB"),
+        maps=terminal_maps,
+        lifecycle_events=terminal_lifecycle,
+        observations=[ObservationFact(1, 1, _AS_OF - timedelta(minutes=5), "EVALUATED")],
+    )
+    assert scope_a.recompute_transition_state == "RECOMPUTE_OVERDUE"
+    assert scope_b.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+
+
+def test_recompute_transition_state_idempotent_across_repeated_cycles() -> None:
+    """Regression cases 3 and 5: repeated evaluation cycles (and, since the
+    projection is a pure function of persisted facts, a process restart
+    between cycles) reproduce the identical recompute_transition_state from
+    identical inputs -- no duplicate/oscillating classification."""
+    maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5))]
+    lifecycle = [LifecycleEventFact(1, 1, "COMPLETED", _AS_OF - timedelta(minutes=30))]
+    observations = [ObservationFact(1, 1, _AS_OF - timedelta(minutes=5), "EVALUATED")]
+
+    first = _project(maps=maps, lifecycle_events=lifecycle, observations=observations)
+    second = _project(
+        maps=maps,
+        lifecycle_events=lifecycle,
+        observations=observations,
+        rebuilt_at_utc=_AS_OF + timedelta(seconds=5),
+    )
+    assert first.recompute_transition_state == second.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+
+
 def test_rebuild_idempotent_for_identical_facts_and_as_of_utc() -> None:
     maps = [MapFact(map_id=1, published_at_utc=_AS_OF - timedelta(hours=5), map_cycle_id="c1")]
     lifecycle = [LifecycleEventFact(1, 1, "ACTIVATED", _AS_OF - timedelta(hours=5))]
@@ -404,6 +602,7 @@ def test_rebuild_idempotent_for_identical_facts_and_as_of_utc() -> None:
         "cadence_contract_version",
         "next_expected_evaluation_at_utc",
         "observation_overdue_after_utc",
+        "recompute_transition_state",
     ):
         assert getattr(first, field_name) == getattr(second, field_name), field_name
     assert first.rebuilt_at_utc != second.rebuilt_at_utc
