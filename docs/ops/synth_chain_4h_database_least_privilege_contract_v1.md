@@ -215,6 +215,10 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | scope admin idempotency read | `SELECT` from `native_short_scope_admin_operation_v1` (unconditional; `read_existing_operation` plus the operations projection in `read_scope_state_snapshot`) | `src/market_data/native_short_scope_administration_transaction_v1.py:680-711,751-772` via `src/market_data/native_short_auto_onboarding_v1.py:36-93` |
 | scope admin promote-operation audit read | `SELECT` from `native_short_scope_admin_operation_v1` (`PROMOTE_SCOPE` rows, reachable from every `run_audit` call inside `reconcile_ready_scopes`) | `src/market_data/native_short_multi_asset_audit_v1.py:814-822,830-832` |
 | scope admin ledger write | `INSERT` into `native_short_scope_admin_operation_v1` (only when a READY market is actually onboarded to `SUPPORTED`; append-only, never `UPDATE`/`DELETE`) | `src/market_data/native_short_scope_administration_transaction_v1.py:1629-1654` |
+| scope onboard: new READY scope | `INSERT` into `native_short_map_scope_v1` (`PROMOTE_NEW`, `classify_scope_state` == `NO_SCOPE`; first row for a canonical scope) | `src/market_data/native_short_scope_administration_transaction_v1.py:1753-1780` via `decide_administration`/`_decide_promote` at `:1301-1349` |
+| scope onboard: re-support after withdrawal | `UPDATE` `native_short_map_scope_v1` (`PROMOTE_REACTIVATE`, `classify_scope_state` == `MANAGED_REMOVED`; flips the existing `NOT_APPLICABLE` row back to `SUPPORTED`) | `src/market_data/native_short_scope_administration_transaction_v1.py:1802-1821` via `decide_administration`/`_decide_promote` at `:1301-1349` |
+| scope onboard: new cadence row | `INSERT` into `native_short_scope_cadence_config_v1` (`PROMOTE_NEW` and `PROMOTE_REACTIVATE` both call this; one new active cadence row per onboarding/re-support) | `src/market_data/native_short_scope_administration_transaction_v1.py:1875-1917` via `_apply_decision` at `:2009-2048` |
+| scope onboard: support event append | `INSERT` into `native_short_scope_support_event_v1` (`PROMOTE_NEW` and `PROMOTE_REACTIVATE` both call this; append-only, never `UPDATE`/`DELETE`) | `src/market_data/native_short_scope_administration_transaction_v1.py:1709-1750` via `_apply_decision` at `:2009-2048` |
 | Native SHORT scope selection | `SELECT` supported rows from `native_short_map_scope_v1` | `src/market_data/run_native_short_scope_status_chain_v1.py:200-236` |
 | Native SHORT candles | `SELECT` from `obs_market_candle JOIN asset`, parameterized once per interval/scope | `src/market_data/run_native_short_scope_status_chain_v1.py:262-283` |
 | writer commit fence | `SELECT ... FOR UPDATE` from `native_short_map_scope_v1`, captured and revalidated | `src/market_data/native_short_writer_commit_fence_v1.py:76-103` |
@@ -291,14 +295,14 @@ sequences, DDL, or administrative statements.
 | `native_short_map_level_target_event_coverage_v1` | yes | no | no | no | terminal-transition coverage read only; establishment (`INSERT`) not reachable from this identity's entrypoint |
 | `native_short_map_level_target_event_v1` | yes | yes | no | no | terminal-transition target-event append; append-only, never `UPDATE`/`DELETE` |
 | `native_short_map_lifecycle_event_v1` | yes | yes | no | no | Native SHORT ledger/snapshot |
-| `native_short_map_scope_v1` | yes | no | no | no | scope selection and row lock |
+| `native_short_map_scope_v1` | yes | yes | yes | no | scope selection and row lock; AUTO_ONBOARD_SCOPE `PROMOTE_NEW` insert / `PROMOTE_REACTIVATE` update; `DELETE` never issued (`REMOVE_SCOPE` soft-delete via `UPDATE` is not reachable from this chain) |
 | `native_short_map_v1` | yes | yes | no | no | map materialization/snapshot |
 | `native_short_materializer_run_v1` | yes | yes | yes | no | run insert/terminalize; `SELECT` required for compare-and-set `UPDATE ... WHERE run_id` |
 | `native_short_scope_admin_operation_v1` | yes | yes | no | no | AUTO_ONBOARD_SCOPES idempotency ledger read (unconditional); ledger row insert on genuine onboarding only |
-| `native_short_scope_cadence_config_v1` | yes | no | no | no | cadence fact and row lock |
+| `native_short_scope_cadence_config_v1` | yes | yes | no | no | cadence fact and row lock; AUTO_ONBOARD_SCOPE `PROMOTE_NEW`/`PROMOTE_REACTIVATE` insert; `UPDATE` (`_bind_legacy_cadence`/`_deactivate_cadence`) only reachable via `ADOPT_LEGACY_SCOPE`/`REMOVE_SCOPE`, not from this chain |
 | `native_short_scope_observation_v1` | yes | yes | no | no | observation fact/append |
 | `native_short_scope_status_v1` | yes | yes | yes | no | projection upsert/read |
-| `native_short_scope_support_event_v1` | yes | no | no | no | support fact read |
+| `native_short_scope_support_event_v1` | yes | yes | no | no | support fact read; AUTO_ONBOARD_SCOPE `PROMOTE_NEW`/`PROMOTE_REACTIVATE` append; append-only, never `UPDATE`/`DELETE` |
 | `obs_market_candle` | yes | no | no | no | freshness/features/Native SHORT/zone/filter reads |
 | `paper_advice_observation` | yes | yes | yes | no | paper-advice upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
 | `ranking_state` | yes | yes | yes | no | ranking upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
@@ -711,13 +715,158 @@ Equivalently, re-running the complete, idempotent
 `db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes this grant
 alongside the unchanged complete set) achieves the same end state.
 
+## Native SHORT Map Scope Onboard Gap (corrected 2026-09-04, second gap)
+
+Confirmed production failure on gurkdb, immediately after the ledger-gap
+correction above was applied: preflight passed (`required_objects=38`,
+`status=PASS`), then runtime failed one step further into the same
+`AUTO_ONBOARD_SCOPES` phase:
+
+```text
+MariaDB error 1142: INSERT command denied to user
+synth_chain_4h_writer@192.168.1.221 for synth.native_short_map_scope_v1
+```
+
+Root cause: this identity's grant for `native_short_map_scope_v1` was
+`SELECT`-only, reviewed only against the read-only call sites (`SELECT` from
+`run_native_short_scope_status_chain_v1.py`, the writer commit fence, and
+`native_short_map_materializer_v1.py`). It was never re-reviewed against the
+write-capable `execute_scope_administration` path that
+`native_short_auto_onboarding_v1.reconcile_ready_scopes` calls with
+`operation_type=AUTO_ONBOARD_SCOPE` for every READY canonical market.
+
+`decide_administration` routes `AUTO_ONBOARD_SCOPE` only into
+`_decide_promote` (never `_decide_adopt` or `_decide_remove`), which yields
+exactly three outcomes, independently confirmed against `_apply_decision`:
+
+- `classify_scope_state == NO_SCOPE` (new READY scope, no prior row): action
+  `PROMOTE_NEW` -> `_insert_scope_supported` -- `INSERT` into
+  `native_short_map_scope_v1`. This is the branch that failed in production.
+- `classify_scope_state == MANAGED_REMOVED` (re-support after a prior
+  withdrawal/removal): action `PROMOTE_REACTIVATE` -> `_update_scope_promote`
+  -- `UPDATE` of the existing `NOT_APPLICABLE` row back to `SUPPORTED`. Not yet
+  observed in production, but independently reachable the first time a
+  previously-withdrawn scope becomes READY again; granting only `INSERT` would
+  leave this branch to fail closed later.
+- `classify_scope_state == MANAGED_SUPPORTED` (already-supported/idempotent
+  path): action `NOOP`, result `SCOPE_ALREADY_SUPPORTED` -- no mutation of
+  `native_short_map_scope_v1` at all; covered by the existing `SELECT`.
+
+`DELETE` is not required: no action reachable from `AUTO_ONBOARD_SCOPE` issues
+a SQL `DELETE` against this table. `REMOVE_SCOPE`'s `_update_scope_remove` is
+itself an `UPDATE` (soft-delete to `NOT_APPLICABLE`, not a row delete), and it
+is only reachable via the `REMOVE_SCOPE` operation type, which
+`reconcile_ready_scopes` never requests.
+
+Correction, this change:
+
+```text
+native_short_map_scope_v1.SELECT = granted (unchanged)
+native_short_map_scope_v1.INSERT = granted (new)
+native_short_map_scope_v1.UPDATE = granted (new)
+native_short_map_scope_v1.DELETE = not granted (no code path issues DELETE)
+required_objects: 38 (unchanged -- existing object, privileges widened only)
+```
+
+This correction does not rewrite any pre-existing row/entry above except the
+`native_short_map_scope_v1` row in "Exact Object-Level Privilege Matrix"; it
+adds two new "Executed SQL Inventory" rows for the `PROMOTE_NEW`/
+`PROMOTE_REACTIVATE` branches.
+
+Apply only the one changed grant (host-side, not executed by this change):
+
+```sql
+GRANT SELECT, INSERT, UPDATE
+    ON `synth`.`native_short_map_scope_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+```
+
+Equivalently, re-running the complete, idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes this
+widened grant alongside the unchanged complete set) achieves the same end
+state.
+
+## Native SHORT Cadence/Support-Event Onboard Gap (audited proactively 2026-09-04, third gap)
+
+Audited before deployment, not yet observed in production, to close out the
+complete `AUTO_ONBOARD_SCOPES` write-set in one pass rather than discovering
+the remaining gaps one MariaDB error 1142 at a time. The same
+`_apply_decision` branches corrected above (`PROMOTE_NEW`, `PROMOTE_REACTIVATE`)
+also call two more mutation helpers that were never re-reviewed against this
+identity's grant:
+
+- `_insert_active_cadence` -- `INSERT` into `native_short_scope_cadence_config_v1`
+  (one new active cadence row per onboarding/re-support). Called by both
+  `PROMOTE_NEW` and `PROMOTE_REACTIVATE`.
+- `_insert_support_event` -- `INSERT` into `native_short_scope_support_event_v1`
+  (one immutable support-event row per onboarding/re-support). Called by both
+  `PROMOTE_NEW` and `PROMOTE_REACTIVATE`.
+
+Both tables already carry `SELECT` for this identity (`read_scope_state_snapshot`
+reads both unconditionally, and the writer commit fence separately locks the
+cadence table), so the audit is `INSERT`-only for both. Independently checked
+for `UPDATE`/`DELETE` reachability from this chain:
+
+- `native_short_scope_cadence_config_v1` has two `UPDATE` sites,
+  `_bind_legacy_cadence` and `_deactivate_cadence`. Both are called only from
+  the `ADOPT` and `REMOVE` actions in `_apply_decision`, which
+  `decide_administration` reaches only for `ADOPT_LEGACY_SCOPE` and
+  `REMOVE_SCOPE` respectively -- `decide_administration` routes
+  `AUTO_ONBOARD_SCOPE` exclusively to `_decide_promote`, so neither `UPDATE`
+  site is reachable from this chain. Not granted.
+- `native_short_scope_support_event_v1` has no `UPDATE` or `DELETE` statement
+  anywhere in the module; it is append-only by design. Not granted.
+
+A full re-audit of every `cur.execute` call reachable from
+`reconcile_ready_scopes` -- across
+`native_short_auto_onboarding_v1.py`, `native_short_multi_asset_audit_v1.py`,
+`native_short_promotion_bootstrap_evidence_v1.py`, and
+`native_short_scope_administration_transaction_v1.py` -- confirms the
+complete write-set touched by `AUTO_ONBOARD_SCOPE` is exactly four tables:
+`native_short_map_scope_v1`, `native_short_scope_cadence_config_v1`,
+`native_short_scope_support_event_v1`, and
+`native_short_scope_admin_operation_v1` (corrected in the first gap above).
+`_revalidate_post_state` (run before every commit) and `run_audit` (the
+readiness scan) are confirmed read-only. No fifth table requires a write
+privilege not already represented in the authority manifest.
+
+Correction, this change:
+
+```text
+native_short_scope_cadence_config_v1.SELECT = granted (unchanged)
+native_short_scope_cadence_config_v1.INSERT = granted (new)
+native_short_scope_cadence_config_v1.UPDATE = not granted (only ADOPT_LEGACY_SCOPE/REMOVE_SCOPE reach it)
+native_short_scope_cadence_config_v1.DELETE = not granted (no code path issues DELETE)
+native_short_scope_support_event_v1.SELECT = granted (unchanged)
+native_short_scope_support_event_v1.INSERT = granted (new)
+native_short_scope_support_event_v1.UPDATE = not granted (append-only, no code path issues UPDATE)
+native_short_scope_support_event_v1.DELETE = not granted (append-only, no code path issues DELETE)
+required_objects: 38 (unchanged -- both are existing objects, privileges widened only)
+```
+
+Apply only the two changed grants (host-side, not executed by this change):
+
+```sql
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_cadence_config_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_support_event_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+```
+
+Equivalently, re-running the complete, idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes these
+widened grants alongside the unchanged complete set) achieves the same end
+state.
+
 ## Operator Grant Procedure (host-side, not executed by this change)
 
 This repository change performs no database mutation, credential change, or
 grant execution. After merge, on gurkdb, with a MariaDB session already
 holding `@synth_chain_4h_writer_password` set from an approved secret
 channel (exactly the existing procedure for `db/dba/synth_chain_4h_writer_v1.sql`),
-apply only the two new grants:
+apply only the changed/new grants from the three gap corrections above:
 
 ```sql
 GRANT SELECT
@@ -726,10 +875,19 @@ GRANT SELECT
 GRANT SELECT, INSERT
     ON `synth`.`native_short_map_level_target_event_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT, UPDATE
+    ON `synth`.`native_short_map_scope_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_cadence_config_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_scope_support_event_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
 ```
 
 Equivalently, re-running the complete, idempotent
-`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes these two
+`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes these
 grants alongside the unchanged complete set) achieves the same end state; it
 resets and re-grants only the dedicated `synth_chain_4h_writer` identity and
 does not touch the existing broad `synth` identity or any other user.

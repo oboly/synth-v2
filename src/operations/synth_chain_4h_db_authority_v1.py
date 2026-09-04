@@ -68,7 +68,23 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "native_short_map_level_target_event_coverage_v1": _privileges(SELECT),
     "native_short_map_level_target_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_lifecycle_event_v1": _privileges(SELECT, INSERT),
-    "native_short_map_scope_v1": _privileges(SELECT),
+    # AUTO_ONBOARD_SCOPES calls native_short_auto_onboarding_v1.reconcile_
+    # ready_scopes -> execute_scope_administration -> decide_administration,
+    # which routes AUTO_ONBOARD_SCOPE to _decide_promote (never _decide_adopt
+    # or _decide_remove). _decide_promote's NO_SCOPE branch (new READY-scope
+    # onboarding) applies as OperationAction.PROMOTE_NEW, which INSERTs the
+    # first row via _insert_scope_supported (error 1142 confirmed in
+    # production on gurkdb, 2026-09-04, when INSERT was still missing). Its
+    # MANAGED_REMOVED branch (re-support after a prior withdrawal) applies as
+    # PROMOTE_REACTIVATE, which UPDATEs the existing NOT_APPLICABLE row via
+    # _update_scope_promote -- also unreachable without UPDATE. The
+    # MANAGED_SUPPORTED branch (already-supported/idempotent path) is a pure
+    # NOOP with no mutation, so SELECT alone (read_scope_state_snapshot)
+    # already covers it. DELETE is never issued against this table by any
+    # action reachable from AUTO_ONBOARD_SCOPE: REMOVE (a soft-delete UPDATE
+    # to NOT_APPLICABLE, not a SQL DELETE) is only reachable via the
+    # REMOVE_SCOPE operation type, which this chain never requests.
+    "native_short_map_scope_v1": _privileges(SELECT, INSERT, UPDATE),
     "native_short_map_v1": _privileges(SELECT, INSERT),
     "native_short_materializer_run_v1": _privileges(SELECT, INSERT, UPDATE),
     # AUTO_ONBOARD_SCOPES runs unconditionally at the start of every scheduled
@@ -82,10 +98,26 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     # production on gurkdb, 2026-09-04, when SELECT was still missing). Rows
     # are never UPDATEd or DELETEd once committed.
     "native_short_scope_admin_operation_v1": _privileges(SELECT, INSERT),
-    "native_short_scope_cadence_config_v1": _privileges(SELECT),
+    # Same PROMOTE_NEW/PROMOTE_REACTIVATE branches that write native_short_
+    # map_scope_v1 also call _insert_active_cadence, which INSERTs one new
+    # active cadence row for the scope (error 1142 predicted here next, same
+    # AUTO_ONBOARD_SCOPES phase, once native_short_map_scope_v1 INSERT is
+    # granted). read_scope_state_snapshot (unconditional) already requires
+    # SELECT. UPDATE is not required: the only UPDATEs on this table are
+    # _bind_legacy_cadence (ADOPT_LEGACY_SCOPE only) and _deactivate_cadence
+    # (REMOVE_SCOPE only) -- decide_administration never routes
+    # AUTO_ONBOARD_SCOPE to either _decide_adopt or _decide_remove, so neither
+    # is reachable from this chain. DELETE is never issued against this table.
+    "native_short_scope_cadence_config_v1": _privileges(SELECT, INSERT),
     "native_short_scope_observation_v1": _privileges(SELECT, INSERT),
     "native_short_scope_status_v1": _privileges(SELECT, INSERT, UPDATE),
-    "native_short_scope_support_event_v1": _privileges(SELECT),
+    # Same PROMOTE_NEW/PROMOTE_REACTIVATE branches also call _insert_support_
+    # event, appending one immutable support-event row (error 1142 predicted
+    # here next as well, for the same reason as the cadence table above).
+    # read_scope_state_snapshot (unconditional) already requires SELECT. This
+    # table has no UPDATE or DELETE statement anywhere in the module -- it is
+    # append-only by design -- so neither is granted.
+    "native_short_scope_support_event_v1": _privileges(SELECT, INSERT),
     "obs_market_candle": _privileges(SELECT),
     "paper_advice_observation": _privileges(SELECT, INSERT, UPDATE),
     "ranking_state": _privileges(SELECT, INSERT, UPDATE),
