@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS fast_rotation_c1_observation_v1 (
     signed_flow_unit                   DECIMAL(28, 12) NULL,
     relative_acceleration_unit         DECIMAL(28, 12) NULL,
     cohort_size                        SMALLINT UNSIGNED NOT NULL,
+    evaluated_universe_size            SMALLINT UNSIGNED NOT NULL,
+    coverage_ratio                     DECIMAL(8, 6) NOT NULL,
 
     freshness_state                    VARCHAR(32)  NOT NULL,
     data_quality                       VARCHAR(32)  NOT NULL,
@@ -69,7 +71,13 @@ CREATE TABLE IF NOT EXISTS fast_rotation_c1_observation_v1 (
     CONSTRAINT chk_fast_rotation_c1_quality
         CHECK (data_quality IN ('COMPLETE', 'INSUFFICIENT_DATA')),
     CONSTRAINT chk_fast_rotation_c1_score
-        CHECK (rotation_score IS NULL OR rotation_score BETWEEN -100 AND 100)
+        CHECK (rotation_score IS NULL OR rotation_score BETWEEN -100 AND 100),
+    CONSTRAINT chk_fast_rotation_c1_universe_size
+        CHECK (evaluated_universe_size > 0),
+    CONSTRAINT chk_fast_rotation_c1_cohort_size
+        CHECK (cohort_size <= evaluated_universe_size),
+    CONSTRAINT chk_fast_rotation_c1_coverage
+        CHECK (coverage_ratio BETWEEN 0 AND 1)
 
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   COMMENT='Validated #593 C1 fast Rotation raw evidence history. Market-only, append/idempotent, no trading authority.';
