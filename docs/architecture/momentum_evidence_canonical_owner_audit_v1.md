@@ -18,8 +18,11 @@ evidence owner for #617. This confirms and extends the prior finding in
 no MACD/oscillator producer of any kind exists anywhere in the repository
 (production, research, or reporting), and the one raw momentum-adjacent
 value that does exist (`feat_candle.rsi_14`) is a feature-layer primitive
-consumed only inside a selection-local composite score — it is not exposed,
-versioned, or contracted as standalone canonical evidence and cannot be
+consumed by multiple downstream paths — including a selection-local
+composite score, an operational signal-engine query, and a research
+validation script — none of which independently exposes, versions, or
+contracts `rsi_14` as standalone #243-compliant canonical evidence. None of
+these paths constitutes a canonical MOMENTUM evidence owner, and none can be
 promoted to that role by a small adapter alone.
 
 ```text
@@ -89,17 +92,38 @@ primary truth; no categorical momentum states are proposed by this audit.
 - Raw numeric fields: yes (`rsi_14`).
 - State/classification fields: none (raw only) at this layer.
 - Reason codes / provenance: none beyond `close_ts_utc`/`interval_code`.
-- Downstream use: consumed only inside
-  `src/signal_engine/run_signal_state_etl.py::compute_pullback_quality_score`,
-  where `rsi_14` is folded (weight `0.15`) into a composite
-  `pullback_quality_score` alongside EMA/volume terms with hardcoded
-  weights. This is a selection-local composite feature, not standalone
-  momentum evidence, and per this task's constraints must not be treated as
-  an implicitly promoted general-purpose MOMENTUM owner.
-- Also displayed by `src/ui_chart/chart_renderer.py` (`show_rsi` /
-  `"RSI 14"` subplot). The renderer only plots the value it is given; it
-  does not compute RSI itself, so this is a correctly read-only reporting
-  consumer, not a dashboard-owned indicator-truth violation.
+- Downstream use is multi-path, not exclusive to one consumer. Direct
+  readers of `feat_candle.rsi_14` on current `main`:
+  - **Selection/signal consumer:**
+    `src/signal_engine/run_signal_state_etl.py` (lines 122, 346, 351) folds
+    `rsi_14` (weight `0.15`) into a composite `pullback_quality_score`
+    alongside EMA/volume terms with hardcoded weights. This is a
+    selection-local composite feature, not standalone momentum evidence.
+  - **Operational/runtime consumer:** `src/engine/run_signal_engine.py`
+    (line 75) selects `fc.rsi_14` in its `feat_candle` query, but no
+    `classify_*` function or `SignalEngineInput` field in this engine
+    (`src/signal_engine/signal_engine.py`,
+    `build_signal_engine_input` in `run_signal_engine.py`) reads or scores
+    it — the column is fetched but not consumed by this engine's
+    trend/volume/phase/compass/rotation/relative/setup/risk classifiers.
+    It is not a MOMENTUM evidence path in this engine today.
+  - **Research/validation consumer:**
+    `src/research/run_breath_curve_symbol_regime_validation_v1.py`
+    (`classify_rsi`, lines 310-320) buckets `rsi_14` into an ad hoc
+    `RSI_LOW`/`RSI_MID`/`RSI_HIGH`/`RSI_EXTREME` categorical scheme for a
+    research validation report only. This is a research-only categorical
+    invention, confined to `src/research/`, with no `model_id`/version/
+    freshness/horizon fields; it must not be read back as a canonical
+    MOMENTUM evidence contract per this task's constraints.
+  - **Reporting consumer:** `src/ui_chart/chart_renderer.py` (`show_rsi` /
+    `"RSI 14"` subplot, via `chart_repository.py` and `chart_config.py`)
+    only plots the value it is given; it does not compute RSI itself, so
+    this is a correctly read-only reporting consumer, not a dashboard-owned
+    indicator-truth violation.
+  - None of these four paths defines, versions, or exposes `rsi_14` as
+    independently addressable, #243-contracted MOMENTUM evidence; per this
+    task's constraints, none may be treated as an implicitly promoted
+    general-purpose MOMENTUM owner.
 - **Classification: reusable production primitive, not a canonical MOMENTUM
   evidence owner.** The raw value is real, live, and deterministic, but it
   carries none of the #243 `SignalHorizonV1` provenance/freshness/version
@@ -187,8 +211,10 @@ primary truth; no categorical momentum states are proposed by this audit.
 ```text
 obs_market_candle
   -> feat_candle (ema_20, ema_50, atr_14, rsi_14 — raw per-asset primitives, no #243 contract fields)
-  -> signal_engine (rsi_14 folded into pullback_quality_score composite, weight 0.15)
-  -> chart_renderer (reads rsi_14 for display only)
+     -> src/signal_engine/run_signal_state_etl.py (rsi_14 folded into pullback_quality_score composite, weight 0.15)
+     -> src/engine/run_signal_engine.py (selects rsi_14 in query; not read by any classifier — unused in this engine's output)
+     -> src/research/run_breath_curve_symbol_regime_validation_v1.py (rsi_14 -> ad hoc RSI_LOW/MID/HIGH/EXTREME research bucket; research-only)
+     -> src/ui_chart/chart_renderer.py (reads rsi_14 for display only)
 
 No current path:
   -> macd_value / signal_value / histogram_value / histogram_delta (none exist)
@@ -207,8 +233,10 @@ market-only, production-safe MOMENTUM evidence owner. Before it may supply
 #617, that owner must define and validate:
 
 1. an explicit producer namespace (`src/features/` or `src/signal_engine/`,
-   consistent with AGENTS.md layer definitions) that is distinct from the
-   existing selection-local `pullback_quality_score` composite;
+   consistent with AGENTS.md layer definitions) that is distinct from all
+   existing `rsi_14` readers identified above (the selection-local
+   `pullback_quality_score` composite, the `run_signal_engine.py` query, and
+   the research validation script);
 2. which raw numeric fields it emits — prefer `macd_value`, `signal_value`,
    `histogram_value`, `histogram_delta`, and, if RSI is retained as part of
    this family, a distinctly versioned `rsi_value` rather than reusing
@@ -230,8 +258,11 @@ market-only, production-safe MOMENTUM evidence owner. Before it may supply
 
 The future owner may reuse `feat_candle`'s already-computed EMA/RSI values as
 raw inputs where suitable, but must not repurpose the existing selection-local
-`pullback_quality_score` composite, `active_regime_observation`'s single
-hypothesis, or `momentum_persistence_snapshot`'s return-persistence metric as
+`pullback_quality_score` composite, the unused `rsi_14` query column in
+`run_signal_engine.py`, the research-only `RSI_LOW`/`MID`/`HIGH`/`EXTREME`
+bucket in `run_breath_curve_symbol_regime_validation_v1.py`,
+`active_regime_observation`'s single hypothesis, or
+`momentum_persistence_snapshot`'s return-persistence metric as
 that owner. It remains market-only and must not alter `selection_engine`,
 `decision_gate`, `execution_planner`, `executor`, broker, or orders, and must
 not duplicate #415 (RSI divergence) or #449 (Rotation Flip).
