@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from decimal import Decimal
 
 from src.research import verify_fib_exit_ladder_v1_pit_replay_phase_c_v1 as verifier
@@ -52,6 +53,52 @@ def test_phase_c_verifier_rederives_selection_and_dispositions_from_raw_rows() -
         assert Decimal(row["oos_window_2_alpha_vs_hold_pct"]) == EXPECTED_OOS_ALPHAS[symbol][1]
 
     assert result["overall_disposition"] == "REJECTED"
+
+
+def test_phase_c_selection_sign_is_rederived_from_selected_raw_grid_row() -> None:
+    data = verifier.load_raw_evidence()
+    verified = {row["symbol"]: row for row in verifier.verify_evidence()["assets"]}
+
+    for asset in data["assets"]:
+        selected_row = verifier._derive_selected_row(asset)
+        alpha = Decimal(selected_row["alpha_vs_hold_pct"])
+        total_return = Decimal(selected_row["total_return_pct_with_remaining"])
+        hold_return = Decimal(selected_row["hold_return_pct"])
+        assert alpha == total_return - hold_return
+        assert Decimal(verified[asset["symbol"]]["selection_window_alpha_vs_hold_pct"]) == alpha
+
+    # LINK/XRP are the mixed-OOS cases. Their REVISED routing must be backed by
+    # a genuinely positive selected-row alpha, not the runner's total-return
+    # selection metric masquerading as alpha.
+    for symbol in ("LINK", "XRP"):
+        asset = next(row for row in data["assets"] if row["symbol"] == symbol)
+        selected_row = verifier._derive_selected_row(asset)
+        assert Decimal(selected_row["alpha_vs_hold_pct"]) > 0
+        assert Decimal(asset["selected_policy"]["selection_metric_value"]) == Decimal(
+            selected_row["total_return_pct_with_remaining"]
+        )
+        assert Decimal(asset["selected_policy"]["selection_metric_value"]) != Decimal(
+            selected_row["alpha_vs_hold_pct"]
+        )
+
+
+def test_phase_c_verifier_freezes_disposition_and_original_config_semantics_locally() -> None:
+    source = inspect.getsource(verifier)
+    assert "fib_exit_ladder_v1_phase_a_disposition_v1" not in source
+    assert verifier.ORIGINAL_ASSET_CONFIG == {
+        "LINK": ("PRO_3X4X", "0.80"),
+        "XLM": ("PRO_3X4X", "0.80"),
+        "SOL": ("SUPERCYCLE", "0.80"),
+        "XRP": ("SUPERCYCLE", "0.80"),
+        "HOT": ("EXPLOSIVE_SUPERCYCLE", "0.40"),
+    }
+    assert verifier.OUTCOME_ORDER == (
+        "BLOCKED",
+        "INSUFFICIENT_DATA",
+        "REJECTED",
+        "REVISED",
+        "VALIDATED",
+    )
 
 
 def test_phase_c_original_vs_selected_assignment_delta_is_only_xrp() -> None:
