@@ -8,6 +8,7 @@ from __future__ import annotations
 import inspect
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -318,12 +319,108 @@ class TestLifecycleReasonExactness:
             candles.append(_candle(t, o, h, l, c))
         return candles
 
-    def test_target1_reached(self) -> None:
+    def test_target1_reached_is_recorded_but_not_terminal(self) -> None:
+        # T1 must not terminate the episode: with no further T2/invalidation
+        # candles the scan runs out of source data, but target1_ts_utc is
+        # still recorded from the candle that crossed target_t1.
         feature = self._feature()
         forward = self._forward([100, 105, 113], feature=feature)
         labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
-        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_TARGET1_REACHED
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED
         assert labels.target1_ts_utc == forward[2].close_ts_utc
+        assert labels.target2_ts_utc is None
+
+    def test_target1_then_target2_later_both_timings_preserved(self) -> None:
+        feature = self._feature()
+        # T1 (112.72) hit on candle 1, T2 (116.18) only later on candle 3.
+        forward = self._forward_ohlc(
+            [
+                (100, 113, 99.5, 113),
+                (113, 113.5, 112.5, 113),
+                (113, 117, 112.5, 117),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_TARGET2_REACHED
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+        assert labels.target2_ts_utc == forward[2].close_ts_utc
+        assert labels.time_to_target1_seconds == (
+            forward[0].close_ts_utc - feature.map_creation_ts_utc
+        ).total_seconds()
+        assert labels.time_to_target2_seconds == (
+            forward[2].close_ts_utc - feature.map_creation_ts_utc
+        ).total_seconds()
+        assert labels.time_to_target1_seconds < labels.time_to_target2_seconds
+
+    def test_target1_then_invalidation_later_t1_timing_preserved(self) -> None:
+        feature = self._feature()
+        # T1 (112.72) hit on candle 1, invalidation (90) only later on candle 3.
+        forward = self._forward_ohlc(
+            [
+                (100, 113, 99.5, 113),
+                (113, 113.5, 105, 105),
+                (105, 106, 89, 89),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+        assert labels.target2_ts_utc is None
+        assert labels.invalidation_ts_utc == forward[2].close_ts_utc
+
+    def test_target1_then_later_same_candle_ambiguity_preserves_target1(self) -> None:
+        feature = self._feature()
+        # T1 hit cleanly on candle 1. Candle 2 crosses both target2 and
+        # invalidation in the same bar -- ambiguous and non-attributable,
+        # but the earlier target1_ts_utc must survive.
+        forward = self._forward_ohlc(
+            [
+                (100, 113, 99.5, 113),
+                (100, 120, 85, 110),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+        assert labels.target2_ts_utc is None
+        assert labels.invalidation_ts_utc is None
+        assert labels.ambiguous_ts_utc == forward[1].close_ts_utc
+
+    def test_bearish_target1_then_target2_later_both_timings_preserved(self) -> None:
+        feature = self._bearish_feature()
+        # Bearish mirror: T1 (87.28) hit on candle 1, T2 (83.82) later.
+        forward = self._forward_ohlc(
+            [
+                (100, 100.5, 87, 87),
+                (87, 87.5, 86, 86),
+                (86, 86.5, 83, 83),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_TARGET2_REACHED
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+        assert labels.target2_ts_utc == forward[2].close_ts_utc
+
+    def test_bearish_target1_then_invalidation_later_t1_timing_preserved(self) -> None:
+        feature = self._bearish_feature()
+        # Bearish mirror: T1 (87.28) hit on candle 1, invalidation (110) later.
+        forward = self._forward_ohlc(
+            [
+                (100, 100.5, 87, 87),
+                (87, 95, 86, 95),
+                (95, 111, 94, 111),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+        assert labels.target2_ts_utc is None
+        assert labels.invalidation_ts_utc == forward[2].close_ts_utc
 
     def test_target2_reached(self) -> None:
         feature = self._feature()
@@ -415,6 +512,86 @@ class TestImmutableOutput:
             runner.write_immutable_json(path, '{"a": 2}\n')
 
 
+class TestRunIdentity:
+    def _kwargs(self, **overrides: Any) -> dict[str, Any]:
+        base = dict(
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="4h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-06-01 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+        )
+        base.update(overrides)
+        return base
+
+    def test_run_id_deterministic_for_identical_inputs(self) -> None:
+        id_a = runner.compute_run_id(**self._kwargs())
+        id_b = runner.compute_run_id(**self._kwargs())
+        assert id_a == id_b
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"from_ts": "2026-01-02 00:00:00"},
+            {"to_ts": "2026-06-02 00:00:00"},
+            {"episode_stride_candles": 5},
+            {"max_episodes": 10},
+            {"venue": "other_venue"},
+            {"symbol": "ETH"},
+            {"timeframe": "1h"},
+        ],
+    )
+    def test_run_id_changes_when_any_dataset_defining_parameter_changes(self, override) -> None:
+        baseline = runner.compute_run_id(**self._kwargs())
+        varied = runner.compute_run_id(**self._kwargs(**override))
+        assert varied != baseline
+
+    def test_output_path_includes_run_id_and_isolates_conflicting_runs(self, tmp_path) -> None:
+        kwargs_a = self._kwargs(max_episodes=5)
+        kwargs_b = self._kwargs(max_episodes=50)
+        run_id_a = runner.compute_run_id(**kwargs_a)
+        run_id_b = runner.compute_run_id(**kwargs_b)
+        assert run_id_a != run_id_b
+
+        base_dir = tmp_path / "bitvavo" / "BTC" / "4h"
+        path_a = base_dir / run_id_a / "episodes_v1.json"
+        path_b = base_dir / run_id_b / "episodes_v1.json"
+
+        runner.write_immutable_json(path_a, '{"episodes": "a"}\n')
+        runner.write_immutable_json(path_b, '{"episodes": "b"}\n')  # must not collide with path_a
+
+        assert path_a.read_text(encoding="utf-8") == '{"episodes": "a"}\n'
+        assert path_b.read_text(encoding="utf-8") == '{"episodes": "b"}\n'
+
+    def test_manifest_carries_full_run_identity(self) -> None:
+        run_id = runner.compute_run_id(**self._kwargs())
+        manifest = runner.build_manifest(
+            run_id=run_id,
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="4h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-06-01 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+            candle_count=10,
+            episode_count=1,
+            episodes_sha256="a" * 64,
+        )
+        assert manifest["run_id"] == run_id
+        assert manifest["builder_version"] == runner.BUILDER_VERSION
+        assert manifest["contract_version"] == runner.CONTRACT_VERSION
+        assert manifest["venue"] == "bitvavo"
+        assert manifest["symbol"] == "BTC"
+        assert manifest["timeframe"] == "4h"
+        assert manifest["source_from_ts"] == "2026-01-01 00:00:00"
+        assert manifest["source_to_ts"] == "2026-06-01 00:00:00"
+        assert manifest["episode_stride_candles"] == 1
+        assert manifest["max_episodes"] is None
+
+
 class TestBoundaryAndSafety:
     def test_fetch_candles_select_only_with_exact_bounds_and_order(self) -> None:
         source = inspect.getsource(runner.fetch_candles)
@@ -440,11 +617,14 @@ class TestBoundaryAndSafety:
 
     def test_manifest_safety_markers_are_all_zero_except_research_market(self) -> None:
         manifest = runner.build_manifest(
+            run_id="deadbeef",
             venue="bitvavo",
             symbol="TST",
             timeframe="1h",
             from_ts="2026-01-01",
             to_ts="2026-01-02",
+            episode_stride_candles=1,
+            max_episodes=None,
             candle_count=10,
             episode_count=1,
             episodes_sha256="a" * 64,

@@ -118,10 +118,19 @@ target generation, invalidation generation, or episode admission.
 
 ## Lifecycle Transition Reasons
 
+T1 is **not terminal**. Reaching `target_t1` records `target1_ts_utc` /
+`time_to_target1_seconds` and the forward scan keeps going, so one episode
+can carry time-to-T1 **and** time-to-T2 (issue #555 explicitly requires
+both, plus time-to-first-entry and time-to-invalidation). Only T2,
+invalidation, same-candle ambiguity, or exhaustion of the forward/source
+data terminate the scan and set `lifecycle_transition_reason`:
+
 ```text
-TARGET1_REACHED                                target_t1 crossed before target_t2/invalidation
-TARGET2_REACHED                                 target_t2 crossed before invalidation
-INVALIDATION_BREACHED                           invalidation_level crossed
+TARGET2_REACHED                                 target_t2 crossed (target1_ts_utc is backfilled
+                                                 to this candle if T1 was not already recorded
+                                                 earlier)
+INVALIDATION_BREACHED                           invalidation_level crossed on a candle with no
+                                                 target hit
 AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE       see below
 FORWARD_WINDOW_EXHAUSTED                        replay's bounded forward-candle budget ran out
                                                  with no terminal event (research-only concept;
@@ -131,40 +140,50 @@ SOURCE_DATA_EXHAUSTED                           ran out of historical candles be
                                                  terminal event or before the forward budget
 ```
 
-`TARGET1_REACHED` / `TARGET2_REACHED` / `INVALIDATION_BREACHED` carry the
-same semantic meaning as the canonical `fib_navigation_map_v1` rebuild
-triggers `TRIGGER_ALL_TARGETS_PASSED` / `TRIGGER_PRICE_BELOW_INVALIDATION`.
+`target1_ts_utc` / `time_to_target1_seconds` can therefore be populated
+under any of the above terminal reasons (or with no terminal target/
+invalidation event at all, e.g. `SOURCE_DATA_EXHAUSTED`) -- it records
+"when T1 was reached", independent of how/whether the episode later
+terminated. `TARGET2_REACHED` / `INVALIDATION_BREACHED` carry the same
+semantic meaning as the canonical `fib_navigation_map_v1` rebuild triggers
+`TRIGGER_ALL_TARGETS_PASSED` / `TRIGGER_PRICE_BELOW_INVALIDATION`.
 
 ### Same-Candle Target/Invalidation Ambiguity
 
 A single `obs_market_candle` row only records the high and low reached
 during that bar, not the order in which they were touched. When a
-candle's OHLC range crosses **both** a target level and the invalidation
-level, there is no way to determine from the source data whether the
-target or the invalidation happened first.
+candle's OHLC range crosses **both** a target level (T1 and/or T2) and the
+invalidation level, there is no way to determine from the source data
+whether the target or the invalidation happened first.
 
 This substrate does not infer an order. When this collision occurs, the
 label builder:
 
 - sets `lifecycle_transition_reason = AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE`
 - records the candle's timestamp in `ambiguous_ts_utc`
-- leaves `target1_ts_utc`, `target2_ts_utc`, and `invalidation_ts_utc` (and
-  their `time_to_*` fields) as `None` for that episode
+- terminates the scan
+- leaves `target2_ts_utc` and `invalidation_ts_utc` (and their `time_to_*`
+  fields) as `None` for **this** candle
+- preserves `target1_ts_utc` if it was already recorded from an earlier,
+  unambiguous candle -- an earlier T1 hit is a separate, already-resolved
+  observation and is not retroactively invalidated by a later ambiguous
+  candle
 
 Downstream research (#664/#723) must not count an episode with this reason
-as a target success or an invalidation success unless a later frozen
-protocol explicitly decides how to resolve the ambiguity (e.g. an
-intra-candle tie-breaking convention, or a switch to finer-grained source
-data). `NON_ATTRIBUTABLE_LIFECYCLE_REASONS` in
+as a target2/invalidation success unless a later frozen protocol explicitly
+decides how to resolve the ambiguity (e.g. an intra-candle tie-breaking
+convention, or a switch to finer-grained source data).
+`NON_ATTRIBUTABLE_LIFECYCLE_REASONS` in
 `historical_fib_map_episode_substrate_v1.py` names the reason(s) that must
 be excluded from success/failure attribution by default.
 
-Target1-vs-target2 same-candle collisions are not ambiguous in this sense:
-extension levels are monotonically nested on the same side of price (e.g.
-`ext_1618` is farther than `ext_1272` in the same direction), so a single
-high/low crossing the farther level necessarily also crossed the nearer
-one — there is no competing interpretation, so `TARGET2_REACHED` governs
-and `target1_ts_utc` is backfilled to the same candle.
+Target1-vs-target2 same-candle collisions (no invalidation involved) are
+not ambiguous in this sense: extension levels are monotonically nested on
+the same side of price (e.g. `ext_1618` is farther than `ext_1272` in the
+same direction), so a single high/low crossing the farther level
+necessarily also crossed the nearer one -- there is no competing
+interpretation, so `TARGET2_REACHED` governs and `target1_ts_utc` is
+backfilled to the same candle if not already set.
 
 ## Historical Data Source
 
@@ -181,10 +200,24 @@ or non-monotonic candle timestamps before any geometry is built.
   contract_version, map_creation_ts_utc, direction, anchor_low, anchor_high)`.
 - The runner (`run_historical_fib_map_episode_substrate_v1.py`) writes
   `episodes_v1.json` and `manifest_v1.json` under
-  `data/research/historical_fib_map_episode_substrate_v1/<venue>/<symbol>/<interval_code>/`
-  via atomic hardlink-create. A repeat run with identical content is
-  idempotent; a repeat run with different content is refused
-  (`write_immutable_json` raises `ValueError`).
+  `data/research/historical_fib_map_episode_substrate_v1/<venue>/<symbol>/<interval_code>/<run_id>/`
+  via atomic hardlink-create. `<run_id>` is a SHA-256 of the canonical
+  (sorted-key) JSON of every dataset-defining parameter --
+  `builder_version`, `contract_version`, `venue`, `symbol`, `timeframe`,
+  `from_ts`, `to_ts`, `episode_stride_candles`, `max_episodes` -- computed by
+  `compute_run_id()`. Keying the immutable path on venue/symbol/timeframe
+  alone was unsafe: different `from_ts`/`to_ts`/`episode_stride_candles`/
+  `max_episodes` produce different datasets, so a bounded smoke run and a
+  later canonical/full run (or any two differently-bounded runs) could
+  otherwise collide at the same immutable path. Folding the full parameter
+  set into the path makes that structurally impossible: two runs with any
+  differing dataset-defining input always resolve to different `<run_id>`
+  directories, while a repeat run with identical inputs always resolves to
+  the same path (idempotent; a repeat run with different *content* at that
+  same path is still refused by `write_immutable_json`, which raises
+  `ValueError`). The manifest also carries `run_id`, `episode_stride_candles`,
+  and `max_episodes` directly, so a run's full identity is recoverable from
+  the manifest alone.
 
 ## Scope Boundary
 
@@ -194,7 +227,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (21 tests, no DB)
+3. synthetic/unit tests (39 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

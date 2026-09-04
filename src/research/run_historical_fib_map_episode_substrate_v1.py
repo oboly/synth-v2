@@ -13,7 +13,13 @@ INPUT:
 - asset (SELECT only)
 
 OUTPUT:
-- immutable JSON episode file under data/research/historical_fib_map_episode_substrate_v1/
+- immutable JSON episode file under
+  data/research/historical_fib_map_episode_substrate_v1/<venue>/<symbol>/<timeframe>/<run_id>/
+  where <run_id> is a SHA-256 of the canonical JSON of every dataset-defining
+  parameter (builder_version, contract_version, venue, symbol, timeframe,
+  from_ts, to_ts, episode_stride_candles, max_episodes) -- see
+  compute_run_id(). This keeps two runs with different bounds/stride/limit
+  from ever aliasing the same immutable path.
 
 CLI:
 python -m src.research.run_historical_fib_map_episode_substrate_v1 \
@@ -164,6 +170,41 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def compute_run_id(
+    *,
+    venue: str,
+    symbol: str,
+    timeframe: str,
+    from_ts: str,
+    to_ts: str,
+    episode_stride_candles: int,
+    max_episodes: int | None,
+) -> str:
+    """Deterministic run identity over every dataset-defining parameter.
+
+    Immutable output is unsafe if it is keyed only on venue/symbol/timeframe:
+    different `from_ts`/`to_ts`/`episode_stride_candles`/`max_episodes` values
+    produce different episode datasets. The run id folds all of them (plus
+    builder/contract version) into the output path so two runs with
+    different dataset-defining inputs can never alias the same immutable
+    artifact, and a repeat run with identical inputs always resolves to the
+    same path (idempotent).
+    """
+    run_key = {
+        "builder_version": BUILDER_VERSION,
+        "contract_version": CONTRACT_VERSION,
+        "venue": venue,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "from_ts": from_ts,
+        "to_ts": to_ts,
+        "episode_stride_candles": episode_stride_candles,
+        "max_episodes": max_episodes,
+    }
+    canonical_text = json.dumps(run_key, sort_keys=True, separators=(",", ":"))
+    return _sha256_text(canonical_text)
+
+
 def write_immutable_json(path: Path, text: str) -> str:
     """Write `text` to `path` exactly once via atomic hardlink create.
 
@@ -219,16 +260,20 @@ def write_immutable_json(path: Path, text: str) -> str:
 
 def build_manifest(
     *,
+    run_id: str,
     venue: str,
     symbol: str,
     timeframe: str,
     from_ts: str,
     to_ts: str,
+    episode_stride_candles: int,
+    max_episodes: int | None,
     candle_count: int,
     episode_count: int,
     episodes_sha256: str,
 ) -> dict[str, Any]:
     return {
+        "run_id": run_id,
         "builder_name": BUILDER_NAME,
         "builder_version": BUILDER_VERSION,
         "contract_version": CONTRACT_VERSION,
@@ -239,6 +284,8 @@ def build_manifest(
         "source_from_ts": from_ts,
         "source_to_ts": to_ts,
         "source_candle_count": candle_count,
+        "episode_stride_candles": episode_stride_candles,
+        "max_episodes": max_episodes,
         "episode_count": episode_count,
         "episodes_sha256": episodes_sha256,
         "safety_markers": {
@@ -291,18 +338,31 @@ def main(argv: list[str] | None = None) -> int:
     episodes_text = episodes_to_json(records)
     episodes_sha256 = _sha256_text(episodes_text)
 
-    output_dir = Path(args.output_dir) / args.venue / args.symbol / cfg.interval_code
+    run_id = compute_run_id(
+        venue=args.venue,
+        symbol=args.symbol,
+        timeframe=args.timeframe,
+        from_ts=args.from_ts,
+        to_ts=args.to_ts,
+        episode_stride_candles=args.episode_stride_candles,
+        max_episodes=args.max_episodes,
+    )
+
+    output_dir = Path(args.output_dir) / args.venue / args.symbol / cfg.interval_code / run_id
     episodes_path = output_dir / "episodes_v1.json"
     manifest_path = output_dir / "manifest_v1.json"
 
     write_immutable_json(episodes_path, episodes_text)
 
     manifest = build_manifest(
+        run_id=run_id,
         venue=args.venue,
         symbol=args.symbol,
         timeframe=args.timeframe,
         from_ts=args.from_ts,
         to_ts=args.to_ts,
+        episode_stride_candles=args.episode_stride_candles,
+        max_episodes=args.max_episodes,
         candle_count=len(candles),
         episode_count=len(records),
         episodes_sha256=episodes_sha256,
@@ -311,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     write_immutable_json(manifest_path, manifest_text)
 
     print(
-        f"FINISHED episodes={len(records)} episodes_path={episodes_path} "
+        f"FINISHED episodes={len(records)} run_id={run_id} episodes_path={episodes_path} "
         f"manifest_path={manifest_path} episodes_sha256={episodes_sha256}",
         flush=True,
     )

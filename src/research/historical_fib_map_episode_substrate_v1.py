@@ -95,12 +95,19 @@ DIRECTION_FROM_CURRENT_LEG: Mapping[str, str] = {
 # ---------------------------------------------------------------------------
 # Lifecycle transition reasons
 # ---------------------------------------------------------------------------
-# TARGET1_REACHED / TARGET2_REACHED / INVALIDATION_BREACHED reuse the same
-# semantic meaning as the canonical fib_navigation_map_v1 rebuild triggers
+# TARGET2_REACHED / INVALIDATION_BREACHED reuse the same semantic meaning as
+# the canonical fib_navigation_map_v1 rebuild triggers
 # (TRIGGER_ALL_TARGETS_PASSED / TRIGGER_PRICE_BELOW_INVALIDATION). The
 # remaining reasons are research-only concepts: production runs forward
 # live and never needs to say "the replay window ran out" or "the source
 # candle for this bar touched both sides and OHLC cannot order them".
+#
+# TARGET1_REACHED is NOT a terminal transition reason: T1 records
+# target1_ts_utc without ending the scan, so #555 can observe time-to-T1 AND
+# time-to-T2 in the same episode. The label is kept as a named constant only
+# because target1_ts_utc/time_to_target1_seconds on EpisodeOutcomeLabels
+# still needs a stable name for "T1 was reached" in docs/tests; it never
+# appears as `lifecycle_transition_reason`.
 LIFECYCLE_REASON_TARGET1_REACHED = "TARGET1_REACHED"
 LIFECYCLE_REASON_TARGET2_REACHED = "TARGET2_REACHED"
 LIFECYCLE_REASON_INVALIDATION_BREACHED = "INVALIDATION_BREACHED"
@@ -119,7 +126,6 @@ LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE = (
 
 TERMINAL_LIFECYCLE_REASONS = frozenset(
     {
-        LIFECYCLE_REASON_TARGET1_REACHED,
         LIFECYCLE_REASON_TARGET2_REACHED,
         LIFECYCLE_REASON_INVALIDATION_BREACHED,
         LIFECYCLE_REASON_FORWARD_WINDOW_EXHAUSTED,
@@ -526,13 +532,19 @@ def build_episode_labels(
     `feature.map_creation_ts_utc`. This is the structural PIT tripwire: any
     candle at/before as-of raises PitViolationError.
 
-    When a single candle's OHLC range crosses both a target level and the
-    invalidation level, obs_market_candle cannot establish which happened
-    first. That candle is labeled
-    LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE and none of
-    target1_ts_utc / target2_ts_utc / invalidation_ts_utc are set for it --
-    the episode must not be counted as a target success or an invalidation
-    success from this candle.
+    T1 is not terminal: reaching target_t1 records target1_ts_utc but the
+    scan continues so target2_ts_utc / time_to_target2_seconds can still be
+    observed later, exactly as #555 requires (time to T1 AND time to T2 in
+    the same episode). Only T2, invalidation, same-candle ambiguity, or
+    forward/source exhaustion terminate the scan.
+
+    When a single candle's OHLC range crosses both a target level (T1 and/or
+    T2) and the invalidation level, obs_market_candle cannot establish which
+    happened first. That candle is labeled
+    LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE and terminates
+    the scan; target2_ts_utc / invalidation_ts_utc are NOT set for it. A
+    target1_ts_utc already recorded from an earlier, non-ambiguous candle is
+    preserved -- only this candle's attribution is withheld.
     """
     for candle in forward_candles:
         if candle.close_ts_utc <= feature.map_creation_ts_utc:
@@ -575,7 +587,9 @@ def build_episode_labels(
 
         if invalidation_hit and target_hit_this_candle:
             # Cannot infer target-first or invalidation-first from OHLC.
-            # Do not attribute this candle to either outcome.
+            # Do not attribute this candle to either outcome. A target1_ts
+            # already recorded from an earlier, unambiguous candle is
+            # preserved -- only this candle's own attribution is withheld.
             ambiguous_ts = candle.close_ts_utc
             reason = LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
             break
@@ -590,9 +604,10 @@ def build_episode_labels(
             reason = LIFECYCLE_REASON_TARGET2_REACHED
             break
         if target1_hit:
-            target1_ts = candle.close_ts_utc
-            reason = LIFECYCLE_REASON_TARGET1_REACHED
-            break
+            # T1 is not terminal: record it and keep scanning so a later
+            # T2/invalidation/ambiguity can still be observed.
+            if target1_ts is None:
+                target1_ts = candle.close_ts_utc
     else:
         if len(forward_candles) > cfg.forward_max_candles:
             reason = LIFECYCLE_REASON_FORWARD_WINDOW_EXHAUSTED
