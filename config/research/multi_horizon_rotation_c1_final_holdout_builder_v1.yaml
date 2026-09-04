@@ -21,7 +21,7 @@ canonical_run_binding:
   reopen_in_alternate_directory: DENY
 
 authoritative_opened_state_registry:
-  location: data/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  location: approved_account_passwd_home/.local/state/synth/research/multi_horizon_rotation_c1_final_holdout_registry_v1
   caller_selectable: false
   key_fields: [manifest_sha256, source_integrity_composite_sha256, venue, candidate_id, phase]
   key_is_path_independent: true
@@ -31,17 +31,17 @@ authoritative_opened_state_registry:
   check_then_write_sequence: false
   concurrent_fresh_run_winner_count: 1
   fresh_run_denied_registry_states: [RUNNING, INTERRUPTED, FAILED, FINISHED]
-  resume_allowed_registry_states: [RUNNING, INTERRUPTED]
-  resume_denied_registry_states: [FAILED, FINISHED]
+  resume_allowed_registry_states: [RUNNING, INTERRUPTED, FINALIZING_recovery_only]
+  resume_denied_registry_states: [FAILED, FINISHED_except_mixed_FINALIZING_recovery]
   silent_reset_or_refreeze: DENY
 
 execution_identity:
-  ordered_gates: [approved_frozen_manifest_sha256, frozen_c1_implementation_fingerprint, verified_source_integrity, approved_execution_host, authoritative_one_shot_registry_and_run_lease]
+  ordered_gates: [approved_execution_host, approved_execution_account, authoritative_registry_root, canonical_paths, approved_frozen_manifest_sha256, approved_source_integrity_artifact_identity, frozen_c1_implementation_fingerprint, current_source_recompute_and_verify, authoritative_one_shot_registry_and_run_lease]
 
 integrity_gate:
   required: true
   artifact: source_integrity_v1.json
-  mode: recompute_then_verify_existing
+  mode: approved_artifact_identity_before_db_then_recompute_and_verify_existing
   verification_must_complete_before_candidate_replay: true
   verification_must_complete_before_resumed_replay: true
   drift_policy: fail_closed
@@ -54,14 +54,14 @@ interruption_and_resume:
   interrupted_lines_emitted: 1
   traceback_on_interrupt: false
   resume_argument: --resume
-  resume_allowed_terminal_states: [RUNNING, INTERRUPTED]
-  resume_denied_terminal_states: [FINISHED, FAILED]
-  post_open_ordinary_exception_terminal_state: FAILED
+  resume_allowed_terminal_states: [RUNNING, INTERRUPTED, FINALIZING_recovery_only]
+  resume_denied_terminal_states: [FINISHED, FAILED_except_mixed_FINALIZING_recovery]
+  post_open_ordinary_exception_terminal_state: FAILED_before_rows_publication_FINALIZING_after_rows_publication
   post_open_failure_marks_both: [local_checkpoint, authoritative_registry]
   pre_open_failure_creates_opened_state: false
 
 resume_lease:
-  location: data/research/multi_horizon_rotation_c1_final_holdout_registry_v1
+  location: approved_account_passwd_home/.local/state/synth/research/multi_horizon_rotation_c1_final_holdout_registry_v1
   path_rule: "<registry_key>.resume_lease.json"
   caller_selectable: false
   key_is_path_independent: true
@@ -69,7 +69,7 @@ resume_lease:
   check_then_create_sequence: false
   concurrent_resume_winner_count: 1
   acquired_before: [source_integrity_reverify, checkpoint_registry_identity_validation, partial_reconcile, replay]
-  released_on: [FINISHED, INTERRUPTED, FAILED]
+  released_on: [before_FINISHED_terminal_commit, INTERRUPTED, FAILED]
   automatic_stale_lease_recovery: false
   lease_identity_fields: [registry_key, runner, runner_version, pid, hostname, acquired_ts_utc]
 

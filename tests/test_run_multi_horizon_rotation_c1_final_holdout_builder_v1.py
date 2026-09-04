@@ -3000,3 +3000,103 @@ def test_approved_source_integrity_identity_has_no_cli_or_environment_override(
     assert module.verify_approved_source_integrity_artifact(artifact) == approved
     with pytest.raises(SystemExit):
         module.parse_args(["--split-manifest", str(manifest_path), "--source-integrity", str(artifact), "--approved-source-integrity-composite-sha256", "0" * 64])
+
+
+# --- Ordinary post-publication finalization recovery ----------------------
+
+@pytest.mark.parametrize("inject", ["after_rename", "summary", "checkpoint", "registry", "lease_release"])
+def test_ordinary_post_publication_failure_recovers_without_replay_or_row_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inject: str
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    artifact_path = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+    summary_path = tmp_path / "final_holdout_c1_summary_v1.json"
+    real_replace = Path.replace
+    real_write_json_atomic = module.write_json_atomic
+    real_write_checkpoint = module.write_checkpoint
+    real_mark_registry_terminal = module.mark_registry_terminal
+    real_release_run_lease = module.release_run_lease
+
+    if inject == "after_rename":
+        def injected_replace(self, target):
+            result = real_replace(self, target)
+            if Path(target) == artifact_path:
+                raise RuntimeError("ordinary after-rename failure")
+            return result
+        monkeypatch.setattr(Path, "replace", injected_replace)
+    elif inject == "summary":
+        def injected_summary(path, payload):
+            if Path(path) == summary_path:
+                raise RuntimeError("ordinary summary failure")
+            real_write_json_atomic(path, payload)
+        monkeypatch.setattr(module, "write_json_atomic", injected_summary)
+    elif inject == "checkpoint":
+        def injected_checkpoint(*args, **kwargs):
+            if kwargs.get("terminal_state") == "FINISHED":
+                raise RuntimeError("ordinary finished-checkpoint failure")
+            return real_write_checkpoint(*args, **kwargs)
+        monkeypatch.setattr(module, "write_checkpoint", injected_checkpoint)
+    elif inject == "registry":
+        def injected_registry(*args, **kwargs):
+            if kwargs.get("terminal_state") == "FINISHED":
+                raise RuntimeError("ordinary finished-registry failure")
+            return real_mark_registry_terminal(*args, **kwargs)
+        monkeypatch.setattr(module, "mark_registry_terminal", injected_registry)
+    else:
+        def injected_release(path):
+            real_release_run_lease(path)
+            raise RuntimeError("ordinary lease-release failure")
+        monkeypatch.setattr(module, "release_run_lease", injected_release)
+
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    rows_before = artifact_path.read_bytes()
+    cp_path = checkpoint_path(tmp_path)
+    manifest_sha = module.manifest_fingerprint(manifest)
+    key = registry_key_for(manifest_sha256=manifest_sha, source_integrity_composite_sha256="fixed", venue="bitvavo", candidate_id="C1", phase="final_holdout")
+    registry_path = registry_entry_path(key)
+    checkpoint_state = load_checkpoint(cp_path)["terminal_state"]
+    registry_state = load_registry_entry(registry_path)["terminal_state"]
+    assert checkpoint_state in module.FINALIZATION_STATES
+    assert registry_state in module.FINALIZATION_STATES
+    assert "FINALIZING" in (checkpoint_state, registry_state)
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+
+    monkeypatch.setattr(Path, "replace", real_replace)
+    monkeypatch.setattr(module, "write_json_atomic", real_write_json_atomic)
+    monkeypatch.setattr(module, "write_checkpoint", real_write_checkpoint)
+    monkeypatch.setattr(module, "mark_registry_terminal", real_mark_registry_terminal)
+    monkeypatch.setattr(module, "release_run_lease", real_release_run_lease)
+    replay_calls = {"n": 0}
+    monkeypatch.setattr(module, "evaluate_candidate", lambda **kwargs: replay_calls.__setitem__("n", replay_calls["n"] + 1))
+
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]) == 0
+    assert replay_calls["n"] == 0
+    assert artifact_path.read_bytes() == rows_before
+    assert load_checkpoint(cp_path)["terminal_state"] == "FINISHED"
+    assert load_registry_entry(registry_path)["terminal_state"] == "FINISHED"
+    assert not run_lease_path(key).exists()
+
+
+def test_ordinary_pre_rename_finalization_failure_still_marks_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=_two_asof_manifest())
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=tmp_path / "_registry")
+    real_replace = Path.replace
+    artifact_path = tmp_path / "final_holdout_c1_rows_v1.jsonl"
+    monkeypatch.setattr(
+        Path, "replace",
+        lambda self, target: (_ for _ in ()).throw(RuntimeError("pre-rename failure"))
+        if Path(target) == artifact_path else real_replace(self, target),
+    )
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+    assert load_checkpoint(checkpoint_path(tmp_path))["terminal_state"] == "FAILED"
+    monkeypatch.setattr(Path, "replace", real_replace)

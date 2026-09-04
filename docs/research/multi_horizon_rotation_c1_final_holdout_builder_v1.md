@@ -21,13 +21,14 @@ This runner does not reopen C2 or C3.
 
 Before any final-holdout candidate replay or forward-label construction, the runner:
 
-1. loads the frozen split manifest, requires `final_holdout_inspected=false`, and verifies its canonical-JSON SHA-256 against the committed `approved_split_manifest_sha256`;
-2. recomputes `multi_horizon_rotation_source_integrity_v1` against the canonical DB sources;
-3. verifies equality with the frozen write-once `source_integrity_v1.json`;
-4. fails closed on any drift.
+1. verifies the approved host and account, resolves the approved-account registry root, and canonicalizes the supplied paths;
+2. loads the frozen split manifest and verifies its committed canonical SHA-256 identity;
+3. loads `source_integrity_v1.json` and requires its `composite_sha256` to equal the committed approved source-integrity composite before any DB access;
+4. verifies the committed semantic implementation fingerprint;
+5. recomputes `multi_horizon_rotation_source_integrity_v1` against the canonical DB sources and verifies equality with the approved artifact.
 
-Only after successful verification may holdout rows be built. Execution identity is: approved frozen manifest SHA → frozen C1 implementation fingerprint → verified source integrity → approved host + authoritative one-shot registry/run lease. On resume, the committed approved SHA, supplied SHA, checkpoint SHA, and registry SHA must agree; manifest drift becomes `FAILED` with zero replay continuation. On `--resume`, this
-recompute-and-verify step runs again, before any further row is replayed.
+Only after successful verification may holdout rows be built. On resume, these gates run again before any replay or finalization recovery.
+
 
 ## Canonical one-time holdout opening
 
@@ -43,7 +44,7 @@ That per-directory checkpoint alone is **not** the security boundary: a
 byte-identical copy of `split_manifest_v1.json` + `source_integrity_v1.json` in
 a second directory would otherwise open a fresh checkpoint namespace. The
 actual one-shot gate is a trusted, non-caller-selectable **opened-state
-registry** under `data/research/multi_horizon_rotation_c1_final_holdout_registry_v1/`
+registry** under the approved execution account passwd home at `<approved-home>/.local/state/synth/research/multi_horizon_rotation_c1_final_holdout_registry_v1/`
 (never overridable by any CLI flag or environment variable), keyed by a
 SHA-256 fingerprint of:
 
@@ -125,24 +126,7 @@ a pre-registered, committed expected value at
 There is no CLI/env override and no refreeze/update mechanism in the
 runner -- a mismatch always fails closed.
 
-The fingerprint binds every semantic that can change the evaluated C1
-signal:
-
-```text
-1. canonical JSON of the frozen C1 candidate spec from CANDIDATE_SPECS
-   (candidate_id, model_version, horizon_minutes, effective_horizon --
-   which together fix the lookback/input-interval semantics)
-2. exact source bytes, on disk, of src/research/multi_horizon_rotation_replay_v1.py
-   -- the sole module owning the C1 formula, sign, weights, eligibility/
-   minimum-cohort, and boundary/gap semantics
-```
-
-`implementation_fingerprint_sha256` is SHA-256 over the canonical
-(`sort_keys=True, separators=(",", ":")`) JSON envelope
-`{"c1_spec": <spec fields>, "replay_source_sha256": <sha256 of the replay
-module's source bytes>}`. Hashing the module's actual source bytes (rather
-than `inspect.getsource`) avoids formatting-related instability and detects
-any change to that file.
+The fingerprint binds the canonical C1 spec and exact source-byte SHA-256 values for the minimal direct semantic owners: `multi_horizon_rotation_replay_v1` (C1 scoring), `multi_horizon_rotation_dataset_builder_v1` (PIT and forward-label primitives), `run_multi_horizon_rotation_dataset_builder_v1` (candle reconstruction and validation rows), and `run_multi_horizon_rotation_source_integrity_v1` (source-integrity construction and verification). DB, CLI, logging, and path helpers are deliberately excluded. The committed record stores this deterministic canonical envelope and its overall SHA-256.
 
 The verified fingerprint is bound into both the local checkpoint and the
 authoritative registry entry (`implementation_fingerprint_sha256`), so a
@@ -159,19 +143,12 @@ registry entry `INTERRUPTED`, prints exactly one `INTERRUPTED` line with no
 traceback, restores the previous signal handlers, and exits `130` (SIGINT) or
 `143` (SIGTERM). No partially processed as-of is ever committed.
 
-Once the holdout has been opened (registry + local checkpoint created, or a
-`--resume` of a previously-opened fingerprint), **any ordinary exception**
-atomically marks both the local checkpoint and the registry entry
-`FAILED` before the runner returns a non-zero exit code. `FAILED` is
-permanently non-resumable, exactly like `FINISHED` -- only `RUNNING` and
-`INTERRUPTED` may ever be resumed. A failure that happens *before* the holdout
+Before the rows rename, ordinary failures retain `FAILED` semantics. Immediately before the rename, both records transition to `FINALIZING`. Once rows are published, ordinary failures leave that recoverable state (or a deterministic mixed `FINISHED`/`FINALIZING` pair); a later `--resume` must reacquire the same lease, performs zero replay, never rewrites rows, and completes only summary, terminal records, and lease handling. `FAILED` remains permanently non-resumable; `FINALIZING` is resumeable only with a published rows artifact and no partial artifact. A failure that happens *before* the holdout
 was opened (for example the initial integrity verification itself) creates no
 registry entry at all.
 
-`--resume` requires the canonical local checkpoint and partial artifact to
-exist with `terminal_state` `RUNNING` or `INTERRUPTED`, and the matching
-registry entry (located by the checkpoint's own recorded fingerprint) to exist
-in the same resumable state.
+`--resume` normally requires the canonical local checkpoint and partial artifact with terminal state `RUNNING` or `INTERRUPTED`. The only exception is artifact-backed `FINALIZING` recovery (including a mixed `FINISHED`/`FINALIZING` pair): it requires no partial artifact and completes no replay. The matching registry entry is located by the checkpoint's own recorded fingerprint.
+
 
 ### Exclusive resume lease
 

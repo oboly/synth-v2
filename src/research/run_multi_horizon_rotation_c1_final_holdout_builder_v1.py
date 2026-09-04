@@ -87,6 +87,7 @@ PHASE = "final_holdout"
 MANIFEST_BASENAME = "split_manifest_v1.json"
 INTEGRITY_BASENAME = "source_integrity_v1.json"
 RESUMABLE_TERMINAL_STATES = ("RUNNING", "INTERRUPTED")
+FINALIZATION_STATES = ("FINALIZING", "FINISHED")
 
 # The single approved execution host for this frozen #593 C1 final-holdout
 # run -- see ``enforce_approved_execution_host`` for why this is required in
@@ -639,6 +640,7 @@ def validate_resume_checkpoint(
     manifest_sha256: str,
     source_integrity_composite_sha256: str,
     implementation_fingerprint_sha256: str | None = None,
+    allow_finalization_state: bool = False,
 ) -> None:
     if checkpoint.get("runner") != RUNNER_NAME or checkpoint.get("runner_version") != RUNNER_VERSION:
         raise ValueError("checkpoint runner/version mismatch")
@@ -660,10 +662,11 @@ def validate_resume_checkpoint(
                 "was opened; refuses to resume under changed code"
             )
     terminal_state = checkpoint.get("terminal_state")
-    if terminal_state not in RESUMABLE_TERMINAL_STATES:
+    allowed_states = RESUMABLE_TERMINAL_STATES + (FINALIZATION_STATES if allow_finalization_state else ())
+    if terminal_state not in allowed_states:
         raise ValueError(
             f"checkpoint terminal_state={terminal_state!r} is not resumable; "
-            "only RUNNING or INTERRUPTED checkpoints may be resumed"
+            "only RUNNING, INTERRUPTED, or authorized FINALIZING recovery may resume"
         )
     for key in ("asofs_completed", "row_count", "partial_bytes"):
         if int(checkpoint.get(key, -1)) < 0:
@@ -963,6 +966,26 @@ def install_interrupt_handlers() -> dict[int, Any]:
     return previous
 
 
+def build_final_holdout_summary(
+    *, venue: str, manifest_sha: str, composite_sha: str, implementation_fingerprint: str,
+    phase_start: datetime, phase_end: datetime, asofs_completed: int, row_count: int,
+    source_query_count: int, source_rows_read: int,
+) -> dict[str, Any]:
+    return {
+        "runner": RUNNER_NAME, "runner_version": RUNNER_VERSION, "phase": PHASE,
+        "candidate_id": CANDIDATE_ID, "venue": venue, "manifest_sha256": manifest_sha,
+        "source_integrity_composite_sha256": composite_sha,
+        "implementation_fingerprint_sha256": implementation_fingerprint,
+        "phase_start": phase_start.isoformat().replace("+00:00", "Z"),
+        "phase_end_exclusive": phase_end.isoformat().replace("+00:00", "Z"),
+        "asof_count": asofs_completed, "row_count": row_count,
+        "source_query_count": source_query_count, "source_rows_read": source_rows_read,
+        "final_holdout_access": "OPENED_FOR_PREREGISTERED_C1_ONLY",
+        "c2_access": "DENY", "c3_access": "DENY", "database_writes": 0,
+        "live_orders": 0, "resume_supported": True,
+    }
+
+
 def finalize_c1_holdout_bundle(
     *,
     partial_path: Path,
@@ -985,33 +1008,12 @@ def finalize_c1_holdout_bundle(
     source_rows_read: int,
     implementation_fingerprint_sha256: str = "",
 ) -> tuple[int, int | None]:
-    """Publish the final artifact bundle and commit the FINISHED terminal state
-    as one signal-safe, forward-only critical section.
+    """Forward-only, signal-safe finalization after holdout replay.
 
-    Renaming ``partial_path`` into ``artifact_path`` is the point of no
-    return: replay is fully done, and unlike an ordinary pre-finalize
-    failure (which still has an intact resumable RUNNING checkpoint), there
-    is no generically safe way to roll a checkpoint back to its exact prior
-    RUNNING content once the final artifact has actually been published. So
-    once that rename has genuinely happened, every remaining step here --
-    writing the summary, the FINISHED checkpoint, the FINISHED registry
-    entry, and releasing the run lease -- always runs to completion, even if
-    a SIGINT/SIGTERM (or, in tests, a directly-raised ``RunnerInterrupted``)
-    arrives partway through. Real OS signals are masked for the duration of
-    this section so the outer interrupt-raising handlers cannot unwind the
-    stack mid-step; a ``RunnerInterrupted`` raised synchronously from inside
-    one step (as tests do, since a real signal cannot be timed to an exact
-    line of code) is instead caught and deferred by that step's guard. The
-    caller only learns whether a signal was deferred after every step has
-    completed and the terminal state is durably FINISHED, so it can never
-    observe a published final artifact/summary next to a checkpoint/registry
-    that is still RUNNING or has been overwritten to INTERRUPTED, and can
-    never reach FINISHED without both final files durably published.
-
-    If the rename itself is interrupted BEFORE it actually completes (i.e.
-    ``artifact_path`` does not yet exist), nothing has been published: this
-    is an ordinary pre-finalize interrupt, and the exception is re-raised
-    unchanged so the caller's existing INTERRUPTED/resumable handling runs.
+    ``FINALIZING`` is durably recorded in checkpoint and registry before the
+    rows rename. A pre-rename ordinary failure still follows FAILED handling;
+    an ordinary failure after publication leaves FINALIZING for a lease-bound
+    resume that writes only missing finalization state and never replays rows.
     """
     deferred_signum: int | None = None
 
@@ -1020,12 +1022,6 @@ def finalize_c1_holdout_bundle(
         if deferred_signum is None:
             deferred_signum = signum
 
-    # signal.signal() only works on the main thread of the main interpreter.
-    # Real OS-signal masking is only meaningful there anyway (a runner process
-    # only ever receives SIGINT/SIGTERM on its main thread); concurrency
-    # regression tests that drive main() from worker threads simulate
-    # interruption by directly raising RunnerInterrupted instead, which the
-    # per-step guards below still catch and defer regardless of this masking.
     on_main_thread = threading.current_thread() is threading.main_thread()
     previous_handlers: dict[int, Any] = {}
     if on_main_thread:
@@ -1033,38 +1029,57 @@ def finalize_c1_holdout_bundle(
         for sig in previous_handlers:
             signal.signal(sig, record_real_signal)
     try:
-        try:
-            partial_path.replace(artifact_path)
-        except RunnerInterrupted as exc:
-            if not artifact_path.exists():
-                raise
-            # The rename itself completed before/while this was raised: past
-            # the point of no return, so defer rather than propagate.
-            deferred_signum = exc.signum
+        if not artifact_path.exists():
+            try:
+                write_checkpoint(
+                    cp_path, venue=venue, manifest_sha256=manifest_sha,
+                    source_integrity_composite_sha256=composite_sha, phase_start=phase_start,
+                    phase_end=phase_end, last_completed_asof=last_completed_asof,
+                    asofs_completed=asofs_completed, row_count=row_count,
+                    partial_bytes=int(partial_path.stat().st_size), source_query_count=source_query_count,
+                    source_rows_read=source_rows_read, terminal_state="FINALIZING",
+                    implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+                )
+            except RunnerInterrupted as exc:
+                deferred_signum = exc.signum
+            try:
+                mark_registry_terminal(registry_path, terminal_state="FINALIZING", identity=registry_identity)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+            try:
+                partial_path.replace(artifact_path)
+            except RunnerInterrupted as exc:
+                if not artifact_path.exists():
+                    raise
+                deferred_signum = exc.signum
         final_bytes = artifact_path.stat().st_size
 
-        try:
-            write_json_atomic(summary_path, summary)
-        except RunnerInterrupted as exc:
-            if deferred_signum is None:
-                deferred_signum = exc.signum
+        if not summary_path.exists():
+            try:
+                write_json_atomic(summary_path, summary)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
+
+        # Release before terminal transitions: a release failure leaves both
+        # durable state records FINALIZING, so a subsequent authorized resume
+        # can finish safely without replay. No stale-lease recovery is added.
+        if run_lease_held_path is not None:
+            try:
+                release_run_lease(run_lease_held_path)
+            except RunnerInterrupted as exc:
+                if deferred_signum is None:
+                    deferred_signum = exc.signum
 
         try:
             write_checkpoint(
-                cp_path,
-                venue=venue,
-                manifest_sha256=manifest_sha,
-                source_integrity_composite_sha256=composite_sha,
-                phase_start=phase_start,
-                phase_end=phase_end,
-                last_completed_asof=last_completed_asof,
-                asofs_completed=asofs_completed,
-                row_count=row_count,
-                partial_bytes=final_bytes,
-                source_query_count=source_query_count,
-                source_rows_read=source_rows_read,
-                terminal_state="FINISHED",
-                implementation_fingerprint_sha256=implementation_fingerprint_sha256,
+                cp_path, venue=venue, manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha, phase_start=phase_start,
+                phase_end=phase_end, last_completed_asof=last_completed_asof,
+                asofs_completed=asofs_completed, row_count=row_count, partial_bytes=final_bytes,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+                terminal_state="FINISHED", implementation_fingerprint_sha256=implementation_fingerprint_sha256,
             )
         except RunnerInterrupted as exc:
             if deferred_signum is None:
@@ -1075,13 +1090,6 @@ def finalize_c1_holdout_bundle(
         except RunnerInterrupted as exc:
             if deferred_signum is None:
                 deferred_signum = exc.signum
-
-        if run_lease_held_path is not None:
-            try:
-                release_run_lease(run_lease_held_path)
-            except RunnerInterrupted as exc:
-                if deferred_signum is None:
-                    deferred_signum = exc.signum
     finally:
         if on_main_thread:
             for sig, handler in previous_handlers.items():
@@ -1107,6 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = None
     partial_path: Path | None = None
+    artifact_path: Path | None = None
     cp_path: Path | None = None
     registry_path: Path | None = None
     registry_identity: dict[str, str] | None = None
@@ -1199,16 +1208,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         checkpoint: dict[str, Any] | None = None
+        finalization_recovery = False
         if args.resume:
-            if not cp_path.exists() or not partial_path.exists():
-                raise ValueError(
-                    "resume requested but the canonical checkpoint and/or partial artifact is missing"
-                )
+            if not cp_path.exists():
+                raise ValueError("resume requested but the canonical checkpoint is missing")
             checkpoint = load_checkpoint(cp_path)
-            if checkpoint.get("terminal_state") not in RESUMABLE_TERMINAL_STATES:
+            checkpoint_state = checkpoint.get("terminal_state")
+            if checkpoint_state in RESUMABLE_TERMINAL_STATES:
+                if not partial_path.exists():
+                    raise ValueError("resume requested but the canonical partial artifact is missing")
+            elif checkpoint_state not in FINALIZATION_STATES or not artifact_path.exists() or partial_path.exists():
                 raise ValueError(
-                    f"checkpoint terminal_state={checkpoint.get('terminal_state')!r} is not resumable; "
-                    "only RUNNING or INTERRUPTED checkpoints may be resumed"
+                    f"checkpoint terminal_state={checkpoint_state!r} is not resumable; "
+                    "FINALIZING recovery requires a published rows artifact and no partial artifact"
                 )
             # The locking key is derived from the checkpoint's OWN recorded identity
             # (not yet-recomputed values), so we can locate -- and if needed fail --
@@ -1233,10 +1245,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             registry_path = registry_entry_path(registry_key)
             registry_entry = load_registry_entry(registry_path)
-            if registry_entry is None or registry_entry.get("terminal_state") not in RESUMABLE_TERMINAL_STATES:
+            if registry_entry is None:
+                raise ValueError("authoritative opened-state registry entry is missing; refuses to resume")
+            registry_state = registry_entry.get("terminal_state")
+            finalization_recovery = (
+                artifact_path.exists()
+                and not partial_path.exists()
+                and checkpoint.get("terminal_state") in FINALIZATION_STATES
+                and registry_state in FINALIZATION_STATES
+                and "FINALIZING" in (checkpoint.get("terminal_state"), registry_state)
+            )
+            if not finalization_recovery and registry_state not in RESUMABLE_TERMINAL_STATES:
                 raise ValueError(
-                    "authoritative opened-state registry entry is missing or not resumable; "
-                    "refuses to resume"
+                    "authoritative opened-state registry entry is not resumable; refuses to resume"
                 )
             validate_resume_registry_entry(registry_entry, identity=registry_identity)
 
@@ -1307,6 +1328,43 @@ def main(argv: list[str] | None = None) -> int:
             f"composite_sha256={composite_sha} "
             f"elapsed_s={time.perf_counter() - gate_started:.3f}"
         )
+
+        if args.resume and finalization_recovery:
+            assert checkpoint is not None and registry_path is not None and registry_identity is not None
+            validate_resume_checkpoint(
+                checkpoint, venue=args.venue, manifest_sha256=manifest_sha,
+                source_integrity_composite_sha256=composite_sha,
+                implementation_fingerprint_sha256=implementation_fingerprint,
+                allow_finalization_state=True,
+            )
+            last_raw = checkpoint.get("last_completed_asof")
+            last_completed_asof = None if last_raw is None else parse_ts(last_raw)
+            asofs_completed = int(checkpoint["asofs_completed"])
+            row_count = int(checkpoint["row_count"])
+            source_query_count = int(checkpoint.get("source_query_count", 0))
+            source_rows_read = int(checkpoint.get("source_rows_read", 0))
+            summary = build_final_holdout_summary(
+                venue=args.venue, manifest_sha=manifest_sha, composite_sha=composite_sha,
+                implementation_fingerprint=implementation_fingerprint, phase_start=phase_start,
+                phase_end=phase_end, asofs_completed=asofs_completed, row_count=row_count,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+            )
+            final_bytes, deferred_signum = finalize_c1_holdout_bundle(
+                partial_path=partial_path, artifact_path=artifact_path, summary_path=summary_path, summary=summary,
+                cp_path=cp_path, registry_path=registry_path, registry_identity=registry_identity,
+                run_lease_held_path=run_lease_held_path, venue=args.venue, manifest_sha=manifest_sha,
+                composite_sha=composite_sha, phase_start=phase_start, phase_end=phase_end,
+                last_completed_asof=last_completed_asof, asofs_completed=asofs_completed, row_count=row_count,
+                source_query_count=source_query_count, source_rows_read=source_rows_read,
+                implementation_fingerprint_sha256=implementation_fingerprint,
+            )
+            partial_path = None
+            emit(
+                f"FINISHED runner={RUNNER_NAME} result=PASS phase={PHASE} candidate={CANDIDATE_ID} "
+                f"rows={row_count} finalization_recovery=1 final_bytes={final_bytes} "
+                f"database_writes=0 live_orders=0 elapsed_s={time.perf_counter() - started:.3f}"
+            )
+            return 0
 
         source_span = manifest["source_span"]
         coverage = fetch_asset_coverage(conn, venue=args.venue, through_ts=parse_ts(source_span["end"]))
@@ -1509,28 +1567,12 @@ def main(argv: list[str] | None = None) -> int:
         if asofs_completed != len(full_grid):
             raise ValueError(f"as-of completion mismatch: {asofs_completed} != {len(full_grid)}")
 
-        summary = {
-            "runner": RUNNER_NAME,
-            "runner_version": RUNNER_VERSION,
-            "phase": PHASE,
-            "candidate_id": CANDIDATE_ID,
-            "venue": args.venue,
-            "manifest_sha256": manifest_sha,
-            "source_integrity_composite_sha256": composite_sha,
-            "implementation_fingerprint_sha256": implementation_fingerprint,
-            "phase_start": phase_start.isoformat().replace("+00:00", "Z"),
-            "phase_end_exclusive": phase_end.isoformat().replace("+00:00", "Z"),
-            "asof_count": asofs_completed,
-            "row_count": row_count,
-            "source_query_count": source_query_count,
-            "source_rows_read": source_rows_read,
-            "final_holdout_access": "OPENED_FOR_PREREGISTERED_C1_ONLY",
-            "c2_access": "DENY",
-            "c3_access": "DENY",
-            "database_writes": 0,
-            "live_orders": 0,
-            "resume_supported": True,
-        }
+        summary = build_final_holdout_summary(
+            venue=args.venue, manifest_sha=manifest_sha, composite_sha=composite_sha,
+            implementation_fingerprint=implementation_fingerprint, phase_start=phase_start,
+            phase_end=phase_end, asofs_completed=asofs_completed, row_count=row_count,
+            source_query_count=source_query_count, source_rows_read=source_rows_read,
+        )
 
         assert registry_path is not None and registry_identity is not None
         final_bytes, deferred_signum = finalize_c1_holdout_bundle(
@@ -1607,12 +1649,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 128 + exc.signum
     except Exception as exc:
-        # Once the holdout was actually opened (registry + checkpoint created, or a
-        # resumed run of a previously-opened fingerprint), any ordinary failure must
-        # permanently lock the run as FAILED so it can never be silently resumed or
-        # reopened. A failure before opening (e.g. integrity verification itself)
-        # must not create any opened state at all.
-        if opened:
+        # Pre-publication ordinary failures remain permanently FAILED. Once rows
+        # are published, FINALIZING is preserved for lease-bound recovery only.
+        # A failure before opening creates no opened state.
+        published_final_artifact = artifact_path is not None and artifact_path.exists()
+        if opened and not published_final_artifact:
             if cp_path is not None and cp_path.exists():
                 try:
                     mark_checkpoint_terminal(cp_path, terminal_state="FAILED")
@@ -1625,6 +1666,12 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             if run_lease_held_path is not None:
                 release_run_lease(run_lease_held_path)
+        elif opened and published_final_artifact and run_lease_held_path is not None:
+            # Preserve FINALIZING and allow only a future lease-bound recovery.
+            try:
+                release_run_lease(run_lease_held_path)
+            except Exception:
+                pass
         emit(
             f"FAILED runner={RUNNER_NAME} error={exc.__class__.__name__}:{exc} "
             f"partial_artifact={partial_path} checkpoint={cp_path} registry={registry_path} "
