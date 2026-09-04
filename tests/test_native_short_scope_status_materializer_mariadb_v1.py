@@ -23,11 +23,18 @@ existing, unmodified A1 + A1b migrations to a disposable schema, then runs
 `run_native_short_scope_status_materializer` for real against that schema —
 no fakes, no mocks — and verifies the persisted rows.
 
-No new migrations are written or applied here; only the three that already
-exist are re-executed against the disposable schema:
+No new migrations are written or applied here; only the migrations that
+already exist are re-executed against the disposable schema, in dependency
+order:
 - db/migrations/20260626_native_short_map_lifecycle_v1.sql (prerequisite)
 - db/migrations/20260706_native_short_scope_status_persistence_v1.sql (A1)
 - db/migrations/20260707_native_short_cadence_unavailable_v1.sql (A1b)
+- db/migrations/20260708_native_short_map_level_status_v1.sql (map level status)
+- db/migrations/20260716_native_short_writer_provenance_v1.sql (writer provenance)
+- db/migrations/20260902_native_short_scope_status_recompute_transition_v1.sql
+  (Issue #681 Amendment 2 recompute-transition column, applied on top of A1's
+  native_short_scope_status_v1 table; required by the materializer, which now
+  persists `recompute_transition_state` on every write)
 
 `materialize_scope_symbol_fn` and the map/generation/lifecycle fetch
 callbacks are injected stubs returning empty/canned results: scenario B
@@ -81,6 +88,9 @@ A1_MIGRATION_PATH = Path("db/migrations/20260706_native_short_scope_status_persi
 A1B_MIGRATION_PATH = Path("db/migrations/20260707_native_short_cadence_unavailable_v1.sql")
 MAP_LEVEL_MIGRATION_PATH = Path("db/migrations/20260708_native_short_map_level_status_v1.sql")
 PROVENANCE_MIGRATION_PATH = Path("db/migrations/20260716_native_short_writer_provenance_v1.sql")
+RECOMPUTE_TRANSITION_MIGRATION_PATH = Path(
+    "db/migrations/20260902_native_short_scope_status_recompute_transition_v1.sql"
+)
 
 TEMP_DB_NAME = "synth_a2_native_short_scope_status_materializer_tmp"
 
@@ -353,6 +363,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
                 A1B_MIGRATION_PATH,
                 MAP_LEVEL_MIGRATION_PATH,
                 PROVENANCE_MIGRATION_PATH,
+                RECOMPUTE_TRANSITION_MIGRATION_PATH,
             ):
                 for statement in _split_sql_statements(migration_path.read_text(encoding="utf-8")):
                     cur.execute(statement)
