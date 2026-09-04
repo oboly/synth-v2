@@ -45,7 +45,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from src.operations.persisted_market_candle_freshness_v1 import (
@@ -140,10 +140,32 @@ def _iso(value: Any) -> str | None:
     return _utc(value).isoformat() if isinstance(value, datetime) else None
 
 
-def _price(value: Any) -> Decimal | None:
+class _MalformedPrice:
+    """Sentinel: a candle price was present but not a finite decimal number
+    (non-numeric, NaN, or +/-Infinity). Distinct from `None` (absent)."""
+
+    __slots__ = ()
+
+
+_MALFORMED_PRICE = _MalformedPrice()
+
+
+def _price(value: Any) -> Decimal | None | _MalformedPrice:
+    """Parse a candle price defensively; never raises.
+
+    Returns `None` if `value` is absent, `_MALFORMED_PRICE` if `value` is
+    present but not a finite decimal number (non-numeric, NaN, or
+    +/-Infinity), otherwise the parsed `Decimal`.
+    """
     if value is None:
         return None
-    return Decimal(str(value))
+    try:
+        price = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return _MALFORMED_PRICE
+    if not price.is_finite():
+        return _MALFORMED_PRICE
+    return price
 
 
 def _boundary_summary(row: Mapping[str, Any] | None, expected_close_ts_utc: datetime) -> dict[str, Any]:
@@ -294,27 +316,35 @@ def build_snapshot(
     btc_close_lb = _price((btc_lookback_row or {}).get("expected_close_price"))
     eth_close_lb = _price((eth_lookback_row or {}).get("expected_close_price"))
 
-    if (
-        btc_close_asof is None
-        or eth_close_asof is None
-        or btc_close_lb is None
-        or eth_close_lb is None
-    ):
+    prices = (btc_close_asof, eth_close_asof, btc_close_lb, eth_close_lb)
+
+    if any(price is None for price in prices):
+        return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.MALFORMED_CANDLE_BOUNDARY])
+    if any(price is _MALFORMED_PRICE for price in prices):
         return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.MALFORMED_CANDLE_BOUNDARY])
 
-    # All four prices must be strictly positive before any division. A
-    # zero/negative price is a data-integrity contradiction (never a real
-    # traded price), so this fails closed explicitly rather than letting a
-    # zero denominator raise `DivisionByZero`/`InvalidOperation` uncaught.
+    # All four prices are now confirmed to be finite Decimal values (never
+    # NaN/Infinity/non-numeric). They must also be strictly positive before
+    # any division: a zero/negative price is a data-integrity contradiction
+    # (never a real traded price), so this fails closed explicitly rather
+    # than letting a zero denominator raise
+    # `DivisionByZero`/`InvalidOperation` uncaught.
     if btc_close_lb <= 0 or btc_close_asof <= 0 or eth_close_lb <= 0 or eth_close_asof <= 0:
         return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.NONPOSITIVE_CANDLE_PRICE])
 
-    btc_return_pct = ((btc_close_asof / btc_close_lb) - Decimal("1")) * Decimal("100")
-    eth_return_pct = ((eth_close_asof / eth_close_lb) - Decimal("1")) * Decimal("100")
-    eth_minus_btc_return_pct = eth_return_pct - btc_return_pct
-    eth_btc_ratio_start = eth_close_lb / btc_close_lb
-    eth_btc_ratio_end = eth_close_asof / btc_close_asof
-    eth_btc_ratio_change_pct = ((eth_btc_ratio_end / eth_btc_ratio_start) - Decimal("1")) * Decimal("100")
+    try:
+        btc_return_pct = ((btc_close_asof / btc_close_lb) - Decimal("1")) * Decimal("100")
+        eth_return_pct = ((eth_close_asof / eth_close_lb) - Decimal("1")) * Decimal("100")
+        eth_minus_btc_return_pct = eth_return_pct - btc_return_pct
+        eth_btc_ratio_start = eth_close_lb / btc_close_lb
+        eth_btc_ratio_end = eth_close_asof / btc_close_asof
+        eth_btc_ratio_change_pct = ((eth_btc_ratio_end / eth_btc_ratio_start) - Decimal("1")) * Decimal("100")
+    except (InvalidOperation, ArithmeticError):
+        # Defense in depth: the checks above already rule out every known
+        # cause of a Decimal arithmetic exception here, so this should be
+        # unreachable, but arithmetic must never leak an exception past this
+        # boundary -- fail closed instead.
+        return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.MALFORMED_CANDLE_BOUNDARY])
 
     return EthBtcLeadershipSnapshot(
         asof_ts_utc=asof,
@@ -348,11 +378,43 @@ def build_snapshot(
     )
 
 
+def resolve_unique_symbol_markets(
+    rows: list[Mapping[str, Any]], *, symbols: tuple[str, ...], venue: str
+) -> dict[str, dict[str, Any]]:
+    """Fold raw `(symbol, asset_id, market)` rows into exactly one eligible
+    venue_market per required symbol.
+
+    `obs_market_candle` carries no market/pair identity of its own (per
+    #310's audit), so an ambiguous BTC/ETH venue_market -- zero eligible
+    rows, or more than one -- can never be resolved by picking an arbitrary
+    first/last row: doing so could silently attribute candles to the wrong
+    market. Both cases fail closed deterministically instead.
+    """
+    by_symbol: dict[str, list[Mapping[str, Any]]] = {symbol: [] for symbol in symbols}
+    for row in rows:
+        symbol = str(row["symbol"]).upper()
+        if symbol in by_symbol:
+            by_symbol[symbol].append(row)
+
+    zero = [symbol for symbol in symbols if len(by_symbol[symbol]) == 0]
+    if zero:
+        raise EthBtcLeadershipInputError(
+            f"missing canonical tradeable venue_market for venue={venue!r} symbols={zero}"
+        )
+    ambiguous = {symbol: len(by_symbol[symbol]) for symbol in symbols if len(by_symbol[symbol]) > 1}
+    if ambiguous:
+        raise EthBtcLeadershipInputError(
+            f"ambiguous tradeable venue_market for venue={venue!r} "
+            f"(more than one eligible market per symbol): {ambiguous}"
+        )
+    return {symbol: dict(by_symbol[symbol][0]) for symbol in symbols}
+
+
 def fetch_btc_eth_markets(conn: Any, *, venue: str) -> dict[str, dict[str, Any]]:
     """Resolve the canonical BTC/ETH `(asset_id, market)` identity for
     `venue` via the `venue_market`/`asset` join (same join used by
     `ma_breadth_snapshot_v1.fetch_universe_members`), never a hardcoded
-    asset_id."""
+    asset_id and never an arbitrary pick among multiple eligible markets."""
     sql = """
         SELECT a.symbol AS symbol, a.asset_id AS asset_id, vm.market AS market
         FROM venue_market vm JOIN asset a ON a.asset_id = vm.base_asset_id
@@ -361,13 +423,8 @@ def fetch_btc_eth_markets(conn: Any, *, venue: str) -> dict[str, dict[str, Any]]
     """
     with conn.cursor() as cur:
         cur.execute(sql, (venue, BTC_SYMBOL, ETH_SYMBOL))
-        rows = {str(row["symbol"]).upper(): row for row in cur.fetchall()}
-    missing = [symbol for symbol in (BTC_SYMBOL, ETH_SYMBOL) if symbol not in rows]
-    if missing:
-        raise EthBtcLeadershipInputError(
-            f"missing canonical tradeable venue_market for venue={venue!r} symbols={missing}"
-        )
-    return rows
+        rows = cur.fetchall()
+    return resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue=venue)
 
 
 def fetch_asset_boundary(

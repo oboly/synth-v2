@@ -21,9 +21,12 @@ from src.features.eth_btc_leadership_snapshot_v1 import (
     LOOKBACK_HORIZON,
     MODEL_ID,
     MODEL_VERSION,
+    BTC_SYMBOL,
+    ETH_SYMBOL,
     EthBtcLeadershipInputError,
     ReasonCode,
     build_snapshot,
+    resolve_unique_symbol_markets,
 )
 
 ASOF = datetime(2026, 9, 3, 0, 0, tzinfo=UTC)
@@ -253,6 +256,72 @@ def test_negative_btc_asof_price_fails_closed_no_exception():
     snap = _build(btc_asof_row=_row(ASOF, "-100"))
     assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
     assert ReasonCode.NONPOSITIVE_CANDLE_PRICE in snap.reason_codes
+    assert snap.btc_return_pct is None
+
+
+def test_resolve_unique_symbol_markets_accepts_exactly_one_row_per_symbol():
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+    ]
+    resolved = resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+    assert resolved[BTC_SYMBOL]["market"] == "BTC-EUR"
+    assert resolved[ETH_SYMBOL]["market"] == "ETH-EUR"
+
+
+def test_resolve_unique_symbol_markets_fails_closed_on_zero_eligible_rows():
+    rows = [{"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"}]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_btc_rows():
+    # Two eligible tradeable venue_market rows for BTC -- must never pick an
+    # arbitrary first/last row.
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "BTC", "asset_id": 3, "market": "BTC-EUR2"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_eth_rows():
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+        {"symbol": "ETH", "asset_id": 4, "market": "ETH-EUR2"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+
+
+def test_malformed_eth_lookback_price_fails_closed_no_exception():
+    snap = _build(eth_lookback_row=_row(LOOKBACK, "not-a-number"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.MALFORMED_CANDLE_BOUNDARY in snap.reason_codes
+    assert snap.eth_return_pct is None
+
+
+def test_nan_btc_asof_price_fails_closed_no_exception():
+    snap = _build(btc_asof_row=_row(ASOF, "NaN"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.MALFORMED_CANDLE_BOUNDARY in snap.reason_codes
+    assert snap.btc_return_pct is None
+
+
+def test_infinity_eth_asof_price_fails_closed_no_exception():
+    snap = _build(eth_asof_row=_row(ASOF, "Infinity"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.MALFORMED_CANDLE_BOUNDARY in snap.reason_codes
+    assert snap.eth_return_pct is None
+
+
+def test_negative_infinity_btc_lookback_price_fails_closed_no_exception():
+    snap = _build(btc_lookback_row=_row(LOOKBACK, "-Infinity"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.MALFORMED_CANDLE_BOUNDARY in snap.reason_codes
     assert snap.btc_return_pct is None
 
 
