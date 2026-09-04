@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -57,6 +58,8 @@ class FastRotationC1Observation:
     signed_flow_unit: Decimal | None
     relative_acceleration_unit: Decimal | None
     cohort_size: int
+    evaluated_universe_size: int
+    coverage_ratio: Decimal
     freshness_state: str
     data_quality: str
     reason_code: str
@@ -99,7 +102,22 @@ def _require_exact(actual: Any, expected: str, field: str) -> None:
         )
 
 
-def materialize_observation(result: Any, *, market: str) -> FastRotationC1Observation:
+def _coverage(cohort_size: int, evaluated_universe_size: int) -> Decimal:
+    if evaluated_universe_size <= 0:
+        raise C1PersistenceContractError("evaluated_universe_size must be > 0")
+    if cohort_size < 0 or cohort_size > evaluated_universe_size:
+        raise C1PersistenceContractError(
+            "C1 cohort_size must be within [0,evaluated_universe_size]"
+        )
+    return (Decimal(cohort_size) / Decimal(evaluated_universe_size)).quantize(Decimal("0.000001"))
+
+
+def materialize_observation(
+    result: Any,
+    *,
+    market: str,
+    evaluated_universe_size: int,
+) -> FastRotationC1Observation:
     """Map one frozen #593 CandidateResult to the canonical persistence row.
 
     No score transformation is performed. Negative scores remain negative.
@@ -150,8 +168,8 @@ def materialize_observation(result: Any, *, market: str) -> FastRotationC1Observ
         raise C1PersistenceContractError("C1 rotation_score outside frozen [-100,100] range")
 
     cohort_size = int(result.cohort_size)
-    if cohort_size < 0:
-        raise C1PersistenceContractError("C1 cohort_size must be non-negative")
+    universe_size = int(evaluated_universe_size)
+    coverage_ratio = _coverage(cohort_size, universe_size)
 
     return FastRotationC1Observation(
         venue=str(result.venue),
@@ -170,6 +188,8 @@ def materialize_observation(result: Any, *, market: str) -> FastRotationC1Observ
         signed_flow_unit=signed_flow_unit,
         relative_acceleration_unit=relative_acceleration_unit,
         cohort_size=cohort_size,
+        evaluated_universe_size=universe_size,
+        coverage_ratio=coverage_ratio,
         freshness_state=freshness,
         data_quality=data_quality,
         reason_code=str(result.reason),
@@ -180,16 +200,32 @@ def materialize_observation(result: Any, *, market: str) -> FastRotationC1Observ
 
 
 def materialize_observations(
-    results: Iterable[Any], *, market_by_asset: Mapping[int, str]
+    results: Iterable[Any],
+    *,
+    market_by_asset: Mapping[int, str],
+    evaluated_universe_size: int,
 ) -> tuple[FastRotationC1Observation, ...]:
+    result_rows = tuple(results)
+    universe_size = int(evaluated_universe_size)
+    if universe_size <= 0:
+        raise C1PersistenceContractError("evaluated_universe_size must be > 0")
+    if len(result_rows) != universe_size:
+        raise C1PersistenceContractError(
+            "C1 result count must equal the immutable evaluated_universe_size denominator"
+        )
+
     observations: list[FastRotationC1Observation] = []
     seen: set[tuple[str, str, int, Any]] = set()
-    for result in results:
+    for result in result_rows:
         asset_id = int(result.asset_id)
         market = market_by_asset.get(asset_id)
         if market is None:
             raise C1PersistenceContractError(f"missing canonical market identity for asset_id={asset_id}")
-        observation = materialize_observation(result, market=market)
+        observation = materialize_observation(
+            result,
+            market=market,
+            evaluated_universe_size=universe_size,
+        )
         key = (observation.venue, observation.market, observation.asset_id, observation.asof_ts_utc)
         if key in seen:
             raise C1PersistenceContractError(f"duplicate C1 logical row in materialization batch: {key!r}")
@@ -201,7 +237,7 @@ def materialize_observations(
 def _sql_values(observation: FastRotationC1Observation) -> tuple[Any, ...]:
     asof = observation.asof_ts_utc
     if getattr(asof, "tzinfo", None) is not None:
-        asof = asof.astimezone(__import__("datetime").UTC).replace(tzinfo=None)
+        asof = asof.astimezone(UTC).replace(tzinfo=None)
     return (
         observation.venue,
         observation.asset_id,
@@ -219,6 +255,8 @@ def _sql_values(observation: FastRotationC1Observation) -> tuple[Any, ...]:
         None if observation.signed_flow_unit is None else str(observation.signed_flow_unit),
         None if observation.relative_acceleration_unit is None else str(observation.relative_acceleration_unit),
         observation.cohort_size,
+        observation.evaluated_universe_size,
+        str(observation.coverage_ratio),
         observation.freshness_state,
         observation.data_quality,
         observation.reason_code,
@@ -251,9 +289,9 @@ def persist_observations(
       venue,asset_id,market,asof_ts_utc,candidate_id,rotation_model,rotation_model_version,
       input_interval,lookback_horizon,effective_horizon,observed_lifecycle,rotation_score,
       relative_return_unit,signed_flow_unit,relative_acceleration_unit,cohort_size,
-      freshness_state,data_quality,reason_code,source_provenance,frozen_replay_source_sha256,
-      frozen_final_holdout_fingerprint
-    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+      evaluated_universe_size,coverage_ratio,freshness_state,data_quality,reason_code,
+      source_provenance,frozen_replay_source_sha256,frozen_final_holdout_fingerprint
+    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     ON DUPLICATE KEY UPDATE c1_observation_id=c1_observation_id
     """
 
