@@ -52,6 +52,7 @@ import hashlib
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,22 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def normalize_db_datetime_to_utc(value: datetime) -> datetime:
+    """Canonicalize a MariaDB datetime value to a UTC-aware datetime.
+
+    obs_market_candle timestamp columns are stored naive; the driver may
+    return either a naive datetime (treated as UTC, the DB storage
+    convention) or, depending on connector/session settings, a
+    timezone-aware one (converted to UTC). Without this normalization,
+    HistoricalCandle timestamps -- and therefore episode identity via
+    compute_episode_id's isoformat() serialization -- would silently depend
+    on the connector/session/host timezone rather than being deterministic.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def fetch_asset_id(*, venue: str, symbol: str) -> int:
@@ -154,8 +171,8 @@ def fetch_candles(
             symbol=symbol,
             venue=str(row["venue"]),
             interval_code=str(row["interval_code"]),
-            open_ts_utc=row["open_ts_utc"],
-            close_ts_utc=row["close_ts_utc"],
+            open_ts_utc=normalize_db_datetime_to_utc(row["open_ts_utc"]),
+            close_ts_utc=normalize_db_datetime_to_utc(row["close_ts_utc"]),
             open_price=_to_decimal(row["open_price"]),
             high_price=_to_decimal(row["high_price"]),
             low_price=_to_decimal(row["low_price"]),

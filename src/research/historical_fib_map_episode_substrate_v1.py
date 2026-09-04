@@ -545,6 +545,14 @@ def build_episode_labels(
     the scan; target2_ts_utc / invalidation_ts_utc are NOT set for it. A
     target1_ts_utc already recorded from an earlier, non-ambiguous candle is
     preserved -- only this candle's attribution is withheld.
+
+    Entry/outcome same-candle ambiguity: a candle's OHLC range likewise
+    cannot establish whether the entry zone was touched before or after a
+    terminal-outcome level (invalidation and/or target) touched in that same
+    bar. first_entry_ts_utc is therefore never attributed from a candle that
+    also hits invalidation and/or a target in the same bar; an earlier,
+    unambiguous entry candle is preserved, and a later unambiguous candle can
+    still set first_entry_ts_utc if entry has not yet been recorded.
     """
     for candle in forward_candles:
         if candle.close_ts_utc <= feature.map_creation_ts_utc:
@@ -569,10 +577,7 @@ def build_episode_labels(
         scanned += 1
         terminal_ts = candle.close_ts_utc
 
-        if first_entry_ts is None:
-            touches_entry = candle.low_price <= feature.entry_zone_high and candle.high_price >= feature.entry_zone_low
-            if touches_entry:
-                first_entry_ts = candle.close_ts_utc
+        touches_entry = candle.low_price <= feature.entry_zone_high and candle.high_price >= feature.entry_zone_low
 
         if bullish:
             invalidation_hit = candle.low_price <= feature.invalidation_level
@@ -584,6 +589,15 @@ def build_episode_labels(
             target2_hit = candle.low_price <= feature.target_t2
 
         target_hit_this_candle = target1_hit or target2_hit
+
+        if first_entry_ts is None and touches_entry and not (invalidation_hit or target_hit_this_candle):
+            # A candle that touches the entry zone AND a terminal-outcome
+            # level (invalidation and/or target) in the same bar cannot be
+            # proven, from OHLC alone, to have reached entry before that
+            # outcome. Withhold attribution for this candle only -- an
+            # earlier, unambiguous entry candle (if any) is unaffected, and
+            # a later unambiguous candle can still set first_entry_ts.
+            first_entry_ts = candle.close_ts_utc
 
         if invalidation_hit and target_hit_this_candle:
             # Cannot infer target-first or invalidation-first from OHLC.

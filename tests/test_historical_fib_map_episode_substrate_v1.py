@@ -496,6 +496,76 @@ class TestLifecycleReasonExactness:
         assert labels.first_entry_ts_utc == forward[0].close_ts_utc
         assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE
 
+    def test_bullish_entry_and_invalidation_same_candle_withholds_entry(self) -> None:
+        feature = self._feature()
+        # Entry zone (96-98) and invalidation (90) both touched by the same
+        # bar's range: OHLC cannot say entry happened before invalidation.
+        forward = self._forward_ohlc([(97, 97.5, 89, 89)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc is None
+        assert labels.time_to_first_entry_seconds is None
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+
+    def test_bullish_entry_and_target_same_candle_withholds_entry(self) -> None:
+        feature = self._feature()
+        # Entry zone (96-98) and target1 (112.72) both touched by the same
+        # bar's range: OHLC cannot say entry happened before target1.
+        forward = self._forward_ohlc([(97, 113, 96.5, 113)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc is None
+        assert labels.time_to_first_entry_seconds is None
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+
+    def test_bearish_entry_and_invalidation_same_candle_withholds_entry(self) -> None:
+        feature = self._bearish_feature()
+        # Entry zone (102-104) and invalidation (110) both touched by the
+        # same bar's range.
+        forward = self._forward_ohlc([(103, 111, 102.5, 111)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc is None
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+
+    def test_bearish_entry_and_target_same_candle_withholds_entry(self) -> None:
+        feature = self._bearish_feature()
+        # Entry zone (102-104) and target1 (87.28) both touched by the same
+        # bar's range.
+        forward = self._forward_ohlc([(103, 103.5, 87, 87)], feature=feature)
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc is None
+        assert labels.target1_ts_utc == forward[0].close_ts_utc
+
+    def test_earlier_entry_preserved_when_later_candle_is_entry_outcome_ambiguous(self) -> None:
+        feature = self._feature()
+        # Candle 1: clean, unambiguous entry-zone touch only.
+        # Candle 2: re-touches entry zone AND hits invalidation in the same
+        # bar -- that candle's own attribution must be withheld, but the
+        # earlier candle-1 entry timestamp must survive untouched.
+        forward = self._forward_ohlc(
+            [
+                (100, 100.5, 96.5, 97),
+                (97, 97.5, 89, 89),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc == forward[0].close_ts_utc
+        assert labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+
+    def test_entry_attributed_from_later_unambiguous_candle_after_earlier_ambiguous_one(self) -> None:
+        feature = self._feature()
+        # Candle 1 touches entry AND target1 in the same bar -- ambiguous,
+        # entry withheld. Candle 2 touches entry zone cleanly (no
+        # target/invalidation in that bar) -- entry attributed there instead.
+        forward = self._forward_ohlc(
+            [
+                (97, 113, 96.5, 113),
+                (100, 100.5, 96.5, 97),
+            ],
+            feature=feature,
+        )
+        labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=_small_cfg())
+        assert labels.first_entry_ts_utc == forward[1].close_ts_utc
+
 
 class TestImmutableOutput:
     def test_write_immutable_json_idempotent(self, tmp_path) -> None:
@@ -644,3 +714,113 @@ class TestBoundaryAndSafety:
             "runtime_activation",
         ):
             assert markers[key] == 0
+
+
+class _FakeCursor:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def execute(self, sql: str, params: list[Any]) -> None:
+        return None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _FakeConnection:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self._rows)
+
+    def close(self) -> None:
+        return None
+
+
+def _fake_row(ts: datetime) -> dict[str, Any]:
+    return {
+        "venue": "bitvavo",
+        "interval_code": "1h",
+        "open_ts_utc": ts,
+        "close_ts_utc": ts + timedelta(hours=1),
+        "open_price": Decimal("100"),
+        "high_price": Decimal("101"),
+        "low_price": Decimal("99"),
+        "close_price": Decimal("100.5"),
+        "volume_base": Decimal("1"),
+    }
+
+
+class TestTimestampNormalization:
+    def test_naive_db_datetime_treated_as_utc(self) -> None:
+        naive_ts = datetime(2026, 1, 1, 12, 0, 0)  # tzinfo=None, as returned by MariaDB driver
+        assert naive_ts.tzinfo is None
+        normalized = runner.normalize_db_datetime_to_utc(naive_ts)
+        assert normalized.tzinfo is timezone.utc
+        assert normalized == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    def test_aware_db_datetime_converted_to_utc(self) -> None:
+        aware_ts = datetime(2026, 1, 1, 14, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+        normalized = runner.normalize_db_datetime_to_utc(aware_ts)
+        assert normalized.tzinfo is timezone.utc
+        assert normalized == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    def test_fetch_candles_produces_utc_aware_historical_candles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        naive_ts = datetime(2026, 1, 1, 0, 0, 0)
+        rows = [_fake_row(naive_ts), _fake_row(naive_ts + timedelta(hours=1))]
+        monkeypatch.setattr(runner, "get_connection", lambda: _FakeConnection(rows))
+
+        candles = runner.fetch_candles(
+            asset_id=1,
+            symbol="BTC",
+            venue="bitvavo",
+            interval_code="1h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-01-02 00:00:00",
+        )
+
+        assert len(candles) == 2
+        for candle in candles:
+            assert candle.open_ts_utc.tzinfo is timezone.utc
+            assert candle.close_ts_utc.tzinfo is timezone.utc
+
+    def test_naive_and_aware_equivalent_db_rows_produce_identical_episode_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same instant, expressed once as a naive datetime (DB storage
+        # convention: naive means UTC) and once as an explicitly UTC-aware
+        # datetime. Both must normalize to the identical canonical
+        # timestamp, independent of any local host timezone assumption.
+        naive_ts = datetime(2026, 1, 1, 0, 0, 0)
+        aware_ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+        def _episode_id_for(ts: datetime) -> str:
+            rows = [_fake_row(ts), _fake_row(ts + timedelta(hours=1))]
+            monkeypatch.setattr(runner, "get_connection", lambda: _FakeConnection(rows))
+            candles = runner.fetch_candles(
+                asset_id=1,
+                symbol="BTC",
+                venue="bitvavo",
+                interval_code="1h",
+                from_ts="2026-01-01 00:00:00",
+                to_ts="2026-01-02 00:00:00",
+            )
+            return substrate.compute_episode_id(
+                symbol="BTC",
+                venue="bitvavo",
+                interval_code="1h",
+                contract_version=substrate.CONTRACT_VERSION,
+                map_creation_ts_utc=candles[-1].close_ts_utc,
+                direction=DIRECTION_BULLISH,
+                anchor_low_price=Decimal("90"),
+                anchor_high_price=Decimal("100"),
+            )
+
+        assert _episode_id_for(naive_ts) == _episode_id_for(aware_ts)

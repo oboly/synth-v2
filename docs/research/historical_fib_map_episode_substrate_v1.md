@@ -185,12 +185,38 @@ necessarily also crossed the nearer one -- there is no competing
 interpretation, so `TARGET2_REACHED` governs and `target1_ts_utc` is
 backfilled to the same candle if not already set.
 
+### Same-Candle Entry/Outcome Ambiguity
+
+The same OHLC ordering limitation applies to `first_entry_ts_utc`. A
+candle's range only records that the entry zone and a terminal-outcome
+level (invalidation and/or a target) were *both* touched during that bar,
+not which happened first. `build_episode_labels` therefore never attributes
+`first_entry_ts_utc` / `time_to_first_entry_seconds` from a candle that also
+hits invalidation and/or a target in the same bar:
+
+- an earlier, unambiguous entry candle (if any) is left untouched --
+  attribution is only withheld for the colliding candle itself
+- if entry has not yet been recorded, a later, unambiguous candle (one that
+  touches the entry zone without also hitting a terminal-outcome level) can
+  still set `first_entry_ts_utc`
+- this uses the same non-attributable-ambiguity posture as the
+  target/invalidation collision above; it does not invent a trade-execution
+  ordering convention
+
 ## Historical Data Source
 
 `obs_market_candle`, SELECT only, explicit `open_ts_utc` bounds,
 `ORDER BY open_ts_utc ASC`. No current-state snapshot table is used as
 historical backfill authority. `validate_candle_sequence` rejects duplicate
 or non-monotonic candle timestamps before any geometry is built.
+
+`fetch_candles` normalizes every `open_ts_utc` / `close_ts_utc` value read
+from the DB through `normalize_db_datetime_to_utc` before constructing
+`HistoricalCandle`: a naive datetime (the MariaDB storage convention) is
+treated as UTC, and an aware datetime is converted to UTC. `HistoricalCandle`
+instances -- and therefore `episode_id`, which serializes
+`map_creation_ts_utc` via `isoformat()` -- are always built from UTC-aware
+timestamps, independent of connector/session/host timezone.
 
 ## Determinism and Immutability
 
