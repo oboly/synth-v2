@@ -1,0 +1,470 @@
+{
+  "rows": [
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2022-05-12 00:00:00",
+      "confirmation_ts": "2023-11-06 00:00:00",
+      "entry_price": "12.1250000000",
+      "entry_ts": "2023-11-07 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "11.88453608247422680412371134",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "32.94845360824742268041237113",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "LINK",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "0.3607008760951188986232790989",
+      "total_return_pct_with_remaining": "11.88453608247422680412371134",
+      "wave1_high_ts": "2023-10-31 00:00:00",
+      "wave2_low_ts": "2023-11-03 00:00:00",
+      "window": "OOS_WINDOW_1"
+    },
+    {
+      "alpha_vs_hold_pct": "17.04854530022269843270725661",
+      "anchor_low_ts": "2024-08-05 00:00:00",
+      "confirmation_ts": "2024-11-22 00:00:00",
+      "entry_price": "15.8660000000",
+      "entry_ts": "2024-11-23 00:00:00",
+      "filled_rung_count": 5,
+      "fills": [
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "25.34960640000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.05333333333333333333333333333",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-12 00:00:00",
+          "limit_price": "26.32547440000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.04266666666666666666666666667",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-12 00:00:00",
+          "limit_price": "27.30134240000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.0320",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-13 00:00:00",
+          "limit_price": "28.27721040000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.02133333333333333333333333333",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-13 00:00:00",
+          "limit_price": "29.25307840000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.01066666666666666666666666667",
+          "target_rank": 1
+        }
+      ],
+      "hold_return_pct": "-38.57935207361653851002142947",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "85.93218202445480902558931048",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "LINK",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "-0.2505558018678793213045816830",
+      "total_return_pct_with_remaining": "-21.53080677339384007731417286",
+      "wave1_high_ts": "2024-11-18 00:00:00",
+      "wave2_low_ts": "2024-11-21 00:00:00",
+      "window": "OOS_WINDOW_2"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2022-12-16 00:00:00",
+      "confirmation_ts": "2023-07-20 00:00:00",
+      "entry_price": "0.1466600000",
+      "entry_ts": "2023-07-21 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "-20.02591026864857493522432838",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "6.368471294149734078821764626",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "XLM",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "-3.144539614561027837259100642",
+      "total_return_pct_with_remaining": "-20.02591026864857493522432838",
+      "wave1_high_ts": "2023-07-14 00:00:00",
+      "wave2_low_ts": "2023-07-17 00:00:00",
+      "window": "OOS_WINDOW_1"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2024-01-01 00:00:00",
+      "confirmation_ts": "2024-12-01 00:00:00",
+      "entry_price": "0.5307400000",
+      "entry_ts": "2024-12-02 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "-71.24580774013641330971850624",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "8.748162942306967630101367901",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "XLM",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "-8.144087874219254792160241224",
+      "total_return_pct_with_remaining": "-71.24580774013641330971850624",
+      "wave1_high_ts": "2024-11-23 00:00:00",
+      "wave2_low_ts": "2024-11-26 00:00:00",
+      "window": "OOS_WINDOW_2"
+    },
+    {
+      "alpha_vs_hold_pct": "-72.1120047768768384703926335",
+      "anchor_low_ts": "2022-11-21 00:00:00",
+      "confirmation_ts": "2023-01-20 00:00:00",
+      "entry_price": "23.4570000000",
+      "entry_ts": "2023-01-21 00:00:00",
+      "filled_rung_count": 15,
+      "fills": [
+        {
+          "fill_ts": "2023-11-01 00:00:00",
+          "limit_price": "43.87234529280000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.06666666666666666666666666666",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2023-11-09 00:00:00",
+          "limit_price": "45.56127162880000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.05333333333333333333333333334",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2023-11-10 00:00:00",
+          "limit_price": "47.25019796480000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.04000",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2023-11-10 00:00:00",
+          "limit_price": "48.93912430080000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.02666666666666666666666666666",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2023-11-10 00:00:00",
+          "limit_price": "50.62805063680000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.01333333333333333333333333333",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2023-11-15 00:00:00",
+          "limit_price": "61.06056898560000000",
+          "multiplier": "4.236",
+          "sell_fraction": "0.09333333333333333333333333332",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2023-12-07 00:00:00",
+          "limit_price": "63.41117965760000000",
+          "multiplier": "4.236",
+          "sell_fraction": "0.07466666666666666666666666668",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2023-12-08 00:00:00",
+          "limit_price": "65.76179032960000000",
+          "multiplier": "4.236",
+          "sell_fraction": "0.05600",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2023-12-08 00:00:00",
+          "limit_price": "68.11240100160000000",
+          "multiplier": "4.236",
+          "sell_fraction": "0.03733333333333333333333333332",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2023-12-09 00:00:00",
+          "limit_price": "70.46301167360000000",
+          "multiplier": "4.236",
+          "sell_fraction": "0.01866666666666666666666666667",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2023-12-22 00:00:00",
+          "limit_price": "88.87192227840000000",
+          "multiplier": "6.854",
+          "sell_fraction": "0.06666666666666666666666666666",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2023-12-23 00:00:00",
+          "limit_price": "92.29316928640000000",
+          "multiplier": "6.854",
+          "sell_fraction": "0.05333333333333333333333333334",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2023-12-23 00:00:00",
+          "limit_price": "95.71441629440000000",
+          "multiplier": "6.854",
+          "sell_fraction": "0.04000",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2023-12-23 00:00:00",
+          "limit_price": "99.13566330240000000",
+          "multiplier": "6.854",
+          "sell_fraction": "0.02666666666666666666666666666",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2023-12-24 00:00:00",
+          "limit_price": "102.55691031040000000",
+          "multiplier": "6.854",
+          "sell_fraction": "0.01333333333333333333333333333",
+          "target_rank": 3
+        }
+      ],
+      "hold_return_pct": "293.7204246067272029671313467",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "389.8324593937843714029927101",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "SOL",
+      "target_family": "SUPERCYCLE",
+      "top_capture_ratio": "0.5684709276761261113480528849",
+      "total_return_pct_with_remaining": "221.6084198298503644967387132",
+      "wave1_high_ts": "2023-01-14 00:00:00",
+      "wave2_low_ts": "2023-01-18 00:00:00",
+      "window": "OOS_WINDOW_1"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2024-01-09 00:00:00",
+      "confirmation_ts": "2024-03-20 00:00:00",
+      "entry_price": "175.5000000000",
+      "entry_ts": "2024-03-21 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "-49.46267806267806267806267806",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "63.95441595441595441595441595",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "SOL",
+      "target_family": "SUPERCYCLE",
+      "top_capture_ratio": "-0.7734052031361368496079828938",
+      "total_return_pct_with_remaining": "-49.46267806267806267806267806",
+      "wave1_high_ts": "2024-03-15 00:00:00",
+      "wave2_low_ts": "2024-03-19 00:00:00",
+      "window": "OOS_WINDOW_2"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2022-06-14 00:00:00",
+      "confirmation_ts": "2023-07-13 00:00:00",
+      "entry_price": "0.7265700000",
+      "entry_ts": "2023-07-14 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "-21.40468227424749163879598662",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "5.035991026329190580398309867",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "XRP",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "-4.250341623394370046460781634",
+      "total_return_pct_with_remaining": "-21.40468227424749163879598662",
+      "wave1_high_ts": "2022-09-23 00:00:00",
+      "wave2_low_ts": "2022-09-26 00:00:00",
+      "window": "OOS_WINDOW_1"
+    },
+    {
+      "alpha_vs_hold_pct": "59.12102260550632163535389343",
+      "anchor_low_ts": "2024-01-01 00:00:00",
+      "confirmation_ts": "2024-11-22 00:00:00",
+      "entry_price": "1.4105000000",
+      "entry_ts": "2024-11-23 00:00:00",
+      "filled_rung_count": 16,
+      "fills": [
+        {
+          "fill_ts": "2024-12-01 00:00:00",
+          "limit_price": "2.03524608000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.05333333333333333333333333333",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-01 00:00:00",
+          "limit_price": "2.11359568000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.04266666666666666666666666667",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-01 00:00:00",
+          "limit_price": "2.19194528000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.0320",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.27029488000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.02133333333333333333333333333",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.34864448000000000",
+          "multiplier": "2.000",
+          "sell_fraction": "0.01066666666666666666666666667",
+          "target_rank": 1
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.38849923072000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.06666666666666666666666666666",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.48044779712000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.05333333333333333333333333334",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.57239636352000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.04000",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.60685312000000000",
+          "multiplier": "3.000",
+          "sell_fraction": "0.06666666666666666666666666666",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.66434492992000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.02666666666666666666666666666",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2024-12-02 00:00:00",
+          "limit_price": "2.70720752000000000",
+          "multiplier": "3.000",
+          "sell_fraction": "0.05333333333333333333333333334",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2024-12-03 00:00:00",
+          "limit_price": "2.75629349632000000",
+          "multiplier": "2.618",
+          "sell_fraction": "0.01333333333333333333333333333",
+          "target_rank": 2
+        },
+        {
+          "fill_ts": "2025-01-15 00:00:00",
+          "limit_price": "2.80756192000000000",
+          "multiplier": "3.000",
+          "sell_fraction": "0.04000",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2025-01-15 00:00:00",
+          "limit_price": "2.90791632000000000",
+          "multiplier": "3.000",
+          "sell_fraction": "0.02666666666666666666666666666",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2025-01-15 00:00:00",
+          "limit_price": "3.00827072000000000",
+          "multiplier": "3.000",
+          "sell_fraction": "0.01333333333333333333333333333",
+          "target_rank": 3
+        },
+        {
+          "fill_ts": "2025-01-16 00:00:00",
+          "limit_price": "3.17846016000000000",
+          "multiplier": "4.000",
+          "sell_fraction": "0.05333333333333333333333333333",
+          "target_rank": 4
+        }
+      ],
+      "hold_return_pct": "-15.81141439205955334987593052",
+      "max_ladder_sell_fraction": "0.80",
+      "peak_oracle_return_pct": "133.9595887982984757178305565",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "XRP",
+      "target_family": "PRO_3X4X",
+      "top_capture_ratio": "0.3233035320723295404427979185",
+      "total_return_pct_with_remaining": "43.30960821344676828547796291",
+      "wave1_high_ts": "2024-11-16 00:00:00",
+      "wave2_low_ts": "2024-11-19 00:00:00",
+      "window": "OOS_WINDOW_2"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-27",
+      "anchor_low_ts": "2023-08-17 00:00:00",
+      "confirmation_ts": "2023-12-14 00:00:00",
+      "entry_price": "0.0020836000",
+      "entry_ts": "2023-12-15 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "5.864849299289690919562296026",
+      "max_ladder_sell_fraction": "0.40",
+      "peak_oracle_return_pct": "21.42445766941831445574966404",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "HOT",
+      "target_family": "EXPLOSIVE_SUPERCYCLE",
+      "top_capture_ratio": "0.2737455197132616487455197133",
+      "total_return_pct_with_remaining": "5.864849299289690919562296026",
+      "wave1_high_ts": "2023-12-08 00:00:00",
+      "wave2_low_ts": "2023-12-11 00:00:00",
+      "window": "OOS_WINDOW_1"
+    },
+    {
+      "alpha_vs_hold_pct": "0E-26",
+      "anchor_low_ts": "2024-01-03 00:00:00",
+      "confirmation_ts": "2024-03-13 00:00:00",
+      "entry_price": "0.0040519000",
+      "entry_ts": "2024-03-14 00:00:00",
+      "filled_rung_count": 0,
+      "fills": [],
+      "hold_return_pct": "-91.99239862780423998617932328",
+      "max_ladder_sell_fraction": "0.40",
+      "peak_oracle_return_pct": "1.475850835410548137910609837",
+      "sample_count": 1,
+      "status": "OK",
+      "symbol": "HOT",
+      "target_family": "EXPLOSIVE_SUPERCYCLE",
+      "top_capture_ratio": "-62.33177257525083612040133781",
+      "total_return_pct_with_remaining": "-91.99239862780423998617932328",
+      "wave1_high_ts": "2024-03-05 00:00:00",
+      "wave2_low_ts": "2024-03-08 00:00:00",
+      "window": "OOS_WINDOW_2"
+    }
+  ],
+  "rows_total": 10
+}

@@ -1,0 +1,45 @@
+{
+  "rows": [
+    {
+      "max_ladder_sell_fraction": "0.80",
+      "selection_metric_value": "33.58295427026495600452244014",
+      "selection_sample_count": 1,
+      "status": "OK",
+      "symbol": "LINK",
+      "target_family": "PRO_3X4X"
+    },
+    {
+      "max_ladder_sell_fraction": "0.80",
+      "selection_metric_value": "82.97701619309959307821940896",
+      "selection_sample_count": 1,
+      "status": "OK",
+      "symbol": "XLM",
+      "target_family": "PRO_3X4X"
+    },
+    {
+      "max_ladder_sell_fraction": "0.80",
+      "selection_metric_value": "126.3112914145019735107034460",
+      "selection_sample_count": 1,
+      "status": "OK",
+      "symbol": "SOL",
+      "target_family": "SUPERCYCLE"
+    },
+    {
+      "max_ladder_sell_fraction": "0.80",
+      "selection_metric_value": "114.6913136419412381112364314",
+      "selection_sample_count": 1,
+      "status": "OK",
+      "symbol": "XRP",
+      "target_family": "PRO_3X4X"
+    },
+    {
+      "max_ladder_sell_fraction": "0.40",
+      "selection_metric_value": "472.8559690927988121752041573",
+      "selection_sample_count": 1,
+      "status": "OK",
+      "symbol": "HOT",
+      "target_family": "EXPLOSIVE_SUPERCYCLE"
+    }
+  ],
+  "rows_total": 5
+}

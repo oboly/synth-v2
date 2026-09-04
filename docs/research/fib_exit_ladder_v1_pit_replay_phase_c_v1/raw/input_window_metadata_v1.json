@@ -1,0 +1,52 @@
+{
+  "candle_row_counts": {
+    "HOT": {
+      "OOS_WINDOW_1": 730,
+      "OOS_WINDOW_2": 974,
+      "SELECTION_WINDOW": 365
+    },
+    "LINK": {
+      "OOS_WINDOW_1": 730,
+      "OOS_WINDOW_2": 974,
+      "SELECTION_WINDOW": 365
+    },
+    "SOL": {
+      "OOS_WINDOW_1": 730,
+      "OOS_WINDOW_2": 974,
+      "SELECTION_WINDOW": 151
+    },
+    "XLM": {
+      "OOS_WINDOW_1": 730,
+      "OOS_WINDOW_2": 974,
+      "SELECTION_WINDOW": 365
+    },
+    "XRP": {
+      "OOS_WINDOW_1": 730,
+      "OOS_WINDOW_2": 974,
+      "SELECTION_WINDOW": 365
+    }
+  },
+  "interval_code": "1d",
+  "symbol_universe": [
+    "LINK",
+    "XLM",
+    "SOL",
+    "XRP",
+    "HOT"
+  ],
+  "venue": "bitvavo",
+  "windows": {
+    "OOS_WINDOW_1": {
+      "from_ts": "2022-01-01 00:00:00",
+      "to_ts": "2024-01-01 00:00:00"
+    },
+    "OOS_WINDOW_2": {
+      "from_ts": "2024-01-01 00:00:00",
+      "to_ts": "2026-09-01 00:00:00"
+    },
+    "SELECTION_WINDOW": {
+      "from_ts": "2020-01-01 00:00:00",
+      "to_ts": "2022-01-01 00:00:00"
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "candidate_families": [
+    "PRO_3X4X",
+    "SUPERCYCLE",
+    "EXPLOSIVE_SUPERCYCLE"
+  ],
+  "code_commit_sha": "232e0d430a15fe180361a1ec157c2931b2cc1d84",
+  "files": {
+    "input_window_metadata_v1.json": {
+      "byte_size": 1024,
+      "sha256": "0dd3cd0017929ac0caa984bbd62f9bd6fc69edaddaf9374728870733d3a9395e"
+    },
+    "oos_evaluation_results_v1.json": {
+      "byte_size": 16462,
+      "sha256": "8ffd6d459d12cf31c97ed27055ede9843ec6f99ff396b28f4280337e5a377b75"
+    },
+    "selected_policies_v1.json": {
+      "byte_size": 1223,
+      "sha256": "a4d4246ce81608795486b6dfa8b35b5bfbcfe802306c21698b2e6b0e4bbf17f9"
+    },
+    "selection_grid_results_v1.json": {
+      "byte_size": 282151,
+      "sha256": "6e82fe0d1b0fedbe2f59edec4601c1cee3e302d3f3e09e62d8098da717d90add"
+    }
+  },
+  "generated_at_utc": "2026-09-04T07:57:15.423804+00:00",
+  "interval_code": "1d",
+  "methodology_version": "fib_exit_ladder_v1_pit_replay_contract_v1@v1",
+  "sell_fraction_grid": [
+    "0.40",
+    "0.50",
+    "0.60",
+    "0.70",
+    "0.80"
+  ],
+  "symbol_universe": [
+    "LINK",
+    "XLM",
+    "SOL",
+    "XRP",
+    "HOT"
+  ],
+  "venue": "bitvavo",
+  "windows": {
+    "OOS_WINDOW_1": {
+      "from_ts": "2022-01-01 00:00:00",
+      "to_ts": "2024-01-01 00:00:00"
+    },
+    "OOS_WINDOW_2": {
+      "from_ts": "2024-01-01 00:00:00",
+      "to_ts": "2026-09-01 00:00:00"
+    },
+    "SELECTION_WINDOW": {
+      "from_ts": "2020-01-01 00:00:00",
+      "to_ts": "2022-01-01 00:00:00"
+    }
+  }
+}
