@@ -1,7 +1,7 @@
 # Fib Exit Ladder V1 PIT Replay Phase C Provenance v1
 
-Issue: #707  
-Runner PR: #717  
+Issue: #707
+Runner PR: #717
 Methodology: `FIB_EXIT_LADDER_V1_PIT_REPLAY_CONTRACT_V1`
 
 ## Raw evidence
