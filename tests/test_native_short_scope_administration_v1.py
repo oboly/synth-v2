@@ -116,6 +116,7 @@ def test_operation_enum_is_closed() -> None:
     assert {item.value for item in NativeShortScopeAdministrationOperationType} == {
         "ADOPT_LEGACY_SCOPE",
         "PROMOTE_SCOPE",
+        "AUTO_ONBOARD_SCOPE",
         "REMOVE_SCOPE",
     }
     with pytest.raises(NativeShortScopeAdministrationValidationError, match="INVALID_ENUM"):
