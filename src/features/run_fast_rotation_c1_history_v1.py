@@ -180,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         conn = get_db_connection()
         market_by_asset = fetch_market_identities(conn, venue=args.venue)
         asset_ids = tuple(sorted(market_by_asset))
+        evaluated_universe_size = len(asset_ids)
         candles_by_asset = fetch_candles(
             conn,
             venue=args.venue,
@@ -192,10 +193,15 @@ def main(argv: list[str] | None = None) -> int:
             spec=c1_spec(),
             venue=args.venue,
         )
-        observations = materialize_observations(results, market_by_asset=market_by_asset)
+        observations = materialize_observations(
+            results,
+            market_by_asset=market_by_asset,
+            evaluated_universe_size=evaluated_universe_size,
+        )
 
         complete = sum(row.data_quality == "COMPLETE" for row in observations)
         insufficient = len(observations) - complete
+        coverage_ratio = observations[0].coverage_ratio if observations else Decimal("0")
         if args.write_db:
             created, existing = persist_observations(
                 conn,
@@ -208,7 +214,8 @@ def main(argv: list[str] | None = None) -> int:
 
         print(
             f"FINISHED runner={RUNNER_NAME} mode={mode} rows={len(observations)} complete={complete} "
-            f"insufficient={insufficient} {persist_state} frozen_replay_sha256={replay_sha} "
+            f"insufficient={insufficient} evaluated_universe_size={evaluated_universe_size} "
+            f"coverage_ratio={coverage_ratio} {persist_state} frozen_replay_sha256={replay_sha} "
             f"elapsed_s={time.monotonic() - started:.3f}",
             flush=True,
         )
