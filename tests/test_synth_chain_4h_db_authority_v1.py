@@ -543,6 +543,210 @@ def test_scope_admin_operation_table_is_not_forbidden_or_account_execution_autho
     assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
 
 
+MAP_SCOPE_TABLE = "native_short_map_scope_v1"
+
+
+def test_map_scope_table_requires_select_insert_update_not_delete() -> None:
+    assert REQUIRED_OBJECT_PRIVILEGES[MAP_SCOPE_TABLE] == {"SELECT", "INSERT", "UPDATE"}
+
+
+def test_grant_preflight_fails_when_map_scope_insert_absent() -> None:
+    """Reproduces the production 2026-09-04 failure: AUTO_ONBOARD_SCOPE's
+    PROMOTE_NEW branch (new READY scope, no prior row) INSERTs the first row
+    via _insert_scope_supported, so SELECT-only must fail closed rather than
+    defer the failure to runtime."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT ON `synth`.`{MAP_SCOPE_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{MAP_SCOPE_TABLE}:INSERT" in audit.missing
+    assert f"synth.{MAP_SCOPE_TABLE}:UPDATE" in audit.missing
+
+
+def test_grant_preflight_fails_when_map_scope_update_absent() -> None:
+    """UPDATE is independently required: AUTO_ONBOARD_SCOPE's
+    PROMOTE_REACTIVATE branch (re-support after a prior withdrawal) UPDATEs
+    the existing NOT_APPLICABLE row via _update_scope_promote, so
+    SELECT+INSERT alone must still fail closed."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT, INSERT ON `synth`.`{MAP_SCOPE_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{MAP_SCOPE_TABLE}:UPDATE" in audit.missing
+    assert f"synth.{MAP_SCOPE_TABLE}:INSERT" not in audit.missing
+
+
+def test_grant_preflight_passes_with_map_scope_select_insert_update_via_run_preflight() -> None:
+    """End-to-end via the real run_preflight entrypoint, proving the complete
+    canonical grant set -- including the widened native_short_map_scope_v1
+    grant -- is accepted as PASS."""
+    connection = _FakeConnection(_exact_grants())
+
+    def connect(**kwargs):
+        return connection
+
+    result = runner.run_preflight(_candidate_config(), connect=connect)
+    assert result.audit.passed
+    assert result.audit.missing == ()
+    assert result.audit.unexpected == ()
+
+
+def test_map_scope_delete_beyond_select_insert_update_is_rejected_as_unexpected() -> None:
+    """No action reachable from AUTO_ONBOARD_SCOPE issues a SQL DELETE against
+    this table (REMOVE_SCOPE's soft-delete UPDATE is not reachable from this
+    chain); a grant beyond SELECT/INSERT/UPDATE must be flagged."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON `synth`.`{MAP_SCOPE_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{MAP_SCOPE_TABLE}:DELETE" in audit.unexpected
+
+
+def test_map_scope_table_is_not_forbidden_or_account_execution_authority() -> None:
+    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+
+    assert MAP_SCOPE_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
+    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+
+
+CADENCE_CONFIG_TABLE = "native_short_scope_cadence_config_v1"
+SUPPORT_EVENT_TABLE = "native_short_scope_support_event_v1"
+
+
+def test_cadence_and_support_event_tables_require_select_insert_not_update_or_delete() -> None:
+    assert REQUIRED_OBJECT_PRIVILEGES[CADENCE_CONFIG_TABLE] == {"SELECT", "INSERT"}
+    assert REQUIRED_OBJECT_PRIVILEGES[SUPPORT_EVENT_TABLE] == {"SELECT", "INSERT"}
+
+
+def test_grant_preflight_fails_when_cadence_config_insert_absent() -> None:
+    """The same PROMOTE_NEW/PROMOTE_REACTIVATE branches that write
+    native_short_map_scope_v1 also call _insert_active_cadence, so
+    SELECT-only must fail closed rather than defer the failure to runtime."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT ON `synth`.`{CADENCE_CONFIG_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{CADENCE_CONFIG_TABLE}:INSERT" in audit.missing
+
+
+def test_grant_preflight_fails_when_support_event_insert_absent() -> None:
+    """The same PROMOTE_NEW/PROMOTE_REACTIVATE branches also call
+    _insert_support_event, so SELECT-only must fail closed rather than defer
+    the failure to runtime."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT ON `synth`.`{SUPPORT_EVENT_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{SUPPORT_EVENT_TABLE}:INSERT" in audit.missing
+
+
+def test_grant_preflight_passes_with_cadence_and_support_event_inserts_via_run_preflight() -> None:
+    """End-to-end via the real run_preflight entrypoint, proving the complete
+    canonical grant set -- including the widened cadence-config and
+    support-event grants -- is accepted as PASS."""
+    connection = _FakeConnection(_exact_grants())
+
+    def connect(**kwargs):
+        return connection
+
+    result = runner.run_preflight(_candidate_config(), connect=connect)
+    assert result.audit.passed
+    assert result.audit.missing == ()
+    assert result.audit.unexpected == ()
+
+
+def test_cadence_config_update_beyond_select_insert_is_rejected_as_unexpected() -> None:
+    """The only UPDATE sites on this table (_bind_legacy_cadence,
+    _deactivate_cadence) are reachable only via ADOPT_LEGACY_SCOPE and
+    REMOVE_SCOPE, never via AUTO_ONBOARD_SCOPE; a grant beyond SELECT/INSERT
+    must be flagged."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT, INSERT, UPDATE ON `synth`.`{CADENCE_CONFIG_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{CADENCE_CONFIG_TABLE}:UPDATE" in audit.unexpected
+
+
+def test_support_event_update_beyond_select_insert_is_rejected_as_unexpected() -> None:
+    """This table is append-only by design -- no code path ever issues UPDATE
+    or DELETE; a grant beyond SELECT/INSERT must be flagged."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT, INSERT, UPDATE ON `synth`.`{SUPPORT_EVENT_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{SUPPORT_EVENT_TABLE}:UPDATE" in audit.unexpected
+
+
+def test_cadence_and_support_event_tables_are_not_forbidden_or_account_execution_authority() -> None:
+    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+
+    assert CADENCE_CONFIG_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    assert SUPPORT_EVENT_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
+    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+
+
 def test_target_event_tables_are_not_forbidden_or_account_execution_authority() -> None:
     """No account, broker, decision_gate, execution_planner, executor, or
     reporting authority is introduced by this change -- the two new objects

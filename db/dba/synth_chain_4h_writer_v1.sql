@@ -87,7 +87,7 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT
     ON `synth`.`native_short_map_lifecycle_event_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT SELECT
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`native_short_map_scope_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT
@@ -99,7 +99,7 @@ GRANT SELECT, INSERT, UPDATE
 GRANT SELECT, INSERT
     ON `synth`.`native_short_scope_admin_operation_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT SELECT
+GRANT SELECT, INSERT
     ON `synth`.`native_short_scope_cadence_config_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT
@@ -108,7 +108,7 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT, UPDATE
     ON `synth`.`native_short_scope_status_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT SELECT
+GRANT SELECT, INSERT
     ON `synth`.`native_short_scope_support_event_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT
