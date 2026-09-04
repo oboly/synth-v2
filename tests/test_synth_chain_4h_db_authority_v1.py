@@ -356,7 +356,7 @@ TARGET_EVENT_COVERAGE_TABLE = "native_short_map_level_target_event_coverage_v1"
 TARGET_EVENT_TABLE = "native_short_map_level_target_event_v1"
 TARGET_EVENT_VIEW = "native_short_map_level_target_event_current_state_v1"
 
-EXPECTED_REQUIRED_OBJECT_COUNT = 37
+EXPECTED_REQUIRED_OBJECT_COUNT = 38
 
 
 def test_target_event_tables_are_part_of_canonical_required_object_set() -> None:
@@ -455,6 +455,92 @@ def test_target_event_reporting_view_is_not_granted() -> None:
     )
     assert not audit.passed
     assert f"synth.{TARGET_EVENT_VIEW}:SELECT" in audit.unexpected
+
+
+SCOPE_ADMIN_OPERATION_TABLE = "native_short_scope_admin_operation_v1"
+
+
+def test_scope_admin_operation_table_is_part_of_canonical_required_object_set() -> None:
+    assert REQUIRED_OBJECT_PRIVILEGES[SCOPE_ADMIN_OPERATION_TABLE] == {"SELECT", "INSERT"}
+
+
+def test_grant_preflight_fails_when_scope_admin_operation_select_absent() -> None:
+    """Reproduces the production 2026-09-04 failure: AUTO_ONBOARD_SCOPES reads
+    this table unconditionally before any decision is made, so a missing
+    SELECT must fail the preflight closed rather than pass and defer the
+    failure to runtime."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{SCOPE_ADMIN_OPERATION_TABLE}`" not in grant
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:SELECT" in audit.missing
+    assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:INSERT" in audit.missing
+
+
+def test_grant_preflight_fails_when_scope_admin_operation_insert_absent() -> None:
+    """INSERT is independently required: execute_scope_administration commits
+    one immutable ledger row whenever a READY market is actually onboarded, so
+    SELECT-only must still fail closed."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{SCOPE_ADMIN_OPERATION_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT ON `synth`.`{SCOPE_ADMIN_OPERATION_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:INSERT" in audit.missing
+
+
+def test_grant_preflight_passes_with_scope_admin_operation_grant_via_run_preflight() -> None:
+    """End-to-end via the real run_preflight entrypoint, proving the complete
+    canonical grant set -- including the new scope-admin-operation object --
+    is accepted as PASS."""
+    connection = _FakeConnection(_exact_grants())
+
+    def connect(**kwargs):
+        return connection
+
+    result = runner.run_preflight(_candidate_config(), connect=connect)
+    assert result.audit.passed
+    assert result.audit.missing == ()
+    assert result.audit.unexpected == ()
+
+
+def test_scope_admin_operation_update_beyond_select_insert_is_rejected_as_unexpected() -> None:
+    """No code path ever issues UPDATE/DELETE against this ledger table
+    (rows are immutable once committed); a grant beyond SELECT/INSERT must be
+    flagged."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{SCOPE_ADMIN_OPERATION_TABLE}`" not in grant
+    ] + [
+        (
+            f"GRANT SELECT, INSERT, UPDATE ON `synth`.`{SCOPE_ADMIN_OPERATION_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:UPDATE" in audit.unexpected
+
+
+def test_scope_admin_operation_table_is_not_forbidden_or_account_execution_authority() -> None:
+    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+
+    assert SCOPE_ADMIN_OPERATION_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
+    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
 
 
 def test_target_event_tables_are_not_forbidden_or_account_execution_authority() -> None:

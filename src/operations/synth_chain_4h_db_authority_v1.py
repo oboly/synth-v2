@@ -71,6 +71,17 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "native_short_map_scope_v1": _privileges(SELECT),
     "native_short_map_v1": _privileges(SELECT, INSERT),
     "native_short_materializer_run_v1": _privileges(SELECT, INSERT, UPDATE),
+    # AUTO_ONBOARD_SCOPES runs unconditionally at the start of every scheduled
+    # run_native_short_scope_status_chain_v1 invocation that omits explicit
+    # symbols (the production entrypoint), via native_short_auto_onboarding_v1
+    # .reconcile_ready_scopes -> execute_scope_administration. That call
+    # always reads this table's idempotency ledger first (read_existing_
+    # operation / read_scope_state_snapshot, both unconditional), then inserts
+    # one immutable terminal ledger row (_insert_operation) whenever a READY
+    # market is actually onboarded to SUPPORTED (error 1142 confirmed in
+    # production on gurkdb, 2026-09-04, when SELECT was still missing). Rows
+    # are never UPDATEd or DELETEd once committed.
+    "native_short_scope_admin_operation_v1": _privileges(SELECT, INSERT),
     "native_short_scope_cadence_config_v1": _privileges(SELECT),
     "native_short_scope_observation_v1": _privileges(SELECT, INSERT),
     "native_short_scope_status_v1": _privileges(SELECT, INSERT, UPDATE),
