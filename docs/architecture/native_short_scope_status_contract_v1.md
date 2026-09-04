@@ -73,21 +73,33 @@ facts, no new DB reads):
   outrank the terminal-map status codes in Status Precedence).
 - `WAITING_FOR_NEW_STRUCTURE` only when **all** of the following hold: the
   selected map is terminal, source is `SOURCE_CURRENT`, the latest scope
-  observation is `OBSERVATION_CURRENT` under the cadence/grace contract, AND
-  that latest observation's `observation_status` is `EVALUATED`.
+  observation is `OBSERVATION_CURRENT` under the cadence/grace contract, that
+  latest observation's `observation_status` is `EVALUATED`, AND that latest
+  successful (`EVALUATED`) observation's timestamp is **at or after** the
+  selected terminal map's lifecycle-event timestamp (the event that moved the
+  map into `MAP_COMPLETED` / `MAP_INVALIDATED` / `MAP_EXPIRED`).
   `OBSERVATION_CURRENT` freshness alone is not sufficient proof of a
   successful recompute evaluation: a fresh observation can still be `FAILED`
   (the materializer ran this cycle but errored before it could evaluate
   structure), and that must never be presented as a healthy wait. Only a
-  fresh, successfully `EVALUATED` observation means the materializer actually
-  evaluated current structure this cycle and found it insufficient. Healthy
-  and bounded; must not by itself become operator Attention (see #688).
+  fresh, successfully `EVALUATED` observation whose timestamp is at or after
+  the terminal lifecycle event means the materializer actually evaluated
+  current structure *after* the map went terminal and found it insufficient
+  for a fresh map. Healthy and bounded; must not by itself become operator
+  Attention (see #688).
+
+  A successful evaluation timestamped **before** the terminal lifecycle event
+  is not evidence of a post-terminal recompute attempt: it may simply be the
+  last evaluation the scope received while the map was still active. Such an
+  observation therefore fails closed to `RECOMPUTE_OVERDUE`, not
+  `WAITING_FOR_NEW_STRUCTURE`.
 - `RECOMPUTE_OVERDUE` otherwise, whenever the selected map is terminal and
   source is `SOURCE_CURRENT`: the latest scope observation is
-  `OBSERVATION_OVERDUE`, `NO_OBSERVATION`, or a fresh (`OBSERVATION_CURRENT`)
-  observation whose `observation_status` is not `EVALUATED` (e.g. `FAILED`).
-  All of these fail closed to overdue; eligible for operator Attention under
-  #688.
+  `OBSERVATION_OVERDUE`, `NO_OBSERVATION`, a fresh (`OBSERVATION_CURRENT`)
+  observation whose `observation_status` is not `EVALUATED` (e.g. `FAILED`),
+  or a fresh, successfully `EVALUATED` observation whose timestamp is
+  **before** the selected terminal map's lifecycle-event timestamp. All of
+  these fail closed to overdue; eligible for operator Attention under #688.
 
 This field is deliberately orthogonal (see
 `docs/ops/state_model_discipline_v1.md`, "Prefer composition over state

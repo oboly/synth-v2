@@ -120,15 +120,21 @@ class NativeShortScopeRecomputeTransitionState(StrEnum):
 
     NOT_APPLICABLE: the selected map is not terminal (or no cadence config /
     map exists), so no recompute-transition evidence applies.
-    WAITING_FOR_NEW_STRUCTURE: the selected map is terminal and the latest
-    scope observation is within the cadence/grace contract (recompute has
-    been evaluated recently and current market structure is not yet
-    sufficient for a fresh map). Healthy, bounded, not an operator Attention
-    condition by itself.
-    RECOMPUTE_OVERDUE: the selected map is terminal and the latest scope
-    observation is overdue or missing under the cadence/grace contract
-    (recompute has not been evaluated recently). Eligible for operator
-    Attention.
+    WAITING_FOR_NEW_STRUCTURE: the selected map is terminal, source is
+    current, and the latest scope observation is within the cadence/grace
+    contract, successfully `EVALUATED`, AND timestamped at or after the
+    selected terminal map's lifecycle-event timestamp (recompute has been
+    evaluated at least once *after* the map went terminal, and current market
+    structure is not yet sufficient for a fresh map). Healthy, bounded, not
+    an operator Attention condition by itself. A successful evaluation
+    timestamped before the terminal lifecycle event is not evidence of a
+    post-terminal recompute attempt and fails closed to RECOMPUTE_OVERDUE.
+    RECOMPUTE_OVERDUE: the selected map is terminal and either the latest
+    scope observation is overdue/missing under the cadence/grace contract, is
+    fresh but not successfully `EVALUATED`, or is a successful `EVALUATED`
+    observation timestamped before the selected terminal map's
+    lifecycle-event timestamp (no confirmed post-terminal recompute attempt
+    exists). Eligible for operator Attention.
     """
 
     NOT_APPLICABLE = "NOT_APPLICABLE"
