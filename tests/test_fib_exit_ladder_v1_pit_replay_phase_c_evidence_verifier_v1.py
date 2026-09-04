@@ -71,8 +71,9 @@ def test_phase_c_original_vs_selected_assignment_delta_is_only_xrp() -> None:
     }
 
 
-def test_phase_c_promotion_remains_fail_closed_until_empirical_repeat() -> None:
+def test_phase_c_promotion_remains_fail_closed_on_oos_evidence() -> None:
     result = verifier.verify_evidence()
     assert result["methodology_promotion_grade"] == 0
     assert result["promotion_eligible"] is False
-    assert result["promotion_blocker"] == "EMPIRICAL_REPEAT_REPLAY_REQUIRED"
+    assert result["promotion_blocker"] == "POSITIVE_OOS_ALPHA_NOT_MET"
+    assert result["overall_disposition"] == "REJECTED"
