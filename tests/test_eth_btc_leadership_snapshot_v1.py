@@ -259,12 +259,12 @@ def test_negative_btc_asof_price_fails_closed_no_exception():
     assert snap.btc_return_pct is None
 
 
-def test_resolve_unique_symbol_markets_accepts_exactly_one_row_per_symbol():
+def test_resolve_unique_symbol_markets_accepts_canonical_btc_eur_eth_eur():
     rows = [
         {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
         {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
     ]
-    resolved = resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+    resolved = resolve_unique_symbol_markets(rows, venue="bitvavo")
     assert resolved[BTC_SYMBOL]["market"] == "BTC-EUR"
     assert resolved[ETH_SYMBOL]["market"] == "ETH-EUR"
 
@@ -272,29 +272,75 @@ def test_resolve_unique_symbol_markets_accepts_exactly_one_row_per_symbol():
 def test_resolve_unique_symbol_markets_fails_closed_on_zero_eligible_rows():
     rows = [{"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"}]
     with pytest.raises(EthBtcLeadershipInputError):
-        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
 
 
-def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_btc_rows():
-    # Two eligible tradeable venue_market rows for BTC -- must never pick an
-    # arbitrary first/last row.
-    rows = [
-        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
-        {"symbol": "BTC", "asset_id": 3, "market": "BTC-EUR2"},
-        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
-    ]
-    with pytest.raises(EthBtcLeadershipInputError):
-        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
-
-
-def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_eth_rows():
+def test_resolve_unique_symbol_markets_rejects_non_bitvavo_venue():
     rows = [
         {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
         {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
-        {"symbol": "ETH", "asset_id": 4, "market": "ETH-EUR2"},
     ]
     with pytest.raises(EthBtcLeadershipInputError):
-        resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue="bitvavo")
+        resolve_unique_symbol_markets(rows, venue="kraken")
+
+
+def test_resolve_unique_symbol_markets_rejects_non_eur_btc_market():
+    # A tradeable BTC-USD market must never substitute for canonical BTC-EUR.
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-USD"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_rejects_non_eur_eth_market():
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-USDT"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_rejects_mismatched_quote_pair():
+    # Neither leg is canonical EUR-quoted -- both must be rejected, not
+    # accepted merely because a BTC row and an ETH row both exist.
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-USDT"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-USD"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_canonical_btc_rows():
+    # Two distinct eligible rows both quoting the exact canonical BTC-EUR
+    # market -- must never pick an arbitrary first/last row.
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "BTC", "asset_id": 3, "market": "BTC-EUR"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
+
+
+def test_resolve_unique_symbol_markets_fails_closed_on_ambiguous_canonical_eth_rows():
+    rows = [
+        {"symbol": "BTC", "asset_id": 1, "market": "BTC-EUR"},
+        {"symbol": "ETH", "asset_id": 2, "market": "ETH-EUR"},
+        {"symbol": "ETH", "asset_id": 4, "market": "ETH-EUR"},
+    ]
+    with pytest.raises(EthBtcLeadershipInputError):
+        resolve_unique_symbol_markets(rows, venue="bitvavo")
+
+
+def test_fetch_btc_eth_markets_rejects_non_bitvavo_venue_before_any_query():
+    from src.features.eth_btc_leadership_snapshot_v1 import fetch_btc_eth_markets
+
+    with pytest.raises(EthBtcLeadershipInputError):
+        fetch_btc_eth_markets(conn=None, venue="kraken")
 
 
 def test_malformed_eth_lookback_price_fails_closed_no_exception():

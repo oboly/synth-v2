@@ -62,6 +62,15 @@ VENUE = "bitvavo"
 BTC_SYMBOL = "BTC"
 ETH_SYMBOL = "ETH"
 
+# Canonical market identity (#305/#721 audit): Bitvavo is EUR-quote only, and
+# these are the exact, reviewed venue_market strings this producer is allowed
+# to read. A non-canonical venue or a non-EUR/mismatched-quote market (e.g.
+# BTC-USD, ETH-USDT) must never silently substitute for these -- fail closed
+# instead of accepting any tradeable market for the symbol.
+BTC_MARKET = "BTC-EUR"
+ETH_MARKET = "ETH-EUR"
+CANONICAL_MARKETS: dict[str, str] = {BTC_SYMBOL: BTC_MARKET, ETH_SYMBOL: ETH_MARKET}
+
 # Deterministic producer-owned facts, not guesses: the only persisted candle
 # series usable for this comparison today is the daily series, and one
 # interval back is exactly the smallest, least-ambiguous lookback for a
@@ -379,42 +388,66 @@ def build_snapshot(
 
 
 def resolve_unique_symbol_markets(
-    rows: list[Mapping[str, Any]], *, symbols: tuple[str, ...], venue: str
+    rows: list[Mapping[str, Any]],
+    *,
+    canonical_markets: Mapping[str, str] = CANONICAL_MARKETS,
+    venue: str,
 ) -> dict[str, dict[str, Any]]:
     """Fold raw `(symbol, asset_id, market)` rows into exactly one eligible
-    venue_market per required symbol.
+    canonical venue_market per required symbol.
+
+    A row is eligible only when its `market` exactly matches the reviewed
+    `canonical_markets[symbol]` string (e.g. `"BTC-EUR"`) -- any other
+    tradeable market for the same symbol (a different quote currency, a
+    mismatched pair, a stray duplicate listing) is not eligible and is
+    silently excluded from consideration, never picked as a fallback.
 
     `obs_market_candle` carries no market/pair identity of its own (per
-    #310's audit), so an ambiguous BTC/ETH venue_market -- zero eligible
-    rows, or more than one -- can never be resolved by picking an arbitrary
-    first/last row: doing so could silently attribute candles to the wrong
-    market. Both cases fail closed deterministically instead.
+    #310's audit), so an ambiguous BTC/ETH venue_market -- zero canonical
+    eligible rows, or more than one -- can never be resolved by picking an
+    arbitrary first/last row: doing so could silently attribute candles to
+    the wrong market. Both cases fail closed deterministically instead.
     """
+    if venue != VENUE:
+        raise EthBtcLeadershipInputError(
+            f"unsupported venue: {venue!r} (only {VENUE!r} is canonical)"
+        )
+
+    symbols = tuple(canonical_markets)
     by_symbol: dict[str, list[Mapping[str, Any]]] = {symbol: [] for symbol in symbols}
     for row in rows:
         symbol = str(row["symbol"]).upper()
-        if symbol in by_symbol:
-            by_symbol[symbol].append(row)
+        if symbol not in by_symbol:
+            continue
+        if str(row["market"]) != canonical_markets[symbol]:
+            continue
+        by_symbol[symbol].append(row)
 
     zero = [symbol for symbol in symbols if len(by_symbol[symbol]) == 0]
     if zero:
         raise EthBtcLeadershipInputError(
-            f"missing canonical tradeable venue_market for venue={venue!r} symbols={zero}"
+            f"missing canonical tradeable venue_market for venue={venue!r} "
+            f"symbols={ {symbol: canonical_markets[symbol] for symbol in zero} }"
         )
     ambiguous = {symbol: len(by_symbol[symbol]) for symbol in symbols if len(by_symbol[symbol]) > 1}
     if ambiguous:
         raise EthBtcLeadershipInputError(
-            f"ambiguous tradeable venue_market for venue={venue!r} "
-            f"(more than one eligible market per symbol): {ambiguous}"
+            f"ambiguous canonical tradeable venue_market for venue={venue!r} "
+            f"(more than one eligible row for the exact canonical market): {ambiguous}"
         )
     return {symbol: dict(by_symbol[symbol][0]) for symbol in symbols}
 
 
 def fetch_btc_eth_markets(conn: Any, *, venue: str) -> dict[str, dict[str, Any]]:
-    """Resolve the canonical BTC/ETH `(asset_id, market)` identity for
-    `venue` via the `venue_market`/`asset` join (same join used by
+    """Resolve the canonical BTC-EUR/ETH-EUR `(asset_id, market)` identity
+    for `venue` via the `venue_market`/`asset` join (same join used by
     `ma_breadth_snapshot_v1.fetch_universe_members`), never a hardcoded
-    asset_id and never an arbitrary pick among multiple eligible markets."""
+    asset_id, never a non-canonical market, and never an arbitrary pick
+    among multiple eligible rows."""
+    if venue != VENUE:
+        raise EthBtcLeadershipInputError(
+            f"unsupported venue: {venue!r} (only {VENUE!r} is canonical)"
+        )
     sql = """
         SELECT a.symbol AS symbol, a.asset_id AS asset_id, vm.market AS market
         FROM venue_market vm JOIN asset a ON a.asset_id = vm.base_asset_id
@@ -424,7 +457,7 @@ def fetch_btc_eth_markets(conn: Any, *, venue: str) -> dict[str, dict[str, Any]]
     with conn.cursor() as cur:
         cur.execute(sql, (venue, BTC_SYMBOL, ETH_SYMBOL))
         rows = cur.fetchall()
-    return resolve_unique_symbol_markets(rows, symbols=(BTC_SYMBOL, ETH_SYMBOL), venue=venue)
+    return resolve_unique_symbol_markets(rows, venue=venue)
 
 
 def fetch_asset_boundary(
