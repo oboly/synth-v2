@@ -432,6 +432,45 @@ def fetch_scope_status_row(
     return dict(rows[0])
 
 
+def fetch_recompute_transition_state_by_symbol(
+    conn: Any,
+    *,
+    venue: str = DEFAULT_VENUE,
+    quote_currency: str = DEFAULT_QUOTE_CURRENCY,
+    fib_trading_horizon: str = DEFAULT_FIB_TRADING_HORIZON,
+    primary_interval: str = DEFAULT_PRIMARY_INTERVAL,
+    supporting_interval: str = DEFAULT_SUPPORTING_INTERVAL,
+) -> dict[str, str]:
+    """Batch read-only SELECT of the verbatim recompute_transition_state
+    column from native_short_scope_status_v1 for every symbol under one
+    canonical (venue, quote_currency, fib_trading_horizon, primary_interval,
+    supporting_interval) scope key.
+
+    Issue #688: this is the sole integration point other reporting consumers
+    (e.g. the Profit Plan card builder) should use to obtain the #681/#716/#736
+    upstream recompute-transition evidence. It forwards the persisted value
+    exactly as-is -- no freshness/lifecycle timing is recomputed here."""
+    sql = """
+    SELECT symbol, recompute_transition_state
+    FROM native_short_scope_status_v1
+    WHERE venue = %s AND quote_currency = %s
+      AND fib_trading_horizon = %s AND primary_interval = %s AND supporting_interval = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (venue, quote_currency, fib_trading_horizon, primary_interval, supporting_interval),
+        )
+        rows = list(cur.fetchall())
+    out: dict[str, str] = {}
+    for row in rows:
+        row_dict = dict(row)
+        value = row_dict.get("recompute_transition_state")
+        if value is not None:
+            out[str(row_dict["symbol"])] = str(value)
+    return out
+
+
 def generate_report_for_symbol(
     conn: Any,
     *,
