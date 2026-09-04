@@ -1043,6 +1043,17 @@ def _validate_referenced_operation(
         operation.support_generation_after,
     )
     if expected_classification == ScopeClassification.MANAGED_SUPPORTED:
+        # AUTO_ONBOARD_SCOPE shares decide_administration's PROMOTE_SCOPE
+        # dispatch (_decide_promote) and can therefore terminally produce
+        # exactly the same (result_class, result_code, generation) shapes as
+        # PROMOTE_SCOPE -- PROMOTED_NEW_SCOPE from NO_SCOPE and
+        # PROMOTED_FROM_PRIOR_WITHDRAWAL from MANAGED_REMOVED. Both operation
+        # types must be accepted lineage identities for both shapes so a
+        # legitimately auto-onboarded (or auto-reactivated) scope does not
+        # classify INCOHERENT on a later administration operation. This adds
+        # no new decision path: it only recognizes result shapes
+        # decide_administration already terminally commits for
+        # AUTO_ONBOARD_SCOPE.
         canonical_tuples = (
             (
                 OperationType.ADOPT_LEGACY_SCOPE.value,
@@ -1059,7 +1070,21 @@ def _validate_referenced_operation(
                 1,
             ),
             (
+                OperationType.AUTO_ONBOARD_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.PROMOTED_NEW_SCOPE.value,
+                None,
+                1,
+            ),
+            (
                 OperationType.PROMOTE_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL.value,
+                expected_generation_after - 1,
+                expected_generation_after,
+            ),
+            (
+                OperationType.AUTO_ONBOARD_SCOPE.value,
                 ResultClass.SUCCESS.value,
                 ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL.value,
                 expected_generation_after - 1,
