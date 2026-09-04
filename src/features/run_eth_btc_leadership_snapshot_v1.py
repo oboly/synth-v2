@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import signal
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
 from src.features.eth_btc_leadership_snapshot_v1 import (
     INPUT_INTERVAL,
+    LOOKBACK_DELTA,
     BTC_SYMBOL,
     ETH_SYMBOL,
     build_snapshot,
@@ -21,7 +22,6 @@ from src.features.eth_btc_leadership_snapshot_v1 import (
 )
 
 RUNNER_NAME = "eth_btc_leadership_snapshot_v1"
-LOOKBACK_DELTA = timedelta(hours=24)
 
 
 def _asof(value: str) -> datetime:

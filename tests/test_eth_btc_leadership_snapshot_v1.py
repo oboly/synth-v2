@@ -17,6 +17,7 @@ from src.features.eth_btc_leadership_snapshot_v1 import (
     FRESHNESS_INSUFFICIENT_DATA,
     FRESHNESS_STALE,
     INPUT_INTERVAL,
+    LOOKBACK_DELTA,
     LOOKBACK_HORIZON,
     MODEL_ID,
     MODEL_VERSION,
@@ -197,6 +198,62 @@ def test_historical_replay_never_falls_back_to_latest_row():
 def test_unsupported_input_interval_raises():
     with pytest.raises(EthBtcLeadershipInputError):
         _build(interval_code="4h")
+
+
+def test_lookback_horizon_alignment_is_enforced():
+    assert LOOKBACK_DELTA == timedelta(hours=24)
+    misaligned_lookback = ASOF - timedelta(hours=23)
+    snap = _build(lookback_ts_utc=misaligned_lookback)
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert snap.data_status == DATA_STATUS_INSUFFICIENT
+    assert ReasonCode.LOOKBACK_HORIZON_MISALIGNED in snap.reason_codes
+    assert snap.lookback_horizon == LOOKBACK_HORIZON
+    assert snap.btc_return_pct is None
+    assert snap.eth_btc_ratio_start is None
+
+
+def test_lookback_horizon_alignment_rejects_longer_gap():
+    misaligned_lookback = ASOF - timedelta(hours=25)
+    snap = _build(lookback_ts_utc=misaligned_lookback)
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.LOOKBACK_HORIZON_MISALIGNED in snap.reason_codes
+
+
+def test_exact_24h_lookback_is_accepted():
+    snap = _build(lookback_ts_utc=ASOF - LOOKBACK_DELTA)
+    assert snap.freshness == FRESHNESS_FRESH
+    assert ReasonCode.LOOKBACK_HORIZON_MISALIGNED not in snap.reason_codes
+
+
+def test_zero_eth_lookback_price_fails_closed_no_exception():
+    snap = _build(eth_lookback_row=_row(LOOKBACK, "0"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert snap.data_status == DATA_STATUS_INSUFFICIENT
+    assert ReasonCode.NONPOSITIVE_CANDLE_PRICE in snap.reason_codes
+    assert snap.eth_return_pct is None
+    assert snap.eth_btc_ratio_start is None
+
+
+def test_negative_eth_asof_price_fails_closed_no_exception():
+    snap = _build(eth_asof_row=_row(ASOF, "-1"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.NONPOSITIVE_CANDLE_PRICE in snap.reason_codes
+    assert snap.eth_return_pct is None
+
+
+def test_zero_btc_lookback_price_fails_closed_no_exception():
+    snap = _build(btc_lookback_row=_row(LOOKBACK, "0"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.NONPOSITIVE_CANDLE_PRICE in snap.reason_codes
+    assert snap.btc_return_pct is None
+    assert snap.eth_btc_ratio_start is None
+
+
+def test_negative_btc_asof_price_fails_closed_no_exception():
+    snap = _build(btc_asof_row=_row(ASOF, "-100"))
+    assert snap.freshness == FRESHNESS_INSUFFICIENT_DATA
+    assert ReasonCode.NONPOSITIVE_CANDLE_PRICE in snap.reason_codes
+    assert snap.btc_return_pct is None
 
 
 def test_no_account_or_execution_imports():

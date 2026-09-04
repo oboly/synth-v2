@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping
 
@@ -69,6 +69,11 @@ ETH_SYMBOL = "ETH"
 # future extension, not invented here.
 INPUT_INTERVAL = "1d"
 LOOKBACK_HORIZON = "24h"
+# The exact timedelta a persisted `lookback_horizon="24h"` claim represents.
+# `build_snapshot` enforces `lookback_ts_utc == asof_ts_utc - LOOKBACK_DELTA`
+# exactly so the persisted `lookback_horizon` label can never silently
+# describe a caller-supplied `lookback_ts_utc` that does not actually match.
+LOOKBACK_DELTA = timedelta(hours=24)
 
 # #305 has not made a reviewed `effective_horizon` declaration for ETH/BTC
 # leadership. Per #243 3.3 this must never be inferred from `input_interval`,
@@ -95,6 +100,8 @@ class ReasonCode:
     MALFORMED_CANDLE_BOUNDARY = "MALFORMED_CANDLE_BOUNDARY"
     FUTURE_CANDLE_BOUNDARY = "FUTURE_CANDLE_BOUNDARY"
     ASOF_AFTER_EVALUATION_TS = "ASOF_AFTER_EVALUATION_TS"
+    LOOKBACK_HORIZON_MISALIGNED = "LOOKBACK_HORIZON_MISALIGNED"
+    NONPOSITIVE_CANDLE_PRICE = "NONPOSITIVE_CANDLE_PRICE"
     UNMAPPED_HORIZON = "UNMAPPED_HORIZON"
 
 
@@ -179,6 +186,38 @@ def build_snapshot(
     lookback = _utc(lookback_ts_utc)
     evaluated = _utc(evaluated_at)
 
+    # The persisted `lookback_horizon` label is the fixed constant "24h", so
+    # the caller-supplied `lookback_ts_utc` must exactly equal
+    # `asof - LOOKBACK_DELTA`. A mismatched lookback would let the persisted
+    # label silently misdescribe the actual comparison window -- fail closed
+    # deterministically rather than accepting an arbitrary lookback.
+    if lookback != asof - LOOKBACK_DELTA:
+        return EthBtcLeadershipSnapshot(
+            asof_ts_utc=asof,
+            venue=venue,
+            btc_market=btc_market,
+            eth_market=eth_market,
+            input_interval=INPUT_INTERVAL,
+            lookback_horizon=LOOKBACK_HORIZON,
+            effective_horizon=EFFECTIVE_HORIZON,
+            model_id=MODEL_ID,
+            model_version=MODEL_VERSION,
+            freshness=FRESHNESS_INSUFFICIENT_DATA,
+            data_status=DATA_STATUS_INSUFFICIENT,
+            btc_return_pct=None,
+            eth_return_pct=None,
+            eth_minus_btc_return_pct=None,
+            eth_btc_ratio_start=None,
+            eth_btc_ratio_end=None,
+            eth_btc_ratio_change_pct=None,
+            reason_codes=(ReasonCode.LOOKBACK_HORIZON_MISALIGNED, ReasonCode.UNMAPPED_HORIZON),
+            provenance={
+                "asof_ts_utc": asof.isoformat(),
+                "lookback_ts_utc": lookback.isoformat(),
+                "expected_lookback_ts_utc": (asof - LOOKBACK_DELTA).isoformat(),
+            },
+        )
+
     def _blocked(freshness: str, reason_codes: list[str]) -> EthBtcLeadershipSnapshot:
         provenance = {
             "btc_asset_asof_boundary": _boundary_summary(btc_asof_row, asof),
@@ -260,10 +299,15 @@ def build_snapshot(
         or eth_close_asof is None
         or btc_close_lb is None
         or eth_close_lb is None
-        or btc_close_lb <= 0
-        or btc_close_asof <= 0
     ):
         return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.MALFORMED_CANDLE_BOUNDARY])
+
+    # All four prices must be strictly positive before any division. A
+    # zero/negative price is a data-integrity contradiction (never a real
+    # traded price), so this fails closed explicitly rather than letting a
+    # zero denominator raise `DivisionByZero`/`InvalidOperation` uncaught.
+    if btc_close_lb <= 0 or btc_close_asof <= 0 or eth_close_lb <= 0 or eth_close_asof <= 0:
+        return _blocked(FRESHNESS_INSUFFICIENT_DATA, [ReasonCode.NONPOSITIVE_CANDLE_PRICE])
 
     btc_return_pct = ((btc_close_asof / btc_close_lb) - Decimal("1")) * Decimal("100")
     eth_return_pct = ((eth_close_asof / eth_close_lb) - Decimal("1")) * Decimal("100")
