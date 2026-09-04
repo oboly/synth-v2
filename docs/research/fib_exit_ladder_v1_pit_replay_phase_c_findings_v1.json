@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "issue": 707,
+  "methodology_version": "FIB_EXIT_LADDER_V1_PIT_REPLAY_CONTRACT_V1",
+  "code_commit_sha": "3d355648dc6bffaa196580740de369b63aed7459",
+  "raw_evidence_path": "data/research/fib_exit_ladder_v1_pit_replay/pit-replay.json",
+  "raw_evidence_sha256": "0eab3c255e56ce49fa3265ab5f4e889e05886b0ee617038a6ce28578d5e80578",
+  "repeat_replay_sha256": "0eab3c255e56ce49fa3265ab5f4e889e05886b0ee617038a6ce28578d5e80578",
+  "repeat_replay_reproduced_identically": true,
+  "assets": {
+    "LINK": {
+      "original_policy": {"target_family": "PRO_3X4X", "max_ladder_sell_fraction": "0.80"},
+      "selected_policy": {"target_family": "PRO_3X4X", "max_ladder_sell_fraction": "0.80"},
+      "assignment_changed": false,
+      "oos_window_1_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "oos_window_2_alpha_vs_hold_pct": "17.04854530022269843270725661",
+      "disposition": "REVISED"
+    },
+    "XLM": {
+      "original_policy": {"target_family": "PRO_3X4X", "max_ladder_sell_fraction": "0.80"},
+      "selected_policy": {"target_family": "PRO_3X4X", "max_ladder_sell_fraction": "0.80"},
+      "assignment_changed": false,
+      "oos_window_1_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "oos_window_2_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "disposition": "REJECTED"
+    },
+    "SOL": {
+      "original_policy": {"target_family": "SUPERCYCLE", "max_ladder_sell_fraction": "0.80"},
+      "selected_policy": {"target_family": "SUPERCYCLE", "max_ladder_sell_fraction": "0.80"},
+      "assignment_changed": false,
+      "oos_window_1_alpha_vs_hold_pct": "-72.1120047768768384703926335",
+      "oos_window_2_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "disposition": "REJECTED"
+    },
+    "XRP": {
+      "original_policy": {"target_family": "SUPERCYCLE", "max_ladder_sell_fraction": "0.80"},
+      "selected_policy": {"target_family": "PRO_3X4X", "max_ladder_sell_fraction": "0.80"},
+      "assignment_changed": true,
+      "oos_window_1_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "oos_window_2_alpha_vs_hold_pct": "59.12102260550632163535389343",
+      "disposition": "REVISED"
+    },
+    "HOT": {
+      "original_policy": {"target_family": "EXPLOSIVE_SUPERCYCLE", "max_ladder_sell_fraction": "0.40"},
+      "selected_policy": {"target_family": "EXPLOSIVE_SUPERCYCLE", "max_ladder_sell_fraction": "0.40"},
+      "assignment_changed": false,
+      "oos_window_1_alpha_vs_hold_pct": "0.000000000000000000000000000",
+      "oos_window_2_alpha_vs_hold_pct": "0.00000000000000000000000000",
+      "disposition": "REJECTED"
+    }
+  },
+  "overall_disposition": "REJECTED",
+  "promotion_criteria": {
+    "criterion_4_deterministic_replay": "PASS",
+    "criterion_7_stable_reproducible": "PASS",
+    "criterion_6_positive_oos_alpha": "FAIL"
+  },
+  "methodology_promotion_grade": 0,
+  "promotion_eligible": false,
+  "promotion_blocker": "POSITIVE_OOS_ALPHA_NOT_MET",
+  "notes": [
+    "The deterministic verifier derives the selection and disposition from committed raw evidence, not from this findings file.",
+    "The empirical repeat replay used the exact same runner commit and reproduced the exact same raw evidence SHA256.",
+    "XRP is the only asset whose selected policy differs from the original published bucket assignment.",
+    "Zero alpha is not positive alpha under frozen contract section 9.",
+    "Promotion remains fail-closed because section 10 criterion 6 is not satisfied; the run is reproducible but not promotion-grade."
+  ]
+}
