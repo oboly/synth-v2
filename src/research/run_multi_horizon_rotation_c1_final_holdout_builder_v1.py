@@ -54,7 +54,10 @@ from typing import Any
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
+from src.research import multi_horizon_rotation_dataset_builder_v1 as c1_dataset_semantics_module
 from src.research import multi_horizon_rotation_replay_v1 as c1_replay_module
+from src.research import run_multi_horizon_rotation_dataset_builder_v1 as c1_dataset_runner_semantics_module
+from src.research import run_multi_horizon_rotation_source_integrity_v1 as c1_source_integrity_semantics_module
 from src.research.multi_horizon_rotation_dataset_builder_v1 import observed_asset_ids_at_asof
 from src.research.multi_horizon_rotation_replay_v1 import CANDIDATE_SPECS, evaluate_candidate
 from src.research.run_multi_horizon_rotation_dataset_builder_v1 import (
@@ -373,36 +376,43 @@ def _c1_spec_fingerprint_material(spec: Any) -> dict[str, Any]:
     }
 
 
-def compute_c1_implementation_fingerprint(spec: Any) -> dict[str, str]:
-    """Deterministic SHA-256 fingerprint binding every semantic that can
-    change the evaluated C1 signal:
+def _semantic_dependency_modules() -> dict[str, Any]:
+    """Return the minimal direct semantic closure for holdout evidence.
 
-    1. the canonical JSON of the frozen C1 candidate spec (candidate_id,
-       model_version, horizon_minutes, effective_horizon -- which together
-       fix the lookback/input-interval semantics via
-       ``CandidateSpec.candles_per_window``/``lookback_horizon``); and
-    2. the exact source bytes, on disk, of the sole module that owns the C1
-       replay formula, sign, weights, eligibility/minimum-cohort, and
-       boundary/gap semantics (``multi_horizon_rotation_replay_v1`` --
-       ``evaluate_candidate`` and everything it calls live in this one
-       file).
+    These modules own C1 replay scoring, PIT/forward-label primitives, the
+    imported row/candle reconstruction functions, and source-integrity
+    construction/verification. DB, CLI, logging, and path helpers are excluded
+    because they do not define evidence semantics.
+    """
+    return {
+        "multi_horizon_rotation_replay_v1": c1_replay_module,
+        "multi_horizon_rotation_dataset_builder_v1": c1_dataset_semantics_module,
+        "run_multi_horizon_rotation_dataset_builder_v1": c1_dataset_runner_semantics_module,
+        "run_multi_horizon_rotation_source_integrity_v1": c1_source_integrity_semantics_module,
+    }
 
-    Uses the module's own actual source bytes (``Path(...).read_bytes()``)
-    rather than ``inspect.getsource`` -- source-inspection reformats
-    whitespace/comments and is not guaranteed byte-stable, whereas hashing
-    the file directly detects literally any change to it and is trivially
-    deterministic and reproducible by re-running this same function.
+
+def compute_c1_implementation_fingerprint(spec: Any) -> dict[str, Any]:
+    """Deterministically bind C1 and its direct holdout evidence semantics.
+
+    Hashes exact source bytes for only the modules that directly determine C1
+    replay, PIT reconstruction, row/forward-label construction, and source
+    integrity. The canonical envelope is stable and contains no path or runtime
+    state.
     """
     spec_material = _c1_spec_fingerprint_material(spec)
     spec_json = json.dumps(spec_material, sort_keys=True, separators=(",", ":"))
-    replay_source_path = Path(c1_replay_module.__file__).resolve()
-    replay_source_sha256 = hashlib.sha256(replay_source_path.read_bytes()).hexdigest()
-    envelope = {"c1_spec": spec_material, "replay_source_sha256": replay_source_sha256}
+    semantic_dependencies = {
+        name: hashlib.sha256(Path(module.__file__).resolve().read_bytes()).hexdigest()
+        for name, module in sorted(_semantic_dependency_modules().items())
+    }
+    envelope = {"c1_spec": spec_material, "semantic_dependencies": semantic_dependencies}
     envelope_json = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(envelope_json.encode("utf-8")).hexdigest()
     return {
         "c1_spec_json": spec_json,
-        "replay_source_sha256": replay_source_sha256,
+        "replay_source_sha256": semantic_dependencies["multi_horizon_rotation_replay_v1"],
+        "semantic_dependencies": semantic_dependencies,
         "implementation_fingerprint_sha256": fingerprint,
     }
 
@@ -450,6 +460,37 @@ def verify_approved_split_manifest(manifest: dict[str, Any]) -> str:
             "refuses to open or continue the final holdout"
         )
     return actual
+
+
+def verify_approved_source_integrity_artifact(path: Path) -> str:
+    """Require the supplied artifact to carry the pre-frozen #593 identity.
+
+    This runs before DB access; later recomputation still proves current source
+    content equals the approved artifact, so a regenerated artifact cannot open
+    a distinct registry identity after source drift.
+    """
+    frozen = load_frozen_c1_implementation_fingerprint()
+    expected = frozen.get("approved_source_integrity_composite_sha256")
+    if not isinstance(expected, str) or SHA256_HEX_RE.fullmatch(expected) is None:
+        raise ValueError(
+            "frozen C1 implementation fingerprint doc has missing or malformed "
+            "approved_source_integrity_composite_sha256; cannot verify final-holdout source identity"
+        )
+    if not path.exists():
+        raise ValueError("source integrity artifact missing; cannot verify approved frozen source identity")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("source integrity artifact must be a JSON object")
+    actual = raw.get("composite_sha256")
+    if not isinstance(actual, str) or SHA256_HEX_RE.fullmatch(actual) is None:
+        raise ValueError("source integrity artifact has missing or malformed composite_sha256")
+    if actual != expected:
+        raise ValueError(
+            "approved frozen source integrity mismatch: supplied artifact does not match "
+            f"the committed #593 source identity (expected={expected} actual={actual}); "
+            "refuses to open or continue the final holdout"
+        )
+    return expected
 
 
 def verify_c1_implementation_fingerprint(spec: Any) -> str:
@@ -1077,6 +1118,7 @@ def main(argv: list[str] | None = None) -> int:
     source_query_count = 0
     source_rows_read = 0
     implementation_fingerprint = ""
+    approved_source_integrity_composite_sha = ""
     try:
         enforce_approved_execution_host()
         emit(
@@ -1121,6 +1163,40 @@ def main(argv: list[str] | None = None) -> int:
             split = manifest["splits"][PHASE]
             phase_start = parse_ts(split["start"])
             phase_end = parse_ts(split["end"])
+
+        source_integrity_approval_error: ValueError | None = None
+        emit("PHASE_STARTED name=verify_approved_frozen_source_integrity_identity")
+        source_identity_gate_started = time.perf_counter()
+        try:
+            approved_source_integrity_composite_sha = verify_approved_source_integrity_artifact(integrity_path)
+        except ValueError as exc:
+            if not args.resume:
+                raise
+            source_integrity_approval_error = exc
+        else:
+            emit(
+                "PHASE_FINISHED name=verify_approved_frozen_source_integrity_identity state=VERIFIED "
+                f"composite_sha256={approved_source_integrity_composite_sha} "
+                f"elapsed_s={time.perf_counter() - source_identity_gate_started:.3f}"
+            )
+
+        c1_spec = select_c1_spec()
+        implementation_fingerprint_error: ValueError | None = None
+        if manifest_approval_error is None:
+            emit("PHASE_STARTED name=verify_frozen_c1_implementation_fingerprint")
+            fingerprint_gate_started = time.perf_counter()
+            try:
+                implementation_fingerprint = verify_c1_implementation_fingerprint(c1_spec)
+            except ValueError as exc:
+                if not args.resume:
+                    raise
+                implementation_fingerprint_error = exc
+            else:
+                emit(
+                    "PHASE_FINISHED name=verify_frozen_c1_implementation_fingerprint state=VERIFIED "
+                    f"implementation_fingerprint_sha256={implementation_fingerprint} "
+                    f"elapsed_s={time.perf_counter() - fingerprint_gate_started:.3f}"
+                )
 
         checkpoint: dict[str, Any] | None = None
         if args.resume:
@@ -1188,6 +1264,10 @@ def main(argv: list[str] | None = None) -> int:
             opened = True
             if manifest_approval_error is not None:
                 raise manifest_approval_error
+            if source_integrity_approval_error is not None:
+                raise source_integrity_approval_error
+            if implementation_fingerprint_error is not None:
+                raise implementation_fingerprint_error
         else:
             if artifact_path.exists() or summary_path.exists() or cp_path.exists() or partial_path.exists():
                 raise ValueError(
@@ -1219,27 +1299,13 @@ def main(argv: list[str] | None = None) -> int:
             split_manifest=manifest,
         )
         verify_existing(integrity_path, current_integrity)
-        composite_sha = current_integrity["composite_sha256"]
+        if current_integrity.get("composite_sha256") != approved_source_integrity_composite_sha:
+            raise ValueError("current source integrity does not match approved frozen source identity")
+        composite_sha = approved_source_integrity_composite_sha
         emit(
             "PHASE_FINISHED name=verify_frozen_source_integrity state=VERIFIED "
             f"composite_sha256={composite_sha} "
             f"elapsed_s={time.perf_counter() - gate_started:.3f}"
-        )
-
-        c1_spec = select_c1_spec()
-
-        # Hard gate: recompute and verify the frozen C1 implementation
-        # fingerprint (spec + replay source bytes) before any registry entry
-        # is created and before any holdout replay. This must happen on both
-        # a fresh run and a resumed run, exactly like the source-integrity
-        # gate above.
-        emit("PHASE_STARTED name=verify_frozen_c1_implementation_fingerprint")
-        fingerprint_gate_started = time.perf_counter()
-        implementation_fingerprint = verify_c1_implementation_fingerprint(c1_spec)
-        emit(
-            "PHASE_FINISHED name=verify_frozen_c1_implementation_fingerprint state=VERIFIED "
-            f"implementation_fingerprint_sha256={implementation_fingerprint} "
-            f"elapsed_s={time.perf_counter() - fingerprint_gate_started:.3f}"
         )
 
         source_span = manifest["source_span"]

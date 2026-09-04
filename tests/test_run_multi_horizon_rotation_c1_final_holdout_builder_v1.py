@@ -470,6 +470,7 @@ def _install_fake_pipeline(
     phase_start: datetime,
     registry_root: Path | None,
     approve_test_manifest: bool = True,
+    approve_test_integrity: bool = True,
 ) -> None:
     """Stub every DB-touching function so main() can run end-to-end deterministically,
     and point the trusted registry at an isolated test directory (never the real repo
@@ -549,6 +550,8 @@ def _install_fake_pipeline(
     monkeypatch.setattr(module, "evaluate_candidate", fake_evaluate_candidate)
     if approve_test_manifest:
         monkeypatch.setattr(module, "verify_approved_split_manifest", lambda manifest: module.manifest_fingerprint(manifest))
+    if approve_test_integrity:
+        monkeypatch.setattr(module, "verify_approved_source_integrity_artifact", lambda path: "fixed")
     if registry_root is not None:
         monkeypatch.setattr(module, "REGISTRY_ROOT", registry_root)
 
@@ -1483,11 +1486,17 @@ def test_two_concurrent_resumes_of_same_checkpoint_exactly_one_wins(
     )
 
     barrier = threading.Barrier(2, timeout=5)
+    loser_attempted_lease = threading.Event()
     real_acquire = module.acquire_run_lease_exclusive
 
     def synced_acquire(path: Path, *, registry_key: str) -> bool:
         barrier.wait()  # both threads reach the exclusive lease-acquire together
-        return real_acquire(path, registry_key=registry_key)
+        won = real_acquire(path, registry_key=registry_key)
+        if won:
+            assert loser_attempted_lease.wait(timeout=5), "test deadlocked waiting for losing lease attempt"
+        else:
+            loser_attempted_lease.set()
+        return won
 
     monkeypatch.setattr(module, "acquire_run_lease_exclusive", synced_acquire)
 
@@ -2479,7 +2488,7 @@ def test_resume_caller_manifest_drift_fails_checkpoint_registry_and_releases_lea
     approved_sha = module.manifest_fingerprint(approved)
     manifest_path, integrity_path = _write_run_files(tmp_path, manifest=approved)
     registry_root = tmp_path / "_registry"
-    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root)
+    _install_fake_pipeline(monkeypatch, module, phase_start=BASE, registry_root=registry_root, approve_test_manifest=False)
     monkeypatch.setattr(module, "load_frozen_c1_implementation_fingerprint", lambda: {"approved_split_manifest_sha256": approved_sha})
     cp_path = checkpoint_path(tmp_path)
     write_checkpoint(cp_path, venue="bitvavo", manifest_sha256=approved_sha, source_integrity_composite_sha256="fixed", phase_start=BASE, phase_end=BASE + timedelta(minutes=30), last_completed_asof=None, asofs_completed=0, row_count=0, partial_bytes=0, source_query_count=0, source_rows_read=0, terminal_state="RUNNING", implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT)
@@ -2847,3 +2856,147 @@ def test_missing_approved_account_passwd_entry_fails_closed_before_db_and_regist
     assert not checkpoint_path(tmp_path).exists()
     assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
     assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+
+
+# --- Approved frozen source-integrity identity ----------------------------
+
+def _approved_source_integrity_composite(module: object) -> str:
+    return module.load_frozen_c1_implementation_fingerprint()["approved_source_integrity_composite_sha256"]
+
+
+def test_approved_source_integrity_artifact_passes_exact_frozen_composite(tmp_path: Path) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    artifact = tmp_path / "source_integrity_v1.json"
+    approved = _approved_source_integrity_composite(module)
+    artifact.write_text(json.dumps({"composite_sha256": approved}), encoding="utf-8")
+    assert module.verify_approved_source_integrity_artifact(artifact) == approved
+
+
+@pytest.mark.parametrize("composite", ["a" * 64, "not-a-sha"])
+def test_changed_source_integrity_composite_fails_before_db_registry_or_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, composite: str
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=_two_asof_manifest())
+    integrity_path.write_text(json.dumps({"composite_sha256": composite}), encoding="utf-8")
+    _install_fake_pipeline(
+        monkeypatch, module, phase_start=BASE, registry_root=tmp_path / "_registry", approve_test_integrity=False
+    )
+    calls = {"db": 0, "registry": 0, "replay": 0}
+    monkeypatch.setattr(module, "get_db_connection", lambda: calls.__setitem__("db", calls["db"] + 1))
+    monkeypatch.setattr(module, "create_registry_entry_exclusive", lambda *args, **kwargs: calls.__setitem__("registry", calls["registry"] + 1))
+    monkeypatch.setattr(module, "evaluate_candidate", lambda **kwargs: calls.__setitem__("replay", calls["replay"] + 1))
+
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    assert calls == {"db": 0, "registry": 0, "replay": 0}
+    assert not checkpoint_path(tmp_path).exists()
+    assert not (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").exists()
+    assert not (tmp_path / "final_holdout_c1_rows_v1.jsonl").exists()
+
+
+def test_regenerated_source_integrity_artifact_is_denied_before_current_source_recomputation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=_two_asof_manifest())
+    regenerated = "b" * 64
+    integrity_path.write_text(json.dumps({"composite_sha256": regenerated}), encoding="utf-8")
+    _install_fake_pipeline(
+        monkeypatch, module, phase_start=BASE, registry_root=tmp_path / "_registry", approve_test_integrity=False
+    )
+    calls = {"db": 0, "integrity": 0}
+    monkeypatch.setattr(module, "get_db_connection", lambda: calls.__setitem__("db", calls["db"] + 1))
+    monkeypatch.setattr(
+        module,
+        "build_integrity_payload",
+        lambda *args, **kwargs: calls.__setitem__("integrity", calls["integrity"] + 1) or {"composite_sha256": regenerated},
+    )
+
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path)]) == 1
+    assert calls == {"db": 0, "integrity": 0}
+
+
+def test_resume_source_integrity_artifact_drift_marks_existing_run_failed_without_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest = _two_asof_manifest()
+    manifest_path, integrity_path = _write_run_files(tmp_path, manifest=manifest)
+    approved = _approved_source_integrity_composite(module)
+    integrity_path.write_text(json.dumps({"composite_sha256": approved}), encoding="utf-8")
+    registry_root = tmp_path / "_registry"
+    _install_fake_pipeline(
+        monkeypatch, module, phase_start=BASE, registry_root=registry_root, approve_test_integrity=False
+    )
+    manifest_sha = module.manifest_fingerprint(manifest)
+    cp_path = checkpoint_path(tmp_path)
+    write_checkpoint(cp_path, venue="bitvavo", manifest_sha256=manifest_sha, source_integrity_composite_sha256=approved, phase_start=BASE, phase_end=BASE + timedelta(minutes=30), last_completed_asof=None, asofs_completed=0, row_count=0, partial_bytes=0, source_query_count=0, source_rows_read=0, terminal_state="RUNNING", implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT)
+    (tmp_path / ".final_holdout_c1_rows_v1.jsonl.partial").touch()
+    key = registry_key_for(manifest_sha256=manifest_sha, source_integrity_composite_sha256=approved, venue="bitvavo", candidate_id="C1", phase="final_holdout")
+    registry_path = registry_entry_path(key)
+    write_registry_entry(registry_path, venue="bitvavo", manifest_sha256=manifest_sha, source_integrity_composite_sha256=approved, terminal_state="RUNNING", opened_run_dir=str(tmp_path), implementation_fingerprint_sha256=REAL_C1_IMPLEMENTATION_FINGERPRINT)
+    integrity_path.write_text(json.dumps({"composite_sha256": "c" * 64}), encoding="utf-8")
+    calls = {"db": 0, "replay": 0}
+    monkeypatch.setattr(module, "get_db_connection", lambda: calls.__setitem__("db", calls["db"] + 1))
+    monkeypatch.setattr(module, "evaluate_candidate", lambda **kwargs: calls.__setitem__("replay", calls["replay"] + 1))
+
+    assert module.main(["--split-manifest", str(manifest_path), "--source-integrity", str(integrity_path), "--resume"]) == 1
+    assert calls == {"db": 0, "replay": 0}
+    assert load_checkpoint(cp_path)["terminal_state"] == "FAILED"
+    assert load_registry_entry(registry_path)["terminal_state"] == "FAILED"
+    assert not run_lease_path(key).exists()
+
+
+# --- Semantic fingerprint closure -----------------------------------------
+
+@pytest.mark.parametrize(
+    "module_attr",
+    [
+        "c1_dataset_semantics_module",
+        "c1_dataset_runner_semantics_module",
+        "c1_source_integrity_semantics_module",
+    ],
+)
+def test_implementation_fingerprint_fails_when_direct_semantic_owner_source_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_attr: str
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    original = getattr(module, module_attr)
+    drifted_path = tmp_path / f"{module_attr}.py"
+    drifted_path.write_bytes(Path(original.__file__).read_bytes() + b"\n# semantic drift\n")
+    drifted_module = type("DriftedModule", (), {"__file__": str(drifted_path)})()
+    monkeypatch.setattr(module, module_attr, drifted_module)
+    with pytest.raises(ValueError, match="C1 implementation fingerprint mismatch"):
+        module.verify_c1_implementation_fingerprint(module.select_c1_spec())
+
+
+def test_implementation_fingerprint_excludes_unrelated_final_runner_helper_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    baseline = module.compute_c1_implementation_fingerprint(module.select_c1_spec())
+    drifted_path = tmp_path / "unrelated_runner_helper.py"
+    drifted_path.write_bytes(Path(module.__file__).read_bytes() + b"\n# non-semantic helper drift\n")
+    monkeypatch.setattr(module, "__file__", str(drifted_path))
+    assert module.compute_c1_implementation_fingerprint(module.select_c1_spec()) == baseline
+
+
+
+def test_approved_source_integrity_identity_has_no_cli_or_environment_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.research.run_multi_horizon_rotation_c1_final_holdout_builder_v1 as module
+
+    manifest_path, artifact = _write_run_files(tmp_path, manifest=_two_asof_manifest())
+    approved = _approved_source_integrity_composite(module)
+    artifact.write_text(json.dumps({"composite_sha256": approved}), encoding="utf-8")
+    monkeypatch.setenv("APPROVED_SOURCE_INTEGRITY_COMPOSITE_SHA256", "0" * 64)
+    assert module.verify_approved_source_integrity_artifact(artifact) == approved
+    with pytest.raises(SystemExit):
+        module.parse_args(["--split-manifest", str(manifest_path), "--source-integrity", str(artifact), "--approved-source-integrity-composite-sha256", "0" * 64])
