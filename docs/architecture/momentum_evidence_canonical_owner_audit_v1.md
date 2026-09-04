@@ -147,21 +147,30 @@ primary truth; no categorical momentum states are proposed by this audit.
 - **Classification: MISSING.** There is no research-only, reporting-only, or
   production implementation to reuse, promote, or adapt.
 
-### 3. `src/regime/run_active_regime_observation_v1.py`: single validated hypothesis, not general momentum
+### 3. `src/regime/run_active_regime_observation_v1.py`: narrow market-only regime snapshot, not general momentum
 
-- Persists to an `active_regime_observation`-style table (per its own
-  runner) but is explicitly scoped, by its own docstring and
-  `make_hypothesis_tags`, to exactly one validated hypothesis
+- Lives under `src/regime/` (not `src/research/`) and persists to the
+  canonical `active_regime_observation` table when run with `--write-db`;
+  it is a market-only, current-snapshot regime context producer, not a
+  research-namespace script. It is explicitly scoped, by its own docstring
+  and `make_hypothesis_tags`, to exactly one validated hypothesis
   (`H1_BTC_MILD_DECLINE_4H_BOUNCE_CONTEXT`); hypotheses H2-H5 remain
   untagged/blocked in code (`# H1 is the only validated hypothesis`).
 - Its own docstring/purpose is "for downstream research and future policy
-  routing (not yet implemented)."
+  routing (not yet implemented)," and its output is consumed by
+  `src/regime/run_policy_router_preview_v1.py` (reads
+  `active_regime_observation`, writes
+  `policy_router_preview_observation`) — a market-only, account-agnostic
+  preview lane, not a research-only dead end.
 - No `model_id`/`model_version`, no `effective_horizon`/`observed_lifecycle`
   mapping, no raw numeric momentum field — output is a narrow categorical
   hypothesis tag, not general momentum evidence.
-- **Classification: research-only, narrow single-hypothesis lane.** Not a
-  candidate general-purpose MOMENTUM owner; must not be broadened or
-  repurposed by #617/#729.
+- **Classification: market-only, narrow/current-snapshot regime context
+  producer — not research-only, and not a general-purpose MOMENTUM owner.**
+  It is a canonical single-hypothesis regime lane consumed by the
+  policy-router preview, but it carries none of the #243 raw-numeric,
+  versioned, multi-horizon MOMENTUM evidence fields and must not be
+  broadened or repurposed by #617/#729 to fill that role.
 
 ### 4. `src/features/momentum_persistence_snapshot.py`: distinct feature family, not oscillator momentum
 
