@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
+import time
 from collections import Counter, defaultdict
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -41,6 +43,16 @@ from src.research.ma_volume_candidate_features_v1 import (
 RUNNER_NAME = "ma_volume_frozen_validation_run_v1"
 DEFAULT_OUTPUT_DIR = "data/research/ma_volume_frozen_validation_v1"
 ASSET_BATCH_SIZE = 200
+
+
+class _Interrupted(RuntimeError):
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"signal={signum}")
+        self.signum = signum
+
+
+def _signal_handler(signum: int, _frame: Any) -> None:
+    raise _Interrupted(signum)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -270,6 +282,7 @@ def prepare_output(
     checkpoint = {
         **identity,
         "terminal_state": "RUNNING",
+        "resumable": 1,
         "asofs_completed": 0,
         "candidate_rows_written": 0,
         "last_asof_ts_utc": None,
@@ -277,6 +290,31 @@ def prepare_output(
     }
     atomic_json(checkpoint_path, checkpoint)
     return checkpoint, 0, []
+
+
+def write_terminal_checkpoint(
+    output_dir: Path,
+    *,
+    identity: dict[str, Any],
+    terminal_state: str,
+    asofs_completed: int,
+    candidate_rows_written: int,
+    last_asof_ts_utc: datetime | str | None,
+    signal_number: int | None = None,
+    resumable: int = 1,
+) -> None:
+    payload: dict[str, Any] = {
+        **identity,
+        "terminal_state": terminal_state,
+        "resumable": resumable,
+        "asofs_completed": asofs_completed,
+        "candidate_rows_written": candidate_rows_written,
+        "last_asof_ts_utc": last_asof_ts_utc,
+        "db_writes": 0,
+    }
+    if signal_number is not None:
+        payload["signal"] = signal_number
+    atomic_json(output_dir / "checkpoint.json", payload)
 
 
 def checkpoint_after_asof(
@@ -287,17 +325,45 @@ def checkpoint_after_asof(
     candidate_rows_written: int,
     last_asof_ts_utc: datetime,
 ) -> None:
-    atomic_json(
-        output_dir / "checkpoint.json",
-        {
-            **identity,
-            "terminal_state": "RUNNING",
-            "asofs_completed": asofs_completed,
-            "candidate_rows_written": candidate_rows_written,
-            "last_asof_ts_utc": last_asof_ts_utc,
-            "db_writes": 0,
-        },
+    write_terminal_checkpoint(
+        output_dir,
+        identity=identity,
+        terminal_state="RUNNING",
+        asofs_completed=asofs_completed,
+        candidate_rows_written=candidate_rows_written,
+        last_asof_ts_utc=last_asof_ts_utc,
     )
+
+
+def has_durable_checkpoint(output_dir: Path) -> bool:
+    path = output_dir / "checkpoint.json"
+    if not path.exists():
+        return False
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(checkpoint, dict)
+        and checkpoint.get("runner") == RUNNER_NAME
+        and checkpoint.get("terminal_state") in {"RUNNING", "INTERRUPTED", "FAILED", "FINISHED"}
+        and checkpoint.get("db_writes") == 0
+        and isinstance(checkpoint.get("asofs_completed"), int)
+        and checkpoint["asofs_completed"] >= 0
+        and isinstance(checkpoint.get("candidate_rows_written"), int)
+        and checkpoint["candidate_rows_written"] >= 0
+    )
+
+
+def safe_cleanup_connection(conn: Any) -> None:
+    for cleanup_name in ("rollback", "close"):
+        cleanup = getattr(conn, cleanup_name, None)
+        if cleanup is None:
+            continue
+        try:
+            cleanup()
+        except Exception:
+            pass
 
 
 def is_full_run(args: argparse.Namespace, selected_count: int, contract: dict[str, Any]) -> bool:
@@ -309,12 +375,11 @@ def is_full_run(args: argparse.Namespace, selected_count: int, contract: dict[st
     )
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def _execute(args: argparse.Namespace, *, started: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    print("PHASE phase=load_frozen_inputs status=started", flush=True)
     contract = load_contract(Path(args.contract))
-    population_path = Path(args.population)
-    outcomes_path = Path(args.outcomes)
-    population = load_population(population_path, contract)
-    outcomes = load_outcomes(outcomes_path, contract)
+    population = load_population(Path(args.population), contract)
+    outcomes = load_outcomes(Path(args.outcomes), contract)
     horizons = tuple(str(value) for value in contract["source_outcomes"]["horizons"])
     validate_outcome_coverage(population, outcomes, horizons)
     selected = select_population_rows(
@@ -330,7 +395,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("selected observation venue mismatch")
         asof_groups[parse_ts(row["asof_ts_utc"])].append(row)
     ordered_asofs = sorted(asof_groups)
-
     output_dir = Path(args.output_dir)
     identity = scope_identity(args, selected=selected, asofs=ordered_asofs)
     candidate_filename = str(contract["output"]["candidate_rows"])
@@ -340,11 +404,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         identity=identity,
         candidate_filename=candidate_filename,
     )
+    state: dict[str, Any] = {
+        "output_dir": output_dir,
+        "identity": identity,
+        "asofs_completed": completed_asofs,
+        "candidate_rows_written": len(candidate_rows),
+        "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc"),
+    }
     if checkpoint.get("terminal_state") == "FINISHED":
-        return json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        return manifest, state
     if completed_asofs < 0 or completed_asofs > len(ordered_asofs):
         raise ValueError("invalid checkpoint asofs_completed")
 
+    print(
+        f"BOUND observations={len(selected)} unique_asofs={len(ordered_asofs)} horizons={','.join(horizons)} "
+        f"resume_from_asof={completed_asofs}",
+        flush=True,
+    )
+    print("PHASE phase=candidate_features status=started", flush=True)
     candidate_path = output_dir / candidate_filename
     conn = get_db_connection()
     try:
@@ -355,6 +433,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         for asof_index, asof in enumerate(ordered_asofs[completed_asofs:], start=completed_asofs + 1):
             observations = asof_groups[asof]
+            print(
+                f"QUERY phase=candidate_features status=started index={asof_index}/{len(ordered_asofs)} "
+                f"asof={asof.isoformat()} observations={len(observations)}",
+                flush=True,
+            )
             candle_by_asset = fetch_candles_for_asof(
                 conn,
                 venue=args.venue,
@@ -374,6 +457,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ]
             append_jsonl(candidate_path, new_rows)
             candidate_rows.extend(new_rows)
+            state["asofs_completed"] = asof_index
+            state["candidate_rows_written"] = len(candidate_rows)
+            state["last_asof_ts_utc"] = asof
             checkpoint_after_asof(
                 output_dir,
                 identity=identity,
@@ -381,15 +467,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 candidate_rows_written=len(candidate_rows),
                 last_asof_ts_utc=asof,
             )
+            print(
+                f"ASOF index={asof_index}/{len(ordered_asofs)} asof={asof.isoformat()} rows={len(new_rows)} "
+                f"total_rows={len(candidate_rows)} elapsed_s={time.monotonic() - started:.3f}",
+                flush=True,
+            )
     finally:
-        conn.close()
+        safe_cleanup_connection(conn)
 
     if len(candidate_rows) != len(selected):
         raise ValueError(f"candidate row count mismatch expected={len(selected)} actual={len(candidate_rows)}")
 
+    print("PHASE phase=outcome_join_and_validation status=started", flush=True)
     reports: dict[str, Any] = {}
     full_run = is_full_run(args, len(selected), contract)
-    for horizon in horizons:
+    for horizon_index, horizon in enumerate(horizons, start=1):
         validation_rows = [
             attach_outcome(row, horizon=horizon, outcome_by_key=outcomes, contract=contract)
             for row in candidate_rows
@@ -413,6 +505,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         report_path = output_dir / f"{contract['output']['report_prefix']}{horizon}.json"
         write_or_verify_json(report_path, report_payload, resume=args.resume)
         reports[horizon] = report_payload
+        print(
+            f"HORIZON index={horizon_index}/{len(horizons)} horizon={horizon} validation_rows={len(validation_rows)} "
+            f"report_status={report_payload['status']}",
+            flush=True,
+        )
 
     status_counts = Counter(str(row["candidate_status"]) for row in candidate_rows)
     manifest = {
@@ -447,25 +544,105 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     manifest_path = output_dir / str(contract["output"]["manifest"])
     write_or_verify_json(manifest_path, manifest, resume=args.resume)
-    atomic_json(
-        output_dir / "checkpoint.json",
-        {
-            **identity,
-            "terminal_state": "FINISHED",
-            "asofs_completed": len(ordered_asofs),
-            "candidate_rows_written": len(candidate_rows),
-            "last_asof_ts_utc": ordered_asofs[-1],
-            "candidate_rows_sha256": manifest["candidate_rows_sha256"],
-            "db_writes": 0,
-        },
+    write_terminal_checkpoint(
+        output_dir,
+        identity=identity,
+        terminal_state="FINISHED",
+        resumable=0,
+        asofs_completed=len(ordered_asofs),
+        candidate_rows_written=len(candidate_rows),
+        last_asof_ts_utc=ordered_asofs[-1],
     )
-    return manifest
+    state["asofs_completed"] = len(ordered_asofs)
+    state["candidate_rows_written"] = len(candidate_rows)
+    state["last_asof_ts_utc"] = ordered_asofs[-1]
+    return manifest, state
+
+
+def run(args: argparse.Namespace) -> int:
+    started = time.monotonic()
+    mode = "RESUME" if args.resume else "FRESH"
+    print(
+        f"STARTED runner={RUNNER_NAME} mode={mode} research_read_only=1 venue={args.venue} "
+        f"asof_index={args.asof_index} asset_id={args.asset_id} limit={args.limit_observations}",
+        flush=True,
+    )
+    print(
+        "SAFETY research_only=1 market_only=1 db_writes=0 production_ranking_changes=0 "
+        "selection_engine=none decision_gate=none execution_planner=none executor=none "
+        "broker_private_calls=0 broker_writes=0 order_submission=0 live_activation=0",
+        flush=True,
+    )
+    previous_handlers: dict[int, Any] = {}
+    state: dict[str, Any] = {
+        "output_dir": Path(args.output_dir),
+        "identity": None,
+        "asofs_completed": 0,
+        "candidate_rows_written": 0,
+        "last_asof_ts_utc": None,
+    }
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _signal_handler)
+        manifest, execution_state = _execute(args, started=started)
+        state.update(execution_state)
+        print(
+            f"FINISHED runner={RUNNER_NAME} observations={manifest['selected_observations']} "
+            f"asofs={manifest['selected_asofs']} full_frozen_run={manifest['full_frozen_run']} "
+            f"candidate_rows_sha256={manifest['candidate_rows_sha256']} db_writes=0 "
+            f"elapsed_s={time.monotonic() - started:.3f}",
+            flush=True,
+        )
+        return 0
+    except _Interrupted as exc:
+        output_dir = Path(state["output_dir"])
+        resumable = has_durable_checkpoint(output_dir)
+        identity = state.get("identity")
+        if resumable and identity is not None:
+            write_terminal_checkpoint(
+                output_dir,
+                identity=identity,
+                terminal_state="INTERRUPTED",
+                asofs_completed=int(state["asofs_completed"]),
+                candidate_rows_written=int(state["candidate_rows_written"]),
+                last_asof_ts_utc=state["last_asof_ts_utc"],
+                signal_number=exc.signum,
+            )
+        print(
+            f"INTERRUPTED runner={RUNNER_NAME} signal={exc.signum} resumable={int(resumable)} "
+            f"asofs_completed={state['asofs_completed']} candidate_rows={state['candidate_rows_written']} "
+            f"db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
+            flush=True,
+        )
+        return 130
+    except Exception as exc:
+        output_dir = Path(state["output_dir"])
+        resumable = has_durable_checkpoint(output_dir)
+        identity = state.get("identity")
+        if resumable and identity is not None:
+            write_terminal_checkpoint(
+                output_dir,
+                identity=identity,
+                terminal_state="FAILED",
+                asofs_completed=int(state["asofs_completed"]),
+                candidate_rows_written=int(state["candidate_rows_written"]),
+                last_asof_ts_utc=state["last_asof_ts_utc"],
+            )
+        print(
+            f"FAILED runner={RUNNER_NAME} error={type(exc).__name__}:{exc} resumable={int(resumable)} "
+            f"asofs_completed={state['asofs_completed']} candidate_rows={state['candidate_rows_written']} "
+            f"db_writes=0 elapsed_s={time.monotonic() - started:.3f}",
+            flush=True,
+        )
+        return 1
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
 
 def main(argv: list[str] | None = None) -> int:
-    manifest = run(parse_args(argv))
-    print(json.dumps(jsonable(manifest), sort_keys=True))
-    return 0
+    return run(parse_args(argv))
 
 
 if __name__ == "__main__":
