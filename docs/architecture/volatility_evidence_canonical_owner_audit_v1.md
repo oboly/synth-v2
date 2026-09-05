@@ -122,7 +122,7 @@ primary truth; no categorical volatility states are proposed by this audit.
     `atr_pct > 0.12`) and a weighted composite score. These are
     selection-local consumers of the raw primitive, not a volatility
     evidence contract.
-  - **Analysis/research consumers:** nine `src/analysis/*_4h.py` modules
+  - **Analysis/research consumers:** ten `src/analysis/*_4h.py` modules
     (`reversion_state_features_4h.py`, `known_signal_family_4h.py`,
     `trend_pullback_continuation_4h.py`,
     `reversion_extreme_t1_entry_t2_exit_4h.py`,
@@ -139,10 +139,15 @@ primary truth; no categorical volatility states are proposed by this audit.
     `chart_repository.py`, `chart_assembler.py` read `atr_14`/`atr_pct` for
     chart display only — correctly read-only, not an indicator-truth
     violation.
-  - **Backtest consumers:** `src/backtest/strategies/pullback_reclaim_strategy.py`,
-    `pullback_reclaim_atr_strategy.py`, `src/backtest/backtest_runner.py`,
-    `src/strategies/ema_trend_strategy.py` (own local `atr()`/`true_range()`
-    reimplementation, not reading `feat_candle`) use ATR as a backtest
+  - **Backtest consumers (independent local reimplementations, not
+    `feat_candle` readers):** `src/backtest/strategies/pullback_reclaim_strategy.py`
+    and `pullback_reclaim_atr_strategy.py` each compute their own local
+    `_atr()` (Wilder-style, on the in-memory backtest dataframe);
+    `src/backtest/backtest_runner.py` imports `atr` from a separate
+    `indicators` module; `src/strategies/ema_trend_strategy.py` has its own
+    local `atr()`/`true_range()` reimplementation. **None of these four
+    reads `feat_candle.atr_pct`/`atr_14`** — each recomputes ATR locally
+    from raw OHLC on its own backtest dataframe. They use ATR as a backtest
     entry-filter/stop parameter — research/backtest scope, not production
     evidence, and explicitly excluded from this audit's owner candidacy.
   - None of these paths defines, versions, or exposes `atr_14`/`atr_pct` as
@@ -424,13 +429,17 @@ obs_market_candle
                   fixed 300-bar warmup batch-upsert, not asof-parameterized)
      -> src/engine/run_signal_engine.py, src/signal_engine/run_signal_state_etl.py
         (atr_pct folded into hardcoded selection-local threshold checks / composite score)
-     -> src/analysis/*_4h.py (9 modules; research/backtest analysis via untracked v_*_4h views)
+     -> src/analysis/*_4h.py (10 modules; research/backtest analysis via untracked v_*_4h views)
      -> src/ui_chart/* (reporting display only)
-     -> src/backtest/strategies/* (backtest entry-filter/stop parameter)
 
   -> candle_feat_builder.py (SEPARATE, differently-formulated ATR: plain rolling
                              mean, not Wilder-EMA; window=cfg.atr_window)
      -> src/features/ma_breadth_snapshot_v1.py (per-series reuse; MA breadth family, not volatility)
+
+src/backtest/strategies/* + src/backtest/backtest_runner.py + src/strategies/ema_trend_strategy.py
+  (each its OWN independent local ATR reimplementation on the backtest
+   dataframe; NONE reads feat_candle.atr_14/atr_pct — backtest entry-filter/
+   stop parameter, out of scope for this audit's owner candidacy)
 
 obs_market_candle (independent path)
   -> asset_profile_engine_v1.py::build_asset_profiles (realized-return pstdev,
