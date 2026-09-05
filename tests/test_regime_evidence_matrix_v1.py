@@ -67,6 +67,7 @@ def test_signal_horizon_fields_are_copied_verbatim() -> None:
     assert cell.raw == evidence.raw
     assert cell.reason_codes == evidence.reason_codes
     assert cell.effective_horizon == evidence.effective_horizon
+    assert cell.observed_lifecycle == evidence.observed_lifecycle
     assert cell.scope_key == "venue=bitvavo;asset_id=1"
 
 
@@ -113,6 +114,7 @@ def test_momentum_exposes_raw_values_without_categorical_state() -> None:
 
     assert cell.family == FAMILY_MOMENTUM
     assert cell.status == snapshot.status
+    assert cell.observed_lifecycle == snapshot.observed_lifecycle_status
     assert cell.raw["macd_value"] == Decimal("1.1")
     assert cell.raw["histogram_delta"] == Decimal("0.05")
     assert "state" not in cell.raw
@@ -149,6 +151,7 @@ def test_breadth_unknown_horizon_and_freshness_are_not_upgraded() -> None:
     assert cell.status == "AVAILABLE"
     assert cell.freshness == "UNKNOWN"
     assert cell.effective_horizon == "UNKNOWN"
+    assert cell.observed_lifecycle is None
     assert cell.raw["universe_above_sma50_pct"] == Decimal("60")
     assert "EXPANDING" not in repr(cell)
 
