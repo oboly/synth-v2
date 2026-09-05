@@ -123,10 +123,14 @@ def evaluate_incremental_features(
     baselines = tuple(baseline_columns)
     if len(set(baselines)) != len(baselines):
         raise MAVolumeValidationInputError("baseline_columns contains duplicates")
-    if set(candidates).intersection(baselines):
-        raise MAVolumeValidationInputError("candidate and baseline columns must be disjoint")
 
-    required = {split_column, outcome_column, *candidates, *baselines}
+    role_columns = (split_column, outcome_column, *candidates, *baselines)
+    if len(set(role_columns)) != len(role_columns):
+        raise MAVolumeValidationInputError(
+            "split, outcome, candidate and baseline columns must be mutually disjoint"
+        )
+
+    required = set(role_columns)
     missing = required.difference(frame.columns)
     if missing:
         raise MAVolumeValidationInputError(f"validation frame missing columns: {sorted(missing)}")
