@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from src.reporting.regime_evidence_matrix_html_v1 import render_regime_evidence_matrix_html
+from src.reporting.regime_evidence_matrix_html_v1 import (
+    _display_optional,
+    render_regime_evidence_matrix_html,
+)
 from src.reporting.regime_evidence_matrix_v1 import RegimeEvidenceCellV1, build_matrix, unavailable_cell
 
 
@@ -55,6 +58,12 @@ def test_renderer_exposes_source_owned_evidence_and_metadata() -> None:
     assert "1.25" in rendered
     assert "UNMAPPED_HORIZON" in rendered
     assert "FRESHNESS_NOT_OWNER_DEFINED" in rendered
+
+
+def test_renderer_preserves_empty_string_distinct_from_none() -> None:
+    assert _display_optional(None) == "—"
+    assert _display_optional("") == ""
+    assert _display_optional("4h") == "4h"
 
 
 def test_renderer_unavailable_family_is_visible_as_text_not_color_only() -> None:
