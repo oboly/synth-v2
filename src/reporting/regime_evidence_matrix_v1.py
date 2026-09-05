@@ -77,7 +77,7 @@ class RegimeEvidenceCellV1:
 
     @property
     def identity(self) -> tuple[str, str, str, str, str | None, str | None]:
-        """Deterministic component identity for duplicate detection/sorting."""
+        """Exact component identity for duplicate detection."""
         return (
             self.family,
             self.component,
@@ -85,6 +85,24 @@ class RegimeEvidenceCellV1:
             self.scope_key,
             self.input_interval,
             self.lookback_horizon,
+        )
+
+    @property
+    def sort_key(self) -> tuple[str, str, str, str, str, str]:
+        """Comparable deterministic ordering key.
+
+        Optional identity fields stay optional in the canonical cell, but are
+        mapped to an empty string only for sorting so Python never compares
+        ``None`` directly with a string. Duplicate detection still uses the
+        exact, unnormalized ``identity`` above.
+        """
+        return (
+            self.family,
+            self.component,
+            self.market,
+            self.scope_key,
+            self.input_interval or "",
+            self.lookback_horizon or "",
         )
 
 
@@ -266,10 +284,13 @@ def build_matrix(
     materialized = tuple(cells)
     identities = [cell.identity for cell in materialized]
     if len(identities) != len(set(identities)):
-        duplicates = sorted(identity for identity in set(identities) if identities.count(identity) > 1)
+        duplicates = sorted(
+            (identity for identity in set(identities) if identities.count(identity) > 1),
+            key=lambda identity: tuple("" if value is None else str(value) for value in identity),
+        )
         raise ValueError(f"duplicate regime evidence cell identities: {duplicates}")
 
-    ordered = tuple(sorted(materialized, key=lambda cell: cell.identity))
+    ordered = tuple(sorted(materialized, key=lambda cell: cell.sort_key))
     return RegimeEvidenceMatrixV1(evaluated_at=evaluated_at, cells=ordered)
 
 
