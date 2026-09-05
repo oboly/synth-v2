@@ -81,6 +81,9 @@ def _partial_spearman(
     outcome_rank = _rank(frame[outcome])
     if not baseline_columns:
         return _safe_corr(feature_rank, outcome_rank)
+    residual_degrees_of_freedom = len(frame) - len(baseline_columns) - 1
+    if residual_degrees_of_freedom < 2:
+        return None
     controls = np.column_stack([_rank(frame[column]) for column in baseline_columns])
     feature_residual = _residualize(feature_rank, controls)
     outcome_residual = _residualize(outcome_rank, controls)
