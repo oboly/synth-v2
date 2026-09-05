@@ -56,6 +56,7 @@ def _validate_plan_structure(plan: AutomaticBuyPlanV1) -> None:
             plan.strategy_id,
             plan.strategy_version,
             plan.setup_id,
+            plan.strategy_bucket_id,
             plan.planner_version,
         )),
         "PLAN_PROVENANCE_FIELD_EMPTY",
@@ -103,6 +104,7 @@ def _identity_payload(plan: AutomaticBuyPlanV1) -> dict[str, object]:
         "strategy_id": plan.strategy_id,
         "strategy_version": plan.strategy_version,
         "setup_id": plan.setup_id,
+        "strategy_bucket_id": plan.strategy_bucket_id,
         "gate_approval": {
             "state": gate.state,
             "reason_code": gate.reason_code,

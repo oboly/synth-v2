@@ -32,7 +32,7 @@ def _candidate(**overrides: object) -> AutomaticBuyCandidateV1:
 
 
 def _decision(**overrides: object) -> AutomaticBuyGateDecisionV1:
-    values: dict[str, object] = dict(state=STATE_APPROVED, reason_code="OK", candidate=_candidate(), approved_notional_ceiling_eur=Decimal("257.03"))
+    values: dict[str, object] = dict(state=STATE_APPROVED, reason_code="OK", candidate=_candidate(), approved_notional_ceiling_eur=Decimal("257.03"), strategy_bucket_id="SHORT_TERM_ROTATION")
     values.update(overrides)
     return AutomaticBuyGateDecisionV1(**values)  # type: ignore[arg-type]
 

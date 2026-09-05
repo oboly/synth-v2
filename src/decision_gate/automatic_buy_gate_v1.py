@@ -128,6 +128,10 @@ class AutomaticBuyGateDecisionV1:
     reason_code: str
     candidate: AutomaticBuyCandidateV1
     approved_notional_ceiling_eur: Decimal | None
+    # Issue #752: preserved so an APPROVED decision's downstream execution
+    # plan/fill attribution can be scoped to the exact bucket that approved
+    # it, instead of the identity being dropped after gate evaluation.
+    strategy_bucket_id: str = ""
     strategy_bucket_reason_code: str | None = None
     protection_reason_code: str | None = None
     protection_code: str | None = None
@@ -151,14 +155,21 @@ def _decision(
     reason: str,
     candidate: AutomaticBuyCandidateV1,
     *,
+    context: AutomaticBuyGateContextV1,
     ceiling: Decimal | None = None,
     bucket_reason: str | None = None,
 ) -> AutomaticBuyGateDecisionV1:
+    # Issue #752: strategy_bucket_id is carried onto every decision (not only
+    # APPROVED ones) so downstream provenance/audit can see which bucket a
+    # BLOCKED/NON_ACTIONABLE evaluation was scoped to. It is never treated as
+    # validated identity here -- upstream field-level checks on
+    # ``context.strategy_bucket_id`` remain unchanged.
     return AutomaticBuyGateDecisionV1(
         state=state,
         reason_code=reason,
         candidate=candidate,
         approved_notional_ceiling_eur=(ceiling if state == STATE_APPROVED else None),
+        strategy_bucket_id=context.strategy_bucket_id,
         strategy_bucket_reason_code=bucket_reason,
     )
 
@@ -178,9 +189,9 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         or candidate.candidate_action not in SUPPORTED_CANDIDATE_ACTIONS
         or not _is_nonempty_string(candidate.evidence_id)
     ):
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_CANDIDATE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_CANDIDATE, candidate, context=context)
     if candidate.policy_name != POLICY_NAME or candidate.policy_version != POLICY_VERSION:
-        return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_POLICY_CONTRACT, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_POLICY_CONTRACT, candidate, context=context)
 
     if not all(_is_aware(value) for value in (
         candidate.observed_ts_utc,
@@ -188,7 +199,7 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         context.free_quote_balance_observed_ts_utc,
         context.evaluation_ts_utc,
     )):
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, candidate, context=context)
 
     if (
         context.trading_account_id <= 0
@@ -201,34 +212,34 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         or context.max_free_quote_balance_age_seconds < 0
         or type(context.live_trading_enabled) is not bool
     ):
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_ACCOUNT_EVIDENCE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_ACCOUNT_EVIDENCE, candidate, context=context)
 
     if (candidate.venue, candidate.asset_id, candidate.market) != (
         context.venue,
         context.asset_id,
         context.market,
     ):
-        return _decision(STATE_NON_ACTIONABLE, REASON_IDENTITY_MISMATCH, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_IDENTITY_MISMATCH, candidate, context=context)
 
     if _stale(context.account_observed_ts_utc, context.evaluation_ts_utc, context.max_account_age_seconds):
-        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_EVIDENCE_STALE, candidate, context=context)
     if _stale(candidate.observed_ts_utc, context.evaluation_ts_utc, context.max_candidate_age_seconds):
-        return _decision(STATE_NON_ACTIONABLE, REASON_CANDIDATE_EVIDENCE_STALE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_CANDIDATE_EVIDENCE_STALE, candidate, context=context)
     if context.free_quote_balance_eur < 0:
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_FREE_QUOTE_BALANCE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_FREE_QUOTE_BALANCE, candidate, context=context)
     if context.proposed_position_amount_eur <= 0:
-        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_PROPOSED_POSITION_AMOUNT, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_PROPOSED_POSITION_AMOUNT, candidate, context=context)
     if context.max_automatic_buy_notional_eur is not None and context.max_automatic_buy_notional_eur < 0:
-        return _decision(STATE_NON_ACTIONABLE, REASON_RISK_BOUND_UNRESOLVED, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_RISK_BOUND_UNRESOLVED, candidate, context=context)
     if not context.account_enabled:
-        return _decision(STATE_DENIED, REASON_ACCOUNT_DISABLED, candidate)
+        return _decision(STATE_DENIED, REASON_ACCOUNT_DISABLED, candidate, context=context)
     if not context.automatic_buy_execution_enabled:
-        return _decision(STATE_DENIED, REASON_EXECUTION_PERMISSION_DISABLED, candidate)
+        return _decision(STATE_DENIED, REASON_EXECUTION_PERMISSION_DISABLED, candidate, context=context)
 
     if context.account_mode not in SUPPORTED_ACCOUNT_MODES:
-        return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_ACCOUNT_MODE, candidate, context=context)
     if not is_account_mode_live_trading_enabled_consistent(context.account_mode, context.live_trading_enabled):
-        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate)
+        return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_EVIDENCE_INCONSISTENT, candidate, context=context)
     if not is_execution_eligible_account_mode(context.account_mode):
         # paper falls through to APPROVED via the existing PAPER runtime
         # lane below; live_readonly (real broker, read-only) must never
@@ -236,17 +247,17 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         # LIVE routing, so it is rejected here explicitly and distinctly
         # from ACCOUNT_MODE_EVIDENCE_INCONSISTENT.
         if context.account_mode == ACCOUNT_MODE_LIVE_READONLY:
-            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE, candidate)
+            return _decision(STATE_NON_ACTIONABLE, REASON_ACCOUNT_MODE_NOT_EXECUTION_ELIGIBLE, candidate, context=context)
     else:
         if _stale(
             context.free_quote_balance_observed_ts_utc,
             context.evaluation_ts_utc,
             context.max_free_quote_balance_age_seconds,
         ):
-            return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate)
+            return _decision(STATE_NON_ACTIONABLE, REASON_FREE_QUOTE_BALANCE_STALE, candidate, context=context)
         live_permission = context.automatic_buy_live_permission_evaluation
         if live_permission is None:
-            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
+            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate, context=context)
         try:
             validate_automatic_buy_live_permission_evaluation_binding_v1(
                 live_permission,
@@ -258,14 +269,15 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
                 STATE_DENIED,
                 REASON_LIVE_PERMISSION_EVALUATION_BINDING_MISMATCH,
                 candidate,
+                context=context,
             )
         if live_permission.decision_state != LIVE_PERMISSION_DECISION_GRANTED:
-            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate)
+            return _decision(STATE_DENIED, REASON_LIVE_EXECUTION_NOT_GRANTED, candidate, context=context)
 
     if context.blocking_conflict:
-        return _decision(STATE_DENIED, REASON_BLOCKING_CONFLICT, candidate)
+        return _decision(STATE_DENIED, REASON_BLOCKING_CONFLICT, candidate, context=context)
     if context.account_mode == ACCOUNT_MODE_LIVE and context.free_quote_balance_eur == 0:
-        return _decision(STATE_DENIED, REASON_NO_FREE_QUOTE_BALANCE, candidate)
+        return _decision(STATE_DENIED, REASON_NO_FREE_QUOTE_BALANCE, candidate, context=context)
 
     bucket_request = StrategyBucketParticipationRequestV1(
         trading_account_id=context.trading_account_id,
@@ -288,6 +300,7 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             STATE_NON_ACTIONABLE,
             REASON_INVALID_STRATEGY_BUCKET_PARTICIPATION_REQUEST,
             candidate,
+            context=context,
         )
 
     if bucket_decision.decision_state == BUCKET_DECISION_BLOCKED:
@@ -295,6 +308,7 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             STATE_DENIED,
             bucket_decision.reason_code,
             candidate,
+            context=context,
             bucket_reason=bucket_decision.reason_code,
         )
 
@@ -308,12 +322,14 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             STATE_DENIED,
             REASON_RISK_BOUND_UNRESOLVED,
             candidate,
+            context=context,
             bucket_reason=bucket_decision.reason_code,
         )
     return _decision(
         STATE_APPROVED,
         REASON_OK,
         candidate,
+        context=context,
         ceiling=ceiling,
         bucket_reason=bucket_decision.reason_code,
     )

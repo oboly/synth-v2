@@ -64,6 +64,15 @@ class StrategyBucketAccountConfigRowV1:
     effective_from_ts_utc: datetime
     effective_until_ts_utc: datetime | None
     source_provenance: str
+    # Issue #752: percentage-of-account-equity allocation fields absent from
+    # the original #279 config. NULL means "no percentage-of-equity policy
+    # configured for this row" -- the effective bucket ceiling then reduces
+    # to the existing absolute max_bucket_amount_eur/max_position_amount_eur
+    # behavior unchanged (see strategy_bucket_capacity_v1.py), so every
+    # config row created before #752 remains valid without a backfill.
+    allocation_target_pct: Decimal | None = None
+    allocation_max_pct: Decimal | None = None
+    max_position_pct_of_bucket: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +107,9 @@ class StrategyBucketAccountConfigV1:
     max_open_positions: int | None
     allow_new_entries: bool
     allow_reduce_reviews: bool
+    allocation_target_pct: Decimal | None = None
+    allocation_max_pct: Decimal | None = None
+    max_position_pct_of_bucket: Decimal | None = None
 
 
 def _is_aware(value: datetime) -> bool:
@@ -238,6 +250,33 @@ def resolve_strategy_bucket_account_config_v1(
         isinstance(row.max_open_positions, bool) or not isinstance(row.max_open_positions, int) or row.max_open_positions <= 0
     ):
         raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_MAX_OPEN_POSITIONS")
+    if row.allocation_target_pct is not None and (
+        not isinstance(row.allocation_target_pct, Decimal)
+        or not row.allocation_target_pct.is_finite()
+        or row.allocation_target_pct < 0
+        or row.allocation_target_pct > 1
+    ):
+        raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_TARGET_PCT")
+    if row.allocation_max_pct is not None and (
+        not isinstance(row.allocation_max_pct, Decimal)
+        or not row.allocation_max_pct.is_finite()
+        or row.allocation_max_pct < 0
+        or row.allocation_max_pct > 1
+    ):
+        raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_MAX_PCT")
+    if (
+        row.allocation_target_pct is not None
+        and row.allocation_max_pct is not None
+        and row.allocation_target_pct > row.allocation_max_pct
+    ):
+        raise StrategyBucketAccountConfigError("STRATEGY_BUCKET_ALLOCATION_TARGET_EXCEEDS_MAX")
+    if row.max_position_pct_of_bucket is not None and (
+        not isinstance(row.max_position_pct_of_bucket, Decimal)
+        or not row.max_position_pct_of_bucket.is_finite()
+        or row.max_position_pct_of_bucket <= 0
+        or row.max_position_pct_of_bucket > 1
+    ):
+        raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_MAX_POSITION_PCT_OF_BUCKET")
 
     return StrategyBucketAccountConfigV1(
         trading_account_id=row.trading_account_id,
@@ -250,4 +289,7 @@ def resolve_strategy_bucket_account_config_v1(
         max_open_positions=row.max_open_positions,
         allow_new_entries=row.allow_new_entries,
         allow_reduce_reviews=row.allow_reduce_reviews,
+        allocation_target_pct=row.allocation_target_pct,
+        allocation_max_pct=row.allocation_max_pct,
+        max_position_pct_of_bucket=row.max_position_pct_of_bucket,
     )
