@@ -52,11 +52,16 @@ class RegimeEvidenceCellV1:
     contracts do not all share one enum today. The matrix preserves those
     source values rather than translating AVAILABLE/FRESH/etc. into a new
     reporting-owned semantic state.
+
+    ``scope_key`` is identity/provenance only. It distinguishes separate
+    assets/universes whose upstream ``market`` field may be a generic label
+    such as ``asset``. It never changes market semantics.
     """
 
     family: str
     component: str
     market: str
+    scope_key: str
     status: str
     freshness: str | None
     asof_ts: datetime | None
@@ -71,12 +76,13 @@ class RegimeEvidenceCellV1:
     source_contract: str = ""
 
     @property
-    def identity(self) -> tuple[str, str, str, str | None, str | None]:
+    def identity(self) -> tuple[str, str, str, str, str | None, str | None]:
         """Deterministic component identity for duplicate detection/sorting."""
         return (
             self.family,
             self.component,
             self.market,
+            self.scope_key,
             self.input_interval,
             self.lookback_horizon,
         )
@@ -91,12 +97,28 @@ class RegimeEvidenceMatrixV1:
         return tuple(cell for cell in self.cells if cell.family == family)
 
 
+def _signal_scope_key(evidence: SignalHorizonV1Evidence) -> str:
+    """Build identity only from already-prepared provenance.
+
+    SignalHorizonV1 adapters for Structure/Relative Strength/Rotation commonly
+    use the generic ``market='asset'`` label. When venue/asset_id provenance is
+    present, preserve it as the reporting identity key so multiple assets can
+    coexist in one matrix. No symbol lookup or market inference occurs here.
+    """
+    venue = evidence.provenance.get("venue")
+    asset_id = evidence.provenance.get("asset_id")
+    if venue is not None or asset_id is not None:
+        return f"venue={venue!s};asset_id={asset_id!s}"
+    return evidence.market
+
+
 def from_signal_horizon(evidence: SignalHorizonV1Evidence) -> RegimeEvidenceCellV1:
     """Copy an existing #243 SignalHorizonV1 evidence object verbatim."""
     return RegimeEvidenceCellV1(
         family=evidence.family,
         component=evidence.component,
         market=evidence.market,
+        scope_key=_signal_scope_key(evidence),
         status=evidence.status,
         freshness=evidence.freshness,
         asof_ts=evidence.asof_ts,
@@ -118,6 +140,7 @@ def from_momentum(snapshot: MomentumEvidenceSnapshot) -> RegimeEvidenceCellV1:
         family=FAMILY_MOMENTUM,
         component=COMPONENT_MACD,
         market=snapshot.market,
+        scope_key=f"venue={snapshot.venue};asset_id={snapshot.asset_id};market={snapshot.market}",
         status=snapshot.status,
         freshness=snapshot.freshness,
         asof_ts=snapshot.asof_ts,
@@ -148,6 +171,7 @@ def from_ma_breadth(snapshot: MABreadthSnapshot) -> RegimeEvidenceCellV1:
         family=FAMILY_BREADTH,
         component=COMPONENT_MA50_PARTICIPATION,
         market=snapshot.universe_id,
+        scope_key=f"venue={snapshot.venue};universe={snapshot.universe_id};hash={snapshot.universe_hash}",
         status=snapshot.data_status,
         freshness=snapshot.freshness_status,
         asof_ts=snapshot.asof_ts_utc,
@@ -177,10 +201,12 @@ def from_ma_breadth(snapshot: MABreadthSnapshot) -> RegimeEvidenceCellV1:
 
 def from_eth_btc_leadership(snapshot: EthBtcLeadershipSnapshot) -> RegimeEvidenceCellV1:
     """Expose raw ETH/BTC comparison evidence; never infer a leader state."""
+    market = f"{snapshot.eth_market} vs {snapshot.btc_market}"
     return RegimeEvidenceCellV1(
         family=FAMILY_ETH_BTC_LEADERSHIP,
         component=COMPONENT_ETH_BTC_RAW,
-        market=f"{snapshot.eth_market} vs {snapshot.btc_market}",
+        market=market,
+        scope_key=f"venue={snapshot.venue};{market}",
         status=snapshot.data_status,
         freshness=snapshot.freshness,
         asof_ts=snapshot.asof_ts_utc,
@@ -216,6 +242,7 @@ def unavailable_cell(*, family: str, detail: str | None = None) -> RegimeEvidenc
         family=family,
         component=COMPONENT_UNAVAILABLE,
         market="market",
+        scope_key=f"unavailable:{family}",
         status=STATUS_INSUFFICIENT_DATA,
         freshness=None,
         asof_ts=None,
