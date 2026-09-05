@@ -415,6 +415,12 @@ class CardEvidence:
     # display label (state_model_discipline_v1.md); does not change
     # short_context_display_state, actionability_state, or any other machine state.
     native_context_freshness_status: str = DATA_UNAVAILABLE
+    # Issue #688: canonical native SHORT recompute-transition evidence,
+    # forwarded verbatim from native_short_scope_status_v1.recompute_transition_state
+    # (#681/#716/#736 upstream projection) -- never recomputed from timestamps
+    # here. NOT_APPLICABLE/DATA_UNAVAILABLE when the selected map is not
+    # terminal or no scope-status row is available.
+    recompute_transition_state: str = DATA_UNAVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +612,15 @@ class ProfitPlanCard:
     # coverage, distinguishing not-enrolled from expected-but-missing. None
     # until apply_fib_coverage_classification() has run.
     fib_coverage: FibCoverageClassification | None = None
+    # Issue #688: single canonical reporting classification of "does a human
+    # operator need to inspect/decide/remediate this card". Derived by
+    # classify_attention() from already-prepared canonical fields only (event
+    # state, ladder state, actionability state, and the verbatim
+    # recompute_transition_state evidence) -- never re-derived from
+    # timestamps/lifecycle logic in the renderer. Header/card Attention counts
+    # must both read this field; no separate count logic is permitted.
+    attention_required: bool = False
+    attention_reason_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3219,6 +3234,13 @@ def _short_context_gap_card(
         ladder_states=("ORDER_DATA_UNAVAILABLE",),
         relevance_reasons=("MINIMAL_CONTEXT",),
         is_relevant=True,
+        # Issue #688: an unsupported/unavailable native SHORT scope is
+        # separately countable (visibility_class=CONTEXT_UNAVAILABLE /
+        # operator_state_summary unavailable-evidence bucket) but is not a
+        # blanket Attention condition -- no prepared field here proves an
+        # operator remediation is actually required.
+        attention_required=False,
+        attention_reason_code=None,
         visibility_class=VISIBILITY_CONTEXT_UNAVAILABLE,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
@@ -3384,6 +3406,153 @@ def _derive_relevance_with_reasons(
     if not reasons and setup_state == "MINIMAL_CONTEXT" and event_state == "CONTEXT_UNAVAILABLE":
         reasons.append("MINIMAL_CONTEXT")
     return bool(reasons), tuple(reasons)
+
+
+# ---------------------------------------------------------------------------
+# Issue #688: canonical Attention classifier.
+#
+# `is_relevant`/`relevance_reasons` above remain untouched -- they drive
+# existing sort/filter behavior (Issue #212 visibility, action-priority sort)
+# that is out of scope for #688. `attention_required`/`attention_reason_code`
+# is a distinct, narrower reporting classification: "does a human operator
+# need to inspect/decide/remediate this card right now", per issue #688's
+# required semantics. It is derived once, here, from already-prepared
+# canonical fields only -- never from raw timestamps -- and both the header
+# count and the per-card badge/attribute must read this one field.
+# ---------------------------------------------------------------------------
+
+# Recompute-transition literals, forwarded verbatim from
+# native_short_scope_status_v1.recompute_transition_state (#681/#716/#736).
+# Reporting must never recompute these from timestamps.
+RECOMPUTE_TRANSITION_WAITING_FOR_NEW_STRUCTURE = "WAITING_FOR_NEW_STRUCTURE"
+RECOMPUTE_TRANSITION_OVERDUE = "RECOMPUTE_OVERDUE"
+RECOMPUTE_TRANSITION_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+# Deterministic, testable attention_reason_code values.
+ATTENTION_REASON_INVALIDATED = "INVALIDATED"
+ATTENTION_REASON_RECOMPUTE_OVERDUE = "RECOMPUTE_OVERDUE"
+# The selected map is terminal (event_state == MAP_EXPIRED) but the upstream
+# #681/#736 recompute-transition evidence is neither the confirmed-healthy
+# WAITING_FOR_NEW_STRUCTURE value nor the confirmed RECOMPUTE_OVERDUE value
+# (e.g. NOT_APPLICABLE, or the field is not yet wired/available for this
+# scope). Fails closed to Attention -- deliberately distinct from
+# RECOMPUTE_OVERDUE so the reason stays truthful about what is actually known.
+ATTENTION_REASON_RECOMPUTE_STATUS_UNCONFIRMED = "RECOMPUTE_STATUS_UNCONFIRMED"
+
+# Event states that already represent a genuine, price-driven operator review
+# condition (approaching target/reload/invalidation, or a confirmed hit).
+# Unchanged from the prior RELEVANT_EVENT_STATES set except that
+# CONTEXT_UNAVAILABLE and MAP_EXPIRED are deliberately excluded: those two are
+# handled by dedicated logic below instead of a blanket membership test,
+# because "unsupported/unavailable" and "map recompute pending" must not be
+# blanket Attention (issue #688 required semantics #2/#3/#4).
+_ATTENTION_EVENT_STATES: frozenset[str] = frozenset({
+    "RELOAD_ZONE_APPROACHING",
+    "TARGET_APPROACHING",
+    "TARGET_HIT",
+    "INVALIDATION_NEAR",
+})
+
+_ATTENTION_MAP_EXPIRED_EVENT_STATE = "MAP_EXPIRED"
+
+# Ladder states that indicate a real, prepared order-coverage gap. Deliberately
+# excludes ORDER_DATA_UNAVAILABLE: that value is used only as a placeholder on
+# cards where price/context is itself unusable (unsupported/unavailable
+# scopes), and never as native canonical evidence that a human must act on a
+# specific missing/incomplete order.
+_ATTENTION_LADDER_STATES: frozenset[str] = frozenset({
+    "LADDER_MISSING",
+    "LADDER_INCOMPLETE",
+    "STALE_ORDERS_PRESENT",
+})
+
+
+def classify_attention(
+    *,
+    event_state: str,
+    ladder_states: tuple[str, ...],
+    actionability_state: str,
+    recompute_transition_state: str | None,
+    force_not_attention: bool = False,
+) -> tuple[bool, str | None]:
+    """Canonical reporting Attention classification (issue #688).
+
+    Consumes only already-prepared canonical facts (event_state, ladder_states,
+    actionability_state, and the verbatim upstream recompute_transition_state
+    from #681/#716/#736). Never re-derives lifecycle timing, freshness, or
+    recompute status from timestamps -- that authority stays upstream.
+
+    `force_not_attention` mirrors the existing is_relevant force-not-relevant
+    convention: canonical-bridge/legacy-reference cards that are read-only,
+    non-lifecycle-verified reference context are never Attention regardless of
+    their other derived fields.
+    """
+    if force_not_attention:
+        return False, None
+    if actionability_state == CARD_ACTIONABILITY_INVALIDATED:
+        return True, ATTENTION_REASON_INVALIDATED
+    if event_state in _ATTENTION_EVENT_STATES:
+        return True, event_state
+    if event_state == _ATTENTION_MAP_EXPIRED_EVENT_STATE:
+        if recompute_transition_state == RECOMPUTE_TRANSITION_WAITING_FOR_NEW_STRUCTURE:
+            pass  # healthy, bounded post-terminal wait -- not Attention by itself
+        elif recompute_transition_state == RECOMPUTE_TRANSITION_OVERDUE:
+            return True, ATTENTION_REASON_RECOMPUTE_OVERDUE
+        else:
+            return True, ATTENTION_REASON_RECOMPUTE_STATUS_UNCONFIRMED
+    for ladder_state in ladder_states:
+        if ladder_state in _ATTENTION_LADDER_STATES:
+            return True, ladder_state
+    return False, None
+
+
+def apply_recompute_transition_state_overlay(
+    cards: list[ProfitPlanCard],
+    *,
+    recompute_transition_state_by_symbol: Mapping[str, str] = {},
+) -> list[ProfitPlanCard]:
+    """Attach the verbatim #681/#716/#736 recompute_transition_state evidence
+    and recompute the canonical Attention classification (issue #688) for any
+    card whose event_state is MAP_EXPIRED -- the only event_state whose
+    Attention classification depends on this evidence.
+
+    Read-only composition, identical in shape to
+    ``apply_execution_capability_overlay``: the caller supplies a per-symbol
+    value resolved from
+    ``native_short_map_ledger_health_report_v1.fetch_recompute_transition_state_by_symbol``,
+    and this function never queries a database itself. A symbol absent from
+    the map, or a MAP_EXPIRED card whose event_state came from a
+    force_not_attention (canonical-bridge/legacy-reference) branch, is
+    impossible in practice -- MAP_EXPIRED only arises from a canonical native
+    SHORT lifecycle-verified card -- but a symbol absent from the map simply
+    leaves that card's evidence/attention at the CardEvidence default
+    (DATA_UNAVAILABLE, which fails Attention closed).
+    """
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        value = recompute_transition_state_by_symbol.get(card.symbol)
+        if value is None or value == card.evidence.recompute_transition_state:
+            out.append(card)
+            continue
+        new_evidence = dataclasses.replace(card.evidence, recompute_transition_state=value)
+        if card.event_state != _ATTENTION_MAP_EXPIRED_EVENT_STATE:
+            out.append(dataclasses.replace(card, evidence=new_evidence))
+            continue
+        attention_required, attention_reason_code = classify_attention(
+            event_state=card.event_state,
+            ladder_states=card.ladder_states,
+            actionability_state=card.actionability_state,
+            recompute_transition_state=value,
+        )
+        out.append(
+            dataclasses.replace(
+                card,
+                evidence=new_evidence,
+                attention_required=attention_required,
+                attention_reason_code=attention_reason_code,
+            )
+        )
+    return out
 
 
 def _display_action_label(action_label: str) -> str:
@@ -3970,6 +4139,11 @@ def build_profit_plan_card(
             ladder_states=("ORDER_DATA_UNAVAILABLE",),
             relevance_reasons=(),
             is_relevant=False,
+            # Issue #688: unusable current price is a data-freshness gap, not
+            # a proven operator-remediation fact -- separately countable via
+            # evidence.price_freshness_state, not blanket Attention.
+            attention_required=False,
+            attention_reason_code=None,
             visibility_class=(
                 VISIBILITY_NATIVE_ATTENTION
                 if canonical_native_map_truth_available
@@ -4127,12 +4301,19 @@ def build_profit_plan_card(
     # This prevents LADDER_MISSING on old reload zones after all sell targets have passed.
     _ladder_buy_zone = () if all_sell_targets_completed else buy_zone
 
+    # Issue #688: tracks whether this card's branch is a read-only,
+    # non-lifecycle-verified reference (legacy bridge / canonical navigation)
+    # that must never be Attention regardless of its other derived fields --
+    # mirrors the existing force_not_relevant convention for is_relevant.
+    force_not_attention = False
+
     if short_context_coverage_status in {
         "LEGACY_1D_CONTEXT_ONLY",
         "INSUFFICIENT_4H_HISTORY",
         "INSUFFICIENT_1H_HISTORY",
         "CONTEXT_INVALID_OR_STALE",
     }:
+        force_not_attention = True
         legacy_reason = (
             "Displayed levels come from the current legacy 1d fib-map bridge or partial fallback context. "
             "No usable native SHORT 4h/1h context is available yet."
@@ -4192,6 +4373,7 @@ def build_profit_plan_card(
         secondary_state = None
         short_context_display_state = SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE
         suggested_manual_attention_label = STATE_LABELS[PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY]
+        force_not_attention = True
         reasons = (
             "Native lifecycle SHORT context is unavailable for this symbol.",
             "Canonical 4h navigation context is available: displayed levels come from "
@@ -4253,6 +4435,14 @@ def build_profit_plan_card(
         canonical_market_context_available=canonical_market_context_available,
     )
 
+    attention_required, attention_reason_code = classify_attention(
+        event_state=event_state,
+        ladder_states=ladder_states,
+        actionability_state=actionability_state,
+        recompute_transition_state=card_evidence.recompute_transition_state,
+        force_not_attention=force_not_attention,
+    )
+
     # Issue #212: visibility_class is a grouping/display concern, independent of
     # is_relevant (attention/actionability). A canonical-bridge card is always
     # CANONICAL_NAVIGATION_REFERENCE regardless of its (always-False) is_relevant
@@ -4305,6 +4495,8 @@ def build_profit_plan_card(
         ladder_states=ladder_states,
         relevance_reasons=relevance_reasons,
         is_relevant=is_relevant,
+        attention_required=attention_required,
+        attention_reason_code=attention_reason_code,
         visibility_class=visibility_class,
         fib_nav_context=fib_nav_context,
         presentation_mode=presentation_mode,
@@ -6110,7 +6302,8 @@ def render_plan_card(
 
     return (
         f"<section class='card plan-card'"
-        f" data-attention='{str(card.is_relevant).lower()}'"
+        f" data-attention='{str(card.attention_required).lower()}'"
+        f" data-attention-reason='{esc(card.attention_reason_code or '')}'"
         f" data-search='{esc(search_text)}'"
         f" data-filter-action='{esc(filter_action_value)}'"
         f" data-filter-action-label='{esc(filter_action_label)}'"
@@ -6214,7 +6407,10 @@ def render_full_html(
     snapshot_writer_id = writer_instance_id or str(uuid.uuid4())
 
     display_cards = sort_cards_action_priority(cards) if sort else list(cards)
-    attention_count = sum(1 for c in cards if c.is_relevant)
+    # Issue #688: header Attention count must read the exact same per-card
+    # canonical field as the card badge/attribute above -- no separate count
+    # logic with different criteria.
+    attention_count = sum(1 for c in cards if c.attention_required)
     total_count = len(cards)
     operator_state_summary = build_operator_state_summary(cards)
     operator_state_summary_html = _operator_state_summary_html(
@@ -6476,6 +6672,9 @@ def build_json_snapshot(
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
+    # Issue #688: canonical Attention count, derived from the exact same
+    # per-card attention_required field as the HTML header/badge above.
+    attention_count = sum(1 for c in cards if c.attention_required)
     total_count = len(cards)
     wallet_held_count = sum(1 for c in cards if c.is_wallet_held)
     portfolio_asset_count = sum(1 for c in cards if c.is_portfolio_asset)
@@ -6492,6 +6691,7 @@ def build_json_snapshot(
         "order_snapshot_ts_utc": order_snapshot_ts_utc,
         "market_price_snapshot_ts_utc": market_price_snapshot_ts_utc,
         "relevant_count": relevant_count,
+        "attention_count": attention_count,
         "total_count": total_count,
         "card_count": total_count,
         "wallet_held_count": wallet_held_count,
@@ -6582,6 +6782,8 @@ def build_json_snapshot(
                 "relevance_reasons": list(c.relevance_reasons),
                 "reasons": list(c.reasons),
                 "is_relevant": c.is_relevant,
+                "attention_required": c.attention_required,
+                "attention_reason_code": c.attention_reason_code,
                 "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
                 "planning_ppp_display": _pct_display(_planning_ppp(c)),
                 "planning_ppp_unavailable_reason": _planning_ppp_unavailable_reason(c),

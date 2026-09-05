@@ -52,6 +52,9 @@ from src.reporting.dashboard_style_v1 import cockpit_nav
 from src.reporting.execution_capability_reporting_adapter_v1 import (
     fetch_execution_mode_by_symbol,
 )
+from src.reporting.native_short_map_ledger_health_report_v1 import (
+    fetch_recompute_transition_state_by_symbol,
+)
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
@@ -97,6 +100,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     apply_execution_capability_overlay,
     apply_fib_coverage_classification,
     apply_portfolio_account_evidence,
+    apply_recompute_transition_state_overlay,
     apply_price_tick_normalization,
     build_json_snapshot,
     build_profit_plan_card,
@@ -1777,20 +1781,18 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
             "CONTEXT_INVALID_OR_STALE",
         ))
     )
-    # Issue #212: is_relevant (attention/actionability) and visibility_class
-    # (default-view grouping) are separate concerns. A card can be fully
-    # present in the rendered view (all cards always are) while being
-    # non-actionable -- that combination must be labeled by its
-    # visibility_class, never reported as "filtered". visibility_class is a
-    # three-way, mutually-exclusive partition of every card, so the three
-    # counts below always sum to len(cards).
+    # Issues #212/#688: is_relevant (sort/filter relevance),
+    # attention_required (operator triage), and visibility_class
+    # (default-view grouping) are separate concerns. The runner's attention=
+    # summary must use the same canonical per-card attention_required field as
+    # HTML/JSON; visibility counts remain an independent three-way partition.
     total = len(cards)
     _SUMMARY_LABEL_BY_VISIBILITY = {
         VISIBILITY_NATIVE_ATTENTION: "RELEVANT",
         VISIBILITY_CANONICAL_NAVIGATION_REFERENCE: "CANONICAL_NAV",
         VISIBILITY_CONTEXT_UNAVAILABLE: "CONTEXT_UNAVAILABLE",
     }
-    attention_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_NATIVE_ATTENTION)
+    attention_count = sum(1 for card in cards if card.attention_required)
     canonical_navigation_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE)
     context_unavailable_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE)
     print(f"attention={attention_count}/{total}")
@@ -1831,6 +1833,34 @@ def resolve_execution_mode_by_symbol_for_cards(
             conn.close()
     except Exception as exc:
         print(f"[warn] execution capability read failed: {exc}", file=sys.stderr)
+        return {}
+
+
+def resolve_recompute_transition_state_by_symbol(
+    *,
+    venue: str = DEFAULT_VENUE,
+) -> dict[str, str]:
+    """Read-only resolution of the canonical #681/#716/#736 native SHORT
+    recompute-transition evidence (issue #688).
+
+    Opens a read-only DB connection and reads
+    ``native_short_scope_status_v1.recompute_transition_state`` verbatim via
+    the reporting-layer helper in ``native_short_map_ledger_health_report_v1``
+    -- the same table/column that report already exposes for ops health. A
+    read failure must not fabricate a value: it is reported to stderr and the
+    caller falls back to ``{}``, which leaves every card at its
+    ``CardEvidence`` default of ``DATA_UNAVAILABLE`` and fails Attention
+    classification closed (Attention, reason RECOMPUTE_STATUS_UNCONFIRMED) for
+    any card whose event_state is MAP_EXPIRED.
+    """
+    try:
+        conn = get_connection()
+        try:
+            return fetch_recompute_transition_state_by_symbol(conn, venue=venue)
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[warn] recompute transition state read failed: {exc}", file=sys.stderr)
         return {}
 
 
@@ -2054,6 +2084,17 @@ def main() -> int:
     execution_mode_by_symbol = resolve_execution_mode_by_symbol_for_cards(cards)
     cards = apply_execution_capability_overlay(
         cards, execution_mode_by_symbol=execution_mode_by_symbol
+    )
+
+    # Issue #688: verbatim #681/#716/#736 recompute-transition evidence,
+    # consumed as the sole canonical basis for demoting a completed/expired
+    # native SHORT map's Attention classification out of blanket "always
+    # Attention" -- see classify_attention() in manual_short_trader_profit_plan_v1.
+    recompute_transition_state_by_symbol = resolve_recompute_transition_state_by_symbol(
+        venue=args.venue
+    )
+    cards = apply_recompute_transition_state_overlay(
+        cards, recompute_transition_state_by_symbol=recompute_transition_state_by_symbol
     )
 
     # Issue #489: truthful per-symbol Fib coverage classification. Read-only

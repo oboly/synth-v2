@@ -8010,3 +8010,261 @@ def test_underlying_action_gate_enum_values_unchanged_by_presentation_refactor()
     fresh_rows = build_card_evidence_rows(fresh)
     fresh_action_gate = _row_by_key(fresh_rows, "action_gate")
     assert fresh_action_gate.status in {"FIX_LADDER", "REVIEW_CONTEXT"}
+
+
+# ---------------------------------------------------------------------------
+# Issue #688: canonical Attention classification (attention_required /
+# attention_reason_code), consuming recompute_transition_state from #681/#716/
+# #736 verbatim. Header/card Attention must derive from this exact field.
+# ---------------------------------------------------------------------------
+
+def test_healthy_wait_for_entry_is_not_attention() -> None:
+    """A normal, healthy waiting card (no price-action event, ladder armed)
+    must not be Attention."""
+    card = _make_card(
+        current_price="0.490000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert card.event_state == "BETWEEN_LEVELS"
+    assert "LADDER_MISSING" not in card.ladder_states
+    assert card.attention_required is False
+    assert card.attention_reason_code is None
+
+
+def test_unsupported_unavailable_context_gap_is_not_blanket_attention() -> None:
+    """Issue #688 required semantics #3/#4: an unsupported/unavailable native
+    SHORT scope (no fib/reentry context at all) must not be blanket Attention,
+    even though it remains separately countable via visibility_class/
+    is_relevant. No prepared field here proves operator remediation is
+    actually required."""
+    card = _make_card(
+        current_price="0.155",
+        short_context_input_status="MISSING_ZONE_CONTEXT",
+        short_context_coverage_status="MARKET_DATA_MISSING",
+        short_context_display_state="MARKET_DATA_MISSING",
+    )
+    assert card.event_state == "CONTEXT_UNAVAILABLE"
+    # Still separately countable/visible -- just not Attention.
+    assert card.is_relevant is True
+    assert card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE
+    assert card.attention_required is False
+    assert card.attention_reason_code is None
+
+
+def _completed_map_card(*, evidence: CardEvidence | None = None) -> ProfitPlanCard:
+    """A native SHORT card whose map is completed/terminal (all sell targets
+    historically passed, price above the final target) -- the state that
+    #681/#716/#736's recompute_transition_state evidence applies to."""
+    return _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.4700"),
+                low_price=Decimal("0.4300"),
+            ),
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.7600"),
+                low_price=Decimal("0.5000"),
+            ),
+        ),
+        evidence=evidence or _fix_ladder_ready_evidence(),
+    )
+
+
+def test_map_expired_waiting_for_new_structure_is_not_attention() -> None:
+    """Issue #688 required semantics #2: a native SHORT post-terminal recompute
+    in the confirmed-healthy WAITING_FOR_NEW_STRUCTURE state must not be
+    Attention by itself."""
+    evidence = dataclasses.replace(
+        _fix_ladder_ready_evidence(),
+        recompute_transition_state="WAITING_FOR_NEW_STRUCTURE",
+    )
+    card = _completed_map_card(evidence=evidence)
+    assert card.primary_state == "MAP_RECOMPUTE_NEEDED"
+    assert card.event_state == "MAP_EXPIRED"
+    assert card.attention_required is False
+    assert card.attention_reason_code is None
+
+
+def test_map_expired_recompute_overdue_is_attention_with_deterministic_reason() -> None:
+    """Issue #688 required semantics #3: RECOMPUTE_OVERDUE must be Attention
+    with a deterministic reason code."""
+    evidence = dataclasses.replace(
+        _fix_ladder_ready_evidence(),
+        recompute_transition_state="RECOMPUTE_OVERDUE",
+    )
+    card = _completed_map_card(evidence=evidence)
+    assert card.event_state == "MAP_EXPIRED"
+    assert card.attention_required is True
+    assert card.attention_reason_code == "RECOMPUTE_OVERDUE"
+
+
+def test_map_expired_unconfirmed_recompute_status_fails_closed_to_attention() -> None:
+    """When the upstream recompute-transition evidence is not (yet) wired or
+    is genuinely unknown for a terminal map, Attention fails closed rather
+    than silently going quiet -- with a reason code that stays truthful about
+    what is actually known (not falsely claiming RECOMPUTE_OVERDUE)."""
+    card = _completed_map_card()  # default CardEvidence.recompute_transition_state
+    assert card.evidence.recompute_transition_state == "DATA_UNAVAILABLE"
+    assert card.event_state == "MAP_EXPIRED"
+    assert card.attention_required is True
+    assert card.attention_reason_code == "RECOMPUTE_STATUS_UNCONFIRMED"
+
+
+def test_invalidated_actionability_is_attention() -> None:
+    """Issue #688 required semantics #6: a canonical actionability_state of
+    INVALIDATED (existing prepared evidence) is Attention."""
+    fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    card = _make_card(
+        current_price="0.3600",
+        fib_ext=fib,
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert card.actionability_state == "INVALIDATED"
+    assert card.attention_required is True
+    assert card.attention_reason_code == "INVALIDATED"
+
+
+def test_manual_rfq_card_is_attention_only_when_existing_evidence_requires_it() -> None:
+    """Issue #688 required semantics #5: manual/RFQ execution mode alone must
+    never create Attention -- only an existing prepared fact (here,
+    LADDER_MISSING) does. Applying the generic execution-capability overlay
+    must not change the boolean outcome."""
+    card = _make_card(
+        current_price="0.490000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(),
+    )
+    assert "LADDER_MISSING" in card.ladder_states
+    assert card.attention_required is True
+    assert card.attention_reason_code == "LADDER_MISSING"
+
+    manual_card = _pp_module.apply_execution_capability_overlay(
+        [card], execution_mode_by_symbol={card.symbol: _pp_module.EXECUTION_MODE_MANUAL_RFQ}
+    )[0]
+    assert manual_card.execution_mode == _pp_module.EXECUTION_MODE_MANUAL_RFQ
+    assert manual_card.attention_required is True
+    assert manual_card.attention_reason_code == "LADDER_MISSING"
+
+    healthy_card = _make_card(
+        current_price="0.490000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    manual_healthy_card = _pp_module.apply_execution_capability_overlay(
+        [healthy_card], execution_mode_by_symbol={healthy_card.symbol: _pp_module.EXECUTION_MODE_MANUAL_RFQ}
+    )[0]
+    assert manual_healthy_card.execution_mode == _pp_module.EXECUTION_MODE_MANUAL_RFQ
+    assert manual_healthy_card.attention_required is False
+
+
+def test_apply_recompute_transition_state_overlay_recomputes_map_expired_attention() -> None:
+    """The read-only overlay attaches verbatim evidence and recomputes
+    Attention only for MAP_EXPIRED cards -- never touching other cards'
+    Attention classification or ladder/event derivation."""
+    overdue_card = _completed_map_card()
+    healthy_card = _make_card(
+        current_price="0.490000",
+        fib_ext=_wld_fib_ext(),
+        symbol="AAA",
+        market="AAA-EUR",
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert overdue_card.attention_required is True
+    assert overdue_card.attention_reason_code == "RECOMPUTE_STATUS_UNCONFIRMED"
+    assert healthy_card.attention_required is False
+
+    out = _pp_module.apply_recompute_transition_state_overlay(
+        [overdue_card, healthy_card],
+        recompute_transition_state_by_symbol={
+            overdue_card.symbol: "WAITING_FOR_NEW_STRUCTURE",
+            healthy_card.symbol: "RECOMPUTE_OVERDUE",  # irrelevant: not a MAP_EXPIRED card
+        },
+    )
+    overlaid_overdue, overlaid_healthy = out
+    assert overlaid_overdue.evidence.recompute_transition_state == "WAITING_FOR_NEW_STRUCTURE"
+    assert overlaid_overdue.attention_required is False
+    assert overlaid_overdue.attention_reason_code is None
+    # A non-MAP_EXPIRED card's evidence is still updated, but its Attention
+    # classification (already False, for unrelated reasons) is untouched.
+    assert overlaid_healthy.evidence.recompute_transition_state == "RECOMPUTE_OVERDUE"
+    assert overlaid_healthy.attention_required is False
+
+
+def test_header_attention_count_matches_canonical_per_card_field() -> None:
+    """Issue #688 required semantics #7: the header Attention count must be
+    derived from exactly the same canonical per-card field as each card's own
+    badge -- no separate count logic with different criteria."""
+    attention_card = _make_card(current_price="0.490000", fib_ext=_wld_fib_ext(), sell_orders=())
+    quiet_card = _make_card(
+        current_price="0.490000",
+        fib_ext=_wld_fib_ext(),
+        symbol="BBB",
+        market="BBB-EUR",
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert attention_card.attention_required is True
+    assert quiet_card.attention_required is False
+    cards = [attention_card, quiet_card]
+
+    html = render_full_html(cards)
+    expected_count = sum(1 for c in cards if c.attention_required)
+    assert expected_count == 1
+    assert f"content='{expected_count}'" in html.split("synth-attention-count")[1][:40]
+    assert f"Attention: {expected_count}" in html
+    assert html.count("data-attention='true'") == expected_count
+
+    snapshot = build_json_snapshot(cards)
+    assert snapshot["attention_count"] == expected_count
+    attention_flags = [sym["attention_required"] for sym in snapshot["symbols"]]
+    assert sum(1 for flag in attention_flags if flag) == expected_count
+
+
+def test_renderer_does_not_recompute_lifecycle_from_timestamps_for_attention() -> None:
+    """Issue #688 required semantics #8: the renderer only renders/counts the
+    canonical attention_required/attention_reason_code fields -- it must not
+    parse or recompute lifecycle/freshness/recompute state from timestamps of
+    its own. The card HTML/data-attribute surface exposes the classification
+    verbatim; no date/timestamp math is introduced in the render path for it."""
+    card = _completed_map_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert f"data-attention='{str(card.attention_required).lower()}'" in html
+    assert f"data-attention-reason='{card.attention_reason_code}'" in html
+    # The renderer must not introduce its own recompute-transition-state
+    # freshness math; the classifier module itself is the single owner of the
+    # classify_attention() logic import boundary check below covers this.
+    source = Path("src/reporting/manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
+    render_start = source.index("def render_plan_card(")
+    render_end = source.index("def render_full_html(")
+    render_source = source[render_start:render_end]
+    assert "recompute_transition_state" not in render_source
+    assert "classify_attention(" not in render_source
