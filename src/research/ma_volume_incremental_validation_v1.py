@@ -28,6 +28,7 @@ class FeatureSplitMetricV1:
     feature: str
     split: str
     sample_count: int
+    partial_sample_count: int
     raw_spearman: float | None
     partial_spearman_given_baseline: float | None
 
@@ -55,10 +56,19 @@ def _rank(series: pd.Series) -> np.ndarray:
     return series.rank(method="average").to_numpy(dtype=float)
 
 
+def _has_effective_variance(values: np.ndarray) -> bool:
+    if len(values) < 3:
+        return False
+    finite = values[np.isfinite(values)]
+    if len(finite) != len(values):
+        return False
+    return not bool(np.allclose(finite, finite[0], rtol=1e-12, atol=1e-12))
+
+
 def _safe_corr(left: np.ndarray, right: np.ndarray) -> float | None:
-    if len(left) < 3:
+    if len(left) != len(right) or len(left) < 3:
         return None
-    if np.nanstd(left) == 0.0 or np.nanstd(right) == 0.0:
+    if not _has_effective_variance(left) or not _has_effective_variance(right):
         return None
     value = float(np.corrcoef(left, right)[0, 1])
     return value if isfinite(value) else None
@@ -103,6 +113,11 @@ def evaluate_incremental_features(
     Rank transforms and baseline residualization are performed independently per
     split. No row from one split can influence another split's metric. All three
     frozen splits are mandatory; incomplete split sets fail closed.
+
+    Raw Spearman uses every row complete for candidate + outcome. Partial
+    Spearman uses the narrower candidate + outcome + baseline-complete sample.
+    The two sample counts remain explicit so baseline missingness cannot silently
+    change the documented raw association.
     """
     candidates = _ordered_unique(candidate_columns, name="candidate_columns")
     baselines = tuple(baseline_columns)
@@ -130,23 +145,32 @@ def evaluate_incremental_features(
     for split in ALLOWED_SPLITS:
         split_frame = frame.loc[frame[split_column].astype(str) == split].copy()
         for feature in candidates:
-            columns = [feature, outcome_column, *baselines]
-            usable = split_frame.loc[:, columns].apply(pd.to_numeric, errors="coerce").dropna()
+            raw_columns = [feature, outcome_column]
+            raw_usable = split_frame.loc[:, raw_columns].apply(pd.to_numeric, errors="coerce").dropna()
+            partial_columns = [feature, outcome_column, *baselines]
+            partial_usable = (
+                split_frame.loc[:, partial_columns].apply(pd.to_numeric, errors="coerce").dropna()
+            )
+
             raw = None
+            if len(raw_usable) >= 3:
+                raw = _safe_corr(_rank(raw_usable[feature]), _rank(raw_usable[outcome_column]))
+
             partial = None
-            if len(usable) >= 3:
-                raw = _safe_corr(_rank(usable[feature]), _rank(usable[outcome_column]))
+            if len(partial_usable) >= 3:
                 partial = _partial_spearman(
-                    usable,
+                    partial_usable,
                     feature=feature,
                     outcome=outcome_column,
                     baseline_columns=baselines,
                 )
+
             metrics.append(
                 FeatureSplitMetricV1(
                     feature=feature,
                     split=split,
-                    sample_count=len(usable),
+                    sample_count=len(raw_usable),
+                    partial_sample_count=len(partial_usable),
                     raw_spearman=raw,
                     partial_spearman_given_baseline=partial,
                 )
