@@ -93,22 +93,27 @@ class RegimeEvidenceCellV1:
             self.lookback_horizon,
         )
 
+    @staticmethod
+    def _nullable_sort_value(value: str | None) -> tuple[int, str]:
+        """Order ``None`` distinctly from every string, including ``""``."""
+        return (0, "") if value is None else (1, value)
+
     @property
-    def sort_key(self) -> tuple[str, str, str, str, str, str]:
+    def sort_key(self) -> tuple[str, str, str, str, tuple[int, str], tuple[int, str]]:
         """Comparable deterministic ordering key.
 
-        Optional identity fields stay optional in the canonical cell, but are
-        mapped to an empty string only for sorting so Python never compares
-        ``None`` directly with a string. Duplicate detection still uses the
-        exact, unnormalized ``identity`` above.
+        Optional identity fields stay optional in the canonical cell. Sorting
+        uses a tagged representation so ``None`` never compares directly with
+        a string and never aliases a real empty string. Duplicate detection
+        still uses the exact, unnormalized ``identity`` above.
         """
         return (
             self.family,
             self.component,
             self.market,
             self.scope_key,
-            self.input_interval or "",
-            self.lookback_horizon or "",
+            self._nullable_sort_value(self.input_interval),
+            self._nullable_sort_value(self.lookback_horizon),
         )
 
 
@@ -295,7 +300,7 @@ def build_matrix(
     if len(identities) != len(set(identities)):
         duplicates = sorted(
             (identity for identity in set(identities) if identities.count(identity) > 1),
-            key=lambda identity: tuple("" if value is None else str(value) for value in identity),
+            key=lambda identity: tuple("<NONE>" if value is None else f"<VALUE>{value}" for value in identity),
         )
         raise ValueError(f"duplicate regime evidence cell identities: {duplicates}")
 
