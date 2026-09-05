@@ -285,6 +285,27 @@ def parse_ts_arg(text: str, *, name: str) -> datetime:
     return normalize_db_datetime_to_utc(parsed)
 
 
+def format_ts_for_query(value: datetime) -> str:
+    """Render a UTC-aware datetime as the canonical naive-UTC DB query bound.
+
+    `--from-ts`/`--to-ts` accept any ISO-8601 timestamp, including one with
+    an explicit UTC offset (e.g. `2026-01-01T00:00:00+02:00`). Every DB
+    query bound MUST be derived from `parse_ts_arg`'s normalized UTC
+    datetime (`from_ts_dt`/`to_ts_dt` in `main()`) via this function, NEVER
+    from the raw CLI string directly: `obs_market_candle` timestamp columns
+    are naive and stored in the UTC convention (see
+    `normalize_db_datetime_to_utc`), so passing an offset-aware string
+    straight through to a parameterized query would filter on the literal
+    wall-clock digits the caller typed, not the UTC instant those digits
+    actually name -- silently fetching a different window than the one
+    `build_episodes`' `emit_from_ts_utc`/`emit_to_ts_utc` (which DOES use
+    the normalized UTC datetime) uses for emission. This keeps the DB fetch
+    bound and the emission bound anchored to the exact same UTC instant
+    regardless of what offset notation the caller used.
+    """
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def validate_args(args: argparse.Namespace) -> None:
     """Reject invalid CLI arguments before any DB connection/query is made.
 
@@ -991,7 +1012,7 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             venue=args.venue,
             interval_code=cfg.interval_code,
-            before_ts=args.from_ts,
+            before_ts=format_ts_for_query(from_ts_dt),
             limit=warmup_target,
         )
     except Exception as exc:
@@ -1009,8 +1030,8 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             venue=args.venue,
             interval_code=cfg.interval_code,
-            from_ts=args.from_ts,
-            to_ts=args.to_ts,
+            from_ts=format_ts_for_query(from_ts_dt),
+            to_ts=format_ts_for_query(to_ts_dt),
             chunk_size=args.chunk_size_candles,
             on_progress=_fetch_progress,
             should_stop=lambda: signal_state.triggered,
@@ -1027,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
             symbol=args.symbol,
             venue=args.venue,
             interval_code=cfg.interval_code,
-            to_ts=args.to_ts,
+            to_ts=format_ts_for_query(to_ts_dt),
             limit=cfg.forward_max_candles,
         )
     except Exception as exc:

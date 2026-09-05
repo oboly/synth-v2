@@ -225,6 +225,31 @@ instances -- and therefore `episode_id`, which serializes
 `map_creation_ts_utc` via `isoformat()` -- are always built from UTC-aware
 timestamps, independent of connector/session/host timezone.
 
+### CLI Bound Normalization: `--from-ts`/`--to-ts` Offset Safety
+
+`--from-ts`/`--to-ts` accept any ISO-8601 timestamp, including one with an
+explicit UTC offset (e.g. `2026-01-01T00:00:00+02:00`). `main()` parses
+both into UTC-aware datetimes once (`from_ts_dt`/`to_ts_dt`, via
+`parse_ts_arg`) and uses THOSE -- never the raw CLI strings -- for every
+downstream purpose that must agree on the exact instant being requested:
+`build_episodes`' `emit_from_ts_utc`/`emit_to_ts_utc` emission gate, AND
+every DB query bound (`fetch_warmup_candles`' `before_ts`, `fetch_candles`'
+`from_ts`/`to_ts`, `fetch_forward_tail_candles`' `to_ts`), via
+`format_ts_for_query(from_ts_dt)` / `format_ts_for_query(to_ts_dt)`.
+
+`format_ts_for_query` renders a UTC-aware datetime as the canonical naive
+`'YYYY-MM-DD HH:MM:SS'` string `obs_market_candle`'s naive, UTC-convention
+timestamp columns expect. Without it, passing the raw CLI string straight
+into a parameterized query would filter on the literal wall-clock digits
+the caller typed (with any offset silently dropped/misinterpreted by the
+DB layer) rather than the UTC instant those digits actually name --
+fetching a different window than the one the emission boundary uses, and
+silently changing which episodes/labels are produced for the same declared
+UTC contract. `compute_run_id`/`build_manifest` deliberately continue to
+use the raw CLI strings for `from_ts`/`to_ts` (they identify the REQUESTED
+contract as the caller typed it, not the DB fetch bound); this fix only
+changes what is sent to `obs_market_candle` queries.
+
 ## Warmup: As-Of Feature Invariance to the Requested Window
 
 `--from-ts`/`--to-ts` is a **research output** bound, not a feature-input
@@ -586,7 +611,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (123 tests, no DB)
+3. synthetic/unit tests (127 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

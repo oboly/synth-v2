@@ -1065,6 +1065,113 @@ class TestTimestampNormalization:
         assert _episode_id_for(naive_ts) == _episode_id_for(aware_ts)
 
 
+class TestOffsetAwareCliTimestampBounds:
+    """Regression coverage for the latest #727 blocker: --from-ts/--to-ts
+
+    accept offset-aware ISO timestamps, but every DB query bound must be
+    derived from the SAME normalized-UTC datetime build_episodes' emission
+    boundary uses (from_ts_dt/to_ts_dt) -- never from the raw CLI string,
+    which could carry an explicit non-UTC offset. Without this, an
+    offset-aware --from-ts/--to-ts would fetch a different window than the
+    declared UTC contract, silently changing episodes/labels.
+    """
+
+    def test_format_ts_for_query_normalizes_offset_aware_datetime(self) -> None:
+        aware = datetime(2026, 1, 1, 2, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+        assert runner.format_ts_for_query(aware) == "2026-01-01 00:00:00"
+
+    def test_format_ts_for_query_matches_naive_utc_equivalent(self) -> None:
+        naive_equivalent = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+        offset_aware = datetime(2026, 1, 1, 5, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        assert (
+            runner.format_ts_for_query(naive_equivalent)
+            == runner.format_ts_for_query(offset_aware)
+            == "2026-01-01 00:00:00"
+        )
+
+    def test_offset_aware_cli_bounds_produce_utc_normalized_db_query_bounds(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+
+        captured: dict[str, dict[str, Any]] = {}
+
+        def _capture_warmup(**kw: Any) -> list[Any]:
+            captured["warmup"] = kw
+            return []
+
+        def _capture_requested(**kw: Any) -> list[Any]:
+            captured["requested"] = kw
+            return []
+
+        def _capture_tail(**kw: Any) -> list[Any]:
+            captured["tail"] = kw
+            return []
+
+        monkeypatch.setattr(runner, "fetch_warmup_candles", _capture_warmup)
+        monkeypatch.setattr(runner, "fetch_candles", _capture_requested)
+        monkeypatch.setattr(runner, "fetch_forward_tail_candles", _capture_tail)
+
+        # +02:00 offset: 2026-01-01T02:00:00+02:00 == 2026-01-01T00:00:00 UTC,
+        # 2026-01-02T02:00:00+02:00 == 2026-01-02T00:00:00 UTC. If the raw
+        # CLI string leaked into any DB query, these captured bounds would
+        # instead show the literal (wrong) wall-clock digits with no offset
+        # stripped, e.g. "2026-01-01 02:00:00".
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-01T02:00:00+02:00",
+                "--to-ts", "2026-01-02T02:00:00+02:00",
+                "--output-dir", str(tmp_path),
+            ]
+        )
+        assert exit_code == 0
+
+        assert captured["warmup"]["before_ts"] == "2026-01-01 00:00:00"
+        assert captured["requested"]["from_ts"] == "2026-01-01 00:00:00"
+        assert captured["requested"]["to_ts"] == "2026-01-02 00:00:00"
+        assert captured["tail"]["to_ts"] == "2026-01-02 00:00:00"
+
+    def test_offset_aware_and_naive_utc_equivalent_bounds_fetch_identical_window(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        # Two CLI invocations naming the SAME UTC instant, one with an
+        # explicit +02:00 offset and one already in UTC, must resolve to
+        # the identical DB query bound for every fetch phase.
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+
+        def _run(from_ts: str, to_ts: str, subdir: str) -> dict[str, Any]:
+            captured: dict[str, Any] = {}
+
+            def _capture(**kw: Any) -> list[Any]:
+                captured.update(kw)
+                return []
+
+            monkeypatch.setattr(runner, "fetch_warmup_candles", _capture)
+            monkeypatch.setattr(runner, "fetch_candles", lambda **kw: [])
+            monkeypatch.setattr(runner, "fetch_forward_tail_candles", lambda **kw: [])
+            exit_code = runner.main(
+                [
+                    "--symbol", "BTC",
+                    "--timeframe", "1h",
+                    "--from-ts", from_ts,
+                    "--to-ts", to_ts,
+                    "--output-dir", str(tmp_path / subdir),
+                ]
+            )
+            assert exit_code == 0
+            return captured
+
+        offset_captured = _run("2026-01-01T02:00:00+02:00", "2026-01-02T00:00:00+00:00", "a")
+        naive_utc_captured = _run("2026-01-01T00:00:00", "2026-01-02T00:00:00", "b")
+        assert (
+            offset_captured["before_ts"]
+            == naive_utc_captured["before_ts"]
+            == "2026-01-01 00:00:00"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fake paginating DB harness for warmup/chunked-retrieval tests.
 # ---------------------------------------------------------------------------
