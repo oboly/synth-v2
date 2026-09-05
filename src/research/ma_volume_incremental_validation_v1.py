@@ -98,7 +98,8 @@ def evaluate_incremental_features(
     """Evaluate candidate monotonic information separately inside frozen splits.
 
     Rank transforms and baseline residualization are performed independently per
-    split. No row from one split can influence another split's metric.
+    split. No row from one split can influence another split's metric. All three
+    frozen splits are mandatory; incomplete split sets fail closed.
     """
     candidates = _ordered_unique(candidate_columns, name="candidate_columns")
     baselines = tuple(baseline_columns)
@@ -118,12 +119,13 @@ def evaluate_incremental_features(
     unknown = split_values.difference(ALLOWED_SPLITS)
     if unknown:
         raise MAVolumeValidationInputError(f"unknown split labels: {sorted(unknown)}")
+    missing_splits = set(ALLOWED_SPLITS).difference(split_values)
+    if missing_splits:
+        raise MAVolumeValidationInputError(f"missing required split labels: {sorted(missing_splits)}")
 
     metrics: list[FeatureSplitMetricV1] = []
     for split in ALLOWED_SPLITS:
         split_frame = frame.loc[frame[split_column].astype(str) == split].copy()
-        if split_frame.empty:
-            continue
         for feature in candidates:
             columns = [feature, outcome_column, *baselines]
             usable = split_frame.loc[:, columns].apply(pd.to_numeric, errors="coerce").dropna()
