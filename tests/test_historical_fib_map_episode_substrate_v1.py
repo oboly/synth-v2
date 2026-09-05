@@ -13,10 +13,12 @@ import signal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
+import pandas as pd
 import pytest
 
+from src.features import etl_candle_feat
 from src.market_data import canonical_fib_zone_map_v1 as canonical_projection
 from src.research import historical_fib_map_episode_substrate_v1 as substrate
 from src.research import run_historical_fib_map_episode_substrate_v1 as runner
@@ -1096,8 +1098,8 @@ class TestOffsetAwareCliTimestampBounds:
 
         captured: dict[str, dict[str, Any]] = {}
 
-        def _capture_warmup(**kw: Any) -> list[Any]:
-            captured["warmup"] = kw
+        def _capture_prehistory(**kw: Any) -> list[Any]:
+            captured["prehistory"] = kw
             return []
 
         def _capture_requested(**kw: Any) -> list[Any]:
@@ -1108,7 +1110,7 @@ class TestOffsetAwareCliTimestampBounds:
             captured["tail"] = kw
             return []
 
-        monkeypatch.setattr(runner, "fetch_warmup_candles", _capture_warmup)
+        monkeypatch.setattr(runner, "fetch_ema_state_prehistory_candles", _capture_prehistory)
         monkeypatch.setattr(runner, "fetch_candles", _capture_requested)
         monkeypatch.setattr(runner, "fetch_forward_tail_candles", _capture_tail)
 
@@ -1128,7 +1130,7 @@ class TestOffsetAwareCliTimestampBounds:
         )
         assert exit_code == 0
 
-        assert captured["warmup"]["before_ts"] == "2026-01-01 00:00:00"
+        assert captured["prehistory"]["from_ts"] == "2026-01-01 00:00:00"
         assert captured["requested"]["from_ts"] == "2026-01-01 00:00:00"
         assert captured["requested"]["to_ts"] == "2026-01-02 00:00:00"
         assert captured["tail"]["to_ts"] == "2026-01-02 00:00:00"
@@ -1148,7 +1150,7 @@ class TestOffsetAwareCliTimestampBounds:
                 captured.update(kw)
                 return []
 
-            monkeypatch.setattr(runner, "fetch_warmup_candles", _capture)
+            monkeypatch.setattr(runner, "fetch_ema_state_prehistory_candles", _capture)
             monkeypatch.setattr(runner, "fetch_candles", lambda **kw: [])
             monkeypatch.setattr(runner, "fetch_forward_tail_candles", lambda **kw: [])
             exit_code = runner.main(
@@ -1166,8 +1168,8 @@ class TestOffsetAwareCliTimestampBounds:
         offset_captured = _run("2026-01-01T02:00:00+02:00", "2026-01-02T00:00:00+00:00", "a")
         naive_utc_captured = _run("2026-01-01T00:00:00", "2026-01-02T00:00:00", "b")
         assert (
-            offset_captured["before_ts"]
-            == naive_utc_captured["before_ts"]
+            offset_captured["from_ts"]
+            == naive_utc_captured["from_ts"]
             == "2026-01-01 00:00:00"
         )
 
@@ -1213,24 +1215,22 @@ class _PagingFakeCursor:
     def execute(self, sql: str, params: list[Any]) -> None:
         self._conn.query_count += 1
         normalized = " ".join(sql.split())
-        if "DESC" in normalized:
-            _asset_id, _venue, _interval_code, before_ts, limit = params
-            before = _coerce_utc(before_ts)
-            candidates = [r for r in self._rows if _coerce_utc(r["open_ts_utc"]) < before]
-            # Mirror the real SQL's ORDER BY open_ts_utc DESC: return the
-            # nearest-before-`before_ts` rows in descending order, matching
-            # what a real DB would hand back before fetch_warmup_candles
-            # itself reverses it to ascending.
-            candidates.sort(key=lambda r: r["open_ts_utc"], reverse=True)
-            self._result = candidates[:limit]
-        elif len(params) == 5:
+        if len(params) == 5 and "open_ts_utc >= %s" in normalized:
             # fetch_forward_tail_candles: ORDER BY ASC, only a lower bound
-            # (open_ts_utc >= to_ts) plus LIMIT -- no upper bound, so this
-            # is distinguished from the requested-window queries by param
-            # count (5, not 6) rather than by SQL substring.
+            # (open_ts_utc >= to_ts) plus LIMIT -- no upper bound.
             _asset_id, _venue, _interval_code, lower, limit = params
             lower_dt = _coerce_utc(lower)
             candidates = [r for r in self._rows if _coerce_utc(r["open_ts_utc"]) >= lower_dt]
+            candidates.sort(key=lambda r: r["open_ts_utc"])
+            self._result = candidates[:limit]
+        elif len(params) == 5 and "open_ts_utc < %s" in normalized:
+            # fetch_ema_state_prehistory_candles first page: ORDER BY ASC,
+            # only an upper bound (open_ts_utc < from_ts) plus LIMIT -- no
+            # lower bound at all (there is no fixed warmup count to seed
+            # it with; this fetches from the true start of history).
+            _asset_id, _venue, _interval_code, upper, limit = params
+            upper_dt = _coerce_utc(upper)
+            candidates = [r for r in self._rows if _coerce_utc(r["open_ts_utc"]) < upper_dt]
             candidates.sort(key=lambda r: r["open_ts_utc"])
             self._result = candidates[:limit]
         elif "open_ts_utc >= %s" in normalized:
@@ -1350,7 +1350,7 @@ class TestBoundedChunkedRetrieval:
         assert 0 < len(fetched) < len(all_candles)
         assert len(fetched) == 20
 
-    def test_fetch_warmup_candles_bounded_and_ascending(
+    def test_fetch_ema_state_prehistory_candles_fetches_all_available_history_ascending(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         start = datetime(2026, 1, 1, tzinfo=UTC)
@@ -1359,40 +1359,47 @@ class TestBoundedChunkedRetrieval:
         conn = _PagingFakeConnection(rows)
         monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-        before_ts = all_candles[100].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
-        warmup = runner.fetch_warmup_candles(
+        from_ts = all_candles[100].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
+        prehistory = runner.fetch_ema_state_prehistory_candles(
             asset_id=1,
             symbol="TST",
             venue="bitvavo",
             interval_code="1h",
-            before_ts=before_ts,
-            limit=30,
+            from_ts=from_ts,
         )
-        assert len(warmup) == 30
-        ts_list = [c.open_ts_utc for c in warmup]
+        # ALL available candles strictly before from_ts -- not a fixed-size
+        # warmup window (proves this is not the old fetch_warmup_candles
+        # LIMIT-bounded behavior).
+        assert len(prehistory) == 100
+        ts_list = [c.open_ts_utc for c in prehistory]
         assert ts_list == sorted(ts_list)
-        before_dt = runner.parse_ts_arg(before_ts, name="before_ts")
-        assert all(ts < before_dt for ts in ts_list)
-        assert warmup[-1].close_ts_utc == all_candles[99].close_ts_utc
+        from_ts_dt = runner.parse_ts_arg(from_ts, name="from_ts")
+        assert all(ts < from_ts_dt for ts in ts_list)
+        assert prehistory[0].close_ts_utc == all_candles[0].close_ts_utc
+        assert prehistory[-1].close_ts_utc == all_candles[99].close_ts_utc
 
-    def test_fetch_warmup_candles_limit_zero_or_negative_returns_empty(
+    def test_fetch_ema_state_prehistory_candles_paginates_across_chunks(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom() -> Any:
-            raise AssertionError("must not query DB when limit <= 0")
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-        monkeypatch.setattr(runner, "get_connection", _boom)
-        assert (
-            runner.fetch_warmup_candles(
-                asset_id=1,
-                symbol="TST",
-                venue="bitvavo",
-                interval_code="1h",
-                before_ts="2026-01-01 00:00:00",
-                limit=0,
-            )
-            == []
+        from_ts = all_candles[100].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
+        prehistory = runner.fetch_ema_state_prehistory_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            from_ts=from_ts,
+            chunk_size=20,
         )
+        assert len(prehistory) == 100
+        assert conn.query_count > 1  # proves pagination actually occurred
+        ts_list = [c.open_ts_utc for c in prehistory]
+        assert ts_list == sorted(set(ts_list))  # strictly ascending, no duplicates
 
     def test_fetch_forward_tail_candles_bounded_and_ascending_from_to_ts(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1445,13 +1452,12 @@ class TestWarmupInvariance:
 
         def _feature_for(from_ts: str, to_ts: str) -> EpisodeFeaturePayload:
             monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
-            warmup = runner.fetch_warmup_candles(
+            prehistory = runner.fetch_ema_state_prehistory_candles(
                 asset_id=1,
                 symbol="TST",
                 venue="bitvavo",
                 interval_code="1h",
-                before_ts=from_ts,
-                limit=cfg.lookback_candles - 1,
+                from_ts=from_ts,
             )
             monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
             requested = runner.fetch_candles(
@@ -1462,7 +1468,7 @@ class TestWarmupInvariance:
                 from_ts=from_ts,
                 to_ts=to_ts,
             )
-            candles = warmup + requested
+            candles = prehistory + requested
             records = build_episodes(
                 symbol="TST",
                 venue="bitvavo",
@@ -1476,6 +1482,14 @@ class TestWarmupInvariance:
             return matches[0].feature
 
         to_ts = (asof_ts + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+        # `from_ts_near` leaves almost all of history as EMA-state
+        # prehistory (fetched via fetch_ema_state_prehistory_candles with
+        # NO fixed limit); `from_ts_far` leaves much less prehistory and
+        # relies on requested_candles for most of the history instead.
+        # Since fetch_ema_state_prehistory_candles always fetches EVERY
+        # available candle below from_ts (not a capped warmup window),
+        # `prehistory + requested` covers the identical full contiguous
+        # history up to the as-of candle in both cases.
         from_ts_near = (asof_ts - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
         from_ts_far = (asof_ts - timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1493,6 +1507,71 @@ class TestWarmupInvariance:
         assert feature_near.map_state == feature_far.map_state
         assert feature_near.atr_value == feature_far.atr_value
         assert feature_near.episode_id == feature_far.episode_id
+
+    def test_same_asof_candle_invariant_even_when_from_ts_leaves_almost_no_prehistory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stronger version of the invariance above: from_ts set to the very
+        # start of the series (almost no prehistory available at all) vs.
+        # from_ts set deep into the series (most of history available as
+        # prehistory) must still produce byte-identical feature output for
+        # a shared as-of candle deep enough that a capped (non-full-history)
+        # EMA reconstruction would visibly differ between the two -- see
+        # TestProductionEmaParity for the direct production-parity proof.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        cfg = self._cfg()
+        rows = [_candle_to_row(c) for c in all_candles]
+
+        asof_index = len(all_candles) - 10
+        asof_ts = all_candles[asof_index].close_ts_utc
+        to_ts = (asof_ts + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+        def _feature_for(from_ts: str) -> EpisodeFeaturePayload:
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            prehistory = runner.fetch_ema_state_prehistory_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                from_ts=from_ts,
+            )
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            requested = runner.fetch_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                from_ts=from_ts,
+                to_ts=to_ts,
+            )
+            candles = prehistory + requested
+            records = build_episodes(
+                symbol="TST",
+                venue="bitvavo",
+                candles=candles,
+                cfg=cfg,
+                emit_from_ts_utc=runner.parse_ts_arg(from_ts, name="--from-ts"),
+                emit_to_ts_utc=runner.parse_ts_arg(to_ts, name="--to-ts"),
+            )
+            matches = [r for r in records if r.feature.map_creation_ts_utc == asof_ts]
+            assert len(matches) == 1
+            return matches[0].feature
+
+        from_ts_at_series_start = all_candles[0].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
+        from_ts_deep = (asof_ts - timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S")
+
+        feature_almost_no_prehistory = _feature_for(from_ts_at_series_start)
+        feature_mostly_prehistory = _feature_for(from_ts_deep)
+
+        assert feature_almost_no_prehistory.episode_id == feature_mostly_prehistory.episode_id
+        assert (
+            feature_almost_no_prehistory.target_t1 == feature_mostly_prehistory.target_t1
+        )
+        assert (
+            feature_almost_no_prehistory.invalidation_level
+            == feature_mostly_prehistory.invalidation_level
+        )
 
     def test_without_warmup_narrow_window_diverges_from_full_history(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1525,6 +1604,132 @@ class TestWarmupInvariance:
         # admit, the reconstructed geometry differs -- either way this shows
         # the un-warmed-up narrow window is not equivalent to the full one.
         assert feature_narrow is None or feature_narrow.anchor_low_price != feature_full.anchor_low_price or feature_narrow.target_t1 != feature_full.target_t1
+
+
+class TestProductionEmaParity:
+    """Regression coverage for the latest #727 blocker: historical replay's
+
+    EMA/trend reconstruction (_reconstruct_trend_row) must match
+    production's src.features.etl_candle_feat.compute_features exactly
+    when given the FULL preceding candle history for an as-of candle, not
+    a candle series truncated to the Fib/map geometry lookback window.
+    """
+
+    def _long_series(self, start: datetime, n: int = 420) -> list[HistoricalCandle]:
+        # Decline, then repeated rally/pullback cycles -- long enough (well
+        # beyond 180 candles) and varied enough that a truncated-history
+        # EMA measurably differs from a full-history one (see
+        # test_truncated_history_measurably_diverges_from_production below).
+        price = 100.0
+        path: list[float] = []
+        for _ in range(10):
+            price -= 1.0
+            path.append(price)
+        while len(path) < n - 10:
+            for _ in range(80):
+                price += 2.0
+                path.append(price)
+            for _ in range(15):
+                price -= 3.0
+                path.append(price)
+        step = timedelta(hours=1)
+        candles = []
+        t = start
+        for p in path[:n]:
+            candles.append(_candle(t, p - 0.2, p + 0.5, p - 0.5, p))
+            t += step
+        return candles
+
+    def _production_trend_inputs(
+        self, candles: list[HistoricalCandle]
+    ) -> tuple[float, float, float]:
+        df = pd.DataFrame(
+            {
+                "close_price": [float(c.close_price) for c in candles],
+                "high_price": [float(c.high_price) for c in candles],
+                "low_price": [float(c.low_price) for c in candles],
+                "volume_base": [float(c.volume) for c in candles],
+            }
+        )
+        prod = etl_candle_feat.compute_features(df)
+        return (
+            float(prod["price_vs_ema20"].iloc[-1]),
+            float(prod["price_vs_ema50"].iloc[-1]),
+            float(prod["ema_spread_pct"].iloc[-1]),
+        )
+
+    def test_full_history_ema_matches_production_compute_features(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = self._long_series(start, n=420)
+        asof_index = 350  # well beyond cfg.lookback_candles=180
+
+        full_history = candles[: asof_index + 1]
+        prod_p20, prod_p50, prod_spread = self._production_trend_inputs(full_history)
+
+        trend_row = substrate._reconstruct_trend_row(full_history)
+        assert trend_row is not None
+        assert trend_row["price_vs_ema20"] == prod_p20
+        assert trend_row["price_vs_ema50"] == prod_p50
+        assert trend_row["ema_spread_pct"] == prod_spread
+
+    def test_truncated_history_measurably_diverges_from_production(self) -> None:
+        # Negative control proving the parity test above is not vacuous:
+        # reconstructing the SAME as-of candle's EMA from only the trailing
+        # cfg.lookback_candles=180 candles (the pre-fix behavior) measurably
+        # diverges from both production and the full-history reconstruction.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = self._long_series(start, n=420)
+        asof_index = 350
+        cfg = resolve_config("1h")
+
+        full_history = candles[: asof_index + 1]
+        _prod_p20, prod_p50, prod_spread = self._production_trend_inputs(full_history)
+
+        truncated_history = candles[max(0, asof_index + 1 - cfg.lookback_candles) : asof_index + 1]
+        trend_row_truncated = substrate._reconstruct_trend_row(truncated_history)
+        assert trend_row_truncated is not None
+
+        # "Measurable" (well above float representation noise, ~1e-15):
+        # the truncated reconstruction's EMA-50-derived inputs differ from
+        # production by several orders of magnitude more than float noise.
+        assert abs(trend_row_truncated["price_vs_ema50"] - prod_p50) > 1e-6
+        assert abs(trend_row_truncated["ema_spread_pct"] - prod_spread) > 1e-6
+
+    def test_build_episode_feature_uses_trend_history_not_window_for_trend_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Direct proof of the wiring itself: build_episode_feature must
+        # call _reconstruct_trend_row with `trend_history` (when given),
+        # never silently falling back to the capped geometry `window`.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = self._long_series(start, n=420)
+        cfg = _small_cfg()
+        asof_index = 350
+
+        geometry_window = candles[max(0, asof_index - cfg.lookback_candles + 1) : asof_index + 1]
+        full_history = candles[: asof_index + 1]
+        assert len(full_history) != len(geometry_window)
+
+        captured: list[Sequence[HistoricalCandle]] = []
+        real_reconstruct = substrate._reconstruct_trend_row
+
+        def _capturing_reconstruct(window: Sequence[HistoricalCandle]) -> Any:
+            captured.append(window)
+            return real_reconstruct(window)
+
+        monkeypatch.setattr(substrate, "_reconstruct_trend_row", _capturing_reconstruct)
+
+        build_episode_feature(
+            symbol="TST",
+            venue="bitvavo",
+            window=geometry_window,
+            trend_history=full_history,
+            cfg=cfg,
+        )
+
+        assert len(captured) == 1
+        assert captured[0] is full_history
+        assert len(captured[0]) == len(full_history) != len(geometry_window)
 
 
 class TestForwardTailRetrieval:
@@ -2054,7 +2259,7 @@ class TestRunIdentityExcludesOperationalParams:
     def test_manifest_carries_warmup_and_chunk_provenance_alongside_shared_run_id(self) -> None:
         # A fixed run_id (computed once, as the runner does) can be reused
         # across manifests whose only difference is provenance-only fields
-        # (warmup_candle_count, chunk_size_candles) -- those fields are
+        # (ema_state_prehistory_candle_count, chunk_size_candles) -- those fields are
         # recorded for observability but are not independently re-derived
         # from run_id, so this does not by itself prove they can vary
         # freely; see TestSourceInputFingerprint for the load-bearing proof
@@ -2083,7 +2288,7 @@ class TestRunIdentityExcludesOperationalParams:
             episode_count=1,
             episodes_sha256="a" * 64,
             source_input_sha256="a" * 64,
-            warmup_candle_count=179,
+            ema_state_prehistory_candle_count=179,
             chunk_size_candles=1000,
         )
         manifest_b = runner.build_manifest(
@@ -2099,12 +2304,12 @@ class TestRunIdentityExcludesOperationalParams:
             episode_count=1,
             episodes_sha256="a" * 64,
             source_input_sha256="a" * 64,
-            warmup_candle_count=179,
+            ema_state_prehistory_candle_count=179,
             chunk_size_candles=5000,
         )
         assert manifest_a["run_id"] == manifest_b["run_id"] == run_id
-        assert manifest_a["warmup_candle_count"] == 179
-        assert manifest_b["warmup_candle_count"] == 179
+        assert manifest_a["ema_state_prehistory_candle_count"] == 179
+        assert manifest_b["ema_state_prehistory_candle_count"] == 179
         assert manifest_a["chunk_size_candles"] == 1000
         assert manifest_b["chunk_size_candles"] == 5000
 
@@ -2426,7 +2631,7 @@ class _RunnerHarness:
         monkeypatch: pytest.MonkeyPatch, candles: list[HistoricalCandle]
     ) -> None:
         monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
-        monkeypatch.setattr(runner, "fetch_warmup_candles", lambda **kw: [])
+        monkeypatch.setattr(runner, "fetch_ema_state_prehistory_candles", lambda **kw: [])
         monkeypatch.setattr(runner, "fetch_candles", lambda **kw: candles)
         monkeypatch.setattr(runner, "fetch_forward_tail_candles", lambda **kw: [])
 
@@ -2561,7 +2766,7 @@ class TestFailedTerminalSummary:
         def _boom(**kw: Any) -> list[Any]:
             raise RuntimeError("db connection reset")
 
-        monkeypatch.setattr(runner, "fetch_warmup_candles", _boom)
+        monkeypatch.setattr(runner, "fetch_ema_state_prehistory_candles", _boom)
 
         exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
         out = capsys.readouterr().out
@@ -2577,7 +2782,7 @@ class TestFailedTerminalSummary:
         start = datetime(2026, 1, 1, tzinfo=UTC)
         candles = _synthetic_bullish_series(start)
         monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
-        monkeypatch.setattr(runner, "fetch_warmup_candles", lambda **kw: [])
+        monkeypatch.setattr(runner, "fetch_ema_state_prehistory_candles", lambda **kw: [])
         monkeypatch.setattr(runner, "fetch_candles", lambda **kw: candles)
 
         def _boom(**kw: Any) -> list[Any]:

@@ -29,7 +29,15 @@ canonical modules it calls. This module adds only:
   raw historical candles, using the canonical `ema()` primitive and the
   exact formula `src/features/etl_candle_feat.py` persists into
   `feat_candle` (price_vs_ema20/50, ema_spread_pct) -- not a second trend
-  classifier, `build_row` still owns the actual classification decision
+  classifier, `build_row` still owns the actual classification decision.
+  `_reconstruct_trend_row` is fed the FULL preceding PIT candle stream up
+  to the as-of candle (`trend_history` in `build_episode_feature`/
+  `build_episodes`), not the (smaller, Fib-geometry-bounded) `window`:
+  `etl_candle_feat.compute_features`' `ewm(adjust=False)` state is
+  recursive over every preceding row, so truncating history here could
+  silently diverge from production's trend classification for an
+  identical as-of candle -- see the runner's "EMA-State Prehistory" module
+  docstring section for the retrieval side of this.
 - ATR-unit distance normalization (research-only; build_row's own
   distance_entry_to_target_pct / distance_entry_to_invalidation_pct fields
   are always None -- not computed by production)
@@ -397,14 +405,36 @@ def build_episode_feature(
     venue: str,
     window: Sequence[HistoricalCandle],
     cfg: EpisodeConfig,
+    trend_history: Sequence[HistoricalCandle] | None = None,
 ) -> EpisodeFeaturePayload | None:
     """Build a PIT-safe episode feature payload from a candle window ending at as-of.
 
-    `window` must contain only candles observable at map-creation time (the
-    last candle in `window` IS the as-of candle). Returns None when the
-    canonical `build_row` projection is unavailable at this as-of point
-    (RANGE state, insufficient data, missing/misaligned trend input, or a
-    canonical MAP_STATE_NO_DATA/STALE result).
+    `window` is the Fib/map GEOMETRY input only: the trailing candles
+    (bounded by `cfg.lookback_candles`) `build_row` uses for anchor/level
+    projection. The last candle in `window` IS the as-of candle, and
+    `window` must contain only candles observable at map-creation time.
+
+    `trend_history`, if given, is the FULL preceding PIT candle stream up
+    to and including the same as-of candle, used ONLY to reconstruct the
+    EMA/trend input (`price_vs_ema20`/`price_vs_ema50`/`ema_spread_pct`)
+    production-equivalently -- see `_reconstruct_trend_row` and the
+    runner's "EMA-State Prehistory" module docstring section. Production
+    `etl_candle_feat.compute_features` computes these via
+    `close.ewm(span=20/50, adjust=False, min_periods=20/50).mean()`, a
+    RECURSIVE state depending on every preceding row, not a fixed trailing
+    window; reconstructing it from the same capped `window` used for Fib
+    geometry (the pre-#727-fix behavior) can silently diverge from
+    production's trend classification and therefore `build_row`
+    admission/direction for an identical as-of candle. When omitted,
+    `trend_history` defaults to `window` (this function's original,
+    geometry-window-only behavior) -- direct callers/tests that do not care
+    about the long-history distinction are unaffected; `build_episodes`
+    (the actual pipeline entry point) always supplies the full preceding
+    stream explicitly.
+
+    Returns None when the canonical `build_row` projection is unavailable
+    at this as-of point (RANGE state, insufficient data, missing/
+    misaligned trend input, or a canonical MAP_STATE_NO_DATA/STALE result).
     """
     if not window:
         return None
@@ -417,7 +447,19 @@ def build_episode_feature(
     if len(window) < cfg.min_window_candles:
         return None
 
-    trend_row = _reconstruct_trend_row(window)
+    trend_source = window if trend_history is None else trend_history
+    if trend_source is not window:
+        if not trend_source or trend_source[-1].close_ts_utc != asof_ts_utc:
+            raise EpisodeSubstrateError(
+                "trend_history must end at the same as-of candle as window"
+            )
+        for candle in trend_source:
+            if candle.close_ts_utc > asof_ts_utc:
+                raise PitViolationError(
+                    "trend-history reconstruction received a candle after as-of time"
+                )
+
+    trend_row = _reconstruct_trend_row(trend_source)
     fib_candles = [c.to_fib_nav_candle() for c in window]
 
     row = build_row(
@@ -695,19 +737,24 @@ def build_episodes(
     by only attempting map creation every N candles; it does not change the
     PIT boundary of any individual episode.
 
-    `candles` may include pre-bound warmup history before the caller's
-    requested research window (see the runner's warmup-fetch rule). Leading
-    candles are used as feature input (window/EMA/ATR reconstruction) for
-    as-of candles inside the requested window exactly as they would be if
-    the requested window had started earlier -- this is what makes an
-    as-of candle's feature output invariant to the caller's requested
-    `from_ts`. `emit_from_ts_utc` / `emit_to_ts_utc`, when given, restrict
-    *emission* only: an episode is appended to the result only when
-    `feature.map_creation_ts_utc` falls in `[emit_from_ts_utc,
-    emit_to_ts_utc)`. Warmup-region as-of candles (before
-    `emit_from_ts_utc`) are still scanned to build up window/stride state
-    identically to production, but never themselves produce an emitted
-    episode.
+    `candles` may include pre-bound EMA-state prehistory before the
+    caller's requested research window (see the runner's "EMA-State
+    Prehistory" module docstring section). For each attempted as-of index
+    `i`, `window = candles[max(0, i - lookback_candles + 1) : i + 1]` is
+    the Fib/map GEOMETRY input (bounded, unchanged), while
+    `trend_history = candles[:i + 1]` -- the FULL preceding stream, not
+    bounded by `lookback_candles` -- is passed to `build_episode_feature`
+    for production-equivalent EMA/trend reconstruction only. Leading
+    candles are therefore feature input for as-of candles inside the
+    requested window exactly as they would be if the requested window had
+    started earlier -- this is what makes an as-of candle's feature output
+    invariant to the caller's requested `from_ts`. `emit_from_ts_utc` /
+    `emit_to_ts_utc`, when given, restrict *emission* only: an episode is
+    appended to the result only when `feature.map_creation_ts_utc` falls in
+    `[emit_from_ts_utc, emit_to_ts_utc)`. Prehistory-region as-of candles
+    (before `emit_from_ts_utc`) are still scanned to build up EMA/trend and
+    window/stride state identically to production, but never themselves
+    produce an emitted episode.
 
     `max_episodes` bounds the emitted count and is checked before building
     each candidate episode, so `max_episodes=0` deterministically yields an
@@ -752,8 +799,21 @@ def build_episodes(
 
         window_start = max(0, i - cfg.lookback_candles + 1)
         window = candles[window_start : i + 1]
+        # Full preceding PIT stream up to the same as-of candle, for
+        # production-equivalent EMA/trend reconstruction only -- see
+        # build_episode_feature's `trend_history` and the runner's
+        # "EMA-State Prehistory" module docstring section. Deliberately NOT
+        # bounded by cfg.lookback_candles: that bound is a Fib/map GEOMETRY
+        # concern (`window`, above), not an EMA-state concern.
+        trend_history = candles[: i + 1]
 
-        feature = build_episode_feature(symbol=symbol, venue=venue, window=window, cfg=cfg)
+        feature = build_episode_feature(
+            symbol=symbol,
+            venue=venue,
+            window=window,
+            trend_history=trend_history,
+            cfg=cfg,
+        )
         if feature is None:
             continue
 

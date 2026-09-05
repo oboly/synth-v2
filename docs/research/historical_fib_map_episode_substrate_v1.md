@@ -233,9 +233,9 @@ both into UTC-aware datetimes once (`from_ts_dt`/`to_ts_dt`, via
 `parse_ts_arg`) and uses THOSE -- never the raw CLI strings -- for every
 downstream purpose that must agree on the exact instant being requested:
 `build_episodes`' `emit_from_ts_utc`/`emit_to_ts_utc` emission gate, AND
-every DB query bound (`fetch_warmup_candles`' `before_ts`, `fetch_candles`'
-`from_ts`/`to_ts`, `fetch_forward_tail_candles`' `to_ts`), via
-`format_ts_for_query(from_ts_dt)` / `format_ts_for_query(to_ts_dt)`.
+every DB query bound (`fetch_ema_state_prehistory_candles`' `from_ts`,
+`fetch_candles`' `from_ts`/`to_ts`, `fetch_forward_tail_candles`' `to_ts`),
+via `format_ts_for_query(from_ts_dt)` / `format_ts_for_query(to_ts_dt)`.
 
 `format_ts_for_query` renders a UTC-aware datetime as the canonical naive
 `'YYYY-MM-DD HH:MM:SS'` string `obs_market_candle`'s naive, UTC-convention
@@ -250,34 +250,85 @@ use the raw CLI strings for `from_ts`/`to_ts` (they identify the REQUESTED
 contract as the caller typed it, not the DB fetch bound); this fix only
 changes what is sent to `obs_market_candle` queries.
 
-## Warmup: As-Of Feature Invariance to the Requested Window
+## EMA-State Prehistory: Production-Equivalent Trend Reconstruction
 
 `--from-ts`/`--to-ts` is a **research output** bound, not a feature-input
-bound. Reconstructing the canonical PIT trend/EMA input and Fib-anchor
-window for an as-of candle near `--from-ts` needs the same
-`cfg.lookback_candles` (180 for both `1h` and `4h`) candles of history a run
-with an earlier `--from-ts` would have used for that identical as-of
-candle -- otherwise the same as-of candle could silently produce a
-different trend/anchor outcome depending only on what the caller asked for.
+bound, and the Fib/map GEOMETRY window (`cfg.lookback_candles`, 180 for
+both `1h` and `4h`) is a SEPARATE, deliberately unchanged concern from the
+EMA/trend feature input:
 
-The runner fixes this by fetching `cfg.lookback_candles - 1` extra candles
-strictly before `--from-ts` as **pre-bound warmup**
-(`fetch_warmup_candles`, a single bounded `LIMIT`-ed query, `ORDER BY
-open_ts_utc DESC` then reversed to ascending). Warmup candles are feature
-input only:
+- Production `src.features.etl_candle_feat.compute_features` computes
+  `price_vs_ema20`/`price_vs_ema50`/`ema_spread_pct` via
+  `close.ewm(span=20/50, adjust=False, min_periods=20/50).mean()`. With
+  `adjust=False`, this is a RECURSIVE state (`y_t = alpha*x_t +
+  (1-alpha)*y_{t-1}`, seeded at `y_0 = x_0`) that depends on EVERY
+  preceding row of whatever candle series it was given -- not a fixed
+  trailing window.
+- Earlier historical replay reconstructed this same formula
+  (`_reconstruct_trend_row`) from only the capped `cfg.lookback_candles`
+  Fib-geometry window. That is production-INEQUIVALENT: identical as-of
+  candles could silently classify to a different trend state -- and
+  therefore a different canonical `build_row` admission/direction -- than
+  production would, purely because replay looked at less history than
+  production's own EWM recursion would have accumulated.
+- The fix keeps the Fib/map geometry window exactly as it was
+  (`build_episodes`' `window = candles[max(0, i - lookback_candles + 1) :
+  i + 1]`, unchanged, still `build_row`'s `candles` argument) and adds a
+  SEPARATE `trend_history = candles[:i + 1]` -- the FULL preceding PIT
+  candle stream up to the same as-of candle, with NO `lookback_candles`
+  cap -- fed to `_reconstruct_trend_row` for EMA/trend reconstruction
+  only. `build_episode_feature` accepts `trend_history` as an explicit
+  parameter (falling back to `window` when omitted, for direct callers/
+  tests that do not care about the distinction); `build_episodes` always
+  supplies the full preceding stream explicitly.
 
-- `build_episodes` still scans them to reconstruct window/EMA/ATR state
-  exactly as production would, via `emit_from_ts_utc` / `emit_to_ts_utc`
+To supply that full preceding stream, the runner fetches the FULL
+available `obs_market_candle` history strictly before `--from-ts`
+(`fetch_ema_state_prehistory_candles` -- no `LIMIT`, bounded/chunked per DB
+round trip via the same keyset-pagination discipline as `fetch_candles`,
+never a small fixed warmup count) as **EMA-state prehistory**. Prehistory
+candles are feature input only:
+
+- `build_episodes` still scans them to reconstruct EMA/trend and
+  window/stride state exactly as production would, via `emit_from_ts_utc`
+  / `emit_to_ts_utc`
 - an episode is only ever **emitted** (appended to the result) when
   `feature.map_creation_ts_utc` falls inside `[emit_from_ts_utc,
   emit_to_ts_utc)` -- the requested `[--from-ts, --to-ts)` window
-- warmup never reads a candle at/after `--to-ts` (no future data) and never
-  reads from a current-state snapshot table (historical `obs_market_candle`
-  rows only)
+- prehistory never reads a candle at/after `--to-ts` (no future data) and
+  never reads from a current-state snapshot table (historical
+  `obs_market_candle` rows only)
+- the trailing `cfg.lookback_candles - 1` prehistory candles additionally
+  serve as the Fib/map GEOMETRY warmup -- a strict subset of the same
+  fetch, not a separate query (see `fib_geometry_warmup_candle_count` in
+  the manifest)
+
+This is a deliberate performance/correctness tradeoff: EMA reconstruction
+is recomputed over the full preceding stream for every attempted as-of
+position (`_reconstruct_trend_row` re-runs `ewm(...)` over `trend_history`
+each time), an `O(candles^2)` cost in the worst case over a very long
+history, accepted for production-equivalent correctness. A streaming/
+incremental EMA optimization is a future improvement if this becomes a
+practical bottleneck; it is out of scope for this fix.
 
 `max_episodes` is checked before building each candidate episode (not
 after appending), so `--max-episodes 0` deterministically yields zero
 episodes rather than one.
+
+### Production Parity
+
+`tests/test_historical_fib_map_episode_substrate_v1.py`'s
+`TestProductionEmaParity` proves this reconstruction is byte-identical to
+production, not merely "close": given the full preceding candle history
+for a chosen as-of candle (420-candle synthetic series, as-of index 350 --
+well beyond the 180-candle geometry window), `_reconstruct_trend_row`'s
+`price_vs_ema20`/`price_vs_ema50`/`ema_spread_pct` exactly equal
+`etl_candle_feat.compute_features`' own output on the identical candle
+series. A paired negative control (`test_truncated_history_measurably_
+diverges_from_production`) reconstructs the SAME as-of candle from only
+the trailing 180 candles (the pre-fix behavior) and asserts the result
+differs from production by more than `1e-6` for `price_vs_ema50`/
+`ema_spread_pct` -- proving the parity test is not vacuous.
 
 ## Forward-Label Tail: To-Ts Invariance for Outcome Labels
 
@@ -290,16 +341,16 @@ mean "the market itself ran out of history", not "the caller's requested
 output window ended"; before this fix the label silently depended on the
 requested output bound rather than on the market.
 
-The runner fixes this the same way it fixes the warmup case, but forward:
-after fetching pre-bound warmup and the requested `[from_ts, to_ts)`
-candles, it fetches up to `cfg.forward_max_candles` additional historical
-`obs_market_candle` rows starting at `open_ts_utc >= to_ts`
-(`fetch_forward_tail_candles`, a single bounded `LIMIT`-ed query, `ORDER BY
-open_ts_utc ASC`). The build input becomes `warmup_candles +
-requested_candles + forward_tail_candles`; `build_episodes`' existing
-forward-only indexing (`forward_candles = candles[i + 1:]`) and
-`emit_from_ts_utc`/`emit_to_ts_utc` gate need no change to honor this
-correctly:
+The runner fixes this the same way it fixes the prehistory case, but
+forward: after fetching EMA-state prehistory and the requested
+`[from_ts, to_ts)` candles, it fetches up to `cfg.forward_max_candles`
+additional historical `obs_market_candle` rows starting at
+`open_ts_utc >= to_ts` (`fetch_forward_tail_candles`, a single bounded
+`LIMIT`-ed query, `ORDER BY open_ts_utc ASC`). The build input becomes
+`prehistory_candles + requested_candles + forward_tail_candles`;
+`build_episodes`' existing forward-only indexing (`forward_candles =
+candles[i + 1:]`) and `emit_from_ts_utc`/`emit_to_ts_utc` gate need no
+change to honor this correctly:
 
 - forward-tail candles can only ever be reached from an as-of index
   *before* them, so they can only extend outcome-label scanning for
@@ -309,7 +360,7 @@ correctly:
 - forward-tail candles can themselves become an as-of position during the
   build loop (the loop runs over the full candle array), but any episode
   candidate there has `map_creation_ts_utc >= to_ts`, which fails the
-  `emit_to_ts_utc` gate exactly like a warmup-region as-of candle fails
+  `emit_to_ts_utc` gate exactly like a prehistory-region as-of candle fails
   `emit_from_ts_utc` -- so a forward-tail candle can never itself produce a
   newly emitted episode
 - the tail is derived only from the caller's `--to-ts` argument, never from
@@ -333,16 +384,21 @@ available (and its exact OHLCV values) directly determines outcome labels
 for episodes near `--to-ts`. That content is folded into `run_id` via
 `source_input_sha256` -- see "Source Input Fingerprint and Run Identity"
 below. Only the fetched *count* (`forward_tail_candle_count`) is recorded
-in the manifest as separate provenance, alongside `warmup_candle_count` and
-`chunk_size_candles`.
+in the manifest as separate provenance, alongside
+`ema_state_prehistory_candle_count`, `fib_geometry_warmup_candle_count`,
+and `chunk_size_candles`.
 
 To summarize the three retrieval regions explicitly:
 
 ```text
-[from_ts, to_ts)   = episode emission window (build_episodes' emit gate)
-prehistory/warmup  = feature warmup only -- never emits, never labels
-post-to_ts tail    = forward-label evidence only -- never emits, never
-                     contributes to feature construction
+[from_ts, to_ts)      = episode emission window (build_episodes' emit gate)
+EMA-state prehistory  = EMA/trend feature input only (full available
+                        history below from_ts) -- never emits, never
+                        labels. Its trailing cfg.lookback_candles - 1
+                        candles ALSO serve as Fib/map geometry warmup
+                        (a strict subset, not a separate fetch).
+post-to_ts tail       = forward-label evidence only -- never emits, never
+                        contributes to feature construction
 ```
 
 ## Bounded/Chunked Retrieval and Interruption
@@ -352,18 +408,24 @@ pages (`--chunk-size-candles`, default 5000) using deterministic
 `ORDER BY open_ts_utc ASC` keyset pagination: the first page uses
 `open_ts_utc >= from_ts`, every following page uses `open_ts_utc >
 <last row's open_ts_utc>` (strict), so no page can duplicate or skip a row
-at a page boundary and no single query is unbounded. `fetch_warmup_candles`
-is inherently bounded by its `LIMIT` and needs no pagination.
+at a page boundary and no single query is unbounded.
+`fetch_ema_state_prehistory_candles` uses the identical pagination
+discipline with no `LIMIT` at all (its first page has no lower bound
+either -- there is no fixed warmup count to seed it with): each DB round
+trip is still bounded to `chunk_size` rows, but the TOTAL row count
+fetched is not capped, since production-equivalent EMA reconstruction
+needs the full available history, not a fixed warmup window.
 
 The runner is single-process, single-worker (no worker pool) and prints an
-observable phase per stage: `STARTED`, `FETCHING` (warmup, then per-chunk
-progress on the requested window, then the forward-label tail --
-`FETCHING phase=forward_tail ...`), `BUILDING` (see below), `WRITING`, and
-exactly one terminal `FINISHED`, `INTERRUPTED`, or `FAILED` line.
-SIGINT/SIGTERM are caught by `_SignalState` (a single flag, no threads); the
-flag is polled between DB chunks, during `BUILDING` (see below), and at each
-phase boundary (after asset/warmup/requested/forward-tail fetch and after
-build, before write). On interruption the runner prints `INTERRUPTED` with
+observable phase per stage: `STARTED`, `FETCHING` (`phase=ema_prehistory`,
+then per-chunk progress on the requested window, then the forward-label
+tail -- `FETCHING phase=forward_tail ...`), `BUILDING` (see below),
+`WRITING`, and exactly one terminal `FINISHED`, `INTERRUPTED`, or `FAILED`
+line. SIGINT/SIGTERM are caught by `_SignalState` (a single flag, no
+threads); the flag is polled between DB chunks, during `BUILDING` (see
+below), and at each phase boundary (after asset/prehistory/requested/
+forward-tail fetch and after build, before write). On interruption the
+runner prints `INTERRUPTED` with
 the signal and
 a non-zero exit code (130 for SIGINT, 143 for SIGTERM) and never calls
 `publish_immutable_run` -- so a killed run never produces a run directory
@@ -451,7 +513,7 @@ encounters them:
 invalid_arguments          -- parse_args (argparse parse failure, before any DB call)
                               / validate_args (before any DB call); exit 2
 asset_lookup_failed        -- fetch_asset_id
-source_fetch_failed        -- fetch_warmup_candles / fetch_candles / fetch_forward_tail_candles
+source_fetch_failed        -- fetch_ema_state_prehistory_candles / fetch_candles / fetch_forward_tail_candles
 source_validation_failed   -- validate_candle_sequence (duplicate/non-monotonic candles)
 build_failed                -- build_episodes (any failure other than BuildCancelled)
 output_write_failed        -- build_manifest / publish_immutable_run (episodes+manifest)
@@ -547,8 +609,9 @@ pre-existing partial/conflicting directory was left exactly as found.
   or any two differently-bounded runs, could otherwise collide at the same
   immutable path); and, separately, two runs with byte-identical CLI
   arguments can still see different actual `obs_market_candle` content
-  (late-arriving backfill, a corrected OHLC value, less warmup/forward-tail
-  history available at fetch time), which would otherwise produce different
+  (late-arriving backfill, a corrected OHLC value, less EMA-state
+  prehistory/forward-tail history available at fetch time), which would
+  otherwise produce different
   `episodes_v1.json` content at the same path. Folding both the full
   parameter set AND the source-content fingerprint into the path makes both
   structurally impossible: two runs collide at the same `<run_id>` only
@@ -566,10 +629,10 @@ pre-existing partial/conflicting directory was left exactly as found.
 `compute_run_id()` folds in `source_input_sha256`
 (`compute_source_input_sha256`): a SHA-256 over a canonical (sorted-key,
 compact-separator) JSON array of every candle in
-`warmup_candles + requested_candles + forward_tail_candles`, in that exact
-fetch order -- the full PIT source snapshot a run's feature/label output
-was actually computed from, not just the CLI parameters describing what was
-requested.
+`prehistory_candles + requested_candles + forward_tail_candles`, in that
+exact fetch order -- the full PIT source snapshot a run's feature/label
+output was actually computed from, not just the CLI parameters describing
+what was requested.
 
 Each candle's fingerprint record (`_candle_fingerprint_fields`) covers every
 field that can affect feature geometry or labels:
@@ -593,15 +656,15 @@ already uses:
   fingerprint is computed)
 - no dependence on Python's built-in `hash()`/`repr()` of any object
 
-**Warmup/forward-tail source content is NOT irrelevant to identity.** Only
-purely operational retrieval parameters that never change *which* candles
-are fetched -- `--chunk-size-candles` (DB round-trip paging) and the
-`BUILDING` progress-heartbeat cadence -- are excluded from
+**EMA-state-prehistory/forward-tail source content is NOT irrelevant to
+identity.** Only purely operational retrieval parameters that never change
+*which* candles are fetched -- `--chunk-size-candles` (DB round-trip
+paging) and the `BUILDING` progress-heartbeat cadence -- are excluded from
 `source_input_sha256`/`run_id`. Two runs produce the same `run_id` if and
 only if both the requested contract (CLI/config parameters) and the actual
 fetched source candle content are identical; any difference in either --
-including a single changed OHLCV value in warmup, the requested window, or
-the forward tail -- produces a different `run_id`.
+including a single changed OHLCV value in EMA-state prehistory, the
+requested window, or the forward tail -- produces a different `run_id`.
 
 ## Scope Boundary
 
@@ -611,7 +674,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (127 tests, no DB)
+3. synthetic/unit tests (131 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,
