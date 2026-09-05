@@ -145,7 +145,7 @@ def test_partial_metric_is_none_when_controls_exhaust_residual_degrees_of_freedo
     assert all(metric.partial_spearman_given_baseline is None for metric in report.metrics)
 
 
-def test_rejects_unknown_splits_missing_splits_and_overlapping_columns() -> None:
+def test_rejects_unknown_splits_missing_splits_and_role_aliases() -> None:
     frame = _frame()
     bad_split = frame.copy()
     bad_split.loc[0, "split"] = "TEST"
@@ -167,10 +167,20 @@ def test_rejects_unknown_splits_missing_splits_and_overlapping_columns() -> None
             outcome_column="forward_return_pct",
         )
 
-    with pytest.raises(MAVolumeValidationInputError, match="disjoint"):
-        evaluate_incremental_features(
-            frame,
-            candidate_columns=("baseline_structure",),
-            baseline_columns=("baseline_structure",),
-            outcome_column="forward_return_pct",
-        )
+    alias_cases = (
+        (("baseline_structure",), ("baseline_structure",), "forward_return_pct", "split"),
+        (("forward_return_pct",), ("baseline_structure",), "forward_return_pct", "split"),
+        (("candidate_sma150_slope",), ("forward_return_pct",), "forward_return_pct", "split"),
+        (("split",), ("baseline_structure",), "forward_return_pct", "split"),
+        (("candidate_sma150_slope",), ("split",), "forward_return_pct", "split"),
+        (("candidate_sma150_slope",), ("baseline_structure",), "split", "split"),
+    )
+    for candidates, baselines, outcome, split_column in alias_cases:
+        with pytest.raises(MAVolumeValidationInputError, match="mutually disjoint"):
+            evaluate_incremental_features(
+                frame,
+                candidate_columns=candidates,
+                baseline_columns=baselines,
+                outcome_column=outcome,
+                split_column=split_column,
+            )
