@@ -256,10 +256,19 @@ primary truth; no categorical volatility states are proposed by this audit.
   independent true-range/ATR-proxy implementation (`true_range_pct`, lines
   ~195-211), scored against a rolling median baseline. This is the most
   fully-formed expansion/compression *formula* found anywhere in the
-  repository, but it is a market-breath research script only: no DB
-  persistence (`db_writes=0`, writes only optional local JSONL/JSON files),
-  no `model_id`/`model_version`, no `asof`/freshness contract, consumed only
-  by other research scripts and by
+  repository, and it does accept an explicit `--asof-ts` argument
+  (`parse_args`), bounds its candle query window to it
+  (`fetch_candles(..., asof_ts=asof_ts)`, with the script's own comment "No
+  future candles are used; all candles are `close_ts_utc <= asof_ts_utc`"),
+  and records `asof_ts_utc` in its output rows — real, explicit
+  point-in-time query discipline, not absent. However it is still a
+  market-breath research script only: no DB persistence (`db_writes=0`,
+  writes only optional local JSONL/JSON files), no `model_id`/
+  `model_version`, no `evaluated_at` distinct from `asof_ts_utc`, no
+  documented future-asof fail-closed behavior, no freshness/staleness
+  classification field, and no producer-owned #243 contract — i.e. explicit
+  `asof` *query* support without a production freshness/evidence-owner
+  *contract*. Consumed only by other research scripts and by
   `src/reporting/market_breath_context_bridge_v1.py` /
   `market_breath_live_v1.py` for read-only display — never by
   `selection_engine`/`decision_gate`/`execution_planner`/`executor`.
@@ -486,8 +495,15 @@ audit, per #243 section 3.3's explicit prohibition.
   found), but no `evaluated_at` distinct from `asof_ts_utc`, no
   freshness/staleness field, no documented future-asof or fail-closed
   contiguity behavior in the engine code itself.
-- All research-only and execution/display-context candidates: no asof
-  parameterization, no freshness contract, no fail-closed behavior
+- `src/research/run_market_breath_analysis_v1.py` is the one exception to
+  "no asof parameterization" among the research-only candidates: it accepts
+  an explicit `--asof-ts`, bounds its candle query to it, and records
+  `asof_ts_utc` in output (see candidate inventory above) — but still has no
+  `evaluated_at`, no freshness/staleness field, no documented future-asof
+  fail-closed behavior, and no #243 contract, so it remains
+  `RESEARCH_ONLY` rather than a freshness/evidence-owner-complete candidate.
+- All other research-only and all execution/display-context candidates: no
+  asof parameterization, no freshness contract, no fail-closed behavior
   documented — consistent with their non-owner classification.
 
 ## Anti-duplication boundaries
