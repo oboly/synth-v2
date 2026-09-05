@@ -274,8 +274,8 @@ def prepare_output(
                 raise ValueError(f"resume identity mismatch for {key}")
         completed = int(checkpoint.get("asofs_completed", 0))
         rows_written = int(checkpoint.get("candidate_rows_written", 0))
-        if checkpoint.get("terminal_state") == "FINISHED" and not manifest_path.exists():
-            raise ValueError("FINISHED checkpoint missing manifest.json")
+        if checkpoint.get("terminal_state") == "FINISHED":
+            raise ValueError("--resume is not allowed for terminal FINISHED output")
         return checkpoint, completed, load_checkpointed_rows(
             candidate_path,
             rows_written,

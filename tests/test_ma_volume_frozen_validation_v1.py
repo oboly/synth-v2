@@ -25,6 +25,7 @@ from src.research.run_ma_volume_frozen_validation_v1 import (
     frozen_grouping_market_map,
     has_durable_checkpoint,
     load_checkpointed_rows,
+    prepare_output,
     run,
     scope_identity,
     write_terminal_checkpoint,
@@ -267,6 +268,50 @@ def test_resume_loader_rejects_corrupted_checkpoint_identity_prefix(tmp_path: Pa
     path.write_text(json.dumps({"observation_id": "wrong"}) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="observation-id prefix mismatch"):
         load_checkpointed_rows(path, 1, expected_observation_ids=["expected"])
+
+
+def test_finished_output_cannot_be_resumed(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.resume = True
+    output = Path(args.output_dir)
+    output.mkdir(parents=True)
+    identity = {
+        "runner": runner.RUNNER_NAME,
+        "contract_sha256": runner.PINNED_CONTRACT_SHA256,
+        "population_sha256": runner.PINNED_POPULATION_SHA256,
+        "outcomes_sha256": runner.PINNED_OUTCOMES_SHA256,
+        "venue": "bitvavo",
+        "asof_index": None,
+        "asset_id": None,
+        "limit_observations": None,
+        "selected_observations": 1,
+        "selected_asofs": 1,
+        "selected_observation_ids_sha256": runner.canonical_json_sha256(["obs-1"]),
+    }
+    runner.atomic_json(
+        output / "checkpoint.json",
+        {
+            **identity,
+            "terminal_state": "FINISHED",
+            "resumable": 0,
+            "asofs_completed": 1,
+            "candidate_rows_written": 1,
+            "last_asof_ts_utc": "2026-08-01T00:00:00Z",
+            "db_writes": 0,
+        },
+    )
+    (output / "manifest.json").write_text("{}\n", encoding="utf-8")
+    (output / "candidate_observations.jsonl").write_text(
+        json.dumps({"observation_id": "obs-1"}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="not allowed for terminal FINISHED"):
+        prepare_output(
+            output,
+            args=args,
+            identity=identity,
+            candidate_filename="candidate_observations.jsonl",
+            expected_observation_ids=["obs-1"],
+        )
 
 
 def test_scope_identity_binds_exact_selected_observation_ids() -> None:

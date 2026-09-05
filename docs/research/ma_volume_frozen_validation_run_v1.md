@@ -151,7 +151,8 @@ Fresh output directories must not already exist.
 The runner checkpoints after each as-of. `--resume` binds the exact invocation
 and selected observation-ID hash. If an interruption leaves uncheckpointed
 candidate rows, resume truncates them back to the checkpointed prefix before
-continuing.
+continuing. A terminal `FINISHED` output is immutable and cannot be resumed;
+`--resume` fails closed for it instead of trusting previously written artifacts.
 
 Final artifacts:
 
