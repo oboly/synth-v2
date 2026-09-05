@@ -77,6 +77,34 @@ Warmup and Run Identity:
   The actual fetch window (including how much warmup was actually
   available) and the chunk size used are recorded in the manifest for
   provenance, not identity.
+
+Forward-label tail:
+- [from_ts, to_ts) is the EPISODE EMISSION window: only as-of candles in
+  this range can produce an emitted episode (build_episodes'
+  emit_from_ts_utc/emit_to_ts_utc).
+- Pre-bound warmup (above) is FEATURE INPUT ONLY: it extends the window
+  backwards so PIT trend/anchor reconstruction for an as-of candle near
+  --from-ts is invariant to the requested bound. It is never itself
+  eligible for emission and never contributes to outcome labels.
+- The forward-label tail (fetch_forward_tail_candles) is FORWARD-LABEL
+  EVIDENCE ONLY: up to `cfg.forward_max_candles` historical
+  `obs_market_candle` rows starting at `open_ts_utc >= --to-ts`, fetched
+  once bounded by construction (a single LIMIT query, never derived from
+  wall-clock/current time). Without it, an episode emitted near --to-ts
+  whose T2/invalidation resolves after --to-ts would be mislabeled
+  SOURCE_DATA_EXHAUSTED purely because DB retrieval stopped at the
+  requested output bound, not because the market data was actually
+  exhausted. Forward-tail candles may only extend the forward-outcome scan
+  for episodes already emitted from the requested window; they can never
+  themselves become an as-of candle for a NEW emitted episode (same
+  emit_to_ts_utc gate as warmup) and never leak into feature construction
+  for an earlier as-of candle (build_episodes only ever looks backwards
+  from an as-of index for feature input).
+- Forward-tail candle count and the actual final fetched timestamp are
+  recorded in the manifest for provenance, like warmup candle count and
+  chunk size -- NOT part of compute_run_id(): the emitted episode set for
+  fixed dataset-defining inputs does not depend on how much forward-tail
+  history happened to be available.
 """
 
 import argparse
@@ -286,6 +314,52 @@ def fetch_warmup_candles(
     return [_row_to_candle(row, symbol=symbol) for row in rows]
 
 
+def fetch_forward_tail_candles(
+    *,
+    asset_id: int,
+    symbol: str,
+    venue: str,
+    interval_code: str,
+    to_ts: str,
+    limit: int,
+) -> list[HistoricalCandle]:
+    """Fetch up to `limit` candles at/after `to_ts` (SELECT only).
+
+    Forward-label evidence only -- see the module docstring's
+    "Forward-label tail" section. Bounded by construction (LIMIT `limit`,
+    always `cfg.forward_max_candles`), so this is a single bounded round
+    trip, never an unbounded fetch. Ascending `open_ts_utc` order, starting
+    at the requested output upper bound itself (`open_ts_utc >= to_ts`) so
+    no gap or overlap exists between the requested-window fetch (which ends
+    strictly before `to_ts`) and this tail. Derived only from the caller's
+    `to_ts` argument -- never from wall-clock/current time -- and reads the
+    same historical `obs_market_candle` table as every other fetch here, no
+    current-state/snapshot source.
+    """
+    if limit <= 0:
+        return []
+
+    sql = f"""
+    SELECT{_CANDLE_COLUMNS}
+    FROM obs_market_candle
+    WHERE asset_id = %s
+      AND venue = %s
+      AND interval_code = %s
+      AND open_ts_utc >= %s
+    ORDER BY open_ts_utc ASC
+    LIMIT %s
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [asset_id, venue, interval_code, to_ts, limit])
+            rows = cur.fetchall() or []
+    finally:
+        conn.close()
+
+    return [_row_to_candle(row, symbol=symbol) for row in rows]
+
+
 def fetch_candles(
     *,
     asset_id: int,
@@ -478,6 +552,10 @@ def build_manifest(
     warmup_candle_count: int = 0,
     source_fetch_from_ts_utc: str | None = None,
     chunk_size_candles: int = DEFAULT_CHUNK_CANDLES,
+    requested_candle_count: int = 0,
+    forward_tail_candle_count: int = 0,
+    forward_tail_max_candles: int = 0,
+    source_fetch_final_ts_utc: str | None = None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -488,6 +566,10 @@ def build_manifest(
         "symbol": symbol,
         "timeframe": timeframe,
         "source_table": "obs_market_candle",
+        # [source_from_ts, source_to_ts) is the requested SOURCE/OUTPUT
+        # window == the episode EMISSION window. It is not a feature-input
+        # bound (see warmup) and not a label-evidence bound (see the
+        # forward tail fields below).
         "source_from_ts": from_ts,
         "source_to_ts": to_ts,
         "source_candle_count": candle_count,
@@ -497,9 +579,18 @@ def build_manifest(
         "episodes_sha256": episodes_sha256,
         # Provenance only -- NOT part of run_id/dataset identity. See
         # compute_run_id() and the module docstring's
-        # "Warmup and Run Identity" section.
+        # "Warmup and Run Identity" / "Forward-label tail" sections.
         "warmup_candle_count": warmup_candle_count,
+        "requested_window_candle_count": requested_candle_count,
+        # Forward-label evidence support only -- these candles are never
+        # eligible for emission (see emit_to_ts_utc) and are not a
+        # dataset-selection parameter; they exist only so labels near
+        # source_to_ts do not depend on where the requested output window
+        # happened to end.
+        "forward_tail_candle_count": forward_tail_candle_count,
+        "forward_tail_max_candles": forward_tail_max_candles,
         "source_fetch_from_ts_utc": source_fetch_from_ts_utc,
+        "source_fetch_final_ts_utc": source_fetch_final_ts_utc,
         "chunk_size_candles": chunk_size_candles,
         "safety_markers": {
             "research_only": 1,
@@ -634,10 +725,27 @@ def main(argv: list[str] | None = None) -> int:
     if signal_state.triggered:
         return _interrupted_exit()
 
-    candles = warmup_candles + requested_candles
+    print(f"FETCHING phase=forward_tail target={cfg.forward_max_candles}", flush=True)
+    try:
+        forward_tail_candles = fetch_forward_tail_candles(
+            asset_id=asset_id,
+            symbol=args.symbol,
+            venue=args.venue,
+            interval_code=cfg.interval_code,
+            to_ts=args.to_ts,
+            limit=cfg.forward_max_candles,
+        )
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_SOURCE_FETCH, exc)
+    print(f"FETCHING phase=forward_tail fetched={len(forward_tail_candles)}", flush=True)
+    if signal_state.triggered:
+        return _interrupted_exit()
+
+    candles = warmup_candles + requested_candles + forward_tail_candles
     print(
         f"FETCHED warmup_candles={len(warmup_candles)} "
-        f"requested_candles={len(requested_candles)} total_candles={len(candles)}",
+        f"requested_candles={len(requested_candles)} "
+        f"forward_tail_candles={len(forward_tail_candles)} total_candles={len(candles)}",
         flush=True,
     )
 
@@ -695,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         write_immutable_json(episodes_path, episodes_text)
 
         source_fetch_from_ts_utc = candles[0].open_ts_utc.isoformat() if candles else None
+        source_fetch_final_ts_utc = candles[-1].open_ts_utc.isoformat() if candles else None
         manifest = build_manifest(
             run_id=run_id,
             venue=args.venue,
@@ -710,6 +819,10 @@ def main(argv: list[str] | None = None) -> int:
             warmup_candle_count=len(warmup_candles),
             source_fetch_from_ts_utc=source_fetch_from_ts_utc,
             chunk_size_candles=args.chunk_size_candles,
+            requested_candle_count=len(requested_candles),
+            forward_tail_candle_count=len(forward_tail_candles),
+            forward_tail_max_candles=cfg.forward_max_candles,
+            source_fetch_final_ts_utc=source_fetch_final_ts_utc,
         )
         manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         print(f"WRITING manifest_path={manifest_path}", flush=True)

@@ -140,6 +140,13 @@ SOURCE_DATA_EXHAUSTED                           ran out of historical candles be
                                                  terminal event or before the forward budget
 ```
 
+`SOURCE_DATA_EXHAUSTED` means the market itself had no more candles to
+scan -- not that the requested `--to-ts` output bound was reached. The
+runner's forward-label tail (see "Forward-Label Tail" below) is what keeps
+these two cases distinct: without it, an episode near `--to-ts` would be
+mislabeled `SOURCE_DATA_EXHAUSTED` purely because retrieval stopped at the
+requested bound.
+
 `target1_ts_utc` / `time_to_target1_seconds` can therefore be populated
 under any of the above terminal reasons (or with no terminal target/
 invalidation event at all, e.g. `SOURCE_DATA_EXHAUSTED`) -- it records
@@ -247,6 +254,69 @@ input only:
 after appending), so `--max-episodes 0` deterministically yields zero
 episodes rather than one.
 
+## Forward-Label Tail: To-Ts Invariance for Outcome Labels
+
+`[--from-ts, --to-ts)` is the **episode emission window**. Historically the
+runner also stopped *source retrieval* at `--to-ts`, which meant an episode
+emitted near the end of that window -- whose T2 or invalidation only
+resolves on a candle *after* `--to-ts` -- had no forward candles left to
+scan and was mislabeled `SOURCE_DATA_EXHAUSTED`. That reason is supposed to
+mean "the market itself ran out of history", not "the caller's requested
+output window ended"; before this fix the label silently depended on the
+requested output bound rather than on the market.
+
+The runner fixes this the same way it fixes the warmup case, but forward:
+after fetching pre-bound warmup and the requested `[from_ts, to_ts)`
+candles, it fetches up to `cfg.forward_max_candles` additional historical
+`obs_market_candle` rows starting at `open_ts_utc >= to_ts`
+(`fetch_forward_tail_candles`, a single bounded `LIMIT`-ed query, `ORDER BY
+open_ts_utc ASC`). The build input becomes `warmup_candles +
+requested_candles + forward_tail_candles`; `build_episodes`' existing
+forward-only indexing (`forward_candles = candles[i + 1:]`) and
+`emit_from_ts_utc`/`emit_to_ts_utc` gate need no change to honor this
+correctly:
+
+- forward-tail candles can only ever be reached from an as-of index
+  *before* them, so they can only extend outcome-label scanning for
+  episodes already emitted from the requested window -- never contribute to
+  feature/geometry construction for an earlier as-of candle (feature
+  construction only ever looks backward from its own as-of index)
+- forward-tail candles can themselves become an as-of position during the
+  build loop (the loop runs over the full candle array), but any episode
+  candidate there has `map_creation_ts_utc >= to_ts`, which fails the
+  `emit_to_ts_utc` gate exactly like a warmup-region as-of candle fails
+  `emit_from_ts_utc` -- so a forward-tail candle can never itself produce a
+  newly emitted episode
+- the tail is derived only from the caller's `--to-ts` argument, never from
+  `datetime.now()`/wall-clock time, and reads the same historical
+  `obs_market_candle` table as every other fetch in this runner -- no
+  current-state/snapshot source
+- the fetch is bounded by construction (`LIMIT cfg.forward_max_candles`),
+  matching the same bound `build_episode_labels` already applies when
+  scanning forward from any individual episode's own as-of point, so the
+  tail is always sufficient for the worst case (an episode emitted on the
+  very last candle before `--to-ts`) without being unbounded
+
+`cfg.forward_max_candles` is a per-timeframe constant already used to bound
+the forward label scan (`build_episode_labels`'s `bounded =
+forward_candles[:cfg.forward_max_candles]`); the tail fetch reuses the same
+value as its `LIMIT`, so no new tunable parameter is introduced.
+`fetch_forward_tail_candles` is evidence support for labels, not a new
+dataset-selection parameter -- it is deliberately excluded from
+`compute_run_id()` (see "Determinism and Immutability" below) for the same
+reason `warmup_candle_count`/`chunk_size_candles` are: the emitted episode
+set for fixed dataset-defining inputs does not depend on how much
+forward-tail history happened to be available.
+
+To summarize the three retrieval regions explicitly:
+
+```text
+[from_ts, to_ts)   = episode emission window (build_episodes' emit gate)
+prehistory/warmup  = feature warmup only -- never emits, never labels
+post-to_ts tail    = forward-label evidence only -- never emits, never
+                     contributes to feature construction
+```
+
 ## Bounded/Chunked Retrieval and Interruption
 
 `fetch_candles` retrieves the requested `[from_ts, to_ts)` range in bounded
@@ -259,12 +329,14 @@ is inherently bounded by its `LIMIT` and needs no pagination.
 
 The runner is single-process, single-worker (no worker pool) and prints an
 observable phase per stage: `STARTED`, `FETCHING` (warmup, then per-chunk
-progress on the requested window), `BUILDING` (see below), `WRITING`, and
+progress on the requested window, then the forward-label tail --
+`FETCHING phase=forward_tail ...`), `BUILDING` (see below), `WRITING`, and
 exactly one terminal `FINISHED`, `INTERRUPTED`, or `FAILED` line.
 SIGINT/SIGTERM are caught by `_SignalState` (a single flag, no threads); the
 flag is polled between DB chunks, during `BUILDING` (see below), and at each
-phase boundary (after asset/warmup/requested fetch and after build, before
-write). On interruption the runner prints `INTERRUPTED` with the signal and
+phase boundary (after asset/warmup/requested/forward-tail fetch and after
+build, before write). On interruption the runner prints `INTERRUPTED` with
+the signal and
 a non-zero exit code (130 for SIGINT, 143 for SIGTERM) and never calls
 `write_immutable_json` -- so a killed run never produces a partial
 `episodes_v1.json`/`manifest_v1.json`; the immutable files are only written
@@ -325,7 +397,7 @@ encounters them:
 ```text
 invalid_arguments          -- validate_args (before any DB call); exit 2
 asset_lookup_failed        -- fetch_asset_id
-source_fetch_failed        -- fetch_warmup_candles / fetch_candles
+source_fetch_failed        -- fetch_warmup_candles / fetch_candles / fetch_forward_tail_candles
 source_validation_failed   -- validate_candle_sequence (duplicate/non-monotonic candles)
 build_failed                -- build_episodes (any failure other than BuildCancelled)
 output_write_failed        -- write_immutable_json (episodes or manifest)
@@ -378,13 +450,17 @@ manifest is written either.
   `ValueError`). The manifest also carries `run_id`, `episode_stride_candles`,
   and `max_episodes` directly, so a run's full identity is recoverable from
   the manifest alone.
-- `compute_run_id()` deliberately does **not** include warmup candle count
-  or `--chunk-size-candles`: for fixed dataset-defining parameters, the
-  emitted episode set is identical regardless of how the data was fetched.
-  The manifest still records `warmup_candle_count`,
-  `source_fetch_from_ts_utc` (the earliest candle timestamp actually
-  fetched, including warmup), and `chunk_size_candles` -- as provenance,
-  not identity.
+- `compute_run_id()` deliberately does **not** include warmup candle count,
+  forward-tail candle count, or `--chunk-size-candles`: for fixed
+  dataset-defining parameters, the emitted episode set is identical
+  regardless of how the data was fetched. The manifest still records
+  `warmup_candle_count`, `requested_window_candle_count`,
+  `forward_tail_candle_count`, `forward_tail_max_candles` (the configured
+  `cfg.forward_max_candles` bound used as the tail's `LIMIT`),
+  `source_fetch_from_ts_utc` / `source_fetch_final_ts_utc` (the earliest and
+  latest candle timestamps actually fetched, spanning warmup through the
+  forward tail), and `chunk_size_candles` -- all as provenance, not
+  identity.
 
 ## Scope Boundary
 
@@ -394,7 +470,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (90 tests, no DB)
+3. synthetic/unit tests (99 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

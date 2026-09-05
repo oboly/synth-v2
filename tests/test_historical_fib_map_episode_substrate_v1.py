@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import json
 import os
 import signal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -676,6 +678,37 @@ class TestBoundaryAndSafety:
         assert "open_ts_utc >= %s" in source
         assert "open_ts_utc < %s" in source
 
+    def test_fetch_forward_tail_candles_select_only_bounded_and_ascending(self) -> None:
+        source = inspect.getsource(runner.fetch_forward_tail_candles)
+        assert "SELECT" in source
+        assert "INSERT" not in source.upper()
+        assert "UPDATE" not in source.upper()
+        assert "DELETE" not in source.upper()
+        assert "ORDER BY open_ts_utc ASC" in source
+        assert "open_ts_utc >= %s" in source
+        assert "LIMIT %s" in source
+        assert "datetime.now" not in source
+        assert "utcnow" not in source
+
+    def test_fetch_forward_tail_candles_limit_zero_or_negative_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom() -> Any:
+            raise AssertionError("must not query DB when limit <= 0")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        assert (
+            runner.fetch_forward_tail_candles(
+                asset_id=1,
+                symbol="TST",
+                venue="bitvavo",
+                interval_code="1h",
+                to_ts="2026-01-01 00:00:00",
+                limit=0,
+            )
+            == []
+        )
+
     def test_no_forbidden_layer_imports(self) -> None:
         for module in (substrate, runner):
             source = inspect.getsource(module)
@@ -880,6 +913,16 @@ class _PagingFakeCursor:
             # itself reverses it to ascending.
             candidates.sort(key=lambda r: r["open_ts_utc"], reverse=True)
             self._result = candidates[:limit]
+        elif len(params) == 5:
+            # fetch_forward_tail_candles: ORDER BY ASC, only a lower bound
+            # (open_ts_utc >= to_ts) plus LIMIT -- no upper bound, so this
+            # is distinguished from the requested-window queries by param
+            # count (5, not 6) rather than by SQL substring.
+            _asset_id, _venue, _interval_code, lower, limit = params
+            lower_dt = _coerce_utc(lower)
+            candidates = [r for r in self._rows if _coerce_utc(r["open_ts_utc"]) >= lower_dt]
+            candidates.sort(key=lambda r: r["open_ts_utc"])
+            self._result = candidates[:limit]
         elif "open_ts_utc >= %s" in normalized:
             _asset_id, _venue, _interval_code, lower, upper, limit = params
             lower_dt, upper_dt = _coerce_utc(lower), _coerce_utc(upper)
@@ -1041,6 +1084,31 @@ class TestBoundedChunkedRetrieval:
             == []
         )
 
+    def test_fetch_forward_tail_candles_bounded_and_ascending_from_to_ts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in all_candles]
+        conn = _PagingFakeConnection(rows)
+        monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+        to_ts = all_candles[100].open_ts_utc.strftime("%Y-%m-%d %H:%M:%S")
+        tail = runner.fetch_forward_tail_candles(
+            asset_id=1,
+            symbol="TST",
+            venue="bitvavo",
+            interval_code="1h",
+            to_ts=to_ts,
+            limit=30,
+        )
+        assert len(tail) == 30
+        ts_list = [c.open_ts_utc for c in tail]
+        assert ts_list == sorted(ts_list)
+        to_ts_dt = runner.parse_ts_arg(to_ts, name="to_ts")
+        assert all(ts >= to_ts_dt for ts in ts_list)
+        assert tail[0].open_ts_utc == all_candles[100].open_ts_utc
+
 
 class TestWarmupInvariance:
     """Regression coverage for the #727 PIT trend-feature warmup blocker."""
@@ -1147,6 +1215,239 @@ class TestWarmupInvariance:
         # admit, the reconstructed geometry differs -- either way this shows
         # the un-warmed-up narrow window is not equivalent to the full one.
         assert feature_narrow is None or feature_narrow.anchor_low_price != feature_full.anchor_low_price or feature_narrow.target_t1 != feature_full.target_t1
+
+
+class TestForwardTailRetrieval:
+    """Regression coverage for the #727 forward-label-tail blocker.
+
+    Without a forward-label tail, an episode emitted near --to-ts whose
+    T2/invalidation resolves after --to-ts was mislabeled
+    SOURCE_DATA_EXHAUSTED purely because DB retrieval stopped at the
+    requested output bound, not because the market itself ran out of data.
+    """
+
+    MIN_TERMINAL_OFFSET_HOURS = 10
+    MAX_TERMINAL_OFFSET_HOURS = 60  # stays within cfg.forward_max_candles below
+
+    def _cfg(self) -> EpisodeConfig:
+        return EpisodeConfig(
+            interval_code="1h",
+            interval_seconds=3600,
+            min_window_candles=50,
+            lookback_candles=60,
+            forward_max_candles=80,
+        )
+
+    def _full_series_and_reference_labels(
+        self,
+    ) -> tuple[list[HistoricalCandle], EpisodeConfig, list[Any]]:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        all_candles = _synthetic_bullish_series(start)
+        cfg = self._cfg()
+        records = build_episodes(symbol="BTC", venue="bitvavo", candles=all_candles, cfg=cfg)
+        return all_candles, cfg, records
+
+    def _pick_reference(self, records: list[Any], reason: str) -> Any:
+        for record in records:
+            if record.labels.lifecycle_transition_reason != reason:
+                continue
+            offset_hours = (
+                record.labels.terminal_ts_utc - record.feature.map_creation_ts_utc
+            ).total_seconds() / 3600
+            if self.MIN_TERMINAL_OFFSET_HOURS <= offset_hours <= self.MAX_TERMINAL_OFFSET_HOURS:
+                return record
+        raise AssertionError(
+            f"synthetic series produced no {reason} candidate with a distant terminal event"
+        )
+
+    def test_upper_bound_does_not_falsely_exhaust_target2_labels(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        all_candles, cfg, records = self._full_series_and_reference_labels()
+        reference = self._pick_reference(records, LIFECYCLE_REASON_TARGET2_REACHED)
+
+        from_ts_dt = reference.feature.map_creation_ts_utc - timedelta(hours=5)
+        to_ts_dt = reference.feature.map_creation_ts_utc + timedelta(hours=1)
+
+        rows = [_candle_to_row(c) for c in all_candles]
+        monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+        monkeypatch.setattr(runner, "resolve_config", lambda timeframe: cfg)
+
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", from_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "--to-ts", to_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "--output-dir", str(tmp_path),
+            ]
+        )
+        assert exit_code == 0
+
+        [episodes_path] = list(tmp_path.rglob("episodes_v1.json"))
+        [manifest_path] = list(tmp_path.rglob("manifest_v1.json"))
+        episodes = json.loads(episodes_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        matches = [e for e in episodes if e["feature"]["episode_id"] == reference.feature.episode_id]
+        assert len(matches) == 1
+        labels = matches[0]["labels"]
+        assert labels["lifecycle_transition_reason"] == LIFECYCLE_REASON_TARGET2_REACHED
+        assert labels["lifecycle_transition_reason"] != LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED
+        assert datetime.fromisoformat(labels["target2_ts_utc"]) == reference.labels.target2_ts_utc
+        assert manifest["forward_tail_candle_count"] > 0
+        assert manifest["forward_tail_max_candles"] == cfg.forward_max_candles
+
+    def test_split_and_concatenated_forward_candles_preserve_invalidation_labels(self) -> None:
+        # Cheap substrate-level equivalent of the runner-level T2 case above,
+        # for INVALIDATION_BREACHED: the runner builds its final candle input
+        # as `warmup + requested_window + forward_tail` -- i.e. it fetches
+        # the SAME forward candle series as an unsplit fetch would, just in
+        # two pieces joined end to end. Splitting `forward_candles` at an
+        # arbitrary boundary (standing in for the requested-window/to_ts
+        # cut) and re-concatenating it must be label-identical to a single
+        # unsplit fetch; truncating instead of concatenating is exactly the
+        # pre-#727-fix bug (SOURCE_DATA_EXHAUSTED for a purely
+        # request-bound reason).
+        helpers = TestLifecycleReasonExactness()
+        feature = helpers._feature()
+        # T1 hit candle 1, nothing candle 2, invalidation breached candle 3
+        # -- same scenario as test_target1_then_invalidation_later_t1_timing_preserved.
+        forward = helpers._forward_ohlc(
+            [
+                (100, 113, 99.5, 113),
+                (113, 113.5, 105, 105),
+                (105, 106, 89, 89),
+            ],
+            feature=feature,
+        )
+        cfg = _small_cfg()
+
+        full_labels = build_episode_labels(feature=feature, forward_candles=forward, cfg=cfg)
+        assert full_labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+
+        # Pre-fix behavior: DB retrieval stops at the requested-window
+        # boundary and no tail is fetched -- the same episode is mislabeled
+        # SOURCE_DATA_EXHAUSTED purely because of where the request ended.
+        truncated_labels = build_episode_labels(
+            feature=feature, forward_candles=forward[:2], cfg=cfg
+        )
+        assert truncated_labels.lifecycle_transition_reason == LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED
+
+        # Fixed behavior: requested-window candles + forward-tail candles,
+        # fetched separately, concatenated exactly like the runner's
+        # `warmup + requested_candles + forward_tail_candles`.
+        reconstructed = forward[:2] + forward[2:]
+        reconstructed_labels = build_episode_labels(
+            feature=feature, forward_candles=reconstructed, cfg=cfg
+        )
+        assert reconstructed_labels == full_labels
+        assert reconstructed_labels.lifecycle_transition_reason == LIFECYCLE_REASON_INVALIDATION_BREACHED
+
+    def test_without_forward_tail_same_episode_is_falsely_exhausted(self) -> None:
+        # Negative control proving the fix is load-bearing: replaying the
+        # SAME requested window with NO forward tail (the pre-#727-fix
+        # behavior) mislabels the identical episode SOURCE_DATA_EXHAUSTED.
+        all_candles, cfg, records = self._full_series_and_reference_labels()
+        reference = self._pick_reference(records, LIFECYCLE_REASON_TARGET2_REACHED)
+
+        from_ts_dt = reference.feature.map_creation_ts_utc - timedelta(hours=5)
+        to_ts_dt = reference.feature.map_creation_ts_utc + timedelta(hours=1)
+
+        requested_only = [c for c in all_candles if from_ts_dt <= c.open_ts_utc < to_ts_dt]
+        warmup_pool = [c for c in all_candles if c.open_ts_utc < from_ts_dt]
+        warmup_only = warmup_pool[-(cfg.lookback_candles - 1):] if cfg.lookback_candles > 1 else []
+        no_tail_candles = warmup_only + requested_only
+
+        no_tail_records = build_episodes(
+            symbol="BTC",
+            venue="bitvavo",
+            candles=no_tail_candles,
+            cfg=cfg,
+            emit_from_ts_utc=from_ts_dt,
+            emit_to_ts_utc=to_ts_dt,
+        )
+        matches = [r for r in no_tail_records if r.feature.episode_id == reference.feature.episode_id]
+        assert len(matches) == 1
+        assert matches[0].labels.lifecycle_transition_reason == LIFECYCLE_REASON_SOURCE_DATA_EXHAUSTED
+
+    def test_emission_boundary_unchanged_by_forward_tail(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        # Extending the forward tail must never create a NEW emitted episode
+        # outside [from_ts, to_ts) -- only supply outcome evidence for
+        # episodes already emitted inside it.
+        all_candles, cfg, records = self._full_series_and_reference_labels()
+        reference = self._pick_reference(records, LIFECYCLE_REASON_TARGET2_REACHED)
+
+        from_ts_dt = reference.feature.map_creation_ts_utc - timedelta(hours=5)
+        to_ts_dt = reference.feature.map_creation_ts_utc + timedelta(hours=1)
+
+        rows = [_candle_to_row(c) for c in all_candles]
+        monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+        monkeypatch.setattr(runner, "resolve_config", lambda timeframe: cfg)
+
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", from_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "--to-ts", to_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "--output-dir", str(tmp_path),
+            ]
+        )
+        assert exit_code == 0
+
+        [episodes_path] = list(tmp_path.rglob("episodes_v1.json"))
+        episodes = json.loads(episodes_path.read_text(encoding="utf-8"))
+        assert len(episodes) > 0
+        for episode in episodes:
+            map_creation_ts = datetime.fromisoformat(episode["feature"]["map_creation_ts_utc"])
+            assert from_ts_dt <= map_creation_ts < to_ts_dt
+
+    def test_upper_bound_invariance_extending_output_window_preserves_earlier_episode(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        all_candles, cfg, records = self._full_series_and_reference_labels()
+        reference = self._pick_reference(records, LIFECYCLE_REASON_TARGET2_REACHED)
+
+        from_ts_dt = reference.feature.map_creation_ts_utc - timedelta(hours=5)
+        to_ts_near = reference.feature.map_creation_ts_utc + timedelta(hours=1)
+        to_ts_far = reference.feature.map_creation_ts_utc + timedelta(hours=20)
+
+        rows = [_candle_to_row(c) for c in all_candles]
+
+        def _run(output_dir: Any, to_ts_dt: datetime) -> list[dict[str, Any]]:
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+            monkeypatch.setattr(runner, "resolve_config", lambda timeframe: cfg)
+            exit_code = runner.main(
+                [
+                    "--symbol", "BTC",
+                    "--timeframe", "1h",
+                    "--from-ts", from_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "--to-ts", to_ts_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    "--output-dir", str(output_dir),
+                ]
+            )
+            assert exit_code == 0
+            [episodes_path] = list(Path(output_dir).rglob("episodes_v1.json"))
+            return json.loads(episodes_path.read_text(encoding="utf-8"))
+
+        episodes_near = _run(tmp_path / "near", to_ts_near)
+        episodes_far = _run(tmp_path / "far", to_ts_far)
+
+        [match_near] = [
+            e for e in episodes_near if e["feature"]["episode_id"] == reference.feature.episode_id
+        ]
+        [match_far] = [
+            e for e in episodes_far if e["feature"]["episode_id"] == reference.feature.episode_id
+        ]
+
+        assert match_near["feature"] == match_far["feature"]
+        assert match_near["labels"] == match_far["labels"]
 
 
 class TestCliValidation:
@@ -1499,6 +1800,7 @@ class _RunnerHarness:
         monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
         monkeypatch.setattr(runner, "fetch_warmup_candles", lambda **kw: [])
         monkeypatch.setattr(runner, "fetch_candles", lambda **kw: candles)
+        monkeypatch.setattr(runner, "fetch_forward_tail_candles", lambda **kw: [])
 
 
 class TestBuildingCancellationIntegration:
@@ -1630,6 +1932,28 @@ class TestFailedTerminalSummary:
             raise RuntimeError("db connection reset")
 
         monkeypatch.setattr(runner, "fetch_warmup_candles", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=source_fetch_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_forward_tail_fetch_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+        monkeypatch.setattr(runner, "fetch_warmup_candles", lambda **kw: [])
+        monkeypatch.setattr(runner, "fetch_candles", lambda **kw: candles)
+
+        def _boom(**kw: Any) -> list[Any]:
+            raise RuntimeError("db connection reset")
+
+        monkeypatch.setattr(runner, "fetch_forward_tail_candles", _boom)
 
         exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
         out = capsys.readouterr().out
