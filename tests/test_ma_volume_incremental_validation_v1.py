@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.research.ma_volume_incremental_validation_v1 import (
+    MAVolumeValidationInputError,
+    evaluate_incremental_features,
+)
+
+
+def _frame() -> pd.DataFrame:
+    rows = []
+    for split_index, split in enumerate(("DISCOVERY", "VALIDATION", "HOLDOUT")):
+        for index in range(1, 21):
+            baseline = float(index)
+            candidate = float((index % 5) - 2)
+            outcome = baseline * 0.2 + candidate * 2.0 + split_index * 0.01
+            rows.append(
+                {
+                    "split": split,
+                    "baseline_structure": baseline,
+                    "candidate_sma150_slope": candidate,
+                    "candidate_duplicate_baseline": baseline,
+                    "forward_return_pct": outcome,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_reports_raw_and_baseline_controlled_rank_association_per_split() -> None:
+    report = evaluate_incremental_features(
+        _frame(),
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    assert [metric.split for metric in report.metrics] == ["DISCOVERY", "VALIDATION", "HOLDOUT"]
+    assert all(metric.sample_count == 20 for metric in report.metrics)
+    assert all(metric.partial_spearman_given_baseline is not None for metric in report.metrics)
+    assert all(metric.partial_spearman_given_baseline > 0.8 for metric in report.metrics)
+
+
+def test_candidate_that_duplicates_baseline_has_no_incremental_rank_information() -> None:
+    report = evaluate_incremental_features(
+        _frame(),
+        candidate_columns=("candidate_duplicate_baseline",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    for metric in report.metrics:
+        value = metric.partial_spearman_given_baseline
+        assert value is None or abs(value) < 1e-9
+
+
+def test_split_metrics_are_isolated_from_other_split_outcomes() -> None:
+    frame = _frame()
+    baseline_report = evaluate_incremental_features(
+        frame,
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    mutated = frame.copy()
+    mutated.loc[mutated["split"] == "HOLDOUT", "forward_return_pct"] *= -1000.0
+    mutated_report = evaluate_incremental_features(
+        mutated,
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    before = {metric.split: metric for metric in baseline_report.metrics}
+    after = {metric.split: metric for metric in mutated_report.metrics}
+    assert before["DISCOVERY"] == after["DISCOVERY"]
+    assert before["VALIDATION"] == after["VALIDATION"]
+    assert before["HOLDOUT"] != after["HOLDOUT"]
+
+
+def test_missing_values_are_dropped_per_feature_without_cross_feature_leakage() -> None:
+    frame = _frame()
+    frame.loc[0:4, "candidate_sma150_slope"] = np.nan
+
+    report = evaluate_incremental_features(
+        frame,
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    discovery = next(metric for metric in report.metrics if metric.split == "DISCOVERY")
+    assert discovery.sample_count == 15
+
+
+def test_rejects_unknown_splits_and_overlapping_candidate_baseline_columns() -> None:
+    frame = _frame()
+    bad_split = frame.copy()
+    bad_split.loc[0, "split"] = "TEST"
+
+    with pytest.raises(MAVolumeValidationInputError, match="unknown split"):
+        evaluate_incremental_features(
+            bad_split,
+            candidate_columns=("candidate_sma150_slope",),
+            baseline_columns=("baseline_structure",),
+            outcome_column="forward_return_pct",
+        )
+
+    with pytest.raises(MAVolumeValidationInputError, match="disjoint"):
+        evaluate_incremental_features(
+            frame,
+            candidate_columns=("baseline_structure",),
+            baseline_columns=("baseline_structure",),
+            outcome_column="forward_return_pct",
+        )
