@@ -84,7 +84,19 @@ CAPABILITY_IDENTITY: dict[str, str] = {
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
     "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
+    "fast_rotation_c1_history": "fast-rotation-c1-history-writer",
 }
+
+# A capability whose registry entry declares this runtime_shape has no
+# scheduled service/timer at all -- it may only ever be invoked manually under
+# a bounded ACCEPTANCE permit (see writer_capability_ownership_v1.schema.json
+# and validate_writer_capability_ownership_v1.py). PRODUCTION authorization is
+# therefore always denied for it here, independent of any registry field
+# state, so accidentally flipping production_authorization_status/
+# runtime_lifecycle on such an entry can never grant production ownership.
+# Promoting a capability out of this shape requires a separate reviewed
+# runtime-shape conversion, not a registry field edit.
+RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY = "MANUAL_ACCEPTANCE_ONLY"
 
 # Untracked files under these repo-relative prefixes can affect imported or
 # executed code, configuration, authorization, registry, schema, service units,
@@ -733,6 +745,21 @@ def verify_writer_execution_authorization(
         )
 
     if resolved_mode is ExecutionMode.PRODUCTION:
+        if cap.get("runtime_shape") == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY:
+            # Structural denial, independent of any other registry field state
+            # (production_runtime_owner, production_authorization_status,
+            # runtime_lifecycle). A manual-acceptance-only capability has no
+            # scheduled runtime to authorize into production.
+            return AuthorizationDecision(
+                False,
+                capability_id,
+                resolved_mode,
+                [
+                    f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} may never receive "
+                    "PRODUCTION authorization; promotion requires a separate reviewed "
+                    "runtime-shape conversion"
+                ],
+            )
         # The production authorization path is derived solely from the validated
         # registry capability entry. There is no public/CLI/environment override;
         # tests exercise the real contract by pointing a temporary registry's
