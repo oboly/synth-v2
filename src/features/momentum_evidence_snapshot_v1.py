@@ -56,7 +56,7 @@ Source candle freshness (separate from #243 `status`/`freshness` above):
     one existing canonical candle-freshness authority in the repository;
     this module does not invent a second one.
 
-Warmup (explicit minimum-history requirements; insufficient warmup must
+Warmup (explicit MINIMUM-history requirements; insufficient warmup must
 never be treated as valid production evidence):
     EMA12                minimum 12 bars
     EMA26                minimum 26 bars
@@ -67,10 +67,32 @@ never be treated as valid production evidence):
     histogram            minimum 34 bars (bounded by signal)
     histogram_delta      minimum 35 bars (needs two consecutive valid
                           histogram values: bars 34 and 35)
-    `WARMUP_BARS = 35` below is the single minimum this producer requires
-    end to end, so that whenever raw values are emitted, all four
-    (macd_value, signal_value, histogram_value, histogram_delta) are
-    simultaneously valid -- never a partial row.
+    `WARMUP_BARS = 35` below is a FLOOR (fewer bars than this ->
+    `INSUFFICIENT_WARMUP`, all four raw fields `None`), not the computation
+    window. See "Computation window" immediately below.
+
+Computation window (canonical recursive EMA, not a rolling reset):
+    `fetch_candles_for_asof` applies no lower time bound and no row LIMIT --
+    it returns the complete persisted `obs_market_candle` history for the
+    (venue, asset_id, interval) identity with `close_ts_utc <= asof_ts_utc`.
+    `build_momentum_evidence` computes EMA12/EMA26/MACD/signal-EMA9 by
+    recursion over that *entire* fetched series, not a fixed trailing slice
+    of the most recent `WARMUP_BARS` rows. A fixed-N-bar trailing window
+    would silently reseed the `adjust=False` recursion at the window's first
+    row, so the result for the same `asof_ts_utc` would change depending on
+    how far back the caller's window happened to start -- that is not a
+    canonical (source-of-truth-independent) recursive EMA, only an
+    approximation of one. "Complete contiguous pre-asof history" here means
+    exactly: every row of the caller-provided/fetched series (there is no
+    narrower window). `build_momentum_evidence` requires the WHOLE fetched
+    series to be gap-free at the fixed `4h` cadence; a single gap anywhere
+    in it -- even far in the past -- fails the entire evaluation closed
+    (`data_quality = MALFORMED_SOURCE_CANDLE`,
+    `NON_CONTIGUOUS_SOURCE_WINDOW`) rather than silently narrowing to the
+    contiguous suffix after the gap ("do not stitch across missing
+    candles"). `provenance["bar_count"]`/`window_start_ts_utc`/
+    `window_end_ts_utc` always reflect the true number of rows actually
+    used, never a hardcoded `WARMUP_BARS`.
 
 Boundary:
     - market-only, account-agnostic; no balances/positions/orders/broker
@@ -126,7 +148,10 @@ SIGNAL_EMA_PERIOD = 9
 # simultaneously; see module docstring "Warmup" for the derivation.
 WARMUP_BARS = SLOW_EMA_PERIOD + SIGNAL_EMA_PERIOD  # 35
 
-LOOKBACK_HORIZON = f"{WARMUP_BARS} bars @ {INPUT_INTERVAL}"
+# Describes a minimum-warmup floor, not a fixed computation window: the
+# canonical recursive EMA/MACD/signal always consumes the full contiguous
+# pre-asof history fetched by the caller (see "Computation window" below).
+LOOKBACK_HORIZON = f"full contiguous pre-asof history (>={WARMUP_BARS} bars @ {INPUT_INTERVAL})"
 
 
 class DataQuality:
@@ -371,20 +396,28 @@ def build_momentum_evidence(
     }
 
     if data_quality == DataQuality.OK:
-        window = working.tail(WARMUP_BARS)
-        if len(window) < WARMUP_BARS:
+        # Canonical recursive EMA/MACD/signal consume the FULL contiguous
+        # pre-asof history fetched by the caller (see module docstring
+        # "Computation window" -- `fetch_candles_for_asof` applies no lower
+        # bound and no row LIMIT). WARMUP_BARS is a minimum-history gate
+        # only; it is never used to truncate/reset the computation window
+        # to a fixed trailing slice. Discarding earlier contiguous history
+        # would silently reseed the recursion, changing the result computed
+        # for the same asof depending on how far back the caller happened
+        # to fetch -- that is not a canonical recursive EMA.
+        if len(working) < WARMUP_BARS:
             data_quality = DataQuality.INSUFFICIENT_WARMUP
             reason_codes += (MomentumReasonCode.INSUFFICIENT_WARMUP,)
         else:
-            expected_ts = [asof - _INTERVAL_DELTA * i for i in range(WARMUP_BARS - 1, -1, -1)]
-            if list(window["close_ts_utc"]) != [pd.Timestamp(ts) for ts in expected_ts]:
+            gaps = working["close_ts_utc"].diff().iloc[1:]
+            if (gaps != _INTERVAL_DELTA).any():
                 data_quality = DataQuality.MALFORMED_SOURCE_CANDLE
                 reason_codes += (MomentumReasonCode.NON_CONTIGUOUS_SOURCE_WINDOW,)
-            elif not window["close_price"].apply(_is_finite).all():
+            elif not working["close_price"].apply(_is_finite).all():
                 data_quality = DataQuality.MALFORMED_SOURCE_CANDLE
                 reason_codes += (MomentumReasonCode.MALFORMED_SOURCE_CANDLE,)
             else:
-                close = window["close_price"].astype(float)
+                close = working["close_price"].astype(float)
                 ema_fast = close.ewm(span=FAST_EMA_PERIOD, adjust=False, min_periods=FAST_EMA_PERIOD).mean()
                 ema_slow = close.ewm(span=SLOW_EMA_PERIOD, adjust=False, min_periods=SLOW_EMA_PERIOD).mean()
                 macd = ema_fast - ema_slow
@@ -406,10 +439,10 @@ def build_momentum_evidence(
                     signal_value = _to_decimal(signal.iloc[-1])
                     histogram_value = _to_decimal(histogram.iloc[-1])
                     histogram_delta = _to_decimal(histogram_delta_series.iloc[-1])
-                    asof_row = window.iloc[-1]
+                    asof_row = working.iloc[-1]
                     provenance["candle_id"] = int(asof_row["candle_id"])
-                    provenance["window_start_ts_utc"] = window["close_ts_utc"].iloc[0].isoformat()
-                    provenance["window_end_ts_utc"] = window["close_ts_utc"].iloc[-1].isoformat()
+                    provenance["window_start_ts_utc"] = working["close_ts_utc"].iloc[0].isoformat()
+                    provenance["window_end_ts_utc"] = working["close_ts_utc"].iloc[-1].isoformat()
 
     status, reason_codes = resolve_status(freshness=freshness, extra_reason_codes=reason_codes)
 
@@ -445,18 +478,27 @@ def fetch_candles_for_asof(
     asset_id: int,
     venue: str,
     asof_ts_utc: datetime,
-    warmup_bars: int = WARMUP_BARS,
 ) -> pd.DataFrame:
     """Exact point-in-time source window: every row has close_ts_utc <=
-    asof_ts_utc. Never falls back to a current/latest row."""
+    asof_ts_utc. Never falls back to a current/latest row.
+
+    Deliberately unbounded below and unlimited in row count: this fetches
+    the complete persisted pre-asof history for this (venue, asset_id,
+    interval) identity, not a fixed trailing slice. A canonical recursive
+    EMA (`build_momentum_evidence`) requires the full contiguous history it
+    was seeded on, not a caller-chosen row count -- truncating here (e.g.
+    `ORDER BY close_ts_utc DESC LIMIT N`) would silently reseed the
+    recursion and change the result for the same asof depending on the
+    truncation point. `build_momentum_evidence`'s own contiguity/warmup
+    checks are what decide whether this history is usable, not this fetch.
+    """
     asof = normalize_to_utc(asof_ts_utc)
-    source_start = asof - _INTERVAL_DELTA * (warmup_bars - 1)
     sql = """
     SELECT candle_id, close_ts_utc, close_price
     FROM obs_market_candle
     WHERE asset_id = %s AND venue = %s AND interval_code = %s
-      AND close_ts_utc >= %s AND close_ts_utc <= %s
-    ORDER BY close_ts_utc
+      AND close_ts_utc <= %s
+    ORDER BY close_ts_utc ASC
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -465,7 +507,6 @@ def fetch_candles_for_asof(
                 asset_id,
                 venue,
                 INPUT_INTERVAL,
-                source_start.replace(tzinfo=None),
                 asof.replace(tzinfo=None),
             ),
         )
