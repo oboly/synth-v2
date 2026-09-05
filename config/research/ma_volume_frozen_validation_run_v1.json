@@ -1,0 +1,82 @@
+{
+  "contract_name": "ma_volume_frozen_validation_run_v1",
+  "contract_version": "1.0.0",
+  "issue": 310,
+  "research_only": true,
+  "source_population": {
+    "owner_issue": 661,
+    "population_sha256": "61bab264b2921b93a25a22ec0d12cbc031ad0ef234fa989b2ea43c894bc263b4",
+    "row_count": 19520,
+    "unique_asofs": 45,
+    "unique_assets": 445,
+    "first_asof_ts_utc": "2026-07-18T00:00:00Z",
+    "last_asof_ts_utc": "2026-08-31T00:00:00Z"
+  },
+  "source_outcomes": {
+    "owner_issue": 684,
+    "outcomes_sha256": "2c1b3b9e17e6e06eec3831ac47b48bfd91944730cf9c6e75929979a795727500",
+    "row_count": 58560,
+    "horizons": [
+      "1h",
+      "4h",
+      "24h"
+    ],
+    "required_status": "COMPLETE",
+    "outcome_field": "forward_return_pct"
+  },
+  "feature_contract": {
+    "model_id": "ma_volume_candidate_features",
+    "model_version": "1.0",
+    "input_interval": "4h",
+    "slope_bars": 6,
+    "required_history_bars": 206,
+    "query_history_bars": 240,
+    "candidate_columns": [
+      "close_vs_sma50_pct",
+      "close_vs_sma150_pct",
+      "close_vs_sma200_pct",
+      "sma50_slope_pct_6b",
+      "sma150_slope_pct_6b",
+      "sma200_slope_pct_6b",
+      "bullish_ma_stack",
+      "volume_ratio_20"
+    ]
+  },
+  "baseline_contract": {
+    "identity": "frozen_cq_temporal_observation_composite_baseline_v1",
+    "columns": [
+      "selection_score",
+      "trade_quality_score"
+    ]
+  },
+  "split_contract": {
+    "source_column": "split",
+    "source_labels": [
+      "discovery",
+      "validation",
+      "holdout"
+    ],
+    "validation_labels": [
+      "DISCOVERY",
+      "VALIDATION",
+      "HOLDOUT"
+    ]
+  },
+  "output": {
+    "candidate_rows": "candidate_observations.jsonl",
+    "report_prefix": "validation_report_",
+    "manifest": "manifest.json"
+  },
+  "safety": {
+    "db_writes": 0,
+    "production_ranking_changes": 0,
+    "selection_engine_changes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_activation": 0
+  }
+}
