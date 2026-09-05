@@ -1781,20 +1781,18 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
             "CONTEXT_INVALID_OR_STALE",
         ))
     )
-    # Issue #212: is_relevant (attention/actionability) and visibility_class
-    # (default-view grouping) are separate concerns. A card can be fully
-    # present in the rendered view (all cards always are) while being
-    # non-actionable -- that combination must be labeled by its
-    # visibility_class, never reported as "filtered". visibility_class is a
-    # three-way, mutually-exclusive partition of every card, so the three
-    # counts below always sum to len(cards).
+    # Issues #212/#688: is_relevant (sort/filter relevance),
+    # attention_required (operator triage), and visibility_class
+    # (default-view grouping) are separate concerns. The runner's attention=
+    # summary must use the same canonical per-card attention_required field as
+    # HTML/JSON; visibility counts remain an independent three-way partition.
     total = len(cards)
     _SUMMARY_LABEL_BY_VISIBILITY = {
         VISIBILITY_NATIVE_ATTENTION: "RELEVANT",
         VISIBILITY_CANONICAL_NAVIGATION_REFERENCE: "CANONICAL_NAV",
         VISIBILITY_CONTEXT_UNAVAILABLE: "CONTEXT_UNAVAILABLE",
     }
-    attention_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_NATIVE_ATTENTION)
+    attention_count = sum(1 for card in cards if card.attention_required)
     canonical_navigation_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE)
     context_unavailable_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE)
     print(f"attention={attention_count}/{total}")
