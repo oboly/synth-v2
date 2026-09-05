@@ -214,8 +214,8 @@ def test_matrix_order_is_deterministic_and_family_lookup_is_read_only() -> None:
     assert matrix.by_family(FAMILY_VOLATILITY) == (matrix.cells[1],)
 
 
-def test_matrix_order_handles_mixed_null_and_string_optional_identity_fields() -> None:
-    base = dict(
+def _test_cell(*, input_interval: str | None, lookback_horizon: str | None) -> RegimeEvidenceCellV1:
+    return RegimeEvidenceCellV1(
         family="TEST",
         component="COMPONENT",
         market="asset",
@@ -225,22 +225,31 @@ def test_matrix_order_handles_mixed_null_and_string_optional_identity_fields() -
         asof_ts=ASOF,
         model_id=None,
         model_version=None,
+        input_interval=input_interval,
+        lookback_horizon=lookback_horizon,
         effective_horizon=None,
     )
-    no_interval = RegimeEvidenceCellV1(
-        **base,
-        input_interval=None,
-        lookback_horizon=None,
-    )
-    with_interval = RegimeEvidenceCellV1(
-        **base,
-        input_interval="1h",
-        lookback_horizon="24h",
-    )
+
+
+def test_matrix_order_handles_mixed_null_and_string_optional_identity_fields() -> None:
+    no_interval = _test_cell(input_interval=None, lookback_horizon=None)
+    with_interval = _test_cell(input_interval="1h", lookback_horizon="24h")
 
     matrix = build_matrix(evaluated_at=EVALUATED, cells=[with_interval, no_interval])
 
     assert matrix.cells == (no_interval, with_interval)
+
+
+def test_matrix_order_distinguishes_null_from_empty_string() -> None:
+    null_interval = _test_cell(input_interval=None, lookback_horizon=None)
+    empty_interval = _test_cell(input_interval="", lookback_horizon="")
+
+    forward = build_matrix(evaluated_at=EVALUATED, cells=[empty_interval, null_interval])
+    reverse = build_matrix(evaluated_at=EVALUATED, cells=[null_interval, empty_interval])
+
+    assert forward.cells == (null_interval, empty_interval)
+    assert reverse.cells == (null_interval, empty_interval)
+    assert null_interval.identity != empty_interval.identity
 
 
 def test_duplicate_component_identity_fails_closed() -> None:
