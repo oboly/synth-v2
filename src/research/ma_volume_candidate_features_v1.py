@@ -72,9 +72,9 @@ def build_candidate_frame(
 
     The caller supplies the evaluation boundary explicitly. Future candles are
     removed before scope validation and before any rolling feature is calculated,
-    so future rows cannot alter or invalidate a historical replay. The function
-    returns the full point-in-time feature frame up to the boundary so downstream
-    research can construct labels without recomputing the feature family.
+    so future rows cannot alter or invalidate a historical replay. Rolling
+    primitives are computed final-only by ``candle_feat_builder`` and candidate
+    slopes/output are then restricted to finalized candles as well.
     """
     if slope_bars <= 0:
         raise MAVolumeCandidateInputError("slope_bars must be positive")
@@ -106,6 +106,9 @@ def build_candidate_frame(
             final_only=True,
         ),
     )
+    featured = featured.loc[featured["is_final"]].copy().reset_index(drop=True)
+    if featured.empty:
+        return pd.DataFrame()
 
     close_safe = featured["close"].replace(0.0, np.nan)
     for window in (50, 150, 200):
