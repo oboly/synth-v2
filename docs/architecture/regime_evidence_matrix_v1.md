@@ -78,6 +78,23 @@ venue=bitvavo;asset_id=2
 
 No symbol lookup, pair inference, threshold, or market classification occurs while building `scope_key`.
 
+## Renderer boundary
+
+`src/reporting/regime_evidence_matrix_html_v1.py` is presentation-only. It accepts an already-built `RegimeEvidenceMatrixV1` and renders the prepared fields as a static HTML table.
+
+It may:
+
+```text
+escape user/source text for HTML safety
+format exact Decimal/datetime/lifecycle values for display
+use existing cockpit CSS/navigation helpers
+map technical availability states to visual tone
+```
+
+Technical tone mapping is limited to display treatment for exact source values such as `VALID`, `AVAILABLE`, `FRESH`, `STALE`, `INSUFFICIENT_DATA`, and `UNKNOWN`. The exact source label is always visible as text, so color is never the only carrier of meaning. Tone cannot alter the source status or create market direction.
+
+The renderer does not fetch databases or invoke producers. Producer orchestration/data loading remains a separate later wiring slice so source selection, point-in-time identity and freshness ownership can be reviewed independently from presentation.
+
 ## Forbidden behavior
 
 The matrix and its renderer must not:
@@ -125,11 +142,15 @@ any string -> (1, value)
 
 This prevents Python from comparing `None` directly with strings while preserving a deterministic distinction between `None` and `""`. The canonical cell values themselves are never rewritten. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
 
+For an identical matrix, the renderer emits identical HTML. It does not read wall-clock time or mutable external state.
+
 ## Phasing
 
-This PR slice owns only the read model and normalization boundary.
+Phase 1 owns the read model and normalization boundary.
 
-Later #617 work may add a renderer that consumes `RegimeEvidenceMatrixV1` read-only. That renderer must not duplicate or extend market semantics.
+Phase 2 owns the pure HTML renderer only.
+
+A later #617 wiring slice may load reviewed canonical evidence and construct the matrix for publication. That wiring must remain market-only, replay-safe and read-only, and must not duplicate producer logic inside reporting.
 
 ## Safety
 
