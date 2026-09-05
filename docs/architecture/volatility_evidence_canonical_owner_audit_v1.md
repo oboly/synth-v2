@@ -30,7 +30,7 @@ asymmetry exists anywhere in the repository.
 ```text
 ATR_TRUE_RANGE_PRIMITIVE_EXISTS=1 (feat_candle.atr_14/atr_pct; range_pct exists only in the separate candle_feat_builder.py path, not in feat_candle; not independently contracted)
 REALIZED_VOLATILITY_PRIMITIVE_EXISTS=1 (asset_profile_snapshot.realized_volatility, bundled composite, not standalone)
-EXPANSION_COMPRESSION_DEFINITION_EXISTS=0 (no accepted PRODUCTION definition; research-only bases found: an untracked DB view label, research clustering thresholds, and a market-breath range-vs-baseline score formula)
+EXPANSION_COMPRESSION_DEFINITION_EXISTS=0 (no accepted PRODUCTION definition; research-only bases found: an untracked DB view label, research clustering thresholds, a market-breath range-vs-baseline score formula, and a deterministic single-asset-replay range_expansion boolean rule)
 ASYMMETRY_DEFINITION_EXISTS=0
 GENERAL_VOLATILITY_EVIDENCE_OWNER_EXISTS=0
 ```
@@ -263,12 +263,33 @@ primary truth; no categorical volatility states are proposed by this audit.
   `src/reporting/market_breath_context_bridge_v1.py` /
   `market_breath_live_v1.py` for read-only display — never by
   `selection_engine`/`decision_gate`/`execution_planner`/`executor`.
-- **Classification: `RESEARCH_ONLY`** for all four. None may be treated as
+- `src/research/run_signal_matrix_single_asset_replay_v1.py` defines an
+  explicit, deterministic range-expansion rule: `RANGE_LOOKBACK = 12`,
+  `RANGE_EXPANSION_MULTIPLIER = 1.5`; per bar,
+  `current_range_pct = ((high / low) - 1) * 100`, `median_range_pct =
+  median(range_pct over the preceding 12 candles, strictly excluding the
+  current bar)`, and `range_expansion = current_range_pct >=
+  median_range_pct * 1.5`. The result is emitted into `SignalRow.range_expansion`
+  (a per-row string field of its output rows). It is point-in-time scoped
+  (each row's median is computed only from prior bars via
+  `candles[max(0, idx - RANGE_LOOKBACK):idx]`, never the current or future
+  bar) and reproducible/deterministic given the same input candles, but it
+  is still a **research replay script**, not a production evidence owner:
+  `db_writes=0` (only local CSV/JSONL output under
+  `data/research/signal_matrix_single_asset_replay_v1/`), no `model_id`/
+  `model_version`, no independently versioned volatility-evidence contract,
+  no #243 horizon mapping, and no consumer outside its own research report
+  (`docs/research/signal_matrix_single_asset_replay_v1.md`). A deterministic,
+  replay-safe **research** range-expansion rule existing is not the same
+  thing as a canonical, independently versioned, freshness/horizon-complete
+  **production** VOLATILITY evidence owner existing — this audit does not
+  conflate the two.
+- **Classification: `RESEARCH_ONLY`** for all five. None may be treated as
   an implicitly promoted production volatility owner; the untracked views
   in particular mean their exact logic is not currently auditable or
-  reviewable in-repo at all, and the market-breath formula, while the most
-  complete found, has never been reviewed or contracted as production
-  evidence.
+  reviewable in-repo at all, and the market-breath and single-asset-replay
+  formulas, while the most complete/deterministic found, have never been
+  reviewed or contracted as production evidence.
 
 ### 4. Execution/display-context ATR usage: confirmed out of scope, not owner candidates
 
@@ -345,15 +366,33 @@ research-only, are:
    not a reviewed production baseline.
 3. `src/research/run_market_breath_analysis_v1.py`'s `compression_score`/
    `expansion_score` (range-vs-rolling-median-baseline formula, detailed in
-   the candidate inventory above) — the most fully-formed formula found, but
-   still research-only, unpersisted, unversioned, and never reviewed as a
-   production evidence contract.
+   the candidate inventory above) — the most fully-formed *scoring* formula
+   found, but still research-only, unpersisted, unversioned, and never
+   reviewed as a production evidence contract.
+4. `src/research/run_signal_matrix_single_asset_replay_v1.py`'s
+   `range_expansion` boolean (`current_range_pct >= median_range_pct * 1.5`
+   over a 12-bar trailing window, detailed in the candidate inventory
+   above) — the most fully-formed deterministic, point-in-time-safe
+   *boolean rule* found, but still a research replay script: unpersisted to
+   any DB table, unversioned as an evidence contract, and consumed only by
+   its own research report. A deterministic research replay rule is not a
+   canonical production evidence owner.
 
-**Classification: `MISSING`.** No ATR-current-vs-prior-ATR, ATR percentile,
+This list reflects a repeated, repository-wide search for `range_expansion`,
+`compression_score`, `expansion_score`, `volatility_compression`,
+`range_pct`, rolling-range, ATR-percentile, and volatility-percentile terms
+across `src/`, `db/`, `docs/`, `tests/`, `apps/`, and `scripts/`; no fifth
+expansion/compression candidate base was found beyond the four above.
+
+**Classification: `MISSING`** for a **production** definition. No
+ATR-current-vs-prior-ATR, ATR percentile,
 range-vs-rolling-baseline, Bollinger-width/percentile, or other normalized
 expansion/compression metric exists as an accepted, versioned **production**
-definition anywhere in the repository — candidate 3 above is the closest
-in form but has never been reviewed, persisted, or contracted for that role.
+definition anywhere in the repository — candidates 3 and 4 above are the
+closest in form (a scoring formula and a deterministic boolean rule,
+respectively) but neither has ever been reviewed, persisted to a DB table,
+or contracted for that role. A research-only deterministic rule existing is
+not equivalent to a canonical production VOLATILITY evidence owner existing.
 This audit does not invent one.
 
 ## Asymmetry audit
@@ -428,6 +467,8 @@ feat_candle.atr_14/atr_pct                 explicit        implicit (period=14) 
 candle_feat_builder atr (ma_breadth reuse) explicit        explicit (cfg.atr_window) absent/UNKNOWN   absent/UNMEASURED
 asset_profile_snapshot.realized_volatility explicit        explicit (lookback_days) absent/UNKNOWN    absent/UNMEASURED
 research volatility_pct / btc_volatility_7d n/a (research)  explicit (periods param) absent/UNKNOWN   absent/UNMEASURED
+research market_breath compression/expansion n/a (research) explicit (14/60-bar)    absent/UNKNOWN     absent/UNMEASURED
+research signal_matrix range_expansion     n/a (research)  explicit (RANGE_LOOKBACK=12) absent/UNKNOWN absent/UNMEASURED
 execution/display-context ATR variants     explicit        implicit (fixed period)  absent/UNKNOWN     absent/UNMEASURED
 ```
 
