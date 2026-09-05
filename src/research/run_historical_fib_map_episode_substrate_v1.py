@@ -149,6 +149,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import signal
 import tempfile
 from datetime import datetime, timezone
@@ -185,8 +186,35 @@ DEFAULT_CHUNK_CANDLES = 5000
 DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES = 500
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
+class ArgParseError(Exception):
+    """Raised by `_Parser.error()` instead of argparse's default `SystemExit(2)`.
+
+    argparse's default `ArgumentParser.error()` prints a usage/error message
+    and calls `self.exit(2, ...)`, which raises `SystemExit` -- and it does
+    so from inside `parse_args()`, before `main()` ever reaches
+    `validate_args()` or any of its `FAILED`-line terminal-contract code.
+    That meant a missing required flag, an invalid `--timeframe` choice, or
+    a malformed `--max-episodes` int silently bypassed the
+    `FAILED reason=invalid_arguments` contract every other invalid-input
+    path already honors.
+
+    `_Parser` overrides only `error()` (called for genuine parse failures)
+    to raise this instead, letting `main()` catch it and emit exactly one
+    `FAILED reason=invalid_arguments ...` line with exit code 2 -- the same
+    contract `validate_args()` failures already produce. `--help` is
+    unaffected: `argparse.Action`'s help action calls `parser.exit()`
+    directly (never `error()`), so `--help` keeps normal argparse help
+    semantics (print help, `SystemExit(0)`) untouched by this override.
+    """
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:  # type: ignore[override]
+        raise ArgParseError(message)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = _Parser(
         description="Build the historical PIT Fib/map episode substrate for one symbol/timeframe (#555)."
     )
     parser.add_argument("--venue", default="bitvavo")
@@ -198,7 +226,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--chunk-size-candles", type=int, default=DEFAULT_CHUNK_CANDLES)
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments.
+
+    Raises `ArgParseError` (never `SystemExit`) for a genuine parse failure
+    -- missing required flag, invalid `--timeframe` choice, malformed
+    numeric argument -- so `main()` can own the single
+    `FAILED reason=invalid_arguments` terminal line/exit-code contract.
+    `--help` is unaffected and still raises `SystemExit(0)` after printing
+    help, exactly as plain argparse does; `main()` does not catch
+    `SystemExit`, so that propagates normally and is not converted to
+    `FAILED`. Independently usable outside `main()` for callers that want
+    the `ArgParseError` directly instead of the runner's terminal contract.
+    """
+    return _build_parser().parse_args(argv)
 
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -649,6 +693,130 @@ def write_immutable_json(path: Path, text: str) -> str:
                 pass
 
 
+def _read_text_or_none(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def publish_immutable_run(
+    *,
+    output_dir: Path,
+    episodes_text: str,
+    manifest_text: str,
+) -> tuple[str, str]:
+    """Atomically publish a complete {episodes_v1.json, manifest_v1.json} pair.
+
+    Structural guarantee: `output_dir` is either ABSENT or a COMPLETE,
+    internally consistent immutable run directory containing BOTH files --
+    never a partial directory with only one of them. This replaces the
+    prior design of two independent `write_immutable_json` calls (episodes
+    first, then manifest), which could leave a final run directory
+    containing only `episodes_v1.json` if manifest construction or its
+    write failed in between.
+
+    Both texts are fully built in memory by the caller before this function
+    is ever invoked. Both files are written into a private staging
+    directory (a sibling of `output_dir`, so same filesystem/mount) and
+    `fsync`'d individually, then the staging directory's entry is `fsync`'d
+    too, and only then is the whole staging directory published into
+    `output_dir` with a single atomic `os.rename`. A directory rename
+    either fully succeeds or does not happen at all -- there is no
+    filesystem-visible intermediate state with only one file present.
+
+    If `output_dir` already exists (a repeat run, or a race with a
+    concurrent identical publish):
+    - both files present and content-identical to the candidate =>
+      idempotent success; the staging directory is discarded and
+      `output_dir` is left completely untouched
+    - either file missing (a partial existing directory), or present with
+      different content, => fail closed with `ValueError` (an immutable
+      conflict); `output_dir` is never "repaired" or overwritten
+
+    The staging directory never survives this function returning or
+    raising: a successful rename consumes it (it *becomes* `output_dir`,
+    so there is nothing left at the old path to clean up), and every other
+    path (idempotent match, conflict, or any other exception) removes it in
+    a `finally` block -- so no failure or interruption can ever leave an
+    orphaned partial staging directory next to `output_dir`.
+    """
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    def _existing_or_none() -> tuple[str, str] | None:
+        if not output_dir.exists():
+            return None
+        existing_episodes = _read_text_or_none(output_dir / "episodes_v1.json")
+        existing_manifest = _read_text_or_none(output_dir / "manifest_v1.json")
+        if existing_episodes is None or existing_manifest is None:
+            raise ValueError(
+                f"refusing to publish immutable run {output_dir}: existing run "
+                f"directory is incomplete (episodes_present="
+                f"{existing_episodes is not None} manifest_present="
+                f"{existing_manifest is not None})"
+            )
+        existing_episodes_sha256 = _sha256_text(existing_episodes)
+        existing_manifest_sha256 = _sha256_text(existing_manifest)
+        candidate_episodes_sha256 = _sha256_text(episodes_text)
+        candidate_manifest_sha256 = _sha256_text(manifest_text)
+        if (
+            existing_episodes_sha256 != candidate_episodes_sha256
+            or existing_manifest_sha256 != candidate_manifest_sha256
+        ):
+            raise ValueError(
+                f"refusing to overwrite immutable run {output_dir}: "
+                f"existing episodes_sha256={existing_episodes_sha256} "
+                f"candidate episodes_sha256={candidate_episodes_sha256} "
+                f"existing manifest_sha256={existing_manifest_sha256} "
+                f"candidate manifest_sha256={candidate_manifest_sha256}"
+            )
+        return existing_episodes_sha256, existing_manifest_sha256
+
+    existing = _existing_or_none()
+    if existing is not None:
+        return existing
+
+    staging_dir: Path | None = Path(
+        tempfile.mkdtemp(dir=output_dir.parent, prefix=f".{output_dir.name}.stage-")
+    )
+    try:
+        for name, text in (
+            ("episodes_v1.json", episodes_text),
+            ("manifest_v1.json", manifest_text),
+        ):
+            staged_path = staging_dir / name
+            with open(staged_path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+        dir_fd = os.open(staging_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+        try:
+            os.rename(staging_dir, output_dir)
+        except OSError:
+            # Lost a race with a concurrent identical/conflicting publish:
+            # output_dir now exists where it did not a moment ago.
+            # Re-check exactly as above rather than assuming success or
+            # failure of our own rename attempt.
+            existing = _existing_or_none()
+            if existing is not None:
+                return existing
+            raise
+        else:
+            # The rename moved staging_dir to output_dir -- nothing remains
+            # at the old staging path to clean up.
+            staging_dir = None
+            return _sha256_text(episodes_text), _sha256_text(manifest_text)
+    finally:
+        if staging_dir is not None and staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+
 def build_manifest(
     *,
     run_id: str,
@@ -777,7 +945,10 @@ def _print_failed(reason: str, exc: BaseException, *, exit_code: int = 1) -> int
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    try:
+        args = parse_args(argv)
+    except ArgParseError as exc:
+        return _print_failed("invalid_arguments", exc, exit_code=2)
     try:
         validate_args(args)
     except ValueError as exc:
@@ -927,9 +1098,6 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = output_dir / "manifest_v1.json"
 
     try:
-        print(f"WRITING episodes_path={episodes_path}", flush=True)
-        write_immutable_json(episodes_path, episodes_text)
-
         source_fetch_from_ts_utc = candles[0].open_ts_utc.isoformat() if candles else None
         source_fetch_final_ts_utc = candles[-1].open_ts_utc.isoformat() if candles else None
         manifest = build_manifest(
@@ -954,14 +1122,27 @@ def main(argv: list[str] | None = None) -> int:
             source_fetch_final_ts_utc=source_fetch_final_ts_utc,
         )
         manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-        print(f"WRITING manifest_path={manifest_path}", flush=True)
-        write_immutable_json(manifest_path, manifest_text)
+
+        # Both texts are fully built above -- nothing is written to
+        # output_dir's filesystem location until this single atomic publish
+        # call, which guarantees output_dir ends up either absent or
+        # complete (both files present and mutually consistent), never a
+        # partial directory with only episodes_v1.json. See
+        # publish_immutable_run's docstring.
+        print(f"WRITING phase=staging output_dir={output_dir}", flush=True)
+        episodes_sha256, manifest_sha256 = publish_immutable_run(
+            output_dir=output_dir,
+            episodes_text=episodes_text,
+            manifest_text=manifest_text,
+        )
+        print(f"WRITING phase=published output_dir={output_dir}", flush=True)
     except Exception as exc:
         return _print_failed(FAILED_REASON_OUTPUT_WRITE, exc)
 
     print(
         f"FINISHED episodes={len(records)} run_id={run_id} episodes_path={episodes_path} "
-        f"manifest_path={manifest_path} episodes_sha256={episodes_sha256}",
+        f"manifest_path={manifest_path} episodes_sha256={episodes_sha256} "
+        f"manifest_sha256={manifest_sha256}",
         flush=True,
     )
     return 0

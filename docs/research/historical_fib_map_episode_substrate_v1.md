@@ -341,9 +341,10 @@ phase boundary (after asset/warmup/requested/forward-tail fetch and after
 build, before write). On interruption the runner prints `INTERRUPTED` with
 the signal and
 a non-zero exit code (130 for SIGINT, 143 for SIGTERM) and never calls
-`write_immutable_json` -- so a killed run never produces a partial
-`episodes_v1.json`/`manifest_v1.json`; the immutable files are only written
-after a fully successful build.
+`publish_immutable_run` -- so a killed run never produces a run directory
+at all, partial or otherwise; see "Atomic Publication" below for the
+stronger guarantee that even a *reached* publish attempt can never leave a
+partial directory behind.
 
 ## BUILDING Heartbeat and Cancellation
 
@@ -373,20 +374,44 @@ the previous gap where a long `BUILDING` phase ran with no heartbeat and
 observed SIGINT/SIGTERM only after every episode had already been built.
 On cancellation the runner prints exactly one `INTERRUPTED` line (never
 `FAILED`, never `FINISHED`) and returns before constructing `run_id` or the
-output path, so `write_immutable_json` is never reached.
+output path, so `publish_immutable_run` is never reached.
 
-## CLI Validation
+## CLI Parsing and Validation
 
-`validate_args` runs before any DB connection or query (before
-`fetch_asset_id`) and rejects:
+`main()` owns the FULL CLI terminal contract -- both argparse-level parse
+failures and `validate_args()`-level semantic failures resolve to the same
+`FAILED reason=invalid_arguments ...` line and exit code 2.
+
+argparse's default `ArgumentParser.error()` prints a usage/error message
+and raises `SystemExit(2)` directly from inside `parse_args()`, before
+`main()` ever reaches `validate_args()`. Left as-is, a missing required
+flag (e.g. no `--symbol`), an invalid `--timeframe` choice, or a malformed
+numeric argument (e.g. `--max-episodes not-a-number`) would silently bypass
+the `FAILED` terminal contract every other invalid-input path already
+honors, and exit via a raw `SystemExit` with argparse's own usage text
+instead. `_Parser` (a thin `argparse.ArgumentParser` subclass used by
+`_build_parser()`) overrides only `error()` to raise `ArgParseError`
+instead of calling `self.exit(2, ...)`; `main()` catches `ArgParseError`
+the same way it catches `validate_args()`'s `ValueError` and produces
+exactly one `FAILED reason=invalid_arguments detail=<message>` line, no
+traceback, no separate argparse usage/error chatter, exit code 2, and
+`get_connection` is never called.
+
+`--help` is deliberately unaffected: `argparse`'s built-in help action
+calls `parser.exit()` directly (never `error()`), so `_Parser`'s override
+does not touch it -- `--help` keeps normal argparse help semantics (print
+help to stdout, `SystemExit(0)`) and is never converted to `FAILED`.
+`main()` does not catch `SystemExit` anywhere, so this propagates
+naturally; no other stage of the pipeline catches `SystemExit` either.
+
+Once parsing succeeds, `validate_args` runs before any DB connection or
+query (before `fetch_asset_id`) and rejects, via the same
+`FAILED reason=invalid_arguments` / exit-2 contract:
 
 - `--episode-stride-candles <= 0`
 - `--max-episodes` present and `< 0`
 - `--chunk-size-candles <= 0`
 - `--from-ts` not strictly earlier than `--to-ts`
-
-An invalid CLI invocation prints a `FAILED reason=invalid_arguments` line
-and returns exit code 2 without ever calling `get_connection`.
 
 ## FAILED Terminal Summary
 
@@ -398,12 +423,13 @@ so diagnostics do not leak secrets. Reason codes, in the order a run
 encounters them:
 
 ```text
-invalid_arguments          -- validate_args (before any DB call); exit 2
+invalid_arguments          -- parse_args (argparse parse failure, before any DB call)
+                              / validate_args (before any DB call); exit 2
 asset_lookup_failed        -- fetch_asset_id
 source_fetch_failed        -- fetch_warmup_candles / fetch_candles / fetch_forward_tail_candles
 source_validation_failed   -- validate_candle_sequence (duplicate/non-monotonic candles)
 build_failed                -- build_episodes (any failure other than BuildCancelled)
-output_write_failed        -- write_immutable_json (episodes or manifest)
+output_write_failed        -- build_manifest / publish_immutable_run (episodes+manifest)
 ```
 
 All non-`invalid_arguments` reasons return exit code 1 -- the reason code,
@@ -418,14 +444,61 @@ every `try/except` in `main()` catches `Exception` (never bare
 `BaseException`), so `SystemExit`/`KeyboardInterrupt` semantics are not
 accidentally swallowed by the FAILED-handling paths.
 
-Because `run_id`/output-path construction and both `write_immutable_json`
-calls happen only after a fully successful `BUILDING` phase, a failure in
-any earlier stage (`asset_lookup_failed`, `source_fetch_failed`,
+Because `run_id`/output-path construction and `publish_immutable_run` run
+only after a fully successful `BUILDING` phase, a failure in any earlier
+stage (`asset_lookup_failed`, `source_fetch_failed`,
 `source_validation_failed`, `build_failed`) creates zero files under
-`--output-dir`. An `output_write_failed` conflict on the episodes file
-(pre-existing content with a different hash) leaves that file untouched
-and is detected before the manifest write is ever attempted, so no
-manifest is written either.
+`--output-dir`. See "Atomic Publication" below for what happens once
+publication is reached.
+
+## Atomic Publication
+
+**Invariant: a final `<run_id>` directory is either ABSENT or COMPLETE**
+(both `episodes_v1.json` AND `manifest_v1.json` present and mutually
+consistent) -- **never partial.**
+
+The prior design wrote `episodes_v1.json` and `manifest_v1.json` as two
+independent `write_immutable_json` calls, episodes first. If manifest
+construction or its write failed in between, the run directory could be
+left containing only `episodes_v1.json` -- a partial artifact masquerading
+as content under an otherwise-immutable path.
+
+`publish_immutable_run` replaces both calls with a single atomic
+operation:
+
+1. Both `episodes_text` and `manifest_text` are fully built in memory by
+   `main()` *before* `publish_immutable_run` is ever called -- nothing
+   about publication depends on any prior filesystem write.
+2. If `output_dir` (the final `<run_id>` directory) already exists, it is
+   checked immediately: both files must be present, and both must hash to
+   the exact candidate content. All-present-and-identical is an
+   **idempotent success** (nothing is written; the existing directory is
+   returned as-is). Either file missing (a partial existing directory) or
+   present-but-different content fails closed with `ValueError` -- a
+   partial or conflicting existing directory is never "repaired" or
+   silently overwritten.
+3. Otherwise, both files are written into a private **staging directory**
+   -- a sibling of `output_dir`, so guaranteed to be on the same filesystem
+   -- and each is `fsync`'d individually; the staging directory's own
+   entry is then `fsync`'d too.
+4. The staging directory is published with a single `os.rename` directly
+   onto `output_dir`. A directory rename either fully succeeds or does not
+   happen at all -- there is no filesystem-visible intermediate state with
+   only one file present, which is the structural property a
+   write-episodes-then-write-manifest sequence cannot offer.
+5. If the rename itself races with a concurrent identical/conflicting
+   publish (`output_dir` now exists where it did not a moment ago), step 2
+   is re-run rather than assuming success or failure.
+6. The staging directory is *always* removed before this function returns
+   or raises: a successful rename consumes it (nothing left at the old
+   path), and a `finally` block removes it on every other path (idempotent
+   match, conflict, or any other exception) -- so a failed or interrupted
+   publish attempt can never leave an orphaned staging directory next to
+   `output_dir`.
+
+An `output_write_failed` result therefore always means `output_dir` itself
+was left completely untouched: either it never existed at all, or a
+pre-existing partial/conflicting directory was left exactly as found.
 
 ## Determinism and Immutability
 
@@ -434,9 +507,10 @@ manifest is written either.
 - `episode_id` is a SHA-256 of `(symbol, venue, interval_code,
   contract_version, map_creation_ts_utc, direction, anchor_low, anchor_high)`.
 - The runner (`run_historical_fib_map_episode_substrate_v1.py`) writes
-  `episodes_v1.json` and `manifest_v1.json` under
+  `episodes_v1.json` and `manifest_v1.json` together under
   `data/research/historical_fib_map_episode_substrate_v1/<venue>/<symbol>/<interval_code>/<run_id>/`
-  via atomic hardlink-create. `<run_id>` is a SHA-256 of the canonical
+  via `publish_immutable_run`'s stage-then-atomic-rename publication (see
+  "Atomic Publication" above). `<run_id>` is a SHA-256 of the canonical
   (sorted-key) JSON of every dataset-defining parameter --
   `builder_version`, `contract_version`, `venue`, `symbol`, `timeframe`,
   `from_ts`, `to_ts`, `episode_stride_candles`, `max_episodes` -- PLUS
@@ -456,7 +530,7 @@ manifest is written either.
   when BOTH the requested contract AND the actual source content used to
   satisfy it are identical (idempotent repeat), and a run whose CLI
   arguments match but whose fetched content differs resolves to a different
-  `<run_id>` instead of hitting a spurious `write_immutable_json` conflict.
+  `<run_id>` instead of hitting a spurious immutable-publish conflict.
   The manifest also carries `run_id`, `episode_stride_candles`,
   `max_episodes`, and `source_input_sha256` directly, so a run's full
   identity is recoverable from the manifest alone (`compute_run_id()` is
@@ -512,7 +586,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (108 tests, no DB)
+3. synthetic/unit tests (123 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

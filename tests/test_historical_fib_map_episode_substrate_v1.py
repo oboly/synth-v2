@@ -587,6 +587,190 @@ class TestImmutableOutput:
             runner.write_immutable_json(path, '{"a": 2}\n')
 
 
+class TestAtomicPublication:
+    """Regression coverage for the #727 blocker: a final <run_id> directory
+
+    must be either absent or complete (both episodes_v1.json AND
+    manifest_v1.json present and mutually consistent) -- never a partial
+    directory with only episodes_v1.json, which the prior two-separate-
+    write design could leave behind if manifest construction/write failed.
+    """
+
+    def _staging_dirs(self, output_dir: Path) -> list[Path]:
+        return [
+            p for p in output_dir.parent.iterdir() if p.name.startswith(f".{output_dir.name}.stage-")
+        ] if output_dir.parent.exists() else []
+
+    def test_successful_publish_both_files_appear_together(self, tmp_path: Any) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        episodes_sha256, manifest_sha256 = runner.publish_immutable_run(
+            output_dir=output_dir,
+            episodes_text='{"episodes": true}\n',
+            manifest_text='{"manifest": true}\n',
+        )
+        assert output_dir.exists()
+        assert (output_dir / "episodes_v1.json").read_text(encoding="utf-8") == '{"episodes": true}\n'
+        assert (output_dir / "manifest_v1.json").read_text(encoding="utf-8") == '{"manifest": true}\n'
+        assert episodes_sha256 == runner._sha256_text('{"episodes": true}\n')
+        assert manifest_sha256 == runner._sha256_text('{"manifest": true}\n')
+        assert self._staging_dirs(output_dir) == []
+
+    def test_identical_rerun_is_idempotent(self, tmp_path: Any) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        result_a = runner.publish_immutable_run(
+            output_dir=output_dir,
+            episodes_text='{"episodes": true}\n',
+            manifest_text='{"manifest": true}\n',
+        )
+        result_b = runner.publish_immutable_run(
+            output_dir=output_dir,
+            episodes_text='{"episodes": true}\n',
+            manifest_text='{"manifest": true}\n',
+        )
+        assert result_a == result_b
+        assert (output_dir / "episodes_v1.json").read_text(encoding="utf-8") == '{"episodes": true}\n'
+        assert (output_dir / "manifest_v1.json").read_text(encoding="utf-8") == '{"manifest": true}\n'
+        assert self._staging_dirs(output_dir) == []
+
+    def test_existing_partial_final_dir_fails_closed_without_repair(self, tmp_path: Any) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        output_dir.mkdir(parents=True)
+        (output_dir / "episodes_v1.json").write_text('{"pre-existing": true}\n', encoding="utf-8")
+        # manifest_v1.json deliberately absent -- a partial directory.
+
+        with pytest.raises(ValueError, match="incomplete"):
+            runner.publish_immutable_run(
+                output_dir=output_dir,
+                episodes_text='{"pre-existing": true}\n',
+                manifest_text='{"manifest": true}\n',
+            )
+        # Not "repaired": still exactly the one pre-existing file, untouched.
+        assert (output_dir / "episodes_v1.json").read_text(encoding="utf-8") == '{"pre-existing": true}\n'
+        assert not (output_dir / "manifest_v1.json").exists()
+        assert self._staging_dirs(output_dir) == []
+
+    def test_existing_conflicting_complete_dir_fails_closed(self, tmp_path: Any) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        output_dir.mkdir(parents=True)
+        (output_dir / "episodes_v1.json").write_text('{"episodes": "old"}\n', encoding="utf-8")
+        (output_dir / "manifest_v1.json").write_text('{"manifest": "old"}\n', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="refusing to overwrite"):
+            runner.publish_immutable_run(
+                output_dir=output_dir,
+                episodes_text='{"episodes": "new"}\n',
+                manifest_text='{"manifest": "old"}\n',
+            )
+        assert (output_dir / "episodes_v1.json").read_text(encoding="utf-8") == '{"episodes": "old"}\n'
+        assert (output_dir / "manifest_v1.json").read_text(encoding="utf-8") == '{"manifest": "old"}\n'
+        assert self._staging_dirs(output_dir) == []
+
+    def test_episodes_staged_write_failure_leaves_no_final_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        real_fsync = os.fsync
+        call_count = {"n": 0}
+
+        def _flaky_fsync(fd: int) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 1:  # episodes_v1.json's fsync (written first)
+                raise OSError("simulated disk failure")
+            real_fsync(fd)
+
+        monkeypatch.setattr(runner.os, "fsync", _flaky_fsync)
+
+        with pytest.raises(OSError):
+            runner.publish_immutable_run(
+                output_dir=output_dir,
+                episodes_text='{"episodes": true}\n',
+                manifest_text='{"manifest": true}\n',
+            )
+        assert not output_dir.exists()
+        assert self._staging_dirs(output_dir) == []
+
+    def test_manifest_staged_write_failure_leaves_no_final_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        output_dir = tmp_path / "bitvavo" / "BTC" / "1h" / "runid"
+        real_fsync = os.fsync
+        call_count = {"n": 0}
+
+        def _flaky_fsync(fd: int) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 2:  # manifest_v1.json's fsync (written second)
+                raise OSError("simulated disk failure")
+            real_fsync(fd)
+
+        monkeypatch.setattr(runner.os, "fsync", _flaky_fsync)
+
+        with pytest.raises(OSError):
+            runner.publish_immutable_run(
+                output_dir=output_dir,
+                episodes_text='{"episodes": true}\n',
+                manifest_text='{"manifest": true}\n',
+            )
+        assert not output_dir.exists()
+        assert self._staging_dirs(output_dir) == []
+
+    def test_manifest_construction_failure_leaves_no_final_dir_full_pipeline(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        def _boom(**kw: Any) -> dict[str, Any]:
+            raise RuntimeError("simulated manifest construction failure")
+
+        monkeypatch.setattr(runner, "build_manifest", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=output_write_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_interruption_before_publish_leaves_no_final_run_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+        monkeypatch.setattr(runner, "DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES", 1)
+
+        real_build_episodes = substrate.build_episodes
+
+        def _signal_then_build(**kwargs: Any) -> list[Any]:
+            os.kill(os.getpid(), signal.SIGINT)
+            return real_build_episodes(**kwargs)
+
+        monkeypatch.setattr(runner, "build_episodes", _signal_then_build)
+
+        publish_calls: list[Any] = []
+        monkeypatch.setattr(
+            runner,
+            "publish_immutable_run",
+            lambda **kw: publish_calls.append(kw) or ("sha", "sha"),
+        )
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+        try:
+            exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+            signal.signal(signal.SIGTERM, original_sigterm)
+
+        assert exit_code == 130
+        assert publish_calls == []
+        assert list(tmp_path.rglob("*")) == []
+        out = capsys.readouterr().out
+        assert out.count("INTERRUPTED") == 1
+
+
 class TestRunIdentity:
     def _kwargs(self, **overrides: Any) -> dict[str, Any]:
         base = dict(
@@ -1570,6 +1754,105 @@ class TestCliValidation:
         assert exit_code == 2
 
 
+class TestParserErrorHandling:
+    """Regression coverage for the #727 blocker: argparse's own SystemExit(2)
+
+    bypassed the FAILED reason=invalid_arguments terminal contract before
+    main() ever reached validate_args(). main() must own the full CLI
+    terminal contract for BOTH argparse-level parse failures and
+    validate_args()-level semantic failures.
+    """
+
+    def test_parse_args_raises_arg_parse_error_not_system_exit(self) -> None:
+        with pytest.raises(runner.ArgParseError):
+            runner.parse_args(["--timeframe", "1h"])  # missing required --symbol etc.
+
+    def test_missing_symbol_produces_single_failed_line_exit_2(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exit_code = runner.main(
+            [
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-01 00:00:00",
+                "--to-ts", "2026-01-02 00:00:00",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 2
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=invalid_arguments" in out
+        assert "Traceback" not in out
+        assert "STARTED" not in out
+        assert "FINISHED" not in out
+
+    def test_invalid_timeframe_choice_produces_single_failed_line_exit_2(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1d",  # not in choices=["1h", "4h"]
+                "--from-ts", "2026-01-01 00:00:00",
+                "--to-ts", "2026-01-02 00:00:00",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 2
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=invalid_arguments" in out
+        assert "STARTED" not in out
+        assert "FINISHED" not in out
+
+    def test_malformed_numeric_argument_produces_single_failed_line_exit_2(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-01 00:00:00",
+                "--to-ts", "2026-01-02 00:00:00",
+                "--max-episodes", "not-a-number",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 2
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=invalid_arguments" in out
+        assert "STARTED" not in out
+        assert "FINISHED" not in out
+
+    def test_parser_failure_never_calls_get_connection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom() -> Any:
+            raise AssertionError("DB helper must not be called for a parser failure")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        exit_code = runner.main(["--timeframe", "1h"])  # missing required flags
+        assert exit_code == 2
+
+    def test_help_exits_zero_and_does_not_produce_failed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            runner.main(["--help"])
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "usage" in out.lower()
+        assert "FAILED" not in out
+        assert "STARTED" not in out
+
+    def test_help_never_calls_get_connection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom() -> Any:
+            raise AssertionError("DB helper must not be called for --help")
+
+        monkeypatch.setattr(runner, "get_connection", _boom)
+        with pytest.raises(SystemExit) as exc_info:
+            runner.main(["--help"])
+        assert exc_info.value.code == 0
+
+
 class TestMaxEpisodesZero:
     def test_max_episodes_zero_yields_no_episodes(self) -> None:
         start = datetime(2026, 1, 1, tzinfo=UTC)
@@ -2067,7 +2350,9 @@ class TestBuildingCancellationIntegration:
 
         write_calls: list[Any] = []
         monkeypatch.setattr(
-            runner, "write_immutable_json", lambda *a, **kw: write_calls.append(a) or "sha"
+            runner,
+            "publish_immutable_run",
+            lambda **kw: write_calls.append(kw) or ("sha", "sha"),
         )
 
         original_sigint = signal.getsignal(signal.SIGINT)
@@ -2103,7 +2388,7 @@ class TestBuildingCancellationIntegration:
             return real_build_episodes(**kwargs)
 
         monkeypatch.setattr(runner, "build_episodes", _signal_then_build)
-        monkeypatch.setattr(runner, "write_immutable_json", lambda *a, **kw: "sha")
+        monkeypatch.setattr(runner, "publish_immutable_run", lambda **kw: ("sha", "sha"))
 
         original_sigint = signal.getsignal(signal.SIGINT)
         original_sigterm = signal.getsignal(signal.SIGTERM)
@@ -2132,7 +2417,7 @@ class TestBuildingCancellationIntegration:
             return []
 
         monkeypatch.setattr(runner, "build_episodes", _capturing_build_episodes)
-        monkeypatch.setattr(runner, "write_immutable_json", lambda *a, **kw: "sha")
+        monkeypatch.setattr(runner, "publish_immutable_run", lambda **kw: ("sha", "sha"))
 
         exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
         assert exit_code == 0
@@ -2243,10 +2528,10 @@ class TestFailedTerminalSummary:
         candles = _synthetic_bullish_series(start)
         _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
 
-        def _boom(*a: Any, **kw: Any) -> str:
+        def _boom(*a: Any, **kw: Any) -> tuple[str, str]:
             raise ValueError("refusing to overwrite immutable output")
 
-        monkeypatch.setattr(runner, "write_immutable_json", _boom)
+        monkeypatch.setattr(runner, "publish_immutable_run", _boom)
 
         exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
         out = capsys.readouterr().out
@@ -2254,6 +2539,7 @@ class TestFailedTerminalSummary:
         assert out.count("FAILED") == 1
         assert "FAILED reason=output_write_failed" in out
         assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
 
     def test_output_write_conflict_leaves_existing_file_untouched(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
