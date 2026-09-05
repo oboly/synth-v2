@@ -26,9 +26,14 @@ The evaluator does not fetch candles, create outcome labels, infer split
 boundaries, or choose the baseline. Those identities must be frozen by the
 calling research artifact/run.
 
-Candidate and baseline column sets must be disjoint. Unknown split labels fail
-closed. All three split labels are mandatory; an incomplete frozen split set is
-rejected rather than producing a partial-looking report.
+Split, outcome, candidate and baseline column roles must be mutually disjoint.
+A feature may not alias the outcome or split column, and a candidate may not
+also be a baseline. This prevents trivial self-association and ambiguous
+selection semantics.
+
+Unknown split labels fail closed. All three split labels are mandatory; an
+incomplete frozen split set is rejected rather than producing a partial-looking
+report.
 
 ## Metrics
 
