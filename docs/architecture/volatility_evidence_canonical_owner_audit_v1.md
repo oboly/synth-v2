@@ -366,11 +366,16 @@ No current path:
   -> #617 read-only consumption
 ```
 
-No selection, decision, planner, executor, broker, or order dependency was
-found in any candidate module reviewed above. `feat_candle` and
-`asset_profile_snapshot` are the only two candidates with real persistence
-and production-refresh characteristics; neither is independently versioned
-or #243-complete for volatility specifically.
+`feat_candle.atr_pct` already has existing signal-engine consumers
+(`src/engine/run_signal_engine.py`, `src/signal_engine/run_signal_state_etl.py`
+— hardcoded threshold checks and a composite-score term, per the map above).
+No `src/selection/`, `src/selection_engine/`, `decision_gate`,
+`execution_planner`, `executor`, broker, or order dependency was found on any
+candidate module reviewed above. `feat_candle` and `asset_profile_snapshot`
+are the only two candidates with real persistence and production-refresh
+characteristics; neither is independently versioned or #243-complete for
+volatility specifically, and neither has a dedicated, versioned VOLATILITY
+evidence-owner consumer — only ad hoc, module-local reuse of raw ATR fields.
 
 ## #243 horizon mapping (per candidate)
 
