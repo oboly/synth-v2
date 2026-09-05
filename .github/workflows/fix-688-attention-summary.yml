@@ -77,32 +77,22 @@ jobs:
                   orders=(),
               )
               cards = [
-                  _card(
-                      symbol="AAA",
-                      attention_required=False,
-                      visibility_class=VISIBILITY_NATIVE_ATTENTION,
-                  ),
-                  _card(
-                      symbol="BBB",
-                      attention_required=True,
-                      visibility_class=VISIBILITY_CONTEXT_UNAVAILABLE,
-                  ),
+                  _card(symbol="AAA", attention_required=False, visibility_class=VISIBILITY_NATIVE_ATTENTION),
+                  _card(symbol="BBB", attention_required=True, visibility_class=VISIBILITY_CONTEXT_UNAVAILABLE),
               ]
-
               print_summary(
                   context=context,
                   cards=cards,
                   output_html=tmp_path / "profit-plan.html",
                   output_json=tmp_path / "profit-plan.json",
               )
-
               output = capsys.readouterr().out
               assert "attention=1/2" in output
               assert "canonical_navigation=0/2" in output
               assert "context_unavailable=1/2" in output
           PY
 
-          rm .github/workflows/fix-688-attention-summary.yml
+          rm -f .github/fix-688-trigger .github/workflows/fix-688-attention-summary.yml
 
       - name: Validate focused regression
         run: |
@@ -114,6 +104,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/reporting/run_manual_short_trader_profit_plan_v1.py tests/test_profit_plan_attention_summary_v1.py .github/workflows/fix-688-attention-summary.yml
+          git add -A
           git commit -m "Fix #688 runner Attention summary parity"
           git push origin HEAD:fix/688-profit-plan-attention-v1
