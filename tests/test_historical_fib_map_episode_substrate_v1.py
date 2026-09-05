@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import os
 import signal
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1383,3 +1384,363 @@ class TestRunIdentityExcludesOperationalParams:
         assert manifest_b["warmup_candle_count"] == 50
         assert manifest_a["chunk_size_candles"] == 1000
         assert manifest_b["chunk_size_candles"] == 5000
+
+
+class TestBuildProgressHook:
+    """build_episodes' optional deterministic progress/cancellation hooks (#727)."""
+
+    def test_default_hooks_are_none_and_side_effect_free(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        records = build_episodes(
+            symbol="TST", venue="bitvavo", candles=candles, cfg=cfg, episode_stride_candles=5
+        )
+        assert len(records) > 0
+
+    def test_on_progress_called_at_configured_interval(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        calls: list[tuple[int, int]] = []
+        build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            on_progress=lambda processed, total: calls.append((processed, total)),
+            progress_interval_candles=10,
+        )
+        assert len(calls) > 0
+        assert all(processed % 10 == 0 for processed, _total in calls)
+        assert calls == sorted(calls)
+        assert all(total == len(candles) for _processed, total in calls)
+
+    def test_should_stop_raises_build_cancelled_at_safe_boundary(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        baseline = build_episodes(
+            symbol="TST", venue="bitvavo", candles=candles, cfg=cfg, episode_stride_candles=5
+        )
+
+        with pytest.raises(substrate.BuildCancelled) as exc_info:
+            build_episodes(
+                symbol="TST",
+                venue="bitvavo",
+                candles=candles,
+                cfg=cfg,
+                episode_stride_candles=5,
+                should_stop=lambda: True,
+                progress_interval_candles=10,
+            )
+        assert isinstance(exc_info.value.records, list)
+        assert len(exc_info.value.records) < len(baseline)
+
+    def test_should_stop_not_polled_without_progress_interval_elapsed(self) -> None:
+        # should_stop() must only be polled at the deterministic cadence, not
+        # on every single attempted position -- a should_stop that always
+        # returns True but with an interval larger than the series still
+        # completes if the cadence boundary is never reached.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        attempted_positions = len(candles) - (cfg.min_window_candles - 1)
+
+        records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            should_stop=lambda: True,
+            progress_interval_candles=attempted_positions + 1000,
+        )
+        assert len(records) > 0
+
+    def test_output_byte_identical_with_and_without_noncancelling_progress_hook(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        baseline = build_episodes(
+            symbol="TST", venue="bitvavo", candles=candles, cfg=cfg, episode_stride_candles=5
+        )
+        with_hook = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=5,
+            on_progress=lambda processed, total: None,
+            should_stop=lambda: False,
+            progress_interval_candles=7,
+        )
+        assert episodes_to_json(baseline) == episodes_to_json(with_hook)
+
+
+class _RunnerHarness:
+    """Shared fake-DB/CLI-args scaffolding for full main() integration tests."""
+
+    @staticmethod
+    def valid_args(tmp_path: Any) -> list[str]:
+        return [
+            "--symbol", "BTC",
+            "--timeframe", "1h",
+            "--from-ts", "2026-01-01 00:00:00",
+            "--to-ts", "2026-01-02 00:00:00",
+            "--output-dir", str(tmp_path),
+        ]
+
+    @staticmethod
+    def patch_successful_fetch(
+        monkeypatch: pytest.MonkeyPatch, candles: list[HistoricalCandle]
+    ) -> None:
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+        monkeypatch.setattr(runner, "fetch_warmup_candles", lambda **kw: [])
+        monkeypatch.setattr(runner, "fetch_candles", lambda **kw: candles)
+
+
+class TestBuildingCancellationIntegration:
+    """Runner-level wiring of build_episodes' should_stop/on_progress hooks."""
+
+    def test_sigint_during_building_stops_before_write(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+        monkeypatch.setattr(runner, "DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES", 1)
+
+        real_build_episodes = substrate.build_episodes
+
+        def _signal_then_build(**kwargs: Any) -> list[Any]:
+            # Deliver a real SIGINT to this process before delegating to the
+            # real build_episodes -- main()'s real signal handler (installed
+            # by main() itself) sets _SignalState.signum synchronously, so
+            # the `should_stop` closure main() wired in observes it at the
+            # very first cadence boundary (progress_interval_candles=1).
+            os.kill(os.getpid(), signal.SIGINT)
+            return real_build_episodes(**kwargs)
+
+        monkeypatch.setattr(runner, "build_episodes", _signal_then_build)
+
+        write_calls: list[Any] = []
+        monkeypatch.setattr(
+            runner, "write_immutable_json", lambda *a, **kw: write_calls.append(a) or "sha"
+        )
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+        try:
+            exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+            signal.signal(signal.SIGTERM, original_sigterm)
+
+        assert exit_code == 130
+        assert write_calls == []
+        assert list(tmp_path.rglob("*")) == []
+
+        out = capsys.readouterr().out
+        assert out.count("INTERRUPTED") == 1
+        assert "FAILED" not in out
+        assert "FINISHED" not in out
+        assert f"signal={int(signal.SIGINT)}" in out
+
+    def test_sigterm_during_building_returns_143(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+        monkeypatch.setattr(runner, "DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES", 1)
+
+        real_build_episodes = substrate.build_episodes
+
+        def _signal_then_build(**kwargs: Any) -> list[Any]:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real_build_episodes(**kwargs)
+
+        monkeypatch.setattr(runner, "build_episodes", _signal_then_build)
+        monkeypatch.setattr(runner, "write_immutable_json", lambda *a, **kw: "sha")
+
+        original_sigint = signal.getsignal(signal.SIGINT)
+        original_sigterm = signal.getsignal(signal.SIGTERM)
+        try:
+            exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
+            signal.signal(signal.SIGTERM, original_sigterm)
+
+        assert exit_code == 143
+        out = capsys.readouterr().out
+        assert out.count("INTERRUPTED") == 1
+        assert f"signal={int(signal.SIGTERM)}" in out
+
+    def test_build_episodes_receives_progress_and_stop_hooks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        captured: dict[str, Any] = {}
+
+        def _capturing_build_episodes(**kwargs: Any) -> list[Any]:
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(runner, "build_episodes", _capturing_build_episodes)
+        monkeypatch.setattr(runner, "write_immutable_json", lambda *a, **kw: "sha")
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        assert exit_code == 0
+        assert callable(captured["on_progress"])
+        assert callable(captured["should_stop"])
+        assert captured["progress_interval_candles"] == runner.DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES
+        assert captured["should_stop"]() is False
+
+
+class TestFailedTerminalSummary:
+    """Exactly-one-FAILED-line coverage for each operational failure path (#727)."""
+
+    def test_asset_lookup_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def _boom(**kw: Any) -> int:
+            raise ValueError("no asset found for symbol='BTC'")
+
+        monkeypatch.setattr(runner, "fetch_asset_id", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=asset_lookup_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_source_fetch_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+
+        def _boom(**kw: Any) -> list[Any]:
+            raise RuntimeError("db connection reset")
+
+        monkeypatch.setattr(runner, "fetch_warmup_candles", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=source_fetch_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_source_validation_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        dup = _candle(start, 1, 2, 0.5, 1.5)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, [dup, dup])
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=source_validation_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_build_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        def _boom(**kw: Any) -> list[Any]:
+            raise RuntimeError("unexpected build failure")
+
+        monkeypatch.setattr(runner, "build_episodes", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=build_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_output_write_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        def _boom(*a: Any, **kw: Any) -> str:
+            raise ValueError("refusing to overwrite immutable output")
+
+        monkeypatch.setattr(runner, "write_immutable_json", _boom)
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=output_write_failed" in out
+        assert "FINISHED" not in out
+
+    def test_output_write_conflict_leaves_existing_file_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        cfg_1h = resolve_config("1h")
+        run_id = runner.compute_run_id(
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="1h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-01-02 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+        )
+        conflict_dir = tmp_path / "bitvavo" / "BTC" / cfg_1h.interval_code / run_id
+        conflict_dir.mkdir(parents=True)
+        conflict_path = conflict_dir / "episodes_v1.json"
+        conflict_path.write_text('{"pre-existing": "conflicting content"}\n', encoding="utf-8")
+
+        exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=output_write_failed" in out
+        assert "FINISHED" not in out
+        # The pre-existing conflicting file must survive untouched, and no
+        # manifest must ever be written since the conflict is detected on
+        # the first (episodes) write.
+        assert conflict_path.read_text(encoding="utf-8") == '{"pre-existing": "conflicting content"}\n'
+        assert not (conflict_dir / "manifest_v1.json").exists()
+
+    def test_invalid_arguments_still_single_failed_line(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", "2026-01-02 00:00:00",
+                "--to-ts", "2026-01-01 00:00:00",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert exit_code == 2
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=invalid_arguments" in out
+        assert "FINISHED" not in out

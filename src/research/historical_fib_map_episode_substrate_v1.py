@@ -55,7 +55,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -148,6 +148,21 @@ class EpisodeSubstrateError(ValueError):
 
 class PitViolationError(EpisodeSubstrateError):
     """Raised when a future candle would leak into feature/geometry construction."""
+
+
+class BuildCancelled(EpisodeSubstrateError):
+    """Raised by build_episodes when `should_stop` requests cancellation.
+
+    Cancellation is only observed at a safe, deterministic loop boundary
+    (see build_episodes' `progress_interval_candles`), never mid-episode.
+    Carries whatever episodes were already built before that boundary for a
+    caller that wants best-effort diagnostics; the runner itself does not
+    use `records` -- an interrupted build is never written to disk.
+    """
+
+    def __init__(self, message: str, *, records: list["EpisodeRecord"]) -> None:
+        super().__init__(message)
+        self.records = records
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +671,9 @@ def build_episode_labels(
 # Orchestration over a full candle series for one symbol/timeframe
 # ---------------------------------------------------------------------------
 
+DEFAULT_PROGRESS_INTERVAL_CANDLES = 500
+
+
 def build_episodes(
     *,
     symbol: str,
@@ -666,6 +684,9 @@ def build_episodes(
     max_episodes: int | None = None,
     emit_from_ts_utc: datetime | None = None,
     emit_to_ts_utc: datetime | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    progress_interval_candles: int = DEFAULT_PROGRESS_INTERVAL_CANDLES,
 ) -> list[EpisodeRecord]:
     """Build a deterministic list of episodes from a full historical candle series.
 
@@ -691,13 +712,40 @@ def build_episodes(
     `max_episodes` bounds the emitted count and is checked before building
     each candidate episode, so `max_episodes=0` deterministically yields an
     empty list rather than one episode.
+
+    `on_progress` / `should_stop` are optional, purely deterministic hooks
+    for a long-running caller (the runner): every `progress_interval_candles`
+    attempted as-of positions (a fixed count of loop iterations, never
+    wall-clock time), `on_progress(processed, total)` is called if given,
+    then `should_stop()` is polled if given. With both left `None` (the
+    default), build_episodes calls nothing and its behavior/output is
+    unchanged from a caller with no observability needs -- side-effect free
+    and identical to a build with no hooks. If `should_stop()` returns
+    `True`, the loop stops at that safe boundary (no episode is left
+    partially built) and raises `BuildCancelled` carrying the episodes
+    already built; it never returns a silently-truncated list, so a caller
+    cannot mistake a cancelled build for a complete one.
     """
     validate_candle_sequence(candles)
 
+    total = len(candles)
     records: list[EpisodeRecord] = []
-    for i in range(cfg.min_window_candles - 1, len(candles)):
+    for i in range(cfg.min_window_candles - 1, total):
         if max_episodes is not None and len(records) >= max_episodes:
             break
+
+        processed = i - (cfg.min_window_candles - 1) + 1
+        if (
+            (on_progress is not None or should_stop is not None)
+            and processed % progress_interval_candles == 0
+        ):
+            if on_progress is not None:
+                on_progress(processed, total)
+            if should_stop is not None and should_stop():
+                raise BuildCancelled(
+                    f"build cancelled after processing {processed}/{total} candle positions",
+                    records=records,
+                )
 
         if (i - (cfg.min_window_candles - 1)) % episode_stride_candles != 0:
             continue

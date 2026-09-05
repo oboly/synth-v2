@@ -259,15 +259,46 @@ is inherently bounded by its `LIMIT` and needs no pagination.
 
 The runner is single-process, single-worker (no worker pool) and prints an
 observable phase per stage: `STARTED`, `FETCHING` (warmup, then per-chunk
-progress on the requested window), `BUILDING`, `WRITING`, and exactly one
-terminal `FINISHED` or `INTERRUPTED` line. SIGINT/SIGTERM are caught by
-`_SignalState` (a single flag, no threads); the flag is polled between DB
-chunks and at each phase boundary (after asset/warmup/requested fetch and
-after build, before write). On interruption the runner prints `INTERRUPTED`
-with the signal and a non-zero exit code (130 for SIGINT, 143 for SIGTERM)
-and never calls `write_immutable_json` -- so a killed run never produces a
-partial `episodes_v1.json`/`manifest_v1.json`; the immutable files are only
-written after a fully successful build.
+progress on the requested window), `BUILDING` (see below), `WRITING`, and
+exactly one terminal `FINISHED`, `INTERRUPTED`, or `FAILED` line.
+SIGINT/SIGTERM are caught by `_SignalState` (a single flag, no threads); the
+flag is polled between DB chunks, during `BUILDING` (see below), and at each
+phase boundary (after asset/warmup/requested fetch and after build, before
+write). On interruption the runner prints `INTERRUPTED` with the signal and
+a non-zero exit code (130 for SIGINT, 143 for SIGTERM) and never calls
+`write_immutable_json` -- so a killed run never produces a partial
+`episodes_v1.json`/`manifest_v1.json`; the immutable files are only written
+after a fully successful build.
+
+## BUILDING Heartbeat and Cancellation
+
+`build_episodes` accepts three optional, purely deterministic hooks:
+`on_progress(processed, total)`, `should_stop() -> bool`, and
+`progress_interval_candles` (default `DEFAULT_PROGRESS_INTERVAL_CANDLES =
+500`). Every `progress_interval_candles` *attempted as-of positions* (a
+fixed count of loop iterations -- never wall-clock time), `on_progress` is
+called if given, then `should_stop()` is polled if given. With both left
+`None` -- the default for any direct caller of `build_episodes` -- nothing
+is called and the builder's behavior/output is exactly what it was before
+this hook existed: side-effect free and deterministic. This keeps the
+research builder pure and reusable; only the runner supplies the hooks.
+
+If `should_stop()` returns `True`, the loop stops at that same safe
+boundary (no episode is left half-built) and raises `BuildCancelled`
+(carrying whatever episodes were already built, for best-effort
+diagnostics only -- the runner never uses or writes them). A caller can
+therefore never mistake a cancelled build for a complete one: a normal
+return is always the full result, a cancellation is always the exception.
+
+The runner wires both hooks during `BUILDING`: `on_progress` prints
+`BUILDING progress processed=<n> total=<n>`, and `should_stop` reads the
+same `_SignalState.triggered` flag DB fetch already polls, using
+`DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES = 500` as the cadence. This closes
+the previous gap where a long `BUILDING` phase ran with no heartbeat and
+observed SIGINT/SIGTERM only after every episode had already been built.
+On cancellation the runner prints exactly one `INTERRUPTED` line (never
+`FAILED`, never `FINISHED`) and returns before constructing `run_id` or the
+output path, so `write_immutable_json` is never reached.
 
 ## CLI Validation
 
@@ -281,6 +312,45 @@ written after a fully successful build.
 
 An invalid CLI invocation prints a `FAILED reason=invalid_arguments` line
 and returns exit code 2 without ever calling `get_connection`.
+
+## FAILED Terminal Summary
+
+Every operational stage after argument validation is wrapped so an
+expected failure produces exactly one `FAILED reason=<code> detail=<...>`
+line and a non-zero exit, instead of an unhandled traceback. `detail` is
+`str(exception)` only -- no traceback, no connection/environment payload --
+so diagnostics do not leak secrets. Reason codes, in the order a run
+encounters them:
+
+```text
+invalid_arguments          -- validate_args (before any DB call); exit 2
+asset_lookup_failed        -- fetch_asset_id
+source_fetch_failed        -- fetch_warmup_candles / fetch_candles
+source_validation_failed   -- validate_candle_sequence (duplicate/non-monotonic candles)
+build_failed                -- build_episodes (any failure other than BuildCancelled)
+output_write_failed        -- write_immutable_json (episodes or manifest)
+```
+
+All non-`invalid_arguments` reasons return exit code 1 -- the reason code,
+not the exit code, is the machine-readable contract. `BuildCancelled` is
+caught *before* the generic `build_failed` handler and always resolves to
+`INTERRUPTED`, never `FAILED` -- interruption and operational failure are
+distinct outcomes. Each failure path `return`s immediately, so `FINISHED`
+can never follow a `FAILED` line and no reason code can be printed twice in
+one run. SIGINT/SIGTERM are handled by replacing the default signal
+handler (`_SignalState.install`), not by catching `KeyboardInterrupt`, and
+every `try/except` in `main()` catches `Exception` (never bare
+`BaseException`), so `SystemExit`/`KeyboardInterrupt` semantics are not
+accidentally swallowed by the FAILED-handling paths.
+
+Because `run_id`/output-path construction and both `write_immutable_json`
+calls happen only after a fully successful `BUILDING` phase, a failure in
+any earlier stage (`asset_lookup_failed`, `source_fetch_failed`,
+`source_validation_failed`, `build_failed`) creates zero files under
+`--output-dir`. An `output_write_failed` conflict on the episodes file
+(pre-existing content with a different hash) leaves that file untouched
+and is detected before the manifest write is ever attempted, so no
+manifest is written either.
 
 ## Determinism and Immutability
 
@@ -324,7 +394,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (75 tests, no DB)
+3. synthetic/unit tests (90 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

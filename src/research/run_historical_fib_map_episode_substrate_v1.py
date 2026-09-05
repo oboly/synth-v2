@@ -95,12 +95,15 @@ from src.research.historical_fib_map_episode_substrate_v1 import (
     BUILDER_NAME,
     BUILDER_VERSION,
     CONTRACT_VERSION,
+    BuildCancelled,
     EpisodeConfig,
     EpisodeRecord,
+    EpisodeSubstrateError,
     HistoricalCandle,
     build_episodes,
     episodes_to_json,
     resolve_config,
+    validate_candle_sequence,
 )
 
 DEFAULT_OUTPUT_DIR = "data/research/historical_fib_map_episode_substrate_v1"
@@ -109,6 +112,11 @@ DEFAULT_OUTPUT_DIR = "data/research/historical_fib_map_episode_substrate_v1"
 # (see "Warmup and Run Identity" above -- deliberately excluded from
 # compute_run_id).
 DEFAULT_CHUNK_CANDLES = 5000
+
+# Cadence (in attempted as-of candle positions, not wall-clock time) at
+# which BUILDING polls _SignalState and prints a heartbeat -- see
+# build_episodes' `progress_interval_candles`.
+DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES = 500
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -513,8 +521,8 @@ class _SignalState:
     """Tracks the most recent SIGINT/SIGTERM so main() can stop at a safe boundary.
 
     Deliberately simple (a module-scoped flag, no threads/worker pool): the
-    only long-running phase is DB fetch, which already polls `triggered`
-    between bounded chunks via fetch_candles' `should_stop`.
+    long-running phases (DB fetch, BUILDING) poll `triggered` at a bounded
+    cadence via fetch_candles'/build_episodes' `should_stop` hooks.
     """
 
     def __init__(self) -> None:
@@ -532,13 +540,33 @@ class _SignalState:
         signal.signal(signal.SIGTERM, self.handle)
 
 
+# Stable machine-readable FAILED reason codes -- the exit code is only
+# "non-zero"; `reason` is the contract a caller should key off of.
+FAILED_REASON_ASSET_LOOKUP = "asset_lookup_failed"
+FAILED_REASON_SOURCE_FETCH = "source_fetch_failed"
+FAILED_REASON_SOURCE_VALIDATION = "source_validation_failed"
+FAILED_REASON_BUILD = "build_failed"
+FAILED_REASON_OUTPUT_WRITE = "output_write_failed"
+
+
+def _print_failed(reason: str, exc: BaseException, *, exit_code: int = 1) -> int:
+    """Print exactly one FAILED terminal line and return a non-zero exit code.
+
+    Only `str(exc)` is included (no traceback, no environment/connection
+    payload) to avoid leaking secrets in diagnostics. Callers must `return`
+    this result immediately -- one FAILED line per run, and FINISHED must
+    never follow it.
+    """
+    print(f"FAILED reason={reason} detail={exc}", flush=True)
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         validate_args(args)
     except ValueError as exc:
-        print(f"FAILED reason=invalid_arguments detail={exc}", flush=True)
-        return 2
+        return _print_failed("invalid_arguments", exc, exit_code=2)
     cfg: EpisodeConfig = resolve_config(args.timeframe)
 
     signal_state = _SignalState()
@@ -559,7 +587,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 130 if signal_state.signum == signal.SIGINT else 143
 
-    asset_id = fetch_asset_id(venue=args.venue, symbol=args.symbol)
+    try:
+        asset_id = fetch_asset_id(venue=args.venue, symbol=args.symbol)
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_ASSET_LOOKUP, exc)
     if signal_state.triggered:
         return _interrupted_exit()
 
@@ -568,32 +599,38 @@ def main(argv: list[str] | None = None) -> int:
 
     warmup_target = cfg.lookback_candles - 1
     print(f"FETCHING phase=warmup target={warmup_target}", flush=True)
-    warmup_candles = fetch_warmup_candles(
-        asset_id=asset_id,
-        symbol=args.symbol,
-        venue=args.venue,
-        interval_code=cfg.interval_code,
-        before_ts=args.from_ts,
-        limit=warmup_target,
-    )
+    try:
+        warmup_candles = fetch_warmup_candles(
+            asset_id=asset_id,
+            symbol=args.symbol,
+            venue=args.venue,
+            interval_code=cfg.interval_code,
+            before_ts=args.from_ts,
+            limit=warmup_target,
+        )
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_SOURCE_FETCH, exc)
     print(f"FETCHING phase=warmup fetched={len(warmup_candles)}", flush=True)
     if signal_state.triggered:
         return _interrupted_exit()
 
-    def _progress(count: int) -> None:
+    def _fetch_progress(count: int) -> None:
         print(f"FETCHING phase=requested_window fetched={count}", flush=True)
 
-    requested_candles = fetch_candles(
-        asset_id=asset_id,
-        symbol=args.symbol,
-        venue=args.venue,
-        interval_code=cfg.interval_code,
-        from_ts=args.from_ts,
-        to_ts=args.to_ts,
-        chunk_size=args.chunk_size_candles,
-        on_progress=_progress,
-        should_stop=lambda: signal_state.triggered,
-    )
+    try:
+        requested_candles = fetch_candles(
+            asset_id=asset_id,
+            symbol=args.symbol,
+            venue=args.venue,
+            interval_code=cfg.interval_code,
+            from_ts=args.from_ts,
+            to_ts=args.to_ts,
+            chunk_size=args.chunk_size_candles,
+            on_progress=_fetch_progress,
+            should_stop=lambda: signal_state.triggered,
+        )
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_SOURCE_FETCH, exc)
     if signal_state.triggered:
         return _interrupted_exit()
 
@@ -604,17 +641,34 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
+    try:
+        validate_candle_sequence(candles)
+    except EpisodeSubstrateError as exc:
+        return _print_failed(FAILED_REASON_SOURCE_VALIDATION, exc)
+
     print(f"BUILDING candles={len(candles)}", flush=True)
-    records: list[EpisodeRecord] = build_episodes(
-        symbol=args.symbol,
-        venue=args.venue,
-        candles=candles,
-        cfg=cfg,
-        episode_stride_candles=args.episode_stride_candles,
-        max_episodes=args.max_episodes,
-        emit_from_ts_utc=from_ts_dt,
-        emit_to_ts_utc=to_ts_dt,
-    )
+
+    def _build_progress(processed: int, total: int) -> None:
+        print(f"BUILDING progress processed={processed} total={total}", flush=True)
+
+    try:
+        records: list[EpisodeRecord] = build_episodes(
+            symbol=args.symbol,
+            venue=args.venue,
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=args.episode_stride_candles,
+            max_episodes=args.max_episodes,
+            emit_from_ts_utc=from_ts_dt,
+            emit_to_ts_utc=to_ts_dt,
+            on_progress=_build_progress,
+            should_stop=lambda: signal_state.triggered,
+            progress_interval_candles=DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES,
+        )
+    except BuildCancelled:
+        return _interrupted_exit()
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_BUILD, exc)
     print(f"BUILT episodes={len(records)}", flush=True)
     if signal_state.triggered:
         return _interrupted_exit()
@@ -636,29 +690,32 @@ def main(argv: list[str] | None = None) -> int:
     episodes_path = output_dir / "episodes_v1.json"
     manifest_path = output_dir / "manifest_v1.json"
 
-    print(f"WRITING episodes_path={episodes_path}", flush=True)
-    write_immutable_json(episodes_path, episodes_text)
+    try:
+        print(f"WRITING episodes_path={episodes_path}", flush=True)
+        write_immutable_json(episodes_path, episodes_text)
 
-    source_fetch_from_ts_utc = candles[0].open_ts_utc.isoformat() if candles else None
-    manifest = build_manifest(
-        run_id=run_id,
-        venue=args.venue,
-        symbol=args.symbol,
-        timeframe=args.timeframe,
-        from_ts=args.from_ts,
-        to_ts=args.to_ts,
-        episode_stride_candles=args.episode_stride_candles,
-        max_episodes=args.max_episodes,
-        candle_count=len(candles),
-        episode_count=len(records),
-        episodes_sha256=episodes_sha256,
-        warmup_candle_count=len(warmup_candles),
-        source_fetch_from_ts_utc=source_fetch_from_ts_utc,
-        chunk_size_candles=args.chunk_size_candles,
-    )
-    manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    print(f"WRITING manifest_path={manifest_path}", flush=True)
-    write_immutable_json(manifest_path, manifest_text)
+        source_fetch_from_ts_utc = candles[0].open_ts_utc.isoformat() if candles else None
+        manifest = build_manifest(
+            run_id=run_id,
+            venue=args.venue,
+            symbol=args.symbol,
+            timeframe=args.timeframe,
+            from_ts=args.from_ts,
+            to_ts=args.to_ts,
+            episode_stride_candles=args.episode_stride_candles,
+            max_episodes=args.max_episodes,
+            candle_count=len(candles),
+            episode_count=len(records),
+            episodes_sha256=episodes_sha256,
+            warmup_candle_count=len(warmup_candles),
+            source_fetch_from_ts_utc=source_fetch_from_ts_utc,
+            chunk_size_candles=args.chunk_size_candles,
+        )
+        manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        print(f"WRITING manifest_path={manifest_path}", flush=True)
+        write_immutable_json(manifest_path, manifest_text)
+    except Exception as exc:
+        return _print_failed(FAILED_REASON_OUTPUT_WRITE, exc)
 
     print(
         f"FINISHED episodes={len(records)} run_id={run_id} episodes_path={episodes_path} "
