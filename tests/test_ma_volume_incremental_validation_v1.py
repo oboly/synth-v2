@@ -39,6 +39,7 @@ def test_reports_raw_and_baseline_controlled_rank_association_per_split() -> Non
 
     assert [metric.split for metric in report.metrics] == ["DISCOVERY", "VALIDATION", "HOLDOUT"]
     assert all(metric.sample_count == 20 for metric in report.metrics)
+    assert all(metric.partial_sample_count == 20 for metric in report.metrics)
     assert all(metric.partial_spearman_given_baseline is not None for metric in report.metrics)
     assert all(metric.partial_spearman_given_baseline > 0.8 for metric in report.metrics)
 
@@ -51,9 +52,7 @@ def test_candidate_that_duplicates_baseline_has_no_incremental_rank_information(
         outcome_column="forward_return_pct",
     )
 
-    for metric in report.metrics:
-        value = metric.partial_spearman_given_baseline
-        assert value is None or abs(value) < 1e-9
+    assert all(metric.partial_spearman_given_baseline is None for metric in report.metrics)
 
 
 def test_split_metrics_are_isolated_from_other_split_outcomes() -> None:
@@ -81,7 +80,7 @@ def test_split_metrics_are_isolated_from_other_split_outcomes() -> None:
     assert before["HOLDOUT"] != after["HOLDOUT"]
 
 
-def test_missing_values_are_dropped_per_feature_without_cross_feature_leakage() -> None:
+def test_missing_candidate_values_reduce_both_samples() -> None:
     frame = _frame()
     frame.loc[0:4, "candidate_sma150_slope"] = np.nan
 
@@ -94,6 +93,32 @@ def test_missing_values_are_dropped_per_feature_without_cross_feature_leakage() 
 
     discovery = next(metric for metric in report.metrics if metric.split == "DISCOVERY")
     assert discovery.sample_count == 15
+    assert discovery.partial_sample_count == 15
+
+
+def test_missing_baseline_values_do_not_change_raw_spearman_sample() -> None:
+    frame = _frame()
+    baseline_report = evaluate_incremental_features(
+        frame,
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    missing_baseline = frame.copy()
+    missing_baseline.loc[0:4, "baseline_structure"] = np.nan
+    changed_report = evaluate_incremental_features(
+        missing_baseline,
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    before = next(metric for metric in baseline_report.metrics if metric.split == "DISCOVERY")
+    after = next(metric for metric in changed_report.metrics if metric.split == "DISCOVERY")
+    assert after.sample_count == before.sample_count == 20
+    assert after.raw_spearman == before.raw_spearman
+    assert after.partial_sample_count == 15
 
 
 def test_partial_metric_is_none_when_controls_exhaust_residual_degrees_of_freedom() -> None:
@@ -116,6 +141,7 @@ def test_partial_metric_is_none_when_controls_exhaust_residual_degrees_of_freedo
     )
 
     assert all(metric.sample_count == 3 for metric in report.metrics)
+    assert all(metric.partial_sample_count == 3 for metric in report.metrics)
     assert all(metric.partial_spearman_given_baseline is None for metric in report.metrics)
 
 
