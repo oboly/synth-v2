@@ -36,8 +36,8 @@ ASOF = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
 EVALUATED = datetime(2026, 9, 5, 0, 30, tzinfo=UTC)
 
 
-def test_signal_horizon_fields_are_copied_verbatim() -> None:
-    evidence = SignalHorizonV1Evidence(
+def _rotation_evidence(asset_id: int) -> SignalHorizonV1Evidence:
+    return SignalHorizonV1Evidence(
         family="ROTATION",
         component="PER_ASSET_PRESSURE",
         market="asset",
@@ -50,10 +50,14 @@ def test_signal_horizon_fields_are_copied_verbatim() -> None:
         observed_lifecycle=UNMEASURED_LIFECYCLE,
         asof_ts=ASOF,
         freshness=FreshnessState.FRESH,
-        provenance={"asset_id": 1},
+        provenance={"venue": "bitvavo", "asset_id": asset_id},
         raw={"score_total": Decimal("12.5"), "pressure_state": "ROTATION_IN"},
         reason_codes=("UPSTREAM_REASON",),
     )
+
+
+def test_signal_horizon_fields_are_copied_verbatim() -> None:
+    evidence = _rotation_evidence(1)
 
     cell = from_signal_horizon(evidence)
 
@@ -62,6 +66,20 @@ def test_signal_horizon_fields_are_copied_verbatim() -> None:
     assert cell.raw == evidence.raw
     assert cell.reason_codes == evidence.reason_codes
     assert cell.effective_horizon == evidence.effective_horizon
+    assert cell.scope_key == "venue=bitvavo;asset_id=1"
+
+
+def test_signal_horizon_generic_asset_market_supports_multiple_assets() -> None:
+    btc = from_signal_horizon(_rotation_evidence(1))
+    eth = from_signal_horizon(_rotation_evidence(2))
+
+    matrix = build_matrix(evaluated_at=EVALUATED, cells=[eth, btc])
+
+    assert len(matrix.cells) == 2
+    assert tuple(cell.scope_key for cell in matrix.cells) == (
+        "venue=bitvavo;asset_id=1",
+        "venue=bitvavo;asset_id=2",
+    )
 
 
 def test_momentum_exposes_raw_values_without_categorical_state() -> None:
