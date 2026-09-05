@@ -96,7 +96,7 @@ def test_missing_values_are_dropped_per_feature_without_cross_feature_leakage() 
     assert discovery.sample_count == 15
 
 
-def test_rejects_unknown_splits_and_overlapping_candidate_baseline_columns() -> None:
+def test_rejects_unknown_splits_missing_splits_and_overlapping_columns() -> None:
     frame = _frame()
     bad_split = frame.copy()
     bad_split.loc[0, "split"] = "TEST"
@@ -104,6 +104,15 @@ def test_rejects_unknown_splits_and_overlapping_candidate_baseline_columns() -> 
     with pytest.raises(MAVolumeValidationInputError, match="unknown split"):
         evaluate_incremental_features(
             bad_split,
+            candidate_columns=("candidate_sma150_slope",),
+            baseline_columns=("baseline_structure",),
+            outcome_column="forward_return_pct",
+        )
+
+    missing_holdout = frame.loc[frame["split"] != "HOLDOUT"].copy()
+    with pytest.raises(MAVolumeValidationInputError, match="missing required split"):
+        evaluate_incremental_features(
+            missing_holdout,
             candidate_columns=("candidate_sma150_slope",),
             baseline_columns=("baseline_structure",),
             outcome_column="forward_return_pct",
