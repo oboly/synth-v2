@@ -613,6 +613,7 @@ def _verify_production(
 def _verify_acceptance(
     *,
     capability_id: str,
+    cap: dict[str, Any],
     permit: dict[str, Any],
     actual_host: str,
     checkout_path: Path,
@@ -630,6 +631,37 @@ def _verify_acceptance(
         reasons.append("acceptance permit capability_identity mismatch")
     if permit.get("acceptance_host") != actual_host:
         reasons.append("actual hostname does not match acceptance host")
+
+    if cap.get("runtime_shape") == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY:
+        # A MANUAL_ACCEPTANCE_ONLY capability has no scheduled runtime to pin
+        # it to a host, so the registry's declared acceptance_host is the only
+        # host binding it has. Without this, a valid permit for any host would
+        # authorize the capability regardless of which host the registry
+        # actually assigned it to.
+        registry_host = cap.get("acceptance_host")
+        if not isinstance(registry_host, str) or not registry_host.strip():
+            reasons.append(
+                "registry acceptance_host is missing or invalid for "
+                f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} capability"
+            )
+            registry_host = None
+        elif registry_host == "UNASSIGNED":
+            reasons.append(
+                "registry acceptance_host is UNASSIGNED for "
+                f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} capability"
+            )
+            registry_host = None
+        if registry_host is not None:
+            if permit.get("acceptance_host") != registry_host:
+                reasons.append(
+                    "acceptance permit host does not match registry acceptance_host "
+                    f"{registry_host!r}"
+                )
+            if actual_host != registry_host:
+                reasons.append(
+                    "actual hostname does not match registry acceptance_host "
+                    f"{registry_host!r}"
+                )
 
     issued = _utc_literal_to_datetime(str(permit.get("issued_at_utc")))
     expiry = _utc_literal_to_datetime(str(permit.get("expiry_utc")))
@@ -821,6 +853,7 @@ def verify_writer_execution_authorization(
     permit_payload = permit_result.payload or {}
     reasons = _verify_acceptance(
         capability_id=capability_id,
+        cap=cap,
         permit=permit_payload,
         actual_host=host,
         checkout_path=checkout_path,

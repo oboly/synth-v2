@@ -1439,6 +1439,102 @@ def test_fast_rotation_c1_history_acceptance_permit_is_accepted(tmp_path: Path) 
     assert decision.authorization.capability_id == C1_CAP
 
 
+def test_fast_rotation_c1_history_acceptance_denied_when_permit_and_actual_host_agree_but_differ_from_registry(
+    tmp_path: Path,
+) -> None:
+    # The canonical registry pins fast_rotation_c1_history's acceptance_host
+    # to gurkdb. A permit and actual host that internally agree with each
+    # other (devlap == devlap) but disagree with the registry-owned host must
+    # still be denied -- otherwise a valid permit minted for any host could
+    # authorize a MANUAL_ACCEPTANCE_ONLY capability outside its registered
+    # host.
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    assert _cap(registry, C1_CAP)["acceptance_host"] == "gurkdb"
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json", _c1_permit(head, acceptance_host="devlap")
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any(
+        "acceptance permit host does not match registry acceptance_host" in r
+        for r in decision.reasons
+    )
+    assert any(
+        "actual hostname does not match registry acceptance_host" in r
+        for r in decision.reasons
+    )
+
+
+def test_fast_rotation_c1_history_acceptance_denied_when_registry_host_unassigned(
+    tmp_path: Path,
+) -> None:
+    registry = copy.deepcopy(json.loads(REGISTRY_PATH.read_text(encoding="utf-8")))
+    _cap(registry, C1_CAP)["acceptance_host"] = "UNASSIGNED"
+    registry_path = _write_json(tmp_path / "registry.json", registry)
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json", _c1_permit(head, acceptance_host="gurkdb")
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="gurkdb",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any(
+        "registry acceptance_host is UNASSIGNED" in r for r in decision.reasons
+    )
+
+
+def test_sector_rotation_scheduled_service_acceptance_host_pinning_is_unaffected(
+    tmp_path: Path,
+) -> None:
+    # Regression guard: the new registry-acceptance_host pinning applies only
+    # to runtime_shape=MANUAL_ACCEPTANCE_ONLY. sector_rotation_snapshot is
+    # SCHEDULED_SERVICE (runtime_shape omitted) and its canonical registry
+    # acceptance_host is gurkdb, yet a permit/actual host of devlap (which
+    # disagrees with the registry) must still be accepted exactly as before.
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    sector_cap = _cap(registry, SECTOR_CAP)
+    assert "runtime_shape" not in sector_cap
+    assert sector_cap["acceptance_host"] == "gurkdb"
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(tmp_path / "permit.json", _sector_permit(head))
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+
+
 def test_fast_rotation_c1_history_production_denied_while_manual_acceptance_only(
     tmp_path: Path,
 ) -> None:
