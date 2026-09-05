@@ -18,7 +18,9 @@ evidence owner for #617. This confirms and extends the prior finding in
 found one ATR usage (`local_ma_atr_context_v1.py`, exit-context only). This
 audit finds substantially more raw volatility-adjacent material than existed
 at that time — a persisted ATR/true-range primitive (`feat_candle.atr_14`,
-`atr_pct`, `range_pct`), a persisted realized-volatility primitive
+`atr_pct`; a separate `range_pct` variant is persisted only via the
+different `candle_feat_builder.py` path, not in `feat_candle` — see
+candidate 1 below), a persisted realized-volatility primitive
 (`asset_profile_snapshot.realized_volatility`), and several research-only
 volatility calculations — but none of it is an independently versioned,
 freshness/horizon-complete, #243-compliant evidence owner, and no accepted
@@ -26,9 +28,9 @@ production definition of volatility expansion/compression or upside/downside
 asymmetry exists anywhere in the repository.
 
 ```text
-ATR_TRUE_RANGE_PRIMITIVE_EXISTS=1 (feat_candle.atr_14/atr_pct/range_pct, not independently contracted)
+ATR_TRUE_RANGE_PRIMITIVE_EXISTS=1 (feat_candle.atr_14/atr_pct; range_pct exists only in the separate candle_feat_builder.py path, not in feat_candle; not independently contracted)
 REALIZED_VOLATILITY_PRIMITIVE_EXISTS=1 (asset_profile_snapshot.realized_volatility, bundled composite, not standalone)
-EXPANSION_COMPRESSION_DEFINITION_EXISTS=0 (only an untracked DB view label and research-only clustering thresholds)
+EXPANSION_COMPRESSION_DEFINITION_EXISTS=0 (no accepted PRODUCTION definition; research-only bases found: an untracked DB view label, research clustering thresholds, and a market-breath range-vs-baseline score formula)
 ASYMMETRY_DEFINITION_EXISTS=0
 GENERAL_VOLATILITY_EVIDENCE_OWNER_EXISTS=0
 ```
@@ -65,7 +67,7 @@ primary truth; no categorical volatility states are proposed by this audit.
 
 ## Candidate-owner inventory
 
-### 1. `feat_candle.atr_14` / `atr_pct` / `range_pct`: raw production primitives, not a contracted evidence owner
+### 1. `feat_candle.atr_14` / `atr_pct` (plus a separate `candle_feat_builder.py` `range_pct` variant): raw production primitives, not a contracted evidence owner
 
 - Producer: `src/features/etl_candle_feat.py::compute_atr` (Wilder-style ATR:
   true range = max(high-low, |high-prev_close|, |low-prev_close|); ATR =
@@ -244,10 +246,29 @@ primary truth; no categorical volatility states are proposed by this audit.
 - `src/analysis/known_signal_family_4h.py` similarly reads
   `v_known_signal_family_4h` (also untracked) joined with `next_return_4h`;
   same research-only classification.
-- **Classification: `RESEARCH_ONLY`** for all three. None may be treated as
+- `src/research/run_market_breath_analysis_v1.py` computes explicit,
+  reviewable `compression_score`/`expansion_score` fields (lines 384/386):
+  `compression = 0.55 * score_low_vs_baseline(current_range, median_range) +
+  0.45 * score_low_vs_baseline(atr_proxy, atr_median)`; `expansion = 0.45 *
+  score_high_vs_baseline(current_range, median_range) + 0.35 *
+  score_high_vs_baseline(abs(r3), return_baseline) + 0.20 *
+  score_high_vs_baseline(atr_proxy, atr_median)` — its own **fourth**
+  independent true-range/ATR-proxy implementation (`true_range_pct`, lines
+  ~195-211), scored against a rolling median baseline. This is the most
+  fully-formed expansion/compression *formula* found anywhere in the
+  repository, but it is a market-breath research script only: no DB
+  persistence (`db_writes=0`, writes only optional local JSONL/JSON files),
+  no `model_id`/`model_version`, no `asof`/freshness contract, consumed only
+  by other research scripts and by
+  `src/reporting/market_breath_context_bridge_v1.py` /
+  `market_breath_live_v1.py` for read-only display — never by
+  `selection_engine`/`decision_gate`/`execution_planner`/`executor`.
+- **Classification: `RESEARCH_ONLY`** for all four. None may be treated as
   an implicitly promoted production volatility owner; the untracked views
   in particular mean their exact logic is not currently auditable or
-  reviewable in-repo at all.
+  reviewable in-repo at all, and the market-breath formula, while the most
+  complete found, has never been reviewed or contracted as production
+  evidence.
 
 ### 4. Execution/display-context ATR usage: confirmed out of scope, not owner candidates
 
@@ -286,13 +307,13 @@ primary truth; no categorical volatility states are proposed by this audit.
   `rejection_event.py` — internal buffers/normalizers for a different
   evidence family). None is a general-purpose volatility owner and none
   should be broadened into that role — each has a distinct, independent ATR
-  reimplementation, meaning at least **four** separate ATR/true-range
+  reimplementation, meaning at least **five** separate ATR/true-range
   formulas exist across the repository
   (`etl_candle_feat.py`, `candle_feat_builder.py`,
   `local_ma_atr_context_v1.py`/`impulse_health_state_v1.py`,
   `fib_navigation_map_v1.py`, `range_state.py`, `rejection_event.py`,
-  `strategies/ema_trend_strategy.py`) with no single shared, canonical
-  implementation.
+  `strategies/ema_trend_strategy.py`, `run_market_breath_analysis_v1.py`)
+  with no single shared, canonical implementation.
 
 ### 5. `sector_rotation_engine_v1.py` dispersion: a different evidence family, not per-asset volatility
 
@@ -309,7 +330,8 @@ primary truth; no categorical volatility states are proposed by this audit.
 ## Expansion / compression audit
 
 No reviewed, versioned, in-repo production contract defines deterministic
-volatility expansion/compression. The only two candidate bases found are:
+volatility expansion/compression. The candidate bases found, all
+research-only, are:
 
 1. The DB view label `VOLATILITY_COMPRESSION_BREAKOUT_4H_V1` consumed by
    `src/research/pattern_families/volatility_compression_breakout_4h.py` —
@@ -321,11 +343,18 @@ volatility expansion/compression. The only two candidate bases found are:
    `vol >= 4.0` / `vol <= 2.0` thresholds inside `cluster_label_auto()` —
    explicitly research/discovery-only, invented for exploratory clustering,
    not a reviewed production baseline.
+3. `src/research/run_market_breath_analysis_v1.py`'s `compression_score`/
+   `expansion_score` (range-vs-rolling-median-baseline formula, detailed in
+   the candidate inventory above) — the most fully-formed formula found, but
+   still research-only, unpersisted, unversioned, and never reviewed as a
+   production evidence contract.
 
 **Classification: `MISSING`.** No ATR-current-vs-prior-ATR, ATR percentile,
 range-vs-rolling-baseline, Bollinger-width/percentile, or other normalized
-expansion/compression metric exists as an accepted, versioned production
-definition anywhere in the repository. This audit does not invent one.
+expansion/compression metric exists as an accepted, versioned **production**
+definition anywhere in the repository — candidate 3 above is the closest
+in form but has never been reviewed, persisted, or contracted for that role.
+This audit does not invent one.
 
 ## Asymmetry audit
 
