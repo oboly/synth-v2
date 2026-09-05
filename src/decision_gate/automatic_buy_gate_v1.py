@@ -34,6 +34,16 @@ from src.decision_gate.automatic_buy_live_permission_evaluation_v1 import (
     AutomaticBuyLivePermissionEvaluationV1,
     validate_automatic_buy_live_permission_evaluation_binding_v1,
 )
+from src.decision_gate.strategy_bucket_account_config_contract_v1 import (
+    StrategyBucketAccountConfigError,
+    resolve_strategy_bucket_account_config_v1,
+)
+from src.decision_gate.strategy_bucket_capacity_v1 import (
+    StrategyBucketCapacityError,
+    compute_strategy_bucket_capacity_v1,
+    validate_aggregate_sleeve_allocation_policy_v1,
+    validate_new_entry_within_capacity_v1,
+)
 from src.decision_gate.strategy_bucket_participation_evaluation_v1 import (
     DECISION_BLOCKED as BUCKET_DECISION_BLOCKED,
     REQUEST_KIND_NEW_ENTRY,
@@ -75,6 +85,17 @@ REASON_NO_FREE_QUOTE_BALANCE: Final[str] = "NO_FREE_QUOTE_BALANCE"
 REASON_RISK_BOUND_UNRESOLVED: Final[str] = "AUTOMATIC_BUY_RISK_BOUND_UNRESOLVED"
 REASON_INVALID_STRATEGY_BUCKET_PARTICIPATION_REQUEST: Final[str] = "INVALID_STRATEGY_BUCKET_PARTICIPATION_REQUEST"
 REASON_INVALID_PROTECTION_EVALUATION_BINDING: Final[str] = "INVALID_PROTECTION_EVALUATION_BINDING"
+# Issue #752: capital-sleeve capacity enforcement reason codes. Only reached
+# when the resolved bucket config configures allocation_max_pct -- a legacy
+# #279-only config (allocation_max_pct is None) never produces these.
+REASON_STRATEGY_BUCKET_CONFIGURATION_UNRESOLVED_FOR_CAPACITY: Final[str] = (
+    "STRATEGY_BUCKET_CONFIGURATION_UNRESOLVED_FOR_CAPACITY"
+)
+REASON_STRATEGY_BUCKET_CAPACITY_EVIDENCE_MISSING: Final[str] = "STRATEGY_BUCKET_CAPACITY_EVIDENCE_MISSING"
+REASON_STRATEGY_BUCKET_CAPACITY_EXCEEDED: Final[str] = "STRATEGY_BUCKET_CAPACITY_EXCEEDED_FOR_NEW_ENTRY"
+REASON_AGGREGATE_SLEEVE_ALLOCATION_POLICY_EXCEEDED: Final[str] = (
+    "AGGREGATE_SLEEVE_ALLOCATION_MAX_PCT_EXCEEDS_ACCOUNT_POLICY"
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +141,14 @@ class AutomaticBuyGateContextV1:
     account_protection_evaluation: AccountProtectionEvaluationV1 | None = None
     live_trading_enabled: bool = False
     automatic_buy_live_permission_evaluation: AutomaticBuyLivePermissionEvaluationV1 | None = None
+    # Issue #752: capital-sleeve capacity evidence. ``None`` means "not
+    # supplied" and is fail-closed for NEW exposure only when the resolved
+    # bucket config actually configures ``allocation_max_pct`` (a legacy
+    # #279-only config with ``allocation_max_pct is None`` is never blocked
+    # by a missing value here -- see ``_evaluate_strategy_bucket_capacity_v1``).
+    account_equity_eur: Decimal | None = None
+    strategy_owned_exposure_eur: Decimal | None = None
+    active_buy_reservations_eur: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True)
@@ -172,6 +201,43 @@ def _decision(
         strategy_bucket_id=context.strategy_bucket_id,
         strategy_bucket_reason_code=bucket_reason,
     )
+
+
+def _resolve_enabled_bucket_configs_for_aggregate_check_v1(
+    context: AutomaticBuyGateContextV1,
+) -> tuple:
+    """Resolve every distinct bucket id in the account-scoped config rows.
+
+    ``context.strategy_bucket_config_rows`` is already loaded account-wide
+    (not filtered to the candidate's own bucket) by the caller, so this is
+    the "account-scoped bucket set" the aggregate fail-closed policy is
+    defined over -- never a separate query, never duplicated reservation
+    accounting. A bucket id that fails to resolve (unresolved/ambiguous) at
+    ``context.evaluation_ts_utc`` is skipped here defensively; that is a
+    data-quality condition for that other bucket, not this candidate's
+    evaluation, and the candidate's own bucket resolution is independently
+    required to succeed by ``evaluate_strategy_bucket_participation_v1``.
+    """
+    bucket_ids = sorted({
+        row.strategy_bucket_id
+        for row in context.strategy_bucket_config_rows
+        if row.trading_account_id == context.trading_account_id
+    })
+    resolved: list = []
+    for bucket_id in bucket_ids:
+        try:
+            resolved.append(
+                resolve_strategy_bucket_account_config_v1(
+                    context.strategy_bucket_config_rows,
+                    context.strategy_bucket_config_revocations,
+                    trading_account_id=context.trading_account_id,
+                    strategy_bucket_id=bucket_id,
+                    at=context.evaluation_ts_utc,
+                )
+            )
+        except StrategyBucketAccountConfigError:
+            continue
+    return tuple(resolved)
 
 
 def _evaluate_automatic_buy_candidate_permission_base_v1(
@@ -312,6 +378,44 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             bucket_reason=bucket_decision.reason_code,
         )
 
+    # Issue #752: capital-sleeve capacity enforcement. Reducing/protective
+    # SELL never reaches this function (automatic-BUY is always a NEW_ENTRY
+    # request, see ``bucket_request`` above), so nothing here can ever block
+    # a valid exit -- that authority lives entirely in
+    # ``strategy_owned_inventory_ledger_v1.validate_sell_authority_v1``,
+    # which this module never calls.
+    all_resolved_bucket_configs = _resolve_enabled_bucket_configs_for_aggregate_check_v1(context)
+    try:
+        validate_aggregate_sleeve_allocation_policy_v1(all_resolved_bucket_configs)
+    except StrategyBucketCapacityError:
+        return _decision(
+            STATE_DENIED,
+            REASON_AGGREGATE_SLEEVE_ALLOCATION_POLICY_EXCEEDED,
+            candidate,
+            context=context,
+            bucket_reason=bucket_decision.reason_code,
+        )
+
+    try:
+        resolved_bucket_config = resolve_strategy_bucket_account_config_v1(
+            context.strategy_bucket_config_rows,
+            context.strategy_bucket_config_revocations,
+            trading_account_id=context.trading_account_id,
+            strategy_bucket_id=context.strategy_bucket_id,
+            at=context.evaluation_ts_utc,
+        )
+    except StrategyBucketAccountConfigError:
+        # Should be unreachable: evaluate_strategy_bucket_participation_v1
+        # above already resolved this exact identity successfully from the
+        # same rows/revocations. Fail closed defensively rather than assume.
+        return _decision(
+            STATE_NON_ACTIONABLE,
+            REASON_STRATEGY_BUCKET_CONFIGURATION_UNRESOLVED_FOR_CAPACITY,
+            candidate,
+            context=context,
+            bucket_reason=bucket_decision.reason_code,
+        )
+
     ceiling = context.proposed_position_amount_eur
     if context.account_mode == ACCOUNT_MODE_LIVE:
         ceiling = min(ceiling, context.free_quote_balance_eur)
@@ -325,6 +429,36 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             context=context,
             bucket_reason=bucket_decision.reason_code,
         )
+
+    # allocation_max_pct is None for a legacy #279-only config -- this
+    # preserves prior behavior exactly, no new blocking is ever introduced
+    # for a bucket that never opted into percentage-of-equity capacity.
+    if resolved_bucket_config.allocation_max_pct is not None:
+        if context.account_equity_eur is None or context.strategy_owned_exposure_eur is None:
+            return _decision(
+                STATE_DENIED,
+                REASON_STRATEGY_BUCKET_CAPACITY_EVIDENCE_MISSING,
+                candidate,
+                context=context,
+                bucket_reason=bucket_decision.reason_code,
+            )
+        try:
+            capacity = compute_strategy_bucket_capacity_v1(
+                resolved_bucket_config,
+                account_equity_eur=context.account_equity_eur,
+                owned_exposure_eur=context.strategy_owned_exposure_eur,
+                active_reservations_eur=context.active_buy_reservations_eur,
+            )
+            validate_new_entry_within_capacity_v1(capacity, proposed_position_amount_eur=ceiling)
+        except StrategyBucketCapacityError:
+            return _decision(
+                STATE_DENIED,
+                REASON_STRATEGY_BUCKET_CAPACITY_EXCEEDED,
+                candidate,
+                context=context,
+                bucket_reason=bucket_decision.reason_code,
+            )
+
     return _decision(
         STATE_APPROVED,
         REASON_OK,

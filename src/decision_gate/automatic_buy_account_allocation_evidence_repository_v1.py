@@ -38,6 +38,14 @@ from src.decision_gate.automatic_buy_account_permission_repository_v1 import (
     load_automatic_buy_account_permission_revocation_history_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import StrategyBucketAccountConfigV1
+from src.decision_gate.strategy_owned_inventory_ledger_repository_v1 import (
+    StrategyOwnedInventoryLedgerRepositoryError,
+    load_strategy_owned_fill_events_for_bucket_v1,
+)
+from src.decision_gate.strategy_owned_inventory_ledger_v1 import (
+    StrategyOwnedInventoryLedgerError,
+    compute_bucket_owned_exposure_eur_v1,
+)
 from src.market_data.held_market_coverage_v1 import (
     AssetRegistryRow,
     HeldBalance,
@@ -489,6 +497,24 @@ def load_automatic_buy_account_allocation_evidence_v1(
         else Decimal("0")
     )
 
+    # Issue #752: strategy_owned_exposure_eur is the exact bucket's own
+    # attributed exposure from strategy_owned_inventory_ledger_v1 -- never
+    # the whole-account current_bucket_amount_eur approximation above.
+    # active_buy_reservations_eur is 0: no canonical BUY-side EUR
+    # reservation source exists in this repository today.
+    try:
+        bucket_fill_events = load_strategy_owned_fill_events_for_bucket_v1(
+            conn, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+        strategy_owned_exposure_eur = compute_bucket_owned_exposure_eur_v1(
+            bucket_fill_events, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+    except (StrategyOwnedInventoryLedgerRepositoryError, StrategyOwnedInventoryLedgerError) as exc:
+        raise AutomaticBuyAccountAllocationEvidenceRepositoryError(
+            "STRATEGY_OWNED_EXPOSURE_EVIDENCE_INVALID"
+        ) from exc
+    active_buy_reservations_eur = Decimal("0")
+
     evidence = AutomaticBuyAccountAllocationEvidenceV1(
         evidence_contract_version=EVIDENCE_CONTRACT_VERSION,
         trading_account_id=trading_account_id,
@@ -512,6 +538,9 @@ def load_automatic_buy_account_allocation_evidence_v1(
         unavailable_position_asset_ids=unavailable_position_asset_ids,
         account_state_snapshot_run_id=bundle.account_state_snapshot_run_id,
         trading_account_balance_snapshot_id=balance_snapshot_id,
+        account_equity_eur=nav_eur,
+        strategy_owned_exposure_eur=strategy_owned_exposure_eur,
+        active_buy_reservations_eur=active_buy_reservations_eur,
     )
     try:
         validate_automatic_buy_account_allocation_evidence_v1(evidence, max_age_seconds=max_account_state_age_seconds)

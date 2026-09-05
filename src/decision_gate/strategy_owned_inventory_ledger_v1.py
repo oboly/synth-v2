@@ -222,6 +222,49 @@ def compute_owned_quantity_v1(
     return total
 
 
+def compute_bucket_owned_exposure_eur_v1(
+    events: Iterable[StrategyOwnedFillEventV1],
+    *,
+    trading_account_id: int,
+    strategy_bucket_id: str,
+) -> Decimal:
+    """Return one bucket's total attributed EUR exposure across every lineage.
+
+    Unlike :func:`compute_owned_quantity_v1` (scoped to one exact
+    trade/strategy lineage's base quantity), this aggregates
+    ``quote_notional`` across every lineage sharing the same
+    ``(trading_account_id, strategy_bucket_id)`` -- the scope
+    ``strategy_bucket_capacity_v1``'s bucket ceiling is defined over. Used
+    as the ``owned_exposure_eur`` input to
+    ``strategy_bucket_capacity_v1.compute_strategy_bucket_capacity_v1`` so a
+    bucket's already-committed capital (cost-basis notional, not
+    mark-to-market) reduces its own remaining capacity for NEW entries.
+
+    Deduplicated by canonical ``order_identity`` first, exactly like
+    ``compute_owned_quantity_v1``, so a duplicate reconciliation event never
+    double-counts. Fails closed if the deduplicated ledger is internally
+    inconsistent (computed exposure would be negative).
+    """
+    if trading_account_id <= 0 or not _nonempty(strategy_bucket_id):
+        raise StrategyOwnedInventoryLedgerError("INVALID_STRATEGY_BUCKET_EXPOSURE_LOOKUP")
+    deduped = _dedup_by_order_identity(events)
+    total = Decimal("0")
+    for event in deduped:
+        if (
+            event.lineage.trading_account_id != trading_account_id
+            or event.lineage.strategy_bucket_id != strategy_bucket_id
+        ):
+            continue
+        validate_fill_event_v1(event)
+        if event.side == SIDE_BUY:
+            total += event.quote_notional
+        else:
+            total -= event.quote_notional
+    if total < 0:
+        raise StrategyOwnedInventoryLedgerError("NEGATIVE_BUCKET_EXPOSURE_LEDGER_INCONSISTENT")
+    return total
+
+
 def validate_sell_authority_v1(
     events: Iterable[StrategyOwnedFillEventV1],
     *,

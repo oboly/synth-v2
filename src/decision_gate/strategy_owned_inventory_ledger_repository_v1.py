@@ -103,6 +103,33 @@ def load_strategy_owned_fill_events_v1(
     return tuple(_row_to_event(row) for row in rows)
 
 
+def load_strategy_owned_fill_events_for_bucket_v1(
+    conn: Any, *, trading_account_id: int, strategy_bucket_id: str,
+) -> tuple[StrategyOwnedFillEventV1, ...]:
+    """Load every persisted fill event for one bucket across all lineages.
+
+    Wider than :func:`load_strategy_owned_fill_events_v1` (one exact
+    trade/strategy lineage): this is the bucket-wide scope
+    ``strategy_owned_inventory_ledger_v1.compute_bucket_owned_exposure_eur_v1``
+    aggregates over, matching the scope a bucket's percentage/absolute
+    ceiling is defined over in ``strategy_bucket_capacity_v1``.
+    """
+    if trading_account_id <= 0 or not strategy_bucket_id:
+        raise StrategyOwnedInventoryLedgerRepositoryError("INVALID_BUCKET_LOOKUP")
+    sql = """
+    SELECT trading_account_id, venue, market, strategy_bucket_id, strategy_id,
+           strategy_version, setup_id, execution_plan_reference_id, order_identity,
+           side, base_quantity, quote_notional, occurred_ts_utc, source_provenance
+    FROM strategy_owned_inventory_ledger_v1
+    WHERE trading_account_id = %s AND strategy_bucket_id = %s
+    ORDER BY occurred_ts_utc, strategy_owned_inventory_ledger_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, strategy_bucket_id))
+        rows = [dict(row) for row in cur.fetchall()]
+    return tuple(_row_to_event(row) for row in rows)
+
+
 def record_strategy_owned_fill_event_v1(conn: Any, *, event: StrategyOwnedFillEventV1) -> bool:
     """Append one fill event; idempotent on duplicate ``order_identity``.
 

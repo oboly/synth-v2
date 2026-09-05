@@ -84,6 +84,65 @@ ACCOUNT_POLICY` -- a fail-closed configuration error an operator must fix.
 This module never renormalizes percentages and never authorizes borrowing
 unused capacity across sleeves; unused capacity may remain cash/reserve.
 
+### Enforcement in the real automatic-BUY gate path
+
+`allocation_max_pct`/aggregate capacity is not only a standalone helper --
+it is called from inside the actual canonical account-aware decision
+function, `evaluate_automatic_buy_candidate_permission_v1` in
+`src/decision_gate/automatic_buy_gate_v1.py`, the same function
+`src/entry_policy/automatic_buy_runtime_orchestrator_v1.py` invokes at
+runtime for every candidate. `AutomaticBuyGateContextV1` gained three new
+fields: `account_equity_eur`, `strategy_owned_exposure_eur` (both
+`Decimal | None`, default `None`), and `active_buy_reservations_eur`
+(default `Decimal("0")`, since no canonical BUY-side EUR reservation source
+exists in this repository today -- only SELL-side reservations do, via
+`sell_reservation_v1`).
+
+After the existing #279 bucket-participation check passes, the gate:
+
+1. Resolves every distinct bucket id present in the caller's own
+   account-scoped `strategy_bucket_config_rows` (already loaded account-wide,
+   never a new query) and calls `validate_aggregate_sleeve_allocation_policy_v1`
+   -- a misconfigured *sibling* bucket's aggregate violation blocks this
+   candidate's NEW exposure too, matching the aggregate policy's
+   account-wide intent.
+2. Re-resolves the candidate's own bucket config (deterministic, from the
+   same rows already validated by the #279 participation check) and, only
+   if it configures `allocation_max_pct`, requires `account_equity_eur` and
+   `strategy_owned_exposure_eur` to be present -- fails closed
+   (`STRATEGY_BUCKET_CAPACITY_EVIDENCE_MISSING`) for NEW exposure otherwise.
+   A legacy `allocation_max_pct is None` config is never affected by a
+   missing value here, preserving #279's original behavior exactly.
+3. Computes `strategy_bucket_capacity_v1` capacity and calls
+   `validate_new_entry_within_capacity_v1` against the same final
+   gate-approved notional ceiling (`ceiling`, after the existing
+   `free_quote_balance_eur`/`max_automatic_buy_notional_eur` reductions) --
+   never against the raw unbounded request.
+
+None of this ever runs for a reducing/protective exit: the automatic-BUY
+gate only ever evaluates `REQUEST_KIND_NEW_ENTRY` requests; SELL/exit
+authority is `strategy_owned_inventory_ledger_v1.validate_sell_authority_v1`
+alone, which this module never calls.
+
+Real evidence source: `strategy_owned_exposure_eur` is queried from the
+ledger (`strategy_owned_inventory_ledger_v1.compute_bucket_owned_exposure_eur_v1`
+over `strategy_owned_inventory_ledger_repository_v1.load_strategy_owned_fill_events_for_bucket_v1`)
+inside `automatic_buy_account_allocation_evidence_repository_v1.py` (#474),
+the same decision-gate-owned repository that already computes
+`account_equity_eur` (exposed verbatim from its existing internal `nav_eur`
+= positions + free quote balance -- not a parallel computation). These flow
+`evidence -> AutomaticBuyRuntimeInputV1 -> AutomaticBuyGateContextV1` exactly
+the way every other account-owned field on the runtime input already does
+in `automatic_buy_runtime_repository_v1.build_runtime_item_v1`
+(`dataclasses.replace`, overwriting any placeholder the persisted row
+carried). A separate, older lane
+(`automatic_buy_source_runtime_input_writer_v1.py`, a placeholder-based
+DRY_RUN acceptance harness pre-dating #474/#752) does not call this evidence
+repository at all and so never supplies real values for these three fields;
+its rows fall back to the new fields' `0`/`None` defaults, which is a
+pre-existing, orthogonal gap in that harness (not introduced or worsened by
+#752) rather than a #752 defect.
+
 ## Strategy-owned inventory ledger (new; no canonical existing owner fit)
 
 `db/migrations/20260905_strategy_owned_inventory_ledger_v1.sql` adds
@@ -193,8 +252,11 @@ integration task.
 
 - #279 remains the sole owner of `strategy_bucket_account_config_v1`; this
   change only adds columns and a capacity-computation module layered on top.
-- #399's automatic-BUY gate/planner/handoff pipeline behavior is otherwise
-  unchanged; only the one identity-propagation gap above was closed.
+- #399's automatic-BUY gate/planner/handoff pipeline behavior is unchanged
+  for any bucket that does not configure `allocation_max_pct` (verified by
+  the full existing #279/#399 regression suite passing unmodified); the
+  identity-propagation gap above was closed, and the gate now additionally
+  enforces sleeve capacity for a bucket that does configure it.
 - #753 (Fib/Elliott automatic-exit policy) is expected to be the first
   automated SELL/exit path; it must call `validate_sell_authority_v1` (and,
   for a NEW entry, `validate_new_entry_within_capacity_v1`) rather than

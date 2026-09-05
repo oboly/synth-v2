@@ -114,6 +114,21 @@ class AutomaticBuyAccountAllocationEvidenceV1:
     unavailable_position_asset_ids: tuple[int, ...]
     account_state_snapshot_run_id: int
     trading_account_balance_snapshot_id: int | None
+    # Issue #752: capital-sleeve capacity evidence. ``account_equity_eur`` is
+    # the same NAV (positions + free quote balance) this contract already
+    # computes internally for ``current_asset_exposure_pct`` -- exposed here
+    # verbatim, not a parallel computation. ``strategy_owned_exposure_eur``
+    # is the exact bucket's own attributed exposure from
+    # ``strategy_owned_inventory_ledger_v1`` (never the whole-account
+    # ``current_bucket_amount_eur`` approximation above). ``active_buy_
+    # reservations_eur`` defaults to 0: no canonical BUY-side EUR
+    # reservation source exists in this repository today (only SELL-side
+    # reservations do, via ``sell_reservation_v1``); this field is wired for
+    # a future canonical source to populate without another contract change,
+    # and is never invented/estimated here.
+    account_equity_eur: Decimal = Decimal("0")
+    strategy_owned_exposure_eur: Decimal = Decimal("0")
+    active_buy_reservations_eur: Decimal = Decimal("0")
 
 
 def _aware(value: datetime) -> bool:
@@ -198,5 +213,14 @@ def validate_automatic_buy_account_allocation_evidence_v1(
         or value.current_asset_exposure_pct > 100
         or tuple(sorted(set(value.unavailable_position_asset_ids))) != value.unavailable_position_asset_ids
         or any(asset_id <= 0 for asset_id in value.unavailable_position_asset_ids)
+        or not isinstance(value.account_equity_eur, Decimal)
+        or not value.account_equity_eur.is_finite()
+        or value.account_equity_eur < 0
+        or not isinstance(value.strategy_owned_exposure_eur, Decimal)
+        or not value.strategy_owned_exposure_eur.is_finite()
+        or value.strategy_owned_exposure_eur < 0
+        or not isinstance(value.active_buy_reservations_eur, Decimal)
+        or not value.active_buy_reservations_eur.is_finite()
+        or value.active_buy_reservations_eur < 0
     ):
         raise AutomaticBuyAccountAllocationEvidenceContractError("INVALID_ACCOUNT_ALLOCATION_EVIDENCE_AMOUNTS")

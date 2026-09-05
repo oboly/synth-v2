@@ -149,6 +149,24 @@ CREATE TABLE strategy_bucket_account_config_revocation_v1 (
     reason TEXT NOT NULL
 );
 
+CREATE TABLE strategy_owned_inventory_ledger_v1 (
+    strategy_owned_inventory_ledger_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trading_account_id INTEGER NOT NULL,
+    venue TEXT NOT NULL,
+    market TEXT NOT NULL,
+    strategy_bucket_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    setup_id TEXT NOT NULL,
+    execution_plan_reference_id TEXT NOT NULL,
+    order_identity TEXT NOT NULL,
+    side TEXT NOT NULL,
+    base_quantity TEXT NOT NULL,
+    quote_notional TEXT NOT NULL,
+    occurred_ts_utc TEXT NOT NULL,
+    source_provenance TEXT NOT NULL
+);
+
 CREATE TABLE automatic_buy_account_permission_v1 (
     automatic_buy_account_permission_id INTEGER PRIMARY KEY AUTOINCREMENT,
     trading_account_id INTEGER NOT NULL,

@@ -94,6 +94,9 @@ def _row_to_input(row: dict[str, Any]) -> AutomaticBuyRuntimeInputV1:
             ),
             source_provenance=str(row["source_provenance"]),
             live_trading_enabled=bool(row.get("live_trading_enabled", 0)),
+            account_equity_eur=Decimal(str(row.get("account_equity_eur", "0") or "0")),
+            strategy_owned_exposure_eur=Decimal(str(row.get("strategy_owned_exposure_eur", "0") or "0")),
+            active_buy_reservations_eur=Decimal(str(row.get("active_buy_reservations_eur", "0") or "0")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise AutomaticBuyRuntimeRepositoryError("INVALID_AUTOMATIC_BUY_RUNTIME_INPUT_ROW") from exc
@@ -204,6 +207,9 @@ def build_runtime_item_v1(conn: Any, *, runtime_input: AutomaticBuyRuntimeInputV
         current_bucket_amount_eur=account_allocation_evidence.current_bucket_amount_eur,
         current_open_positions=account_allocation_evidence.current_open_positions,
         current_asset_exposure_pct=account_allocation_evidence.current_asset_exposure_pct,
+        account_equity_eur=account_allocation_evidence.account_equity_eur,
+        strategy_owned_exposure_eur=account_allocation_evidence.strategy_owned_exposure_eur,
+        active_buy_reservations_eur=account_allocation_evidence.active_buy_reservations_eur,
     )
     try:
         validate_runtime_input_v1(runtime_input)
