@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import signal
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -16,6 +18,49 @@ from src.features.momentum_evidence_snapshot_v1 import (
 )
 
 RUNNER_NAME = "momentum_evidence_snapshot_v1"
+
+
+@dataclass(frozen=True)
+class ResolvedMarketIdentity:
+    venue: str
+    market: str
+    asset_id: int
+
+
+def resolve_market_identity(
+    conn: Any,
+    *,
+    venue: str,
+    market: str,
+    expected_asset_id: int,
+) -> ResolvedMarketIdentity:
+    """Resolve one canonical venue_market identity and fail closed on mismatch."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT venue, market, base_asset_id
+            FROM venue_market
+            WHERE venue = %s AND market = %s
+            LIMIT 2
+            """,
+            (venue, market),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        raise ValueError("CANONICAL_MARKET_NOT_FOUND")
+    if len(rows) != 1:
+        raise RuntimeError("CANONICAL_MARKET_AMBIGUOUS")
+
+    row = rows[0]
+    resolved = ResolvedMarketIdentity(
+        venue=str(row["venue"]),
+        market=str(row["market"]),
+        asset_id=int(row["base_asset_id"]),
+    )
+    if resolved.asset_id != expected_asset_id:
+        raise ValueError("CANONICAL_MARKET_ASSET_MISMATCH")
+    return resolved
 
 
 def _asof(value: str) -> datetime:
@@ -80,10 +125,28 @@ def main(argv: list[str] | None = None) -> int:
         load_dotenv()
         conn = get_db_connection()
 
+        print(f"PHASE_START runner={RUNNER_NAME} phase=resolve_market_identity", flush=True)
+        phase_started = time.monotonic()
+        identity = resolve_market_identity(
+            conn,
+            venue=args.venue,
+            market=args.market,
+            expected_asset_id=args.asset_id,
+        )
+        print(
+            f"PHASE_END runner={RUNNER_NAME} phase=resolve_market_identity "
+            f"venue={identity.venue} market={identity.market} asset_id={identity.asset_id} "
+            f"elapsed={_elapsed(phase_started)}",
+            flush=True,
+        )
+
         print(f"PHASE_START runner={RUNNER_NAME} phase=fetch_candles", flush=True)
         phase_started = time.monotonic()
         candles = fetch_candles_for_asof(
-            conn, asset_id=args.asset_id, venue=args.venue, asof_ts_utc=args.asof_ts
+            conn,
+            asset_id=identity.asset_id,
+            venue=identity.venue,
+            asof_ts_utc=args.asof_ts,
         )
         print(
             f"PHASE_END runner={RUNNER_NAME} phase=fetch_candles rows={len(candles)} "
@@ -97,9 +160,9 @@ def main(argv: list[str] | None = None) -> int:
             candles=candles,
             asof_ts_utc=args.asof_ts,
             evaluated_at=evaluated_at,
-            venue=args.venue,
-            asset_id=args.asset_id,
-            market=args.market,
+            venue=identity.venue,
+            asset_id=identity.asset_id,
+            market=identity.market,
             interval_code="4h",
         )
         print(f"PHASE_END runner={RUNNER_NAME} phase=build_evidence elapsed={_elapsed(phase_started)}", flush=True)
