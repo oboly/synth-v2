@@ -2230,6 +2230,184 @@ class TestEmitWindowFilter:
         assert all(r.feature.map_creation_ts_utc < emit_to for r in filtered_records)
 
 
+class TestEmitGateBeforeMapConstruction:
+    """DB-smoke fix (#727 follow-up): the emit-window candidate gate must run
+    BEFORE build_episode_feature()/build_row() (canonical map construction),
+    not only after. A structurally malformed historical canonical map
+    (CanonicalFibMapError) at an EMA-prehistory or forward-tail as-of
+    position must never be attempted and must never abort the build; the
+    identical condition at an as-of position INSIDE the requested emission
+    window must still propagate and fail the build closed -- this is not
+    caught or suppressed anywhere in this module.
+    """
+
+    @staticmethod
+    def _tracking_build_row(
+        monkeypatch: pytest.MonkeyPatch, *, poison_ts: datetime | None = None
+    ) -> list[datetime]:
+        """Patch substrate.build_row to record every now_utc it is called
+        with, delegating to the real canonical build_row -- except at
+        `poison_ts`, where it raises CanonicalFibMapError instead, exactly
+        as the real canonical_fib_zone_map_v1.build_row does for a
+        structurally malformed historical map (see the #727 DB-smoke
+        finding: a low-priced/high-relative-swing period can legitimately
+        produce a negative required Fib extension level)."""
+        real_build_row = substrate.build_row
+        calls: list[datetime] = []
+
+        def _fake_build_row(*, now_utc: datetime, **kwargs: Any) -> dict[str, Any]:
+            calls.append(now_utc)
+            if poison_ts is not None and now_utc == poison_ts:
+                raise canonical_projection.CanonicalFibMapError(
+                    "TST: canonical builder returned malformed levels"
+                )
+            return real_build_row(now_utc=now_utc, **kwargs)
+
+        monkeypatch.setattr(substrate, "build_row", _fake_build_row)
+        return calls
+
+    def test_malformed_map_in_prehistory_does_not_abort_build(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+
+        # A stride-eligible as-of position strictly BEFORE the requested
+        # emission window -- pre-#727-followup-fix, this position would
+        # have been attempted as a build_row candidate purely to build up
+        # EMA/trend state, even though it can never itself be emitted.
+        poison_index = cfg.min_window_candles + 5
+        poison_ts = candles[poison_index].close_ts_utc
+        emit_from = candles[poison_index + 20].close_ts_utc
+        emit_to = candles[-1].close_ts_utc + timedelta(days=1)
+        assert poison_ts < emit_from
+
+        baseline = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=1,
+            emit_from_ts_utc=emit_from,
+            emit_to_ts_utc=emit_to,
+        )
+
+        calls = self._tracking_build_row(monkeypatch, poison_ts=poison_ts)
+        records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=1,
+            emit_from_ts_utc=emit_from,
+            emit_to_ts_utc=emit_to,
+        )
+
+        assert poison_ts not in calls
+        assert [r.feature.episode_id for r in records] == [r.feature.episode_id for r in baseline]
+
+    def test_malformed_map_in_forward_tail_does_not_abort_build(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+
+        emit_from = candles[cfg.min_window_candles + 5].close_ts_utc
+        # A stride-eligible as-of position at/after the requested emission
+        # window's upper bound -- the "forward-tail region" from the
+        # runner's point of view (candles fetched only for forward-label
+        # evidence, never eligible for emission).
+        poison_index = len(candles) - 3
+        poison_ts = candles[poison_index].close_ts_utc
+        emit_to = poison_ts
+        assert emit_from < emit_to <= candles[-1].close_ts_utc
+
+        baseline = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=1,
+            emit_from_ts_utc=emit_from,
+            emit_to_ts_utc=emit_to,
+        )
+
+        calls = self._tracking_build_row(monkeypatch, poison_ts=poison_ts)
+        records = build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=1,
+            emit_from_ts_utc=emit_from,
+            emit_to_ts_utc=emit_to,
+        )
+
+        assert poison_ts not in calls
+        assert [r.feature.episode_id for r in records] == [r.feature.episode_id for r in baseline]
+
+    def test_malformed_map_inside_emit_window_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+
+        emit_from = candles[cfg.min_window_candles + 5].close_ts_utc
+        emit_to = candles[-1].close_ts_utc + timedelta(days=1)
+        poison_index = cfg.min_window_candles + 20
+        poison_ts = candles[poison_index].close_ts_utc
+        assert emit_from <= poison_ts < emit_to
+
+        calls = self._tracking_build_row(monkeypatch, poison_ts=poison_ts)
+
+        with pytest.raises(canonical_projection.CanonicalFibMapError):
+            build_episodes(
+                symbol="TST",
+                venue="bitvavo",
+                candles=candles,
+                cfg=cfg,
+                episode_stride_candles=1,
+                emit_from_ts_utc=emit_from,
+                emit_to_ts_utc=emit_to,
+            )
+        assert poison_ts in calls
+
+    def test_build_row_only_invoked_for_stride_eligible_in_window_positions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        cfg = _small_cfg()
+        candles = _synthetic_bullish_series(start)
+        stride = 4
+
+        emit_from = candles[cfg.min_window_candles + 10].close_ts_utc
+        emit_to = candles[cfg.min_window_candles + 60].close_ts_utc
+
+        calls = self._tracking_build_row(monkeypatch)
+
+        build_episodes(
+            symbol="TST",
+            venue="bitvavo",
+            candles=candles,
+            cfg=cfg,
+            episode_stride_candles=stride,
+            emit_from_ts_utc=emit_from,
+            emit_to_ts_utc=emit_to,
+        )
+
+        expected_ts = {
+            candles[i].close_ts_utc
+            for i in range(cfg.min_window_candles - 1, len(candles))
+            if (i - (cfg.min_window_candles - 1)) % stride == 0
+            and emit_from <= candles[i].close_ts_utc < emit_to
+        }
+        assert expected_ts
+        assert set(calls) == expected_ts
+
+
 class TestSignalState:
     def test_signal_state_tracks_signum(self) -> None:
         state = runner._SignalState()
@@ -2826,6 +3004,49 @@ class TestFailedTerminalSummary:
         monkeypatch.setattr(runner, "build_episodes", _boom)
 
         exit_code = runner.main(_RunnerHarness.valid_args(tmp_path))
+        out = capsys.readouterr().out
+        assert exit_code != 0
+        assert out.count("FAILED") == 1
+        assert "FAILED reason=build_failed" in out
+        assert "FINISHED" not in out
+        assert list(tmp_path.rglob("*")) == []
+
+    def test_build_failure_from_in_window_malformed_canonical_map(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """DB-smoke fix (#727 follow-up): a malformed canonical map INSIDE
+        the requested emission window (CanonicalFibMapError) must still
+        fail the run closed via the same FAILED reason=build_failed
+        contract as any other build failure -- the emit-window gate that
+        stops OUT-OF-WINDOW positions from reaching build_row must never
+        catch or suppress this for an IN-WINDOW position."""
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
+
+        cfg_1h = resolve_config("1h")
+        poison_index = cfg_1h.min_window_candles + 20
+        poison_ts = candles[poison_index].close_ts_utc
+
+        real_build_row = substrate.build_row
+
+        def _poison_build_row(*, now_utc: datetime, **kwargs: Any) -> dict[str, Any]:
+            if now_utc == poison_ts:
+                raise canonical_projection.CanonicalFibMapError(
+                    "TST: canonical builder returned malformed levels"
+                )
+            return real_build_row(now_utc=now_utc, **kwargs)
+
+        monkeypatch.setattr(substrate, "build_row", _poison_build_row)
+
+        args = [
+            "--symbol", "BTC",
+            "--timeframe", "1h",
+            "--from-ts", poison_ts.strftime("%Y-%m-%d %H:%M:%S"),
+            "--to-ts", (poison_ts + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
+            "--output-dir", str(tmp_path),
+        ]
+        exit_code = runner.main(args)
         out = capsys.readouterr().out
         assert exit_code != 0
         assert out.count("FAILED") == 1

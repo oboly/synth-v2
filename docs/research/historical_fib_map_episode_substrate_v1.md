@@ -289,12 +289,18 @@ round trip via the same keyset-pagination discipline as `fetch_candles`,
 never a small fixed warmup count) as **EMA-state prehistory**. Prehistory
 candles are feature input only:
 
-- `build_episodes` still scans them to reconstruct EMA/trend and
-  window/stride state exactly as production would, via `emit_from_ts_utc`
-  / `emit_to_ts_utc`
-- an episode is only ever **emitted** (appended to the result) when
-  `feature.map_creation_ts_utc` falls inside `[emit_from_ts_utc,
-  emit_to_ts_utc)` -- the requested `[--from-ts, --to-ts)` window
+- `build_episodes` checks `emit_from_ts_utc`/`emit_to_ts_utc` against each
+  candidate as-of candle's own `close_ts_utc` FIRST, before any
+  `window`/`trend_history` slicing or `build_episode_feature()`/`build_row()`
+  call -- a prehistory-region as-of position (before `emit_from_ts_utc`)
+  never itself reaches canonical map construction at all (see "Emit-Window
+  Gate Runs Before Map Construction" below); it still exists in `candles`
+  and still feeds `window`/`trend_history` for a LATER, in-window as-of
+  candle
+- an episode is only ever **emitted** (appended to the result) when the
+  as-of candle's `close_ts_utc` (equivalently, `feature.map_creation_ts_utc`)
+  falls inside `[emit_from_ts_utc, emit_to_ts_utc)` -- the requested
+  `[--from-ts, --to-ts)` window
 - prehistory never reads a candle at/after `--to-ts` (no future data) and
   never reads from a current-state snapshot table (historical
   `obs_market_candle` rows only)
@@ -330,6 +336,78 @@ the trailing 180 candles (the pre-fix behavior) and asserts the result
 differs from production by more than `1e-6` for `price_vs_ema50`/
 `ema_spread_pct` -- proving the parity test is not vacuous.
 
+### Emit-Window Gate Runs Before Map Construction
+
+A one-symbol/one-window DB-backed smoke against real `obs_market_candle`
+data (bitvavo/NOT/4h) found that the runner could `FAILED
+reason=build_failed` with `CanonicalFibMapError: canonical builder returned
+malformed levels` even though every failing as-of position was in
+EMA-state prehistory, strictly before the requested emission window. NOT's
+real history contains an early (2024-07), low-priced, high-relative-swing
+period where a `DOWNTREND_STRONG` structure's anchor spread is large
+relative to its absolute price level; the linear Fibonacci extension
+formula then produces a negative required level (e.g. `ext_2618 < 0`), and
+`canonical_fib_zone_map_v1.build_row` correctly rejects that as malformed
+-- exactly as it would for a live production call on the same structure.
+
+The defect was in `build_episodes`, not in the canonical projection engine:
+it called `build_episode_feature()` (and therefore `build_row()`) for
+EVERY stride-eligible as-of index first, and applied the
+`emit_from_ts_utc`/`emit_to_ts_utc` filter only afterward, against
+`feature.map_creation_ts_utc`. A `CanonicalFibMapError` raised for any
+attempted as-of position -- prehistory, requested window, or forward
+tail -- propagated uncaught and aborted the entire build, even when that
+position could never have been emitted anyway.
+
+The fix reorders the gate: for each stride-eligible index `i`,
+`emit_from_ts_utc`/`emit_to_ts_utc` are now checked against
+`candles[i].close_ts_utc` directly, BEFORE `window`/`trend_history` are
+sliced and BEFORE `build_episode_feature()` is called. Only an as-of
+candle whose `close_ts_utc` falls inside `[emit_from_ts_utc,
+emit_to_ts_utc)` ever reaches canonical map construction. This is
+deliberately NOT a change to what `CanonicalFibMapError` means or does:
+
+- a malformed canonical map at a PREHISTORY or FORWARD-TAIL as-of position
+  is now never attempted at all -- `build_row` is simply never called for
+  that timestamp -- so it can no longer abort the build
+- a malformed canonical map at an as-of position INSIDE the requested
+  emission window still raises `CanonicalFibMapError` uncaught, and the
+  runner still maps it to `FAILED reason=build_failed` exactly like any
+  other build failure -- this fix does not catch, suppress, or soften that
+  case in any way
+- stride phase/alignment is unchanged: the stride check
+  (`(i - (min_window_candles - 1)) % episode_stride_candles`) still runs
+  first, over every `i` from `cfg.min_window_candles - 1` to `total - 1`
+  exactly as before; only the emit-window check moved earlier, ahead of
+  feature/map construction, not ahead of the stride check
+
+`tests/test_historical_fib_map_episode_substrate_v1.py`'s
+`TestEmitGateBeforeMapConstruction` proves, via a `build_row` spy that
+raises `CanonicalFibMapError` at a chosen poison timestamp: (a) a
+prehistory-region poison position is never called and the build output is
+identical to a baseline run without the poison, (b) a forward-tail-region
+poison position is likewise never called and never affects output, (c) an
+in-window poison position still raises `CanonicalFibMapError` out of
+`build_episodes`, and (d) across a full run, `build_row` is called for
+exactly the set of stride-eligible as-of positions whose `close_ts_utc`
+falls inside `[emit_from_ts_utc, emit_to_ts_utc)` -- no more, no fewer.
+`TestFailedTerminalSummary.test_build_failure_from_in_window_malformed_
+canonical_map` proves the same in-window-still-fails-closed guarantee at
+the full `runner.main()` level, asserting the exact
+`FAILED reason=build_failed` contract.
+
+This fix does not change EMA-state-prehistory retrieval, forward-tail
+retrieval, `source_input_sha256`, `run_id` identity, or the 180-candle Fib
+geometry window in any way -- it only changes WHICH as-of positions ever
+invoke `build_episode_feature()`/`build_row()`. The `O(candles^2)` EMA
+reconstruction cost noted above is unaffected in the worst case (a very
+long requested window still recomputes full-history EMA state for every
+in-window as-of candle) but this fix does eliminate the previously
+unnecessary `build_row()` invocations across the ENTIRE prehistory/
+forward-tail region -- for the NOT DB smoke, canonical map construction
+now runs only across the ~42 requested-window positions instead of across
+all ~4,722 fetched candles.
+
 ## Forward-Label Tail: To-Ts Invariance for Outcome Labels
 
 `[--from-ts, --to-ts)` is the **episode emission window**. Historically the
@@ -357,12 +435,14 @@ change to honor this correctly:
   episodes already emitted from the requested window -- never contribute to
   feature/geometry construction for an earlier as-of candle (feature
   construction only ever looks backward from its own as-of index)
-- forward-tail candles can themselves become an as-of position during the
-  build loop (the loop runs over the full candle array), but any episode
-  candidate there has `map_creation_ts_utc >= to_ts`, which fails the
-  `emit_to_ts_utc` gate exactly like a prehistory-region as-of candle fails
-  `emit_from_ts_utc` -- so a forward-tail candle can never itself produce a
-  newly emitted episode
+- forward-tail candles can themselves become a candidate as-of position
+  during the build loop (the loop runs over the full candle array), but
+  the emit-window gate (checked BEFORE feature/map construction -- see
+  "Emit-Window Gate Runs Before Map Construction" below) rejects any
+  as-of candle with `close_ts_utc >= to_ts` exactly like it rejects a
+  prehistory-region as-of candle with `close_ts_utc < from_ts` -- so a
+  forward-tail candle never reaches `build_episode_feature()`/`build_row()`
+  at all, and can never produce a newly emitted episode
 - the tail is derived only from the caller's `--to-ts` argument, never from
   `datetime.now()`/wall-clock time, and reads the same historical
   `obs_market_candle` table as every other fetch in this runner -- no

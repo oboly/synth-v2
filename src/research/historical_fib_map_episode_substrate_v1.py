@@ -739,22 +739,45 @@ def build_episodes(
 
     `candles` may include pre-bound EMA-state prehistory before the
     caller's requested research window (see the runner's "EMA-State
-    Prehistory" module docstring section). For each attempted as-of index
-    `i`, `window = candles[max(0, i - lookback_candles + 1) : i + 1]` is
-    the Fib/map GEOMETRY input (bounded, unchanged), while
+    Prehistory" module docstring section). `emit_from_ts_utc` /
+    `emit_to_ts_utc`, when given, are checked FIRST for each stride-eligible
+    index `i` -- against `candles[i].close_ts_utc` directly, before any
+    `window`/`trend_history` slicing or `build_episode_feature()` call --
+    and only an as-of candle whose `close_ts_utc` falls in
+    `[emit_from_ts_utc, emit_to_ts_utc)` proceeds to feature/map
+    construction. This means canonical map construction
+    (`build_episode_feature` -> `build_row`) is attempted ONLY for
+    requested-window as-of positions, never for an EMA-prehistory or
+    forward-tail position -- those regions still exist in `candles` and
+    still feed `window`/`trend_history` (see below) for an in-window as-of
+    candle, but a prehistory/forward-tail position never itself becomes an
+    as-of candle for map construction. This is deliberate: canonical
+    `build_row` can legitimately raise `CanonicalFibMapError` for a
+    structurally degenerate historical structure (e.g. an early, low-priced,
+    high-relative-swing period), and that must never abort a build whose
+    requested window does not depend on it -- while a malformed map for an
+    as-of candle INSIDE the requested window must still raise and fail the
+    build closed (see `build_episode_feature`/`build_row`; this gate does
+    not catch or suppress `CanonicalFibMapError`, it only decides which
+    as-of positions ever reach it).
+
+    For each in-window attempted as-of index `i`,
+    `window = candles[max(0, i - lookback_candles + 1) : i + 1]` is the
+    Fib/map GEOMETRY input (bounded, unchanged), while
     `trend_history = candles[:i + 1]` -- the FULL preceding stream, not
     bounded by `lookback_candles` -- is passed to `build_episode_feature`
     for production-equivalent EMA/trend reconstruction only. Leading
-    candles are therefore feature input for as-of candles inside the
-    requested window exactly as they would be if the requested window had
-    started earlier -- this is what makes an as-of candle's feature output
-    invariant to the caller's requested `from_ts`. `emit_from_ts_utc` /
-    `emit_to_ts_utc`, when given, restrict *emission* only: an episode is
-    appended to the result only when `feature.map_creation_ts_utc` falls in
-    `[emit_from_ts_utc, emit_to_ts_utc)`. Prehistory-region as-of candles
-    (before `emit_from_ts_utc`) are still scanned to build up EMA/trend and
-    window/stride state identically to production, but never themselves
-    produce an emitted episode.
+    (prehistory) candles are therefore feature input for as-of candles
+    inside the requested window exactly as they would be if the requested
+    window had started earlier -- this is what makes an as-of candle's
+    feature output invariant to the caller's requested `from_ts` -- even
+    though a prehistory candle's OWN position is never itself attempted as
+    an as-of candle. Stride/progress-heartbeat cadence (`processed`, the
+    `episode_stride_candles` modulus) is computed identically across every
+    `i` from `cfg.min_window_candles - 1` to `total - 1`, including
+    prehistory/forward-tail positions -- only feature/map construction is
+    gated by the emit-window check, so stride phase/alignment is unchanged
+    by this gate.
 
     `max_episodes` bounds the emitted count and is checked before building
     each candidate episode, so `max_episodes=0` deterministically yields an
@@ -797,6 +820,31 @@ def build_episodes(
         if (i - (cfg.min_window_candles - 1)) % episode_stride_candles != 0:
             continue
 
+        # Emit-window candidate gate -- checked BEFORE any window/
+        # trend_history slicing or build_episode_feature() call, using the
+        # as-of candle's own close_ts_utc (identical to what
+        # feature.map_creation_ts_utc would be, see build_episode_feature's
+        # asof_ts_utc). This is deliberately the FIRST filter after the
+        # stride check: an EMA-prehistory or forward-tail as-of position
+        # (outside [emit_from_ts_utc, emit_to_ts_utc)) must never reach
+        # canonical map construction (`build_row`) at all -- not just never
+        # be emitted. Candles at those positions can carry real historical
+        # structure (e.g. an early, low-priced, high-relative-swing period)
+        # that canonical_fib_zone_map_v1.build_row legitimately rejects as
+        # CanonicalFibMapError; that rejection must never abort a build
+        # whose requested emission window does not depend on it. A
+        # malformed map INSIDE the requested window must still raise and
+        # fail the build closed -- this gate does not touch that path, it
+        # only stops OUT-OF-WINDOW positions from invoking build_row in the
+        # first place. Stride phase/alignment is unchanged: this gate runs
+        # strictly after the stride check above, so which `i` values are
+        # stride-eligible is identical to before this fix.
+        asof_ts_utc = candles[i].close_ts_utc
+        if emit_from_ts_utc is not None and asof_ts_utc < emit_from_ts_utc:
+            continue
+        if emit_to_ts_utc is not None and asof_ts_utc >= emit_to_ts_utc:
+            continue
+
         window_start = max(0, i - cfg.lookback_candles + 1)
         window = candles[window_start : i + 1]
         # Full preceding PIT stream up to the same as-of candle, for
@@ -815,11 +863,6 @@ def build_episodes(
             cfg=cfg,
         )
         if feature is None:
-            continue
-
-        if emit_from_ts_utc is not None and feature.map_creation_ts_utc < emit_from_ts_utc:
-            continue
-        if emit_to_ts_utc is not None and feature.map_creation_ts_utc >= emit_to_ts_utc:
             continue
 
         forward_candles = candles[i + 1 :]
