@@ -16,6 +16,14 @@ def _required_text(value: object, name: str) -> str:
     return value.strip()
 
 
+def _nonempty_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("strategy lineage field must be a nonempty string or None")
+    return value.strip()
+
+
 def _positive_decimal(value: object, name: str) -> Decimal:
     if isinstance(value, bool) or isinstance(value, float) or not isinstance(value, Decimal):
         raise ValueError(f"{name} must be a Decimal")
@@ -61,6 +69,18 @@ class ApprovedExecutionPlanV1:
     market: str
     side: str
     legs: tuple[ExecutionPlanLegV1, ...]
+    # Issue #756 Codex block: minimum immutable strategy-ownership lineage,
+    # propagated through to executor_execution_handoff so a real fill
+    # confirmation can attribute a strategy-owned inventory ledger event
+    # (see src/executor/strategy_owned_fill_attribution_v1.py). ``None`` for
+    # every non-automatic-buy (e.g. manual execution) plan -- manual
+    # execution is unaffected and never sets these. Deliberately excluded
+    # from canonical_payload/content_hash: provenance, not order economics,
+    # so a manual plan's existing hash is unchanged by this field's addition.
+    strategy_bucket_id: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    setup_id: str | None = None
     contract_version: str = field(default=CONTRACT_VERSION, init=False)
     content_hash: str = field(init=False)
 
@@ -82,10 +102,18 @@ class ApprovedExecutionPlanV1:
             raise ValueError("legs must have unique strictly ordered indices")
         if any(leg.side != self.side for leg in self.legs):
             raise ValueError("every leg side must match plan side")
+        lineage_fields = (self.strategy_bucket_id, self.strategy_id, self.strategy_version, self.setup_id)
+        lineage_present = tuple(_nonempty_or_none(value) for value in lineage_fields)
+        if len(set(value is not None for value in lineage_present)) != 1:
+            raise ValueError("strategy lineage fields must be set together or not at all")
         object.__setattr__(self, "plan_source", plan_source)
         object.__setattr__(self, "plan_reference_id", plan_reference_id)
         object.__setattr__(self, "venue", venue)
         object.__setattr__(self, "market", market)
+        object.__setattr__(self, "strategy_bucket_id", lineage_present[0])
+        object.__setattr__(self, "strategy_id", lineage_present[1])
+        object.__setattr__(self, "strategy_version", lineage_present[2])
+        object.__setattr__(self, "setup_id", lineage_present[3])
         object.__setattr__(self, "content_hash", hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest())
 
     def canonical_payload(self) -> dict[str, object]:

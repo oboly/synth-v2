@@ -16,6 +16,8 @@ from src.decision_gate.strategy_owned_inventory_ledger_v1 import (
     StrategyOwnedFillEventV1,
     StrategyOwnedInventoryLedgerError,
     StrategyOwnershipLineageV1,
+    compute_bucket_owned_exposure_eur_v1,
+    compute_lineage_residual_acquisition_cost_v1,
     compute_owned_quantity_v1,
     validate_sell_authority_v1,
 )
@@ -256,3 +258,143 @@ def test_ownership_is_deterministically_reconstructible_from_events_alone():
     assert compute_owned_quantity_v1(events, lineage=_lineage()) == compute_owned_quantity_v1(
         reordered, lineage=_lineage(),
     ) == Decimal("8")
+
+
+# --- #756 Codex block BLOCKER 2: residual acquisition exposure must be
+# deterministic weighted-average cost basis, never
+# sum(BUY quote_notional) - sum(SELL proceeds) -----------------------------
+
+
+def test_profitable_full_sell_exposure_is_zero():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("10"), quote_notional=Decimal("110")),
+    )
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("0")
+
+
+def test_losing_full_sell_exposure_is_zero():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("10"), quote_notional=Decimal("90")),
+    )
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("0")
+
+
+def test_partial_profitable_sell_residual_cost_basis_correct():
+    # BUY 10 for 100 (avg cost 10/unit); SELL 5 at 15 each (proceeds 75,
+    # ignored) -- residual exposure must be 5 * 10 = 50, not 25 (100-75) and
+    # not -25.
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("5"), quote_notional=Decimal("75")),
+    )
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("50")
+
+
+def test_partial_losing_sell_residual_cost_basis_same_as_profitable_for_same_qty():
+    # Identical BUY and identical quantity sold -- only the SELL proceeds
+    # differ (a loss instead of a gain) -- residual exposure must be
+    # identical, since proceeds/realized PnL must never affect it.
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("5"), quote_notional=Decimal("30")),
+    )
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("50")
+
+
+def test_multiple_buy_fills_deterministic_weighted_average_basis():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="b2", base_quantity=Decimal("10"), quote_notional=Decimal("200")),
+    )
+    # avg cost = 300 / 20 = 15/unit; no SELL yet -- full 300 remains.
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("300")
+
+
+def test_partial_sell_after_multiple_buys_uses_weighted_average():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="b2", base_quantity=Decimal("10"), quote_notional=Decimal("200")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("10"), quote_notional=Decimal("999")),
+    )
+    # avg cost 15/unit; SELL 10 removes 150 regardless of its own proceeds;
+    # residual = 300 - 150 = 150.
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("150")
+
+
+def test_cost_basis_duplicate_fill_is_idempotent():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+    )
+    assert compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage()) == Decimal("100")
+
+
+def test_cost_basis_conflicting_duplicate_fill_fails_closed():
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("120")),
+    )
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="CONFLICTING_DUPLICATE_ORDER_IDENTITY"):
+        compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage())
+
+
+def test_cost_basis_sell_over_owned_qty_fails_closed():
+    events = (_event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),)
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="NEGATIVE_OWNED_QUANTITY_LEDGER_INCONSISTENT"):
+        compute_lineage_residual_acquisition_cost_v1(
+            events + (_event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("11"), quote_notional=Decimal("1")),),
+            lineage=_lineage(),
+        )
+
+
+def test_cost_basis_input_order_does_not_change_final_state():
+    # Canonical sequence order is defined by occurred_ts_utc, not input
+    # iteration order -- reversing the input tuple must yield the identical
+    # residual cost.
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100"), occurred_ts_utc=NOW),
+        _event(
+            order_identity="b2", base_quantity=Decimal("10"), quote_notional=Decimal("200"),
+            occurred_ts_utc=NOW + timedelta(minutes=1),
+        ),
+        _event(
+            order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("10"), quote_notional=Decimal("999"),
+            occurred_ts_utc=NOW + timedelta(minutes=2),
+        ),
+    )
+    forward = compute_lineage_residual_acquisition_cost_v1(events, lineage=_lineage())
+    reversed_input = compute_lineage_residual_acquisition_cost_v1(tuple(reversed(events)), lineage=_lineage())
+    assert forward == reversed_input == Decimal("150")
+
+
+def test_bucket_exposure_sums_residual_cost_basis_across_lineages():
+    other_lineage_event = _event(
+        lineage=LONG_TERM, order_identity="lt-b1", base_quantity=Decimal("4"), quote_notional=Decimal("40"),
+    )
+    this_lineage_events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(order_identity="s1", side=SIDE_SELL, base_quantity=Decimal("5"), quote_notional=Decimal("75")),
+    )
+    events = this_lineage_events + (other_lineage_event,)
+    # SHORT_TF lineage residual = 50 (from the partial-sell test above);
+    # LONG_TERM lineage residual = 40 (no SELL yet) -- but LONG_TERM_MOONSHOT
+    # is a different strategy_bucket_id, so it must not be included.
+    assert compute_bucket_owned_exposure_eur_v1(
+        events, trading_account_id=ACCOUNT, strategy_bucket_id="AUTO_SHORTTF_FIB",
+    ) == Decimal("50")
+
+
+def test_bucket_exposure_sums_multiple_lineages_in_same_bucket():
+    same_bucket_other_strategy = _lineage(strategy_id="another_strategy", setup_id="setup-2")
+    events = (
+        _event(order_identity="b1", base_quantity=Decimal("10"), quote_notional=Decimal("100")),
+        _event(
+            lineage=same_bucket_other_strategy, order_identity="b2",
+            base_quantity=Decimal("4"), quote_notional=Decimal("40"),
+        ),
+    )
+    assert compute_bucket_owned_exposure_eur_v1(
+        events, trading_account_id=ACCOUNT, strategy_bucket_id="AUTO_SHORTTF_FIB",
+    ) == Decimal("140")

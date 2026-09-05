@@ -38,6 +38,10 @@ from src.decision_gate.automatic_buy_account_permission_repository_v1 import (
     load_automatic_buy_account_permission_revocation_history_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import StrategyBucketAccountConfigV1
+from src.decision_gate.strategy_bucket_buy_reservation_v1 import (
+    StrategyBucketBuyReservationRepositoryError,
+    load_bucket_active_buy_reservations_eur_v1,
+)
 from src.decision_gate.strategy_owned_inventory_ledger_repository_v1 import (
     StrategyOwnedInventoryLedgerRepositoryError,
     load_strategy_owned_fill_events_for_bucket_v1,
@@ -500,8 +504,6 @@ def load_automatic_buy_account_allocation_evidence_v1(
     # Issue #752: strategy_owned_exposure_eur is the exact bucket's own
     # attributed exposure from strategy_owned_inventory_ledger_v1 -- never
     # the whole-account current_bucket_amount_eur approximation above.
-    # active_buy_reservations_eur is 0: no canonical BUY-side EUR
-    # reservation source exists in this repository today.
     try:
         bucket_fill_events = load_strategy_owned_fill_events_for_bucket_v1(
             conn, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
@@ -513,7 +515,20 @@ def load_automatic_buy_account_allocation_evidence_v1(
         raise AutomaticBuyAccountAllocationEvidenceRepositoryError(
             "STRATEGY_OWNED_EXPOSURE_EVIDENCE_INVALID"
         ) from exc
-    active_buy_reservations_eur = Decimal("0")
+
+    # Issue #756 Codex block: bucket-scoped pending-BUY reservation exposure,
+    # summed across every market sharing this bucket (never market-scoped --
+    # market-scoped conflict, checked separately above by
+    # _load_blocking_conflict, is not a substitute for bucket-wide
+    # reservation accounting).
+    try:
+        active_buy_reservations_eur = load_bucket_active_buy_reservations_eur_v1(
+            conn, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+    except StrategyBucketBuyReservationRepositoryError as exc:
+        raise AutomaticBuyAccountAllocationEvidenceRepositoryError(
+            "STRATEGY_BUCKET_BUY_RESERVATION_EVIDENCE_INVALID"
+        ) from exc
 
     evidence = AutomaticBuyAccountAllocationEvidenceV1(
         evidence_contract_version=EVIDENCE_CONTRACT_VERSION,

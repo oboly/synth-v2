@@ -164,7 +164,34 @@ CREATE TABLE strategy_owned_inventory_ledger_v1 (
     base_quantity TEXT NOT NULL,
     quote_notional TEXT NOT NULL,
     occurred_ts_utc TEXT NOT NULL,
-    source_provenance TEXT NOT NULL
+    source_provenance TEXT NOT NULL,
+    UNIQUE(trading_account_id, venue, market, order_identity)
+);
+
+CREATE TABLE executor_execution_handoff (
+    executor_execution_handoff_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_source TEXT NOT NULL,
+    plan_reference_id TEXT NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    strategy_bucket_id TEXT,
+    strategy_id TEXT,
+    strategy_version TEXT,
+    setup_id TEXT,
+    UNIQUE(plan_source, plan_reference_id)
+);
+
+CREATE TABLE executor_execution_leg (
+    executor_execution_leg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    executor_execution_handoff_id INTEGER NOT NULL,
+    trading_account_id INTEGER NOT NULL,
+    venue TEXT NOT NULL,
+    market TEXT NOT NULL,
+    side TEXT NOT NULL,
+    client_order_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    price TEXT NOT NULL,
+    quantity TEXT NOT NULL,
+    updated_ts_utc TEXT
 );
 
 CREATE TABLE automatic_buy_account_permission_v1 (
@@ -449,6 +476,38 @@ def insert_open_order(
         cur.execute(
             "INSERT INTO account_open_order_snapshot (trading_account_id, venue, snapshot_ts_utc, market) VALUES (%s,%s,%s,%s)",
             (account_id, venue, snapshot_ts_utc, market),
+        )
+        return cur.lastrowid
+
+
+def insert_execution_leg(
+    conn: FakeConnection, *, account_id: int = 7, strategy_bucket_id: str | None = "SHORT_TERM_ROTATION",
+    strategy_id: str | None = "auto_shorttf_fib", strategy_version: str | None = "1",
+    setup_id: str | None = "setup-1", plan_reference_id: str, venue: str = "bitvavo", market: str = "SOL-EUR",
+    client_order_id: str | None = None, side: str = "BUY", state: str = "ACTIVE",
+    price: Decimal = Decimal("100"), quantity: Decimal = Decimal("1"), updated_ts_utc: datetime | None = None,
+) -> int:
+    """Insert one executor_execution_handoff + one executor_execution_leg row,
+    for #756 bucket-scoped BUY reservation / fill-attribution read-model tests."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO executor_execution_handoff "
+            "(plan_source, plan_reference_id, trading_account_id, strategy_bucket_id, strategy_id, strategy_version, setup_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (
+                "automatic_buy_planner_v1", plan_reference_id, account_id, strategy_bucket_id,
+                strategy_id, strategy_version, setup_id,
+            ),
+        )
+        handoff_id = cur.lastrowid
+        cur.execute(
+            "INSERT INTO executor_execution_leg "
+            "(executor_execution_handoff_id, trading_account_id, venue, market, side, client_order_id, state, price, quantity, updated_ts_utc) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                handoff_id, account_id, venue, market, side,
+                client_order_id or f"client-order-{plan_reference_id}", state, price, quantity, updated_ts_utc or TS,
+            ),
         )
         return cur.lastrowid
 

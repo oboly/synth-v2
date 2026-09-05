@@ -228,44 +228,99 @@ def compute_owned_quantity_v1(
     return total
 
 
+def compute_lineage_residual_acquisition_cost_v1(
+    events: Iterable[StrategyOwnedFillEventV1], *, lineage: StrategyOwnershipLineageV1,
+) -> Decimal:
+    """Return one lineage's remaining acquisition cost tied to its currently
+    owned quantity, using deterministic weighted-average cost-basis lot
+    accounting -- never ``sum(BUY quote_notional) - sum(SELL quote_notional)``,
+    which conflates realized SELL proceeds/PnL with remaining acquisition
+    capital and can even go negative on a profitable exit.
+
+    Events are deduplicated by canonical ``order_identity`` first (so a
+    duplicate reconciliation event never double-counts), then processed in
+    canonical sequence order (``occurred_ts_utc``, tie-broken by
+    ``order_identity`` for full determinism regardless of input iteration
+    order): each BUY adds its quantity and its own ``quote_notional`` as
+    acquisition cost; each SELL removes quantity and removes acquisition
+    cost proportionally at the running weighted-average cost per unit --
+    the SELL's own ``quote_notional`` (proceeds) is never consulted, so
+    realized profit or loss can never alter remaining acquisition exposure
+    except via the quantity it removes.
+
+    Invariants enforced: remaining quantity and remaining cost are never
+    negative; remaining quantity of exactly zero always yields exactly zero
+    remaining cost (forced explicitly rather than left to a rounding
+    residual); a SELL for more than the currently owned quantity fails
+    closed rather than going negative.
+    """
+    validate_lineage_v1(lineage)
+    deduped = tuple(e for e in _dedup_by_order_identity(events) if e.lineage == lineage)
+    for event in deduped:
+        validate_fill_event_v1(event)
+    ordered = sorted(deduped, key=lambda event: (event.occurred_ts_utc, event.order_identity))
+    remaining_qty = Decimal("0")
+    remaining_cost = Decimal("0")
+    for event in ordered:
+        if event.side == SIDE_BUY:
+            remaining_qty += event.base_quantity
+            remaining_cost += event.quote_notional
+            continue
+        if event.base_quantity > remaining_qty:
+            raise StrategyOwnedInventoryLedgerError("NEGATIVE_OWNED_QUANTITY_LEDGER_INCONSISTENT")
+        if remaining_qty > 0:
+            avg_cost_per_unit = remaining_cost / remaining_qty
+            remaining_cost -= avg_cost_per_unit * event.base_quantity
+        remaining_qty -= event.base_quantity
+        if remaining_qty == 0:
+            # Force the invariant exactly rather than trust Decimal division
+            # to cancel out to precisely zero.
+            remaining_cost = Decimal("0")
+    if remaining_qty < 0 or remaining_cost < 0:
+        raise StrategyOwnedInventoryLedgerError("NEGATIVE_OWNED_QUANTITY_LEDGER_INCONSISTENT")
+    return remaining_cost
+
+
 def compute_bucket_owned_exposure_eur_v1(
     events: Iterable[StrategyOwnedFillEventV1],
     *,
     trading_account_id: int,
     strategy_bucket_id: str,
 ) -> Decimal:
-    """Return one bucket's total attributed EUR exposure across every lineage.
+    """Return one bucket's total remaining acquisition exposure across every lineage.
 
     Unlike :func:`compute_owned_quantity_v1` (scoped to one exact
-    trade/strategy lineage's base quantity), this aggregates
-    ``quote_notional`` across every lineage sharing the same
-    ``(trading_account_id, strategy_bucket_id)`` -- the scope
-    ``strategy_bucket_capacity_v1``'s bucket ceiling is defined over. Used
-    as the ``owned_exposure_eur`` input to
+    trade/strategy lineage's base quantity), this sums each distinct lineage
+    sharing the same ``(trading_account_id, strategy_bucket_id)`` -- the
+    scope ``strategy_bucket_capacity_v1``'s bucket ceiling is defined over --
+    own :func:`compute_lineage_residual_acquisition_cost_v1` result. Used as
+    the ``owned_exposure_eur`` input to
     ``strategy_bucket_capacity_v1.compute_strategy_bucket_capacity_v1`` so a
-    bucket's already-committed capital (cost-basis notional, not
-    mark-to-market) reduces its own remaining capacity for NEW entries.
+    bucket's already-committed acquisition capital (cost basis, not
+    mark-to-market, and never net BUY-minus-SELL-proceeds) reduces its own
+    remaining capacity for NEW entries.
 
     Deduplicated by canonical ``order_identity`` first, exactly like
     ``compute_owned_quantity_v1``, so a duplicate reconciliation event never
-    double-counts. Fails closed if the deduplicated ledger is internally
-    inconsistent (computed exposure would be negative).
+    double-counts. Fails closed if any lineage's ledger is internally
+    inconsistent.
     """
     if trading_account_id <= 0 or not _nonempty(strategy_bucket_id):
         raise StrategyOwnedInventoryLedgerError("INVALID_STRATEGY_BUCKET_EXPOSURE_LOOKUP")
     deduped = _dedup_by_order_identity(events)
+    bucket_events = tuple(
+        event
+        for event in deduped
+        if event.lineage.trading_account_id == trading_account_id
+        and event.lineage.strategy_bucket_id == strategy_bucket_id
+    )
+    lineages = sorted(
+        {event.lineage for event in bucket_events},
+        key=lambda lineage: (lineage.venue, lineage.market, lineage.strategy_id, lineage.strategy_version, lineage.setup_id),
+    )
     total = Decimal("0")
-    for event in deduped:
-        if (
-            event.lineage.trading_account_id != trading_account_id
-            or event.lineage.strategy_bucket_id != strategy_bucket_id
-        ):
-            continue
-        validate_fill_event_v1(event)
-        if event.side == SIDE_BUY:
-            total += event.quote_notional
-        else:
-            total -= event.quote_notional
+    for lineage in lineages:
+        total += compute_lineage_residual_acquisition_cost_v1(bucket_events, lineage=lineage)
     if total < 0:
         raise StrategyOwnedInventoryLedgerError("NEGATIVE_BUCKET_EXPOSURE_LEDGER_INCONSISTENT")
     return total

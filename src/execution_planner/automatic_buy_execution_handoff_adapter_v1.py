@@ -140,4 +140,13 @@ def adapt_automatic_buy_plan_to_approved_execution_plan_v1(plan: AutomaticBuyPla
             )
             for leg in plan.legs
         ),
+        # Issue #756 Codex block: minimum immutable strategy-ownership
+        # lineage, carried through to executor_execution_handoff so a real
+        # fill confirmation can attribute a strategy-owned inventory ledger
+        # event. Never fed into the plan identity hash above (unchanged) --
+        # only into the shared executor contract's own provenance fields.
+        strategy_bucket_id=plan.strategy_bucket_id,
+        strategy_id=plan.strategy_id,
+        strategy_version=plan.strategy_version,
+        setup_id=plan.setup_id,
     )
