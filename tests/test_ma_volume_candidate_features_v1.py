@@ -60,6 +60,8 @@ def test_future_candles_do_not_change_point_in_time_result() -> None:
     baseline = build_candidate_frame(candles, asof_ts_utc=asof)
 
     future = candles.iloc[-1:].copy()
+    future["market"] = "ETH-EUR"
+    future["interval"] = "1d"
     future["start_ts"] = pd.Timestamp(asof) + pd.Timedelta(hours=4)
     future["end_ts"] = pd.Timestamp(asof) + pd.Timedelta(hours=8)
     future["open"] = 1_000_000.0
