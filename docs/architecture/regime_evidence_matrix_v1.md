@@ -65,6 +65,19 @@ Examples:
 
 This matters because several upstream contracts intentionally remain fail-closed or partially unmapped. Reporting must display those gaps rather than repair them locally.
 
+## Scope identity
+
+Some canonical `SignalHorizonV1Evidence` adapters use the generic value `market="asset"`. That label is not sufficient to distinguish BTC from ETH or other assets inside one matrix.
+
+`RegimeEvidenceCellV1` therefore carries a separate `scope_key` used only for deterministic identity and ordering. It is built from already-prepared provenance, for example:
+
+```text
+venue=bitvavo;asset_id=1
+venue=bitvavo;asset_id=2
+```
+
+No symbol lookup, pair inference, threshold, or market classification occurs while building `scope_key`.
+
 ## Forbidden behavior
 
 The matrix and its renderer must not:
@@ -96,11 +109,12 @@ A matrix cell identity is:
 family
 component
 market
+scope_key
 input_interval
 lookback_horizon
 ```
 
-Duplicate identities fail closed. Cells are sorted by this identity so identical input produces identical matrix ordering.
+Duplicate identities fail closed. Cells are sorted by this identity so identical input produces identical matrix ordering. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
 
 ## Phasing
 
