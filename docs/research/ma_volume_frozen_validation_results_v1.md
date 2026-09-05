@@ -88,11 +88,17 @@ MA breadth may remain useful as descriptive market context, but this run does no
 ## Safety
 
 ```text
-account_awareness=0
-decision_permission=0
-execution_intent=0
-order_submission=0
+research_only=1
+market_only=1
+db_writes=0
+production_ranking_changes=0
+selection_engine=none
+decision_gate=none
+execution_planner=none
+executor=none
 broker_private_calls=0
 broker_writes=0
+order_submission=0
+live_orders=0
 live_activation=0
 ```
