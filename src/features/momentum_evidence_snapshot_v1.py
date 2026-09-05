@@ -138,6 +138,7 @@ class DataQuality:
     """
 
     OK = "OK"
+    FUTURE_ASOF = "FUTURE_ASOF"
     MISSING_SOURCE_CANDLE = "MISSING_SOURCE_CANDLE"
     STALE_SOURCE_CANDLE = "STALE_SOURCE_CANDLE"
     MALFORMED_SOURCE_CANDLE = "MALFORMED_SOURCE_CANDLE"
@@ -273,6 +274,41 @@ def build_momentum_evidence(
     # effective_horizon is never declared by this producer today (#243
     # 12.3): fail closed rather than infer it from input_interval.
     reason_codes += (ReasonCode.UNMAPPED_HORIZON,)
+
+    if ReasonCode.ASOF_AFTER_EVALUATION_TS in freshness_reason_codes:
+        # A future-dated asof relative to evaluated_at is a data-integrity
+        # contradiction, not a staleness judgement (see
+        # evidence_contract_v1.compute_freshness). The snapshot must carry
+        # no usable computed momentum evidence at all -- not merely a
+        # rejected top-level status -- so this short-circuits before any
+        # candle/interval/warmup handling that could otherwise populate a
+        # raw value derived from a future-aware evaluation window.
+        data_quality = DataQuality.FUTURE_ASOF
+        status, reason_codes = resolve_status(freshness=freshness, extra_reason_codes=reason_codes)
+        return MomentumEvidenceSnapshot(
+            venue=venue,
+            market=market,
+            asset_id=asset_id,
+            asof_ts=normalized_asof_ts,
+            input_interval=interval_code,
+            lookback_horizon=LOOKBACK_HORIZON,
+            effective_horizon=EffectiveHorizon.UNKNOWN,
+            observed_lifecycle_status=UNMEASURED_LIFECYCLE.status,
+            fast_ema_period=FAST_EMA_PERIOD,
+            slow_ema_period=SLOW_EMA_PERIOD,
+            signal_ema_period=SIGNAL_EMA_PERIOD,
+            macd_value=None,
+            signal_value=None,
+            histogram_value=None,
+            histogram_delta=None,
+            freshness=freshness,
+            data_quality=data_quality,
+            model_id=MODEL_ID,
+            model_version=MODEL_VERSION,
+            status=status,
+            reason_codes=reason_codes,
+            provenance={"venue": venue, "asset_id": asset_id, "market": market},
+        )
 
     if interval_code != INPUT_INTERVAL:
         data_quality = DataQuality.UNSUPPORTED_INTERVAL

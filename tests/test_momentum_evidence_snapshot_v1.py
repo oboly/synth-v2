@@ -200,6 +200,103 @@ def test_future_asof_fails_closed():
     )
     assert result.status == "INSUFFICIENT_DATA"
     assert "ASOF_AFTER_EVALUATION_TS" in result.reason_codes
+    # A future-dated asof must never carry any usable computed momentum
+    # primitive -- not merely a rejected top-level status.
+    assert result.data_quality != DataQuality.OK
+    assert result.data_quality == DataQuality.FUTURE_ASOF
+    assert result.macd_value is None
+    assert result.signal_value is None
+    assert result.histogram_value is None
+    assert result.histogram_delta is None
+
+
+def test_future_asof_with_fully_valid_warmup_data_still_fails_closed():
+    """Even when the supplied candle window is otherwise perfectly valid
+    (full warmup, contiguous, finite), a future asof alone must still null
+    every raw field -- proving the guard is not merely reachable only on
+    already-broken input."""
+    closes = _closes(WARMUP_BARS)
+    evaluated_at = ASOF - timedelta(hours=4)
+    result = build_momentum_evidence(
+        candles=_candles(closes), asof_ts_utc=ASOF, evaluated_at=evaluated_at, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+    assert result.data_quality == DataQuality.FUTURE_ASOF
+    assert (
+        result.macd_value,
+        result.signal_value,
+        result.histogram_value,
+        result.histogram_delta,
+    ) == (None, None, None, None)
+
+
+def test_future_asof_snapshot_satisfies_persistence_raw_pairing_invariant():
+    """Mirrors the DB `chk_momentum_evidence_raw_pairing` CHECK constraint
+    (all four raw fields NULL together, or all four non-NULL together) so a
+    future-asof snapshot can never persist a partial/usable raw row."""
+    closes = _closes(WARMUP_BARS)
+    evaluated_at = ASOF - timedelta(hours=4)
+    result = build_momentum_evidence(
+        candles=_candles(closes), asof_ts_utc=ASOF, evaluated_at=evaluated_at, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+    raw_fields = (result.macd_value, result.signal_value, result.histogram_value, result.histogram_delta)
+    assert all(value is None for value in raw_fields)
+
+
+def test_future_asof_persist_writes_null_raw_fields(monkeypatch):
+    """Proves the write path itself, not just the in-memory dataclass,
+    cannot leak a usable future-derived raw value into the persisted row."""
+    from src.features.momentum_evidence_snapshot_v1 import persist_snapshot
+    import src.operations.writer_capability_authorization_v1 as auth_module
+
+    monkeypatch.setattr(
+        auth_module,
+        "require_writer_mutation_authorization",
+        lambda authorization, capability_id: authorization,
+    )
+
+    class _Cursor:
+        def __init__(self):
+            self.values = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def execute(self, _sql, values):
+            self.values = values
+            return 1
+
+    class _Conn:
+        def __init__(self):
+            self.cur = _Cursor()
+            self.committed = False
+
+        def cursor(self):
+            return self.cur
+
+        def commit(self):
+            self.committed = True
+
+    closes = _closes(WARMUP_BARS)
+    evaluated_at = ASOF - timedelta(hours=4)
+    snapshot = build_momentum_evidence(
+        candles=_candles(closes), asof_ts_utc=ASOF, evaluated_at=evaluated_at, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+    assert snapshot.data_quality == DataQuality.FUTURE_ASOF
+
+    conn = _Conn()
+    persist_snapshot(conn, snapshot, authorization=object())
+
+    # Positional values match the INSERT column order:
+    # ..., macd_value, signal_value, histogram_value, histogram_delta, ...
+    macd_idx = 11
+    values = conn.cur.values
+    assert values[macd_idx:macd_idx + 4] == (None, None, None, None)
 
 
 def test_misaligned_replay_boundary_gap_fails_closed():

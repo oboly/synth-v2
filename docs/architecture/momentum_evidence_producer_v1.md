@@ -88,7 +88,12 @@ fields `None`).
   quality state to silently coerce.
 - `asof_ts_utc` after `evaluated_at` (future asof) fails closed to
   `status = INSUFFICIENT_DATA` with `ASOF_AFTER_EVALUATION_TS`
-  (`evidence_contract_v1.compute_freshness`, reused unmodified).
+  (`evidence_contract_v1.compute_freshness`, reused unmodified) and
+  `data_quality = FUTURE_ASOF`. This short-circuits before any
+  candle/interval/warmup handling: `macd_value`, `signal_value`,
+  `histogram_value`, and `histogram_delta` are all `None` on the returned
+  snapshot -- a future asof must never carry any usable computed momentum
+  primitive, not merely a rejected top-level `status`.
 
 ## Freshness (two distinct concepts, not conflated)
 
@@ -99,7 +104,9 @@ fields `None`).
    applied to the point-in-time-bounded fetch (so "latest" in that
    classifier's output can never be a real wall-clock value). Result feeds
    `data_quality` (`OK` / `MISSING_SOURCE_CANDLE` / `STALE_SOURCE_CANDLE` /
-   `MALFORMED_SOURCE_CANDLE`).
+   `MALFORMED_SOURCE_CANDLE`). `FUTURE_ASOF` is a separate, higher-priority
+   `data_quality` value set before source-candle classification even runs
+   (see "asof / replay discipline" above).
 2. **#243 evidence freshness** (`SignalHorizonV1Evidence.freshness`) -- asof
    vs. `evaluated_at` only, via `evidence_contract_v1.compute_freshness`,
    reused unmodified. No second staleness policy is invented. Because

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS momentum_evidence_snapshot_v1 (
     CONSTRAINT chk_momentum_evidence_horizon CHECK (effective_horizon IN ('VERY_SHORT', 'SHORT', 'MID', 'LONG', 'REGIME', 'MULTI_HORIZON', 'UNKNOWN')),
     CONSTRAINT chk_momentum_evidence_data_quality CHECK (
         data_quality IN (
-            'OK', 'MISSING_SOURCE_CANDLE', 'STALE_SOURCE_CANDLE',
+            'OK', 'FUTURE_ASOF', 'MISSING_SOURCE_CANDLE', 'STALE_SOURCE_CANDLE',
             'MALFORMED_SOURCE_CANDLE', 'INSUFFICIENT_WARMUP',
             'NON_FINITE_COMPUTED_VALUE', 'UNSUPPORTED_INTERVAL'
         )
