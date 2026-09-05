@@ -73,6 +73,11 @@ class StrategyBucketCapacityV1:
     owned_exposure_eur: Decimal
     active_reservations_eur: Decimal
     remaining_capacity_eur: Decimal | None
+    # Issue #756 Codex block: carried through so
+    # ``validate_new_entry_within_capacity_v1`` can enforce it -- this field
+    # was previously persisted/validated (#279/#752 config contract) but
+    # never reached the actual per-position ceiling check.
+    max_position_pct_of_bucket: Decimal | None = None
 
 
 def _is_finite_nonnegative(value: Decimal) -> bool:
@@ -117,6 +122,12 @@ def compute_strategy_bucket_capacity_v1(
         and config.max_bucket_amount_eur > 0
     ):
         raise StrategyBucketCapacityError("INVALID_MAX_BUCKET_AMOUNT_EUR")
+    if config.max_position_pct_of_bucket is not None and not (
+        isinstance(config.max_position_pct_of_bucket, Decimal)
+        and config.max_position_pct_of_bucket.is_finite()
+        and 0 < config.max_position_pct_of_bucket <= 1
+    ):
+        raise StrategyBucketCapacityError("INVALID_MAX_POSITION_PCT_OF_BUCKET")
 
     percent_ceiling_eur = (
         account_equity_eur * config.allocation_max_pct if config.allocation_max_pct is not None else None
@@ -153,6 +164,7 @@ def compute_strategy_bucket_capacity_v1(
         owned_exposure_eur=owned_exposure_eur,
         active_reservations_eur=active_reservations_eur,
         remaining_capacity_eur=remaining_capacity_eur,
+        max_position_pct_of_bucket=config.max_position_pct_of_bucket,
     )
 
 
@@ -170,9 +182,26 @@ def validate_new_entry_within_capacity_v1(
     None``), this mirrors #279's existing "no ceiling configured means no
     block" behavior and does not fail closed -- an operator who wants a
     ceiling enforced must configure one.
+
+    Issue #756 Codex block: also fails closed if
+    ``capacity.max_position_pct_of_bucket`` is configured, enforcing
+    ``proposed_position_amount_eur <= max_position_pct_of_bucket *
+    effective_bucket_ceiling_eur`` as a single-position ceiling distinct
+    from (and checked in addition to) the bucket-wide remaining-capacity
+    ceiling above. If a per-position percentage is configured but no bucket
+    ceiling exists to take the percentage of (``effective_bucket_ceiling_eur
+    is None``), this fails closed rather than silently skipping the
+    configured cap -- an operator who configures a per-position percentage
+    ceiling has an explicit intent that must never be silently dropped.
     """
     if not _is_finite_nonnegative(proposed_position_amount_eur) or proposed_position_amount_eur <= 0:
         raise StrategyBucketCapacityError("INVALID_PROPOSED_POSITION_AMOUNT")
+    if capacity.max_position_pct_of_bucket is not None:
+        if capacity.effective_bucket_ceiling_eur is None:
+            raise StrategyBucketCapacityError("STRATEGY_BUCKET_CAPACITY_EXCEEDED_FOR_NEW_ENTRY")
+        position_ceiling_eur = capacity.effective_bucket_ceiling_eur * capacity.max_position_pct_of_bucket
+        if proposed_position_amount_eur > position_ceiling_eur:
+            raise StrategyBucketCapacityError("STRATEGY_BUCKET_CAPACITY_EXCEEDED_FOR_NEW_ENTRY")
     if capacity.remaining_capacity_eur is None:
         return
     if proposed_position_amount_eur > capacity.remaining_capacity_eur:

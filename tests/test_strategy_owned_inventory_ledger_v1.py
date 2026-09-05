@@ -85,6 +85,47 @@ def test_conflicting_duplicate_order_identity_fails_closed():
         compute_owned_quantity_v1(events, lineage=_lineage())
 
 
+# --- #756 Codex block: duplicate order_identity with mismatched non-quantity
+# fields (quote_notional, timestamp, plan reference, provenance) must also
+# fail closed rather than being silently treated as an idempotent duplicate.
+
+
+def test_conflicting_duplicate_quote_notional_fails_closed():
+    events = (
+        _event(order_identity="o1", quote_notional=Decimal("1000")),
+        _event(order_identity="o1", quote_notional=Decimal("1200")),
+    )
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="CONFLICTING_DUPLICATE_ORDER_IDENTITY"):
+        compute_owned_quantity_v1(events, lineage=_lineage())
+
+
+def test_conflicting_duplicate_occurred_ts_fails_closed():
+    events = (
+        _event(order_identity="o1", occurred_ts_utc=NOW),
+        _event(order_identity="o1", occurred_ts_utc=NOW + timedelta(minutes=5)),
+    )
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="CONFLICTING_DUPLICATE_ORDER_IDENTITY"):
+        compute_owned_quantity_v1(events, lineage=_lineage())
+
+
+def test_conflicting_duplicate_execution_plan_reference_fails_closed():
+    events = (
+        _event(order_identity="o1", execution_plan_reference_id="plan-ref-1"),
+        _event(order_identity="o1", execution_plan_reference_id="plan-ref-2"),
+    )
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="CONFLICTING_DUPLICATE_ORDER_IDENTITY"):
+        compute_owned_quantity_v1(events, lineage=_lineage())
+
+
+def test_conflicting_duplicate_source_provenance_fails_closed():
+    events = (
+        _event(order_identity="o1", source_provenance="reconciliation"),
+        _event(order_identity="o1", source_provenance="manual_review"),
+    )
+    with pytest.raises(StrategyOwnedInventoryLedgerError, match="CONFLICTING_DUPLICATE_ORDER_IDENTITY"):
+        compute_owned_quantity_v1(events, lineage=_lineage())
+
+
 # --- 12/13: SELL partial fill + duplicate idempotence ----------------------
 
 

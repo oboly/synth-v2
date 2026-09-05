@@ -96,6 +96,15 @@ REASON_STRATEGY_BUCKET_CAPACITY_EXCEEDED: Final[str] = "STRATEGY_BUCKET_CAPACITY
 REASON_AGGREGATE_SLEEVE_ALLOCATION_POLICY_EXCEEDED: Final[str] = (
     "AGGREGATE_SLEEVE_ALLOCATION_MAX_PCT_EXCEEDS_ACCOUNT_POLICY"
 )
+# Issue #756 Codex block: a sibling sleeve config row marked is_enabled that
+# cannot be cleanly resolved (ambiguous overlapping rows, malformed window,
+# unsupported version/fields) must fail the aggregate check closed rather
+# than being silently skipped -- an unresolved enabled sleeve is exactly the
+# kind of overcommitted/undetermined configuration the aggregate policy
+# exists to catch.
+REASON_UNRESOLVED_ENABLED_SLEEVE_SIBLING: Final[str] = (
+    "UNRESOLVED_ENABLED_STRATEGY_BUCKET_SLEEVE_SIBLING_CONFIGURATION"
+)
 
 
 @dataclass(frozen=True)
@@ -212,17 +221,23 @@ def _resolve_enabled_bucket_configs_for_aggregate_check_v1(
     (not filtered to the candidate's own bucket) by the caller, so this is
     the "account-scoped bucket set" the aggregate fail-closed policy is
     defined over -- never a separate query, never duplicated reservation
-    accounting. A bucket id that fails to resolve (unresolved/ambiguous) at
-    ``context.evaluation_ts_utc`` is skipped here defensively; that is a
-    data-quality condition for that other bucket, not this candidate's
-    evaluation, and the candidate's own bucket resolution is independently
-    required to succeed by ``evaluate_strategy_bucket_participation_v1``.
+    accounting.
+
+    Issue #756 Codex block: a bucket id that fails to resolve
+    (unresolved/ambiguous/malformed) at ``context.evaluation_ts_utc`` is
+    skipped only when none of its raw rows are ``is_enabled``. If any raw
+    row for that bucket id is ``is_enabled``, the resolution failure means
+    an enabled sleeve's actual committed percentage cannot be determined --
+    silently skipping it would let an overcommitted/undetermined aggregate
+    configuration pass, so this fails the whole aggregate check closed
+    instead (:class:`StrategyBucketAccountConfigError`). The candidate's own
+    bucket resolution is independently required to succeed by
+    ``evaluate_strategy_bucket_participation_v1`` regardless.
     """
-    bucket_ids = sorted({
-        row.strategy_bucket_id
-        for row in context.strategy_bucket_config_rows
-        if row.trading_account_id == context.trading_account_id
-    })
+    account_rows = tuple(
+        row for row in context.strategy_bucket_config_rows if row.trading_account_id == context.trading_account_id
+    )
+    bucket_ids = sorted({row.strategy_bucket_id for row in account_rows})
     resolved: list = []
     for bucket_id in bucket_ids:
         try:
@@ -236,6 +251,8 @@ def _resolve_enabled_bucket_configs_for_aggregate_check_v1(
                 )
             )
         except StrategyBucketAccountConfigError:
+            if any(row.strategy_bucket_id == bucket_id and row.is_enabled for row in account_rows):
+                raise
             continue
     return tuple(resolved)
 
@@ -384,7 +401,16 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
     # a valid exit -- that authority lives entirely in
     # ``strategy_owned_inventory_ledger_v1.validate_sell_authority_v1``,
     # which this module never calls.
-    all_resolved_bucket_configs = _resolve_enabled_bucket_configs_for_aggregate_check_v1(context)
+    try:
+        all_resolved_bucket_configs = _resolve_enabled_bucket_configs_for_aggregate_check_v1(context)
+    except StrategyBucketAccountConfigError:
+        return _decision(
+            STATE_DENIED,
+            REASON_UNRESOLVED_ENABLED_SLEEVE_SIBLING,
+            candidate,
+            context=context,
+            bucket_reason=bucket_decision.reason_code,
+        )
     try:
         validate_aggregate_sleeve_allocation_policy_v1(all_resolved_bucket_configs)
     except StrategyBucketCapacityError:
@@ -430,10 +456,15 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
             bucket_reason=bucket_decision.reason_code,
         )
 
-    # allocation_max_pct is None for a legacy #279-only config -- this
-    # preserves prior behavior exactly, no new blocking is ever introduced
-    # for a bucket that never opted into percentage-of-equity capacity.
-    if resolved_bucket_config.allocation_max_pct is not None:
+    # allocation_max_pct and max_position_pct_of_bucket are both None for a
+    # legacy #279-only config -- this preserves prior behavior exactly, no
+    # new blocking is ever introduced for a bucket that never opted into
+    # either percentage-of-equity capacity or a per-position percentage
+    # ceiling. Issue #756 Codex block: max_position_pct_of_bucket is now
+    # enforced here too (previously only allocation_max_pct triggered this
+    # branch, so a config setting only max_position_pct_of_bucket was
+    # persisted/validated but never actually checked against a real BUY).
+    if resolved_bucket_config.allocation_max_pct is not None or resolved_bucket_config.max_position_pct_of_bucket is not None:
         if context.account_equity_eur is None or context.strategy_owned_exposure_eur is None:
             return _decision(
                 STATE_DENIED,

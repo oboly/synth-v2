@@ -164,11 +164,21 @@ def _dedup_by_order_identity(
     A duplicate reconciliation event (same ``order_identity`` observed more
     than once, e.g. from an at-least-once delivery or a restart replay) must
     never double-increment or double-decrement owned quantity. The first
-    occurrence in the supplied iteration order wins; callers are expected to
-    supply events pre-sorted by ``occurred_ts_utc`` when order matters, but
-    the dedup result is identical regardless of input order since only one
-    fact per ``order_identity`` is kept and its own fields never conflict for
-    a legitimately duplicated event.
+    occurrence in the supplied iteration order wins only when every
+    deterministic/state-affecting field of a repeated ``order_identity``
+    agrees exactly with the first occurrence -- an idempotent duplicate,
+    accepted once. ``StrategyOwnedFillEventV1`` is a frozen dataclass whose
+    equality already compares every field (lineage identity, side,
+    base_quantity, quote_notional, occurred_ts_utc,
+    execution_plan_reference_id, source_provenance), so a full-value
+    inequality check is exactly "any material field differs" -- there is no
+    narrower subset of fields that could be compared instead without
+    silently accepting a corrupted/conflicting duplicate. Any such
+    difference for the same canonical fill/order identity fails closed
+    rather than accepting either value. The dedup result is identical
+    regardless of input order: only one fact per ``order_identity`` is ever
+    kept, and a legitimate duplicate's fields never disagree with the first
+    occurrence by construction.
     """
     seen: dict[str, StrategyOwnedFillEventV1] = {}
     for event in events:
@@ -176,11 +186,7 @@ def _dedup_by_order_identity(
         if existing is None:
             seen[event.order_identity] = event
             continue
-        if (
-            existing.lineage != event.lineage
-            or existing.side != event.side
-            or existing.base_quantity != event.base_quantity
-        ):
+        if existing != event:
             raise StrategyOwnedInventoryLedgerError("CONFLICTING_DUPLICATE_ORDER_IDENTITY")
     return tuple(seen.values())
 
