@@ -114,9 +114,16 @@ input_interval
 lookback_horizon
 ```
 
-Duplicate identities fail closed. Duplicate detection uses those exact source values.
+Duplicate identities fail closed. Duplicate detection uses those exact source values, including the distinction between `None` and a real empty string.
 
-For ordering only, nullable `input_interval` and `lookback_horizon` values are mapped to an empty comparison string so mixed `None`/string rows remain deterministically sortable without changing the canonical cell values. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
+For ordering only, nullable `input_interval` and `lookback_horizon` values use a tagged comparison representation:
+
+```text
+None       -> (0, "")
+any string -> (1, value)
+```
+
+This prevents Python from comparing `None` directly with strings while preserving a deterministic distinction between `None` and `""`. The canonical cell values themselves are never rewritten. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
 
 ## Phasing
 
