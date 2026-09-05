@@ -302,11 +302,14 @@ the forward label scan (`build_episode_labels`'s `bounded =
 forward_candles[:cfg.forward_max_candles]`); the tail fetch reuses the same
 value as its `LIMIT`, so no new tunable parameter is introduced.
 `fetch_forward_tail_candles` is evidence support for labels, not a new
-dataset-selection parameter -- it is deliberately excluded from
-`compute_run_id()` (see "Determinism and Immutability" below) for the same
-reason `warmup_candle_count`/`chunk_size_candles` are: the emitted episode
-set for fixed dataset-defining inputs does not depend on how much
-forward-tail history happened to be available.
+CLI/config dataset-selection parameter -- but its actual fetched CONTENT is
+not identity-irrelevant: how much forward-tail history is actually
+available (and its exact OHLCV values) directly determines outcome labels
+for episodes near `--to-ts`. That content is folded into `run_id` via
+`source_input_sha256` -- see "Source Input Fingerprint and Run Identity"
+below. Only the fetched *count* (`forward_tail_candle_count`) is recorded
+in the manifest as separate provenance, alongside `warmup_candle_count` and
+`chunk_size_candles`.
 
 To summarize the three retrieval regions explicitly:
 
@@ -436,31 +439,70 @@ manifest is written either.
   via atomic hardlink-create. `<run_id>` is a SHA-256 of the canonical
   (sorted-key) JSON of every dataset-defining parameter --
   `builder_version`, `contract_version`, `venue`, `symbol`, `timeframe`,
-  `from_ts`, `to_ts`, `episode_stride_candles`, `max_episodes` -- computed by
-  `compute_run_id()`. Keying the immutable path on venue/symbol/timeframe
-  alone was unsafe: different `from_ts`/`to_ts`/`episode_stride_candles`/
-  `max_episodes` produce different datasets, so a bounded smoke run and a
-  later canonical/full run (or any two differently-bounded runs) could
-  otherwise collide at the same immutable path. Folding the full parameter
-  set into the path makes that structurally impossible: two runs with any
-  differing dataset-defining input always resolve to different `<run_id>`
-  directories, while a repeat run with identical inputs always resolves to
-  the same path (idempotent; a repeat run with different *content* at that
-  same path is still refused by `write_immutable_json`, which raises
-  `ValueError`). The manifest also carries `run_id`, `episode_stride_candles`,
-  and `max_episodes` directly, so a run's full identity is recoverable from
-  the manifest alone.
-- `compute_run_id()` deliberately does **not** include warmup candle count,
-  forward-tail candle count, or `--chunk-size-candles`: for fixed
-  dataset-defining parameters, the emitted episode set is identical
-  regardless of how the data was fetched. The manifest still records
-  `warmup_candle_count`, `requested_window_candle_count`,
-  `forward_tail_candle_count`, `forward_tail_max_candles` (the configured
-  `cfg.forward_max_candles` bound used as the tail's `LIMIT`),
-  `source_fetch_from_ts_utc` / `source_fetch_final_ts_utc` (the earliest and
-  latest candle timestamps actually fetched, spanning warmup through the
-  forward tail), and `chunk_size_candles` -- all as provenance, not
-  identity.
+  `from_ts`, `to_ts`, `episode_stride_candles`, `max_episodes` -- PLUS
+  `source_input_sha256` (see "Source Input Fingerprint and Run Identity"
+  below), computed by `compute_run_id()`. Keying the immutable path on CLI
+  parameters alone was unsafe in two ways: different
+  `from_ts`/`to_ts`/`episode_stride_candles`/`max_episodes` produce
+  different datasets (a bounded smoke run and a later canonical/full run,
+  or any two differently-bounded runs, could otherwise collide at the same
+  immutable path); and, separately, two runs with byte-identical CLI
+  arguments can still see different actual `obs_market_candle` content
+  (late-arriving backfill, a corrected OHLC value, less warmup/forward-tail
+  history available at fetch time), which would otherwise produce different
+  `episodes_v1.json` content at the same path. Folding both the full
+  parameter set AND the source-content fingerprint into the path makes both
+  structurally impossible: two runs collide at the same `<run_id>` only
+  when BOTH the requested contract AND the actual source content used to
+  satisfy it are identical (idempotent repeat), and a run whose CLI
+  arguments match but whose fetched content differs resolves to a different
+  `<run_id>` instead of hitting a spurious `write_immutable_json` conflict.
+  The manifest also carries `run_id`, `episode_stride_candles`,
+  `max_episodes`, and `source_input_sha256` directly, so a run's full
+  identity is recoverable from the manifest alone (`compute_run_id()` is
+  mechanically re-derivable from the manifest's own fields).
+
+### Source Input Fingerprint and Run Identity
+
+`compute_run_id()` folds in `source_input_sha256`
+(`compute_source_input_sha256`): a SHA-256 over a canonical (sorted-key,
+compact-separator) JSON array of every candle in
+`warmup_candles + requested_candles + forward_tail_candles`, in that exact
+fetch order -- the full PIT source snapshot a run's feature/label output
+was actually computed from, not just the CLI parameters describing what was
+requested.
+
+Each candle's fingerprint record (`_candle_fingerprint_fields`) covers every
+field that can affect feature geometry or labels:
+
+```text
+symbol, venue, interval_code, open_ts_utc, close_ts_utc,
+open_price, high_price, low_price, close_price, volume
+```
+
+Canonicalization rules, matching the discipline `compute_episode_id`
+already uses:
+
+- timestamps: UTC ISO-8601 (`astimezone(timezone.utc).isoformat()`) --
+  candles reaching this point have already gone through
+  `normalize_db_datetime_to_utc`, so this is never host-timezone dependent
+- `Decimal` values: `format(value, "f")`, never `str()`/`repr()` (whose
+  output can vary with a `Decimal`'s internal exponent for numerically
+  equal values)
+- candle order: preserved exactly as fetched (`validate_candle_sequence`
+  separately enforces ascending, non-duplicate `close_ts_utc` before this
+  fingerprint is computed)
+- no dependence on Python's built-in `hash()`/`repr()` of any object
+
+**Warmup/forward-tail source content is NOT irrelevant to identity.** Only
+purely operational retrieval parameters that never change *which* candles
+are fetched -- `--chunk-size-candles` (DB round-trip paging) and the
+`BUILDING` progress-heartbeat cadence -- are excluded from
+`source_input_sha256`/`run_id`. Two runs produce the same `run_id` if and
+only if both the requested contract (CLI/config parameters) and the actual
+fetched source candle content are identical; any difference in either --
+including a single changed OHLCV value in warmup, the requested window, or
+the forward tail -- produces a different `run_id`.
 
 ## Scope Boundary
 
@@ -470,7 +512,7 @@ Implemented in this slice:
    `EpisodeRecord`)
 2. deterministic builder (`build_episode_feature`, `build_episode_labels`,
    `build_episodes`)
-3. synthetic/unit tests (99 tests, no DB)
+3. synthetic/unit tests (108 tests, no DB)
 4. one-symbol/one-window smoke capability
    (`run_historical_fib_map_episode_substrate_v1.py`)
 5. immutable manifest/provenance (`manifest_v1.json` with source bounds,

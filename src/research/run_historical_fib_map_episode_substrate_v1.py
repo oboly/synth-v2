@@ -17,12 +17,16 @@ OUTPUT:
   data/research/historical_fib_map_episode_substrate_v1/<venue>/<symbol>/<timeframe>/<run_id>/
   where <run_id> is a SHA-256 of the canonical JSON of every dataset-defining
   parameter (builder_version, contract_version, venue, symbol, timeframe,
-  from_ts, to_ts, episode_stride_candles, max_episodes) -- see
-  compute_run_id(). This keeps two runs with different bounds/stride/limit
-  from ever aliasing the same immutable path. Operational parameters that do
-  not change the emitted dataset (warmup candle count, DB fetch chunk size)
-  are deliberately excluded from run_id -- see "Warmup and Run Identity"
-  below.
+  from_ts, to_ts, episode_stride_candles, max_episodes) PLUS
+  source_input_sha256 -- a fingerprint of the ACTUAL warmup/requested/
+  forward-tail candle content the run was built from -- see
+  compute_run_id() and "Source Input Fingerprint and Run Identity" below.
+  This keeps two runs with different bounds/stride/limit, OR with identical
+  CLI arguments but different underlying obs_market_candle content, from
+  ever aliasing the same immutable path. Purely operational retrieval
+  parameters that never change what candles are fetched (DB fetch chunk
+  size, BUILDING progress cadence) remain deliberately excluded from
+  run_id -- see "Warmup and Run Identity" below.
 
 CLI:
 python -m src.research.run_historical_fib_map_episode_substrate_v1 \
@@ -68,15 +72,18 @@ Warmup and Run Identity:
   window backwards, never forwards; no future data is used.
 - No current-state snapshot table is read; warmup is exclusively historical
   `obs_market_candle` rows below --from-ts.
-- Warmup candle count and DB fetch chunk size are operational retrieval
-  parameters, not dataset-defining parameters: for fixed
-  (builder_version, contract_version, venue, symbol, timeframe, from_ts,
-  to_ts, episode_stride_candles, max_episodes), the emitted episode set is
-  identical regardless of chunk size or of how much of the *available*
-  warmup history exists. compute_run_id() therefore does not include them.
-  The actual fetch window (including how much warmup was actually
-  available) and the chunk size used are recorded in the manifest for
-  provenance, not identity.
+- DB fetch chunk size is a purely operational retrieval parameter (it only
+  changes how many round trips fetch_candles makes, never which candles it
+  returns), so compute_run_id() does not include it -- it is recorded in
+  the manifest for provenance only.
+- Warmup candle CONTENT is not operationally irrelevant to identity: how
+  much warmup history is actually available (and its exact OHLCV values)
+  can differ between two runs with identical CLI arguments, and that
+  content feeds directly into feature/geometry construction for as-of
+  candles near --from-ts. compute_run_id() therefore folds the actual
+  fetched warmup content into source_input_sha256 -- see "Source Input
+  Fingerprint and Run Identity" below. Only the fetched *count* is also
+  recorded in the manifest as separate provenance (warmup_candle_count).
 
 Forward-label tail:
 - [from_ts, to_ts) is the EPISODE EMISSION window: only as-of candles in
@@ -100,11 +107,42 @@ Forward-label tail:
   emit_to_ts_utc gate as warmup) and never leak into feature construction
   for an earlier as-of candle (build_episodes only ever looks backwards
   from an as-of index for feature input).
-- Forward-tail candle count and the actual final fetched timestamp are
-  recorded in the manifest for provenance, like warmup candle count and
-  chunk size -- NOT part of compute_run_id(): the emitted episode set for
-  fixed dataset-defining inputs does not depend on how much forward-tail
-  history happened to be available.
+- Forward-tail candle CONTENT is, like warmup, folded into
+  source_input_sha256 (see below) -- how much forward-tail history is
+  actually available (and its exact OHLCV values) directly determines
+  outcome labels for episodes near --to-ts, so it is not identity-irrelevant.
+  Forward-tail candle *count* and the actual final fetched timestamp are
+  additionally recorded in the manifest as separate provenance, like
+  warmup candle count.
+
+Source Input Fingerprint and Run Identity:
+- compute_run_id() is keyed on the REQUESTED contract (builder/contract
+  version, venue, symbol, timeframe, from_ts, to_ts, episode_stride_candles,
+  max_episodes) PLUS source_input_sha256, a SHA-256 fingerprint
+  (compute_source_input_sha256) over the exact ordered
+  warmup_candles + requested_candles + forward_tail_candles sequence
+  actually used to build the episodes -- the full PIT source snapshot, not
+  just the CLI parameters describing what was asked for.
+- This closes a real gap: two runs with byte-identical CLI arguments can
+  still see different underlying obs_market_candle content (a late-arriving
+  backfill, a corrected OHLC value, or simply less warmup/forward-tail
+  history being available at fetch time), which would otherwise produce
+  different episodes_v1.json content at the SAME immutable path -- a
+  spurious write_immutable_json conflict rather than a legitimately new,
+  distinguishable artifact.
+- The fingerprint covers every field that can affect feature geometry or
+  labels for each candle: symbol, venue, interval_code, open_ts_utc,
+  close_ts_utc, open_price, high_price, low_price, close_price, volume.
+  Timestamps are canonicalized to UTC ISO-8601 and Decimal values to
+  format(value, "f") -- never Python repr()/hash() -- so the fingerprint is
+  stable across hosts/runs for identical content and candle order.
+- Two runs produce the same run_id if and only if BOTH the requested
+  contract AND the actual source candle content used to satisfy it are
+  identical. Purely operational retrieval settings (DB fetch chunk size,
+  BUILDING progress-heartbeat cadence) never affect source_input_sha256 or
+  run_id, because they never change which candles are fetched.
+- source_input_sha256 is also written to the manifest, so run_id is
+  mechanically recomputable from the manifest's identity fields alone.
 """
 
 import argparse
@@ -116,7 +154,7 @@ import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from src.common.db import get_connection
 from src.research.historical_fib_map_episode_substrate_v1 import (
@@ -443,6 +481,62 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _candle_fingerprint_fields(candle: HistoricalCandle) -> dict[str, str]:
+    """Canonical, order-independent-within-record field mapping for one candle.
+
+    Every field that can affect feature geometry or forward-outcome labels
+    is included: identity fields (symbol/venue/interval_code), both
+    timestamps, and every OHLCV value. Timestamps are serialized as UTC
+    ISO-8601 (never host-timezone dependent -- candles passed here have
+    already gone through `normalize_db_datetime_to_utc`); `Decimal` values
+    use `format(value, "f")` (stable, locale-independent, no scientific
+    notation) rather than `str()`/`repr()`, whose output can vary with a
+    `Decimal`'s internal exponent for numerically-equal values. No field
+    depends on Python's built-in `hash()`/`repr()` of any object.
+    """
+    return {
+        "symbol": candle.symbol,
+        "venue": candle.venue,
+        "interval_code": candle.interval_code,
+        "open_ts_utc": candle.open_ts_utc.astimezone(timezone.utc).isoformat(),
+        "close_ts_utc": candle.close_ts_utc.astimezone(timezone.utc).isoformat(),
+        "open_price": format(candle.open_price, "f"),
+        "high_price": format(candle.high_price, "f"),
+        "low_price": format(candle.low_price, "f"),
+        "close_price": format(candle.close_price, "f"),
+        "volume": format(candle.volume, "f"),
+    }
+
+
+def compute_source_input_sha256(candles: Sequence[HistoricalCandle]) -> str:
+    """Deterministic SHA-256 fingerprint over the exact ordered source candle input.
+
+    `candles` must be the full `warmup_candles + requested_candles +
+    forward_tail_candles` sequence actually handed to `build_episodes` --
+    the complete PIT source snapshot a run's feature/label output was
+    computed from. Candle order is preserved as given (this substrate
+    requires ascending `close_ts_utc`, enforced separately by
+    `validate_candle_sequence`); this function does not sort or dedupe, so
+    a caller passing an unvalidated or reordered sequence gets a
+    correspondingly different fingerprint -- which is the point: identical
+    source *content* in identical order always yields the identical
+    fingerprint, and any difference in count, order, or any single field of
+    any single candle yields a different one.
+
+    Serialized as a single canonical (sorted-key, compact-separator) JSON
+    array of `_candle_fingerprint_fields()` records, then SHA-256'd -- the
+    same canonicalization discipline `compute_run_id`/`compute_episode_id`
+    already use, so the result is stable across repeated runs/hosts and
+    never depends on Python's `repr()`/`hash()` of any object.
+    """
+    canonical_text = json.dumps(
+        [_candle_fingerprint_fields(c) for c in candles],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _sha256_text(canonical_text)
+
+
 def compute_run_id(
     *,
     venue: str,
@@ -452,21 +546,39 @@ def compute_run_id(
     to_ts: str,
     episode_stride_candles: int,
     max_episodes: int | None,
+    source_input_sha256: str,
 ) -> str:
-    """Deterministic run identity over every dataset-defining parameter.
+    """Deterministic run identity over every dataset-defining parameter
+    AND the actual PIT source candle content the run was built from.
 
-    Immutable output is unsafe if it is keyed only on venue/symbol/timeframe:
-    different `from_ts`/`to_ts`/`episode_stride_candles`/`max_episodes` values
-    produce different episode datasets. The run id folds all of them (plus
-    builder/contract version) into the output path so two runs with
-    different dataset-defining inputs can never alias the same immutable
-    artifact, and a repeat run with identical inputs always resolves to the
-    same path (idempotent).
+    Immutable output is unsafe if it is keyed only on
+    venue/symbol/timeframe/from_ts/to_ts/episode_stride_candles/
+    max_episodes: those CLI/config parameters describe the REQUESTED
+    contract, but the actual `obs_market_candle` content underlying it
+    (warmup, requested-window, and forward-tail candles) can differ between
+    two runs with identical CLI arguments -- e.g. a late-arriving backfill,
+    a corrected OHLC value, or simply less warmup/forward-tail history
+    being available yet -- and would otherwise produce different
+    `episodes_v1.json` content at the SAME immutable path, surfacing as a
+    spurious `write_immutable_json` conflict rather than a new,
+    distinguishable artifact.
 
-    Operational retrieval parameters (warmup candle count, DB fetch chunk
-    size) are deliberately NOT included here: they affect how the data is
-    fetched, not what episode set is emitted for fixed dataset-defining
-    inputs. See the module docstring's "Warmup and Run Identity" section.
+    `source_input_sha256` (see `compute_source_input_sha256`) closes that
+    gap: it is a fingerprint of the exact ordered
+    `warmup_candles + requested_candles + forward_tail_candles` sequence
+    actually used to build the episodes. Folding it in here means two runs
+    produce the same `run_id` if and only if BOTH the requested
+    contract/config AND the actual source candle content used to satisfy
+    it are identical; any difference in either produces a different
+    `run_id` and therefore a different immutable path -- no legitimate
+    content difference can ever collide with an existing artifact.
+
+    Operational retrieval parameters (DB fetch chunk size, BUILDING
+    progress-heartbeat cadence) are deliberately NOT included: they affect
+    only how many round trips/heartbeats a run takes, never which candles
+    are fetched or what content `source_input_sha256` fingerprints. See the
+    module docstring's "Warmup and Run Identity" / "Forward-label tail" /
+    "Source Input Fingerprint and Run Identity" sections.
     """
     run_key = {
         "builder_version": BUILDER_VERSION,
@@ -478,6 +590,7 @@ def compute_run_id(
         "to_ts": to_ts,
         "episode_stride_candles": episode_stride_candles,
         "max_episodes": max_episodes,
+        "source_input_sha256": source_input_sha256,
     }
     canonical_text = json.dumps(run_key, sort_keys=True, separators=(",", ":"))
     return _sha256_text(canonical_text)
@@ -549,6 +662,7 @@ def build_manifest(
     candle_count: int,
     episode_count: int,
     episodes_sha256: str,
+    source_input_sha256: str = "",
     warmup_candle_count: int = 0,
     source_fetch_from_ts_utc: str | None = None,
     chunk_size_candles: int = DEFAULT_CHUNK_CANDLES,
@@ -575,18 +689,28 @@ def build_manifest(
         "source_candle_count": candle_count,
         "episode_stride_candles": episode_stride_candles,
         "max_episodes": max_episodes,
+        # Part of run_id/dataset identity (see compute_run_id and the
+        # module docstring's "Source Input Fingerprint and Run Identity"
+        # section): a SHA-256 fingerprint of the exact ordered
+        # warmup_candles + requested_candles + forward_tail_candles content
+        # this run was built from. run_id is mechanically recomputable from
+        # this manifest by calling compute_run_id() with builder_version,
+        # contract_version, venue, symbol, timeframe, source_from_ts,
+        # source_to_ts, episode_stride_candles, max_episodes, and this
+        # field.
+        "source_input_sha256": source_input_sha256,
         "episode_count": episode_count,
         "episodes_sha256": episodes_sha256,
-        # Provenance only -- NOT part of run_id/dataset identity. See
-        # compute_run_id() and the module docstring's
+        # Provenance only -- NOT part of run_id/dataset identity (unlike
+        # source_input_sha256 above, which fingerprints the same candles'
+        # actual content). See compute_run_id() and the module docstring's
         # "Warmup and Run Identity" / "Forward-label tail" sections.
         "warmup_candle_count": warmup_candle_count,
         "requested_window_candle_count": requested_candle_count,
         # Forward-label evidence support only -- these candles are never
-        # eligible for emission (see emit_to_ts_utc) and are not a
-        # dataset-selection parameter; they exist only so labels near
-        # source_to_ts do not depend on where the requested output window
-        # happened to end.
+        # eligible for emission (see emit_to_ts_utc); their COUNT here is
+        # provenance only, but their CONTENT is folded into
+        # source_input_sha256 above.
         "forward_tail_candle_count": forward_tail_candle_count,
         "forward_tail_max_candles": forward_tail_max_candles,
         "source_fetch_from_ts_utc": source_fetch_from_ts_utc,
@@ -754,6 +878,9 @@ def main(argv: list[str] | None = None) -> int:
     except EpisodeSubstrateError as exc:
         return _print_failed(FAILED_REASON_SOURCE_VALIDATION, exc)
 
+    source_input_sha256 = compute_source_input_sha256(candles)
+    print(f"FETCHED source_input_sha256={source_input_sha256}", flush=True)
+
     print(f"BUILDING candles={len(candles)}", flush=True)
 
     def _build_progress(processed: int, total: int) -> None:
@@ -792,6 +919,7 @@ def main(argv: list[str] | None = None) -> int:
         to_ts=args.to_ts,
         episode_stride_candles=args.episode_stride_candles,
         max_episodes=args.max_episodes,
+        source_input_sha256=source_input_sha256,
     )
 
     output_dir = Path(args.output_dir) / args.venue / args.symbol / cfg.interval_code / run_id
@@ -816,6 +944,7 @@ def main(argv: list[str] | None = None) -> int:
             candle_count=len(candles),
             episode_count=len(records),
             episodes_sha256=episodes_sha256,
+            source_input_sha256=source_input_sha256,
             warmup_candle_count=len(warmup_candles),
             source_fetch_from_ts_utc=source_fetch_from_ts_utc,
             chunk_size_candles=args.chunk_size_candles,

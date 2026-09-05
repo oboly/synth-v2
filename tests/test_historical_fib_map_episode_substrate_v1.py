@@ -597,6 +597,7 @@ class TestRunIdentity:
             to_ts="2026-06-01 00:00:00",
             episode_stride_candles=1,
             max_episodes=None,
+            source_input_sha256="a" * 64,
         )
         base.update(overrides)
         return base
@@ -616,6 +617,7 @@ class TestRunIdentity:
             {"venue": "other_venue"},
             {"symbol": "ETH"},
             {"timeframe": "1h"},
+            {"source_input_sha256": "b" * 64},
         ],
     )
     def test_run_id_changes_when_any_dataset_defining_parameter_changes(self, override) -> None:
@@ -641,7 +643,8 @@ class TestRunIdentity:
         assert path_b.read_text(encoding="utf-8") == '{"episodes": "b"}\n'
 
     def test_manifest_carries_full_run_identity(self) -> None:
-        run_id = runner.compute_run_id(**self._kwargs())
+        kwargs = self._kwargs()
+        run_id = runner.compute_run_id(**kwargs)
         manifest = runner.build_manifest(
             run_id=run_id,
             venue="bitvavo",
@@ -654,6 +657,7 @@ class TestRunIdentity:
             candle_count=10,
             episode_count=1,
             episodes_sha256="a" * 64,
+            source_input_sha256=kwargs["source_input_sha256"],
         )
         assert manifest["run_id"] == run_id
         assert manifest["builder_version"] == runner.BUILDER_VERSION
@@ -665,6 +669,21 @@ class TestRunIdentity:
         assert manifest["source_to_ts"] == "2026-06-01 00:00:00"
         assert manifest["episode_stride_candles"] == 1
         assert manifest["max_episodes"] is None
+        assert manifest["source_input_sha256"] == kwargs["source_input_sha256"]
+
+        # run_id must be mechanically recomputable from the manifest's own
+        # identity fields alone.
+        recomputed = runner.compute_run_id(
+            venue=manifest["venue"],
+            symbol=manifest["symbol"],
+            timeframe=manifest["timeframe"],
+            from_ts=manifest["source_from_ts"],
+            to_ts=manifest["source_to_ts"],
+            episode_stride_candles=manifest["episode_stride_candles"],
+            max_episodes=manifest["max_episodes"],
+            source_input_sha256=manifest["source_input_sha256"],
+        )
+        assert recomputed == run_id
 
 
 class TestBoundaryAndSafety:
@@ -1634,13 +1653,23 @@ class TestSignalState:
 
 
 class TestRunIdentityExcludesOperationalParams:
-    def test_compute_run_id_signature_excludes_warmup_and_chunk_size(self) -> None:
+    def test_compute_run_id_signature_excludes_chunk_size_and_progress_cadence(self) -> None:
         params = inspect.signature(runner.compute_run_id).parameters
         assert "chunk_size" not in params
         assert "chunk_size_candles" not in params
-        assert "warmup_candle_count" not in params
+        assert "progress_interval_candles" not in params
+        # source_input_sha256 IS part of identity -- see TestSourceInputFingerprint.
+        assert "source_input_sha256" in params
 
-    def test_manifest_carries_warmup_and_chunk_provenance_without_affecting_run_id(self) -> None:
+    def test_manifest_carries_warmup_and_chunk_provenance_alongside_shared_run_id(self) -> None:
+        # A fixed run_id (computed once, as the runner does) can be reused
+        # across manifests whose only difference is provenance-only fields
+        # (warmup_candle_count, chunk_size_candles) -- those fields are
+        # recorded for observability but are not independently re-derived
+        # from run_id, so this does not by itself prove they can vary
+        # freely; see TestSourceInputFingerprint for the load-bearing proof
+        # that only source *content* (not chunk size / progress cadence)
+        # changes source_input_sha256/run_id.
         run_id = runner.compute_run_id(
             venue="bitvavo",
             symbol="BTC",
@@ -1649,6 +1678,7 @@ class TestRunIdentityExcludesOperationalParams:
             to_ts="2026-06-01 00:00:00",
             episode_stride_candles=1,
             max_episodes=None,
+            source_input_sha256="a" * 64,
         )
         manifest_a = runner.build_manifest(
             run_id=run_id,
@@ -1662,6 +1692,7 @@ class TestRunIdentityExcludesOperationalParams:
             candle_count=100,
             episode_count=1,
             episodes_sha256="a" * 64,
+            source_input_sha256="a" * 64,
             warmup_candle_count=179,
             chunk_size_candles=1000,
         )
@@ -1677,14 +1708,221 @@ class TestRunIdentityExcludesOperationalParams:
             candle_count=100,
             episode_count=1,
             episodes_sha256="a" * 64,
-            warmup_candle_count=50,
+            source_input_sha256="a" * 64,
+            warmup_candle_count=179,
             chunk_size_candles=5000,
         )
         assert manifest_a["run_id"] == manifest_b["run_id"] == run_id
         assert manifest_a["warmup_candle_count"] == 179
-        assert manifest_b["warmup_candle_count"] == 50
+        assert manifest_b["warmup_candle_count"] == 179
         assert manifest_a["chunk_size_candles"] == 1000
         assert manifest_b["chunk_size_candles"] == 5000
+
+
+class TestSourceInputFingerprint:
+    """Regression coverage for the latest #727 blocker: compute_run_id must
+
+    identify the actual PIT source candle content, not just CLI/config
+    parameters, so identical CLI arguments with different underlying
+    obs_market_candle content can never collide at the same immutable path.
+    """
+
+    def _candles(self, start: datetime, n: int) -> list[HistoricalCandle]:
+        return [
+            _candle(start + timedelta(hours=i), 100 + i, 101 + i, 99 + i, 100.5 + i)
+            for i in range(n)
+        ]
+
+    def _base_kwargs(self) -> dict[str, Any]:
+        return dict(
+            venue="bitvavo",
+            symbol="BTC",
+            timeframe="1h",
+            from_ts="2026-01-01 00:00:00",
+            to_ts="2026-01-02 00:00:00",
+            episode_stride_candles=1,
+            max_episodes=None,
+        )
+
+    def test_canonical_fingerprint_fields(self) -> None:
+        source = inspect.getsource(runner._candle_fingerprint_fields)
+        for field in (
+            "symbol",
+            "venue",
+            "interval_code",
+            "open_ts_utc",
+            "close_ts_utc",
+            "open_price",
+            "high_price",
+            "low_price",
+            "close_price",
+            "volume",
+        ):
+            assert f'"{field}"' in source
+
+    def test_identical_cli_and_identical_source_content_same_fingerprint_and_run_id(
+        self,
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        warmup = self._candles(start, 5)
+        requested = self._candles(start + timedelta(hours=5), 10)
+        tail = self._candles(start + timedelta(hours=15), 5)
+        candles_a = warmup + requested + tail
+        candles_b = self._candles(start, 5) + self._candles(
+            start + timedelta(hours=5), 10
+        ) + self._candles(start + timedelta(hours=15), 5)
+
+        fp_a = runner.compute_source_input_sha256(candles_a)
+        fp_b = runner.compute_source_input_sha256(candles_b)
+        assert fp_a == fp_b
+
+        kwargs = self._base_kwargs()
+        run_id_a = runner.compute_run_id(**kwargs, source_input_sha256=fp_a)
+        run_id_b = runner.compute_run_id(**kwargs, source_input_sha256=fp_b)
+        assert run_id_a == run_id_b
+
+    def test_changed_warmup_candle_changes_fingerprint_and_run_id(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        warmup = self._candles(start, 5)
+        requested = self._candles(start + timedelta(hours=5), 10)
+        tail = self._candles(start + timedelta(hours=15), 5)
+        baseline = warmup + requested + tail
+
+        mutated_warmup = list(warmup)
+        mutated_warmup[0] = _candle(
+            mutated_warmup[0].open_ts_utc, 999, 999.5, 998.5, 999
+        )
+        mutated = mutated_warmup + requested + tail
+
+        fp_baseline = runner.compute_source_input_sha256(baseline)
+        fp_mutated = runner.compute_source_input_sha256(mutated)
+        assert fp_baseline != fp_mutated
+
+        kwargs = self._base_kwargs()
+        run_id_baseline = runner.compute_run_id(**kwargs, source_input_sha256=fp_baseline)
+        run_id_mutated = runner.compute_run_id(**kwargs, source_input_sha256=fp_mutated)
+        assert run_id_baseline != run_id_mutated
+
+    def test_changed_requested_window_candle_changes_fingerprint_and_run_id(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        warmup = self._candles(start, 5)
+        requested = self._candles(start + timedelta(hours=5), 10)
+        tail = self._candles(start + timedelta(hours=15), 5)
+        baseline = warmup + requested + tail
+
+        mutated_requested = list(requested)
+        mutated_requested[3] = _candle(
+            mutated_requested[3].open_ts_utc, 999, 999.5, 998.5, 999
+        )
+        mutated = warmup + mutated_requested + tail
+
+        fp_baseline = runner.compute_source_input_sha256(baseline)
+        fp_mutated = runner.compute_source_input_sha256(mutated)
+        assert fp_baseline != fp_mutated
+
+        kwargs = self._base_kwargs()
+        run_id_baseline = runner.compute_run_id(**kwargs, source_input_sha256=fp_baseline)
+        run_id_mutated = runner.compute_run_id(**kwargs, source_input_sha256=fp_mutated)
+        assert run_id_baseline != run_id_mutated
+
+    def test_changed_forward_tail_candle_changes_fingerprint_and_run_id(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        warmup = self._candles(start, 5)
+        requested = self._candles(start + timedelta(hours=5), 10)
+        tail = self._candles(start + timedelta(hours=15), 5)
+        baseline = warmup + requested + tail
+
+        mutated_tail = list(tail)
+        mutated_tail[-1] = _candle(
+            mutated_tail[-1].open_ts_utc, 999, 999.5, 998.5, 999
+        )
+        mutated = warmup + requested + mutated_tail
+
+        fp_baseline = runner.compute_source_input_sha256(baseline)
+        fp_mutated = runner.compute_source_input_sha256(mutated)
+        assert fp_baseline != fp_mutated
+
+        kwargs = self._base_kwargs()
+        run_id_baseline = runner.compute_run_id(**kwargs, source_input_sha256=fp_baseline)
+        run_id_mutated = runner.compute_run_id(**kwargs, source_input_sha256=fp_mutated)
+        assert run_id_baseline != run_id_mutated
+
+    def test_chunk_size_and_progress_cadence_do_not_affect_fingerprint_or_run_id(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        # Same underlying candle content, fetched via the full runner
+        # pipeline with two different --chunk-size-candles values (which
+        # only change how many DB round trips fetch_candles makes, never
+        # which candles it returns) and two different BUILDING progress
+        # cadences: source_input_sha256 and run_id must be identical.
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in candles]
+
+        def _run(output_dir: Any, chunk_size: int, progress_interval: int) -> dict[str, Any]:
+            monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+            monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+            monkeypatch.setattr(runner, "DEFAULT_BUILD_PROGRESS_INTERVAL_CANDLES", progress_interval)
+            exit_code = runner.main(
+                [
+                    "--symbol", "BTC",
+                    "--timeframe", "1h",
+                    "--from-ts", start.strftime("%Y-%m-%d %H:%M:%S"),
+                    "--to-ts", (start + timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "--output-dir", str(output_dir),
+                    "--chunk-size-candles", str(chunk_size),
+                ]
+            )
+            assert exit_code == 0
+            [manifest_path] = list(Path(output_dir).rglob("manifest_v1.json"))
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        manifest_a = _run(tmp_path / "a", chunk_size=5, progress_interval=1)
+        manifest_b = _run(tmp_path / "b", chunk_size=1000, progress_interval=500)
+
+        assert manifest_a["source_input_sha256"] == manifest_b["source_input_sha256"]
+        assert manifest_a["run_id"] == manifest_b["run_id"]
+        assert manifest_a["chunk_size_candles"] != manifest_b["chunk_size_candles"]
+
+    def test_fingerprint_stable_across_repeated_calls(self) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = self._candles(start, 20)
+        fingerprints = {runner.compute_source_input_sha256(candles) for _ in range(5)}
+        assert len(fingerprints) == 1
+
+    def test_run_id_recomputable_from_manifest_after_full_pipeline_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        candles = _synthetic_bullish_series(start)
+        rows = [_candle_to_row(c) for c in candles]
+        monkeypatch.setattr(runner, "get_connection", lambda: _PagingFakeConnection(rows))
+        monkeypatch.setattr(runner, "fetch_asset_id", lambda **kw: 1)
+
+        exit_code = runner.main(
+            [
+                "--symbol", "BTC",
+                "--timeframe", "1h",
+                "--from-ts", start.strftime("%Y-%m-%d %H:%M:%S"),
+                "--to-ts", (start + timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S"),
+                "--output-dir", str(tmp_path),
+            ]
+        )
+        assert exit_code == 0
+        [manifest_path] = list(tmp_path.rglob("manifest_v1.json"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        recomputed = runner.compute_run_id(
+            venue=manifest["venue"],
+            symbol=manifest["symbol"],
+            timeframe=manifest["timeframe"],
+            from_ts=manifest["source_from_ts"],
+            to_ts=manifest["source_to_ts"],
+            episode_stride_candles=manifest["episode_stride_candles"],
+            max_episodes=manifest["max_episodes"],
+            source_input_sha256=manifest["source_input_sha256"],
+        )
+        assert recomputed == manifest["run_id"]
 
 
 class TestBuildProgressHook:
@@ -2025,6 +2263,11 @@ class TestFailedTerminalSummary:
         _RunnerHarness.patch_successful_fetch(monkeypatch, candles)
 
         cfg_1h = resolve_config("1h")
+        # patch_successful_fetch stubs warmup=[] / requested=candles /
+        # forward_tail=[] -- match that exact source content here so the
+        # run_id we precompute collides with the one main() computes
+        # internally, producing a genuine immutable-path conflict.
+        source_input_sha256 = runner.compute_source_input_sha256(candles)
         run_id = runner.compute_run_id(
             venue="bitvavo",
             symbol="BTC",
@@ -2033,6 +2276,7 @@ class TestFailedTerminalSummary:
             to_ts="2026-01-02 00:00:00",
             episode_stride_candles=1,
             max_episodes=None,
+            source_input_sha256=source_input_sha256,
         )
         conflict_dir = tmp_path / "bitvavo" / "BTC" / cfg_1h.interval_code / run_id
         conflict_dir.mkdir(parents=True)
