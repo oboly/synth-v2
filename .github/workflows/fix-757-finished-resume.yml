@@ -1,0 +1,61 @@
+name: Fix 757 FINISHED resume guard
+on:
+  push:
+    branches: [research/310-ma-volume-frozen-run-v1]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/310-ma-volume-frozen-run-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reject resume of terminal FINISHED output
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/research/run_ma_volume_frozen_validation_v1.py')
+          s = p.read_text()
+          old = '''        if checkpoint.get("terminal_state") == "FINISHED" and not manifest_path.exists():\n            raise ValueError("FINISHED checkpoint missing manifest.json")\n        return checkpoint, completed, load_checkpointed_rows(\n'''
+          new = '''        if checkpoint.get("terminal_state") == "FINISHED":\n            raise ValueError("--resume is not allowed for terminal FINISHED output")\n        return checkpoint, completed, load_checkpointed_rows(\n'''
+          assert old in s
+          s = s.replace(old, new)
+          p.write_text(s)
+
+          t = Path('tests/test_ma_volume_frozen_validation_v1.py')
+          x = t.read_text()
+          x = x.replace('    load_checkpointed_rows,\n', '    load_checkpointed_rows,\n    prepare_output,\n')
+          marker = 'def test_scope_identity_binds_exact_selected_observation_ids() -> None:\n'
+          extra = '''def test_finished_output_cannot_be_resumed(tmp_path: Path) -> None:\n    args = _args(tmp_path)\n    args.resume = True\n    output = Path(args.output_dir)\n    output.mkdir(parents=True)\n    identity = {\n        "runner": runner.RUNNER_NAME,\n        "contract_sha256": runner.PINNED_CONTRACT_SHA256,\n        "population_sha256": runner.PINNED_POPULATION_SHA256,\n        "outcomes_sha256": runner.PINNED_OUTCOMES_SHA256,\n        "venue": "bitvavo",\n        "asof_index": None,\n        "asset_id": None,\n        "limit_observations": None,\n        "selected_observations": 1,\n        "selected_asofs": 1,\n        "selected_observation_ids_sha256": runner.canonical_json_sha256(["obs-1"]),\n    }\n    runner.atomic_json(\n        output / "checkpoint.json",\n        {\n            **identity,\n            "terminal_state": "FINISHED",\n            "resumable": 0,\n            "asofs_completed": 1,\n            "candidate_rows_written": 1,\n            "last_asof_ts_utc": "2026-08-01T00:00:00Z",\n            "db_writes": 0,\n        },\n    )\n    (output / "manifest.json").write_text("{}\\n", encoding="utf-8")\n    (output / "candidate_observations.jsonl").write_text(\n        json.dumps({"observation_id": "obs-1"}) + "\\n", encoding="utf-8"\n    )\n    with pytest.raises(ValueError, match="not allowed for terminal FINISHED"):\n        prepare_output(\n            output,\n            args=args,\n            identity=identity,\n            candidate_filename="candidate_observations.jsonl",\n            expected_observation_ids=["obs-1"],\n        )\n\n\n'''
+          assert marker in x
+          x = x.replace(marker, extra + marker)
+          t.write_text(x)
+
+          d = Path('docs/research/ma_volume_frozen_validation_run_v1.md')
+          y = d.read_text()
+          old_doc = '''The runner checkpoints after each as-of. `--resume` binds the exact invocation\nand selected observation-ID hash. If an interruption leaves uncheckpointed\ncandidate rows, resume truncates them back to the checkpointed prefix before\ncontinuing.\n'''
+          new_doc = '''The runner checkpoints after each as-of. `--resume` binds the exact invocation\nand selected observation-ID hash. If an interruption leaves uncheckpointed\ncandidate rows, resume truncates them back to the checkpointed prefix before\ncontinuing. A terminal `FINISHED` output is immutable and cannot be resumed;\n`--resume` fails closed for it instead of trusting previously written artifacts.\n'''
+          assert old_doc in y
+          d.write_text(y.replace(old_doc, new_doc))
+          PY
+      - name: Focused validation
+        run: |
+          python -m pip install -q pytest pandas numpy pymysql python-dotenv
+          python -m py_compile src/research/run_ma_volume_frozen_validation_v1.py
+          pytest -q tests/test_ma_volume_frozen_validation_v1.py
+          git diff --check
+      - name: Commit exact fix and self-delete workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/research/run_ma_volume_frozen_validation_v1.py tests/test_ma_volume_frozen_validation_v1.py docs/research/ma_volume_frozen_validation_run_v1.md
+          git rm .github/workflows/fix-757-finished-resume.yml
+          git commit -m 'Fail closed on #757 FINISHED resume'
+          git push origin HEAD:research/310-ma-volume-frozen-run-v1
