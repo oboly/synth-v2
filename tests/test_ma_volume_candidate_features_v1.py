@@ -78,6 +78,26 @@ def test_future_candles_do_not_change_point_in_time_result() -> None:
     pd.testing.assert_frame_equal(baseline, with_future)
 
 
+def test_non_final_interleaving_does_not_change_finalized_bar_slopes() -> None:
+    candles = _candles()
+    asof = candles.iloc[-1]["end_ts"]
+    baseline = build_candidate_frame(candles, asof_ts_utc=asof)
+
+    non_final = candles.iloc[205:215].copy()
+    non_final["start_ts"] = non_final["start_ts"] + pd.Timedelta(minutes=30)
+    non_final["end_ts"] = non_final["end_ts"] + pd.Timedelta(minutes=30)
+    non_final["close"] = non_final["close"] * 5.0
+    non_final["volume"] = non_final["volume"] * 7.0
+    non_final["is_final"] = False
+
+    interleaved = build_candidate_frame(
+        pd.concat([candles, non_final], ignore_index=True),
+        asof_ts_utc=asof,
+    )
+
+    pd.testing.assert_frame_equal(baseline, interleaved)
+
+
 def test_slope_window_is_explicit_research_parameter() -> None:
     candles = _candles()
     asof = candles.iloc[-1]["end_ts"]
