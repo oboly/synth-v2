@@ -96,6 +96,29 @@ def test_missing_values_are_dropped_per_feature_without_cross_feature_leakage() 
     assert discovery.sample_count == 15
 
 
+def test_partial_metric_is_none_when_controls_exhaust_residual_degrees_of_freedom() -> None:
+    rows = []
+    for split in ("DISCOVERY", "VALIDATION", "HOLDOUT"):
+        for index in range(3):
+            rows.append(
+                {
+                    "split": split,
+                    "baseline_structure": float(index),
+                    "candidate_sma150_slope": float(index * 2 + 1),
+                    "forward_return_pct": float(index * 3 + 2),
+                }
+            )
+    report = evaluate_incremental_features(
+        pd.DataFrame(rows),
+        candidate_columns=("candidate_sma150_slope",),
+        baseline_columns=("baseline_structure",),
+        outcome_column="forward_return_pct",
+    )
+
+    assert all(metric.sample_count == 3 for metric in report.metrics)
+    assert all(metric.partial_spearman_given_baseline is None for metric in report.metrics)
+
+
 def test_rejects_unknown_splits_missing_splits_and_overlapping_columns() -> None:
     frame = _frame()
     bad_split = frame.copy()
