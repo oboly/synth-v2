@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 from src.features.eth_btc_leadership_snapshot_v1 import EthBtcLeadershipSnapshot
-from src.features.evidence_contract_v1 import SignalHorizonV1Evidence
+from src.features.evidence_contract_v1 import ObservedLifecycle, SignalHorizonV1Evidence
 from src.features.ma_breadth_snapshot_v1 import MABreadthSnapshot
 from src.features.momentum_evidence_snapshot_v1 import MomentumEvidenceSnapshot
 
@@ -56,6 +56,11 @@ class RegimeEvidenceCellV1:
     ``scope_key`` is identity/provenance only. It distinguishes separate
     assets/universes whose upstream ``market`` field may be a generic label
     such as ``asset``. It never changes market semantics.
+
+    ``observed_lifecycle`` preserves the upstream representation verbatim.
+    `SignalHorizonV1Evidence` owns the structured `ObservedLifecycle`; the
+    canonical MOMENTUM snapshot currently exposes only its lifecycle status
+    string. The read model does not synthesize richer lifecycle evidence.
     """
 
     family: str
@@ -70,6 +75,7 @@ class RegimeEvidenceCellV1:
     input_interval: str | None
     lookback_horizon: str | None
     effective_horizon: str | None
+    observed_lifecycle: ObservedLifecycle | str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
     reason_codes: tuple[str, ...] = field(default_factory=tuple)
     provenance: dict[str, Any] = field(default_factory=dict)
@@ -145,6 +151,7 @@ def from_signal_horizon(evidence: SignalHorizonV1Evidence) -> RegimeEvidenceCell
         input_interval=evidence.input_interval,
         lookback_horizon=evidence.lookback_horizon,
         effective_horizon=evidence.effective_horizon,
+        observed_lifecycle=evidence.observed_lifecycle,
         raw=dict(evidence.raw),
         reason_codes=tuple(evidence.reason_codes),
         provenance=dict(evidence.provenance),
@@ -167,6 +174,7 @@ def from_momentum(snapshot: MomentumEvidenceSnapshot) -> RegimeEvidenceCellV1:
         input_interval=snapshot.input_interval,
         lookback_horizon=snapshot.lookback_horizon,
         effective_horizon=snapshot.effective_horizon,
+        observed_lifecycle=snapshot.observed_lifecycle_status,
         raw={
             "data_quality": snapshot.data_quality,
             "fast_ema_period": snapshot.fast_ema_period,
@@ -269,6 +277,7 @@ def unavailable_cell(*, family: str, detail: str | None = None) -> RegimeEvidenc
         input_interval=None,
         lookback_horizon=None,
         effective_horizon=None,
+        observed_lifecycle=None,
         reason_codes=(REASON_NO_CANONICAL_OWNER,),
         provenance=provenance,
         source_contract="RegimeEvidenceMatrixV1.unavailable",
