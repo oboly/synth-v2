@@ -14,6 +14,7 @@ from src.features.momentum_evidence_snapshot_v1 import (
     MODEL_ID,
     MODEL_VERSION,
     MomentumEvidenceInputError,
+    MomentumReasonCode,
     SIGNAL_EMA_PERIOD,
     SLOW_EMA_PERIOD,
     WARMUP_BARS,
@@ -133,6 +134,80 @@ def test_exact_histogram_delta_arithmetic():
         asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
     )
     assert float(result.histogram_delta) == pytest.approx(delta_ref, abs=1e-8)
+
+
+def test_canonical_recursive_ema_reflects_prepended_pre_asof_history():
+    """A canonical recursive EMA/MACD must consume the FULL contiguous
+    pre-asof history, not a fixed trailing N-bar window that silently
+    reseeds the recursion. Build a valid 35-bar suffix (result A), then
+    prepend additional valid contiguous history before it and recompute for
+    the exact same asof/tail prices (result B); B must differ from A."""
+    tail = _closes(WARMUP_BARS)
+    prepended = [1.0] * 25 + tail
+
+    result_a = build_momentum_evidence(
+        candles=_candles(tail), asof_ts_utc=ASOF, evaluated_at=ASOF, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+    result_b = build_momentum_evidence(
+        candles=_candles(prepended), asof_ts_utc=ASOF, evaluated_at=ASOF, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+
+    assert result_a.data_quality == DataQuality.OK
+    assert result_b.data_quality == DataQuality.OK
+    assert result_b.provenance["bar_count"] == len(prepended)
+    assert result_a.provenance["bar_count"] == len(tail)
+    # Same trailing close prices, same asof -- only the amount of pre-asof
+    # history differs. A fixed-window (bug) implementation would return the
+    # same macd_value for both; the canonical recursive implementation must
+    # not.
+    assert result_a.macd_value != result_b.macd_value
+    assert result_a.signal_value != result_b.signal_value
+    assert result_a.histogram_value != result_b.histogram_value
+    reference_full_macd, reference_full_signal, reference_full_histogram, reference_full_delta = (
+        _reference_macd_signal_histogram(prepended)
+    )
+    assert float(result_b.macd_value) == pytest.approx(reference_full_macd, abs=1e-8)
+    assert float(result_b.signal_value) == pytest.approx(reference_full_signal, abs=1e-8)
+    assert float(result_b.histogram_value) == pytest.approx(reference_full_histogram, abs=1e-8)
+    assert float(result_b.histogram_delta) == pytest.approx(reference_full_delta, abs=1e-8)
+
+
+def test_gap_far_before_warmup_floor_still_fails_closed():
+    """A gap anywhere in the fetched pre-asof series fails the whole
+    evaluation closed -- even one well before the 35-bar warmup floor, on a
+    longer overall series. The producer must never silently narrow to the
+    contiguous suffix after the gap ("no stitching")."""
+    closes = _closes(50)
+    candles = _candles(closes)
+    # Shift a row far back in history (position 5 of 50) off the 4h grid.
+    candles.loc[candles.index[5], "close_ts_utc"] = (
+        candles.loc[candles.index[5], "close_ts_utc"] - timedelta(hours=1)
+    )
+    result = build_momentum_evidence(
+        candles=candles, asof_ts_utc=ASOF, evaluated_at=ASOF, venue=VENUE,
+        asset_id=ASSET_ID, market=MARKET, interval_code=INPUT_INTERVAL,
+    )
+    assert result.data_quality == DataQuality.MALFORMED_SOURCE_CANDLE
+    assert MomentumReasonCode.NON_CONTIGUOUS_SOURCE_WINDOW in result.reason_codes
+    assert result.macd_value is None
+    assert result.signal_value is None
+    assert result.histogram_value is None
+    assert result.histogram_delta is None
+
+
+def test_fetch_candles_for_asof_has_no_lower_bound_or_row_limit():
+    """The source fetch must not truncate history with a fixed row count or
+    a fixed lookback lower bound (e.g. `LIMIT 35` / `close_ts_utc >=
+    asof - N*interval`); it must return the complete pre-asof history so
+    `build_momentum_evidence` can run a canonical recursive EMA over it."""
+    import inspect
+
+    source = inspect.getsource(fetch_candles_for_asof)
+    sql_body = source.split('sql = """', 1)[1].split('"""', 1)[0]
+    assert "LIMIT" not in sql_body.upper()
+    assert "close_ts_utc >=" not in sql_body
 
 
 def test_deterministic_identical_input_output():
