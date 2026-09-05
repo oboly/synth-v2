@@ -33,6 +33,7 @@ EXPECTED_CAPABILITY_IDS = {
     "market_rotation_pressure",
     "native_short_4h_chain",
     "sector_rotation_snapshot",
+    "fast_rotation_c1_history",
 }
 CAPABILITY_IDENTITY = {
     "public_price_snapshot": "public-price-snapshot-writer",
@@ -40,7 +41,18 @@ CAPABILITY_IDENTITY = {
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
     "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
+    "fast_rotation_c1_history": "fast-rotation-c1-history-writer",
 }
+
+# runtime_shape distinguishes a capability with a real scheduled systemd
+# service/timer (the only shape that existed before #748) from a capability
+# that can only ever be invoked manually under a bounded ACCEPTANCE permit and
+# must never claim a scheduled runtime it does not have. Absent runtime_shape
+# on an existing capability is unchanged legacy semantics: SCHEDULED_SERVICE.
+RUNTIME_SHAPE_SCHEDULED_SERVICE = "SCHEDULED_SERVICE"
+RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY = "MANUAL_ACCEPTANCE_ONLY"
+RUNTIME_SHAPES = {RUNTIME_SHAPE_SCHEDULED_SERVICE, RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY}
+MANUAL_ACCEPTANCE_ONLY_CADENCE = "MANUAL_ONLY_NO_SCHEDULE"
 _RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
 )
@@ -318,7 +330,7 @@ def validate_registry_payload(
         "observed_runtime_state",
         "historical_runtime_assignment",
     }
-    capability_allowed = capability_required | {"evaluated_separately_reason", "intervals"}
+    capability_allowed = capability_required | {"evaluated_separately_reason", "intervals", "runtime_shape"}
 
     for cap in capabilities:
         if not isinstance(cap, dict):
@@ -335,6 +347,66 @@ def validate_registry_payload(
             errors.append(
                 f"{label}: capability_identity must be {CAPABILITY_IDENTITY[cap_id]!r} for {cap_id}"
             )
+
+        runtime_shape = cap.get("runtime_shape", RUNTIME_SHAPE_SCHEDULED_SERVICE)
+        if "runtime_shape" in cap and runtime_shape not in RUNTIME_SHAPES:
+            errors.append(f"{label}: invalid runtime_shape {runtime_shape!r}")
+            runtime_shape = RUNTIME_SHAPE_SCHEDULED_SERVICE
+        is_manual_acceptance_only = runtime_shape == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY
+
+        if is_manual_acceptance_only:
+            for scheduled_field in ("wrapper", "service", "timer", "systemd_unit", "timer_unit"):
+                if cap.get(scheduled_field) is not None:
+                    errors.append(
+                        f"{label}: {scheduled_field} must be null for runtime_shape={runtime_shape} "
+                        "(no scheduled runtime exists)"
+                    )
+            if cap.get("committed_unit_binding") is not None:
+                errors.append(
+                    f"{label}: committed_unit_binding must be null for runtime_shape={runtime_shape} "
+                    "unless a real host-bound runtime artifact exists"
+                )
+            if cap.get("lock") is not None:
+                errors.append(
+                    f"{label}: lock must be null for runtime_shape={runtime_shape} "
+                    "unless a real manual runner owns a reviewed lock"
+                )
+            if cap.get("wrappers_invoked"):
+                errors.append(f"{label}: wrappers_invoked must be empty for runtime_shape={runtime_shape}")
+            if not cap.get("modules_invoked"):
+                errors.append(f"{label}: modules_invoked must name the canonical module")
+            if cap.get("cadence") != MANUAL_ACCEPTANCE_ONLY_CADENCE:
+                errors.append(
+                    f"{label}: cadence must be {MANUAL_ACCEPTANCE_ONLY_CADENCE!r} for runtime_shape={runtime_shape}, "
+                    "not an invented schedule"
+                )
+            if cap.get("observed_runtime_state"):
+                errors.append(f"{label}: observed_runtime_state must be empty for runtime_shape={runtime_shape}")
+            if cap.get("historical_runtime_assignment") is not None:
+                errors.append(
+                    f"{label}: historical_runtime_assignment must be null for runtime_shape={runtime_shape}"
+                )
+            if (
+                cap.get("production_runtime_owner") != UNASSIGNED
+                or cap.get("production_authorization_status") != UNASSIGNED
+                or cap.get("runtime_lifecycle") != UNASSIGNED
+                or str(cap.get("production_decision_evidence") or "").strip()
+            ):
+                errors.append(
+                    f"{label}: runtime_shape={runtime_shape} must keep production owner, authorization "
+                    "status, lifecycle, and decision evidence fully UNASSIGNED/empty -- promotion to "
+                    "production requires a separate reviewed runtime-shape conversion"
+                )
+        else:
+            for scheduled_field in ("wrapper", "service", "timer", "systemd_unit", "timer_unit"):
+                if cap.get(scheduled_field) is None:
+                    errors.append(
+                        f"{label}: {scheduled_field} must not be null for runtime_shape={runtime_shape}"
+                    )
+            if cap.get("committed_unit_binding") is None:
+                errors.append(f"{label}: committed_unit_binding must not be null for runtime_shape={runtime_shape}")
+            if cap.get("lock") is None:
+                errors.append(f"{label}: lock must not be null for runtime_shape={runtime_shape}")
         if cap.get("kind") not in _enum_values(registry, "capability_kind"):
             errors.append(f"{label}: invalid kind {cap.get('kind')!r}")
         for field in ("candidate_host", "selected_host", "acceptance_host", "production_runtime_owner"):
@@ -422,10 +494,11 @@ def validate_registry_payload(
                     "for production_runtime_owner"
                 )
 
-        for rel_field in ("wrapper", "service", "timer"):
-            rel = cap.get(rel_field)
-            if not isinstance(rel, str) or not _path_exists(repo, rel):
-                errors.append(f"{label}: referenced {rel_field} path missing or invalid: {rel!r}")
+        if not is_manual_acceptance_only:
+            for rel_field in ("wrapper", "service", "timer"):
+                rel = cap.get(rel_field)
+                if not isinstance(rel, str) or not _path_exists(repo, rel):
+                    errors.append(f"{label}: referenced {rel_field} path missing or invalid: {rel!r}")
 
         guard = cap.get("authorization_guard")
         if not isinstance(guard, dict):
@@ -453,7 +526,7 @@ def validate_registry_payload(
                 errors.append(f"{label}: service missing mandatory authorization guard ExecStartPre")
 
         lock = cap.get("lock")
-        if not isinstance(lock, dict) or lock.get("scope") != "HOST_LOCAL":
+        if not is_manual_acceptance_only and (not isinstance(lock, dict) or lock.get("scope") != "HOST_LOCAL"):
             errors.append(f"{label}: lock must declare scope=HOST_LOCAL")
 
         observed_runtime = cap.get("observed_runtime_state")
@@ -710,7 +783,9 @@ def _capability_for_unit_text(registry: dict[str, Any], text: str) -> set[str]:
             continue
         tokens = set(str(x) for x in cap.get("wrappers_invoked", []))
         tokens.update(str(x) for x in cap.get("modules_invoked", []))
-        tokens.add(str(cap.get("wrapper", "")))
+        wrapper_token = cap.get("wrapper")
+        if wrapper_token:
+            tokens.add(str(wrapper_token))
         for token in tokens:
             if token and token in text:
                 matches.add(str(cap.get("capability_id")))
@@ -729,7 +804,7 @@ def _validate_units_for_duplicates(registry: dict[str, Any], repo: Path, errors:
         if not isinstance(cap, dict):
             continue
         cap_id = str(cap.get("capability_id"))
-        declared_service = str(cap.get("service"))
+        declared_service = cap.get("service")
         hits = sorted(set(unit_hits.get(cap_id, [])))
         unexpected = [hit for hit in hits if hit != declared_service]
         if unexpected:

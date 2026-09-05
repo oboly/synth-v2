@@ -447,6 +447,45 @@
         }
       ],
       "historical_runtime_assignment": null
+    },
+    {
+      "capability_id": "fast_rotation_c1_history",
+      "kind": "public_market_data_writer",
+      "capability_identity": "fast-rotation-c1-history-writer",
+      "runtime_shape": "MANUAL_ACCEPTANCE_ONLY",
+      "wrapper": null,
+      "service": null,
+      "timer": null,
+      "systemd_unit": null,
+      "timer_unit": null,
+      "committed_unit_binding": null,
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-fast-rotation-c1-history-authorization-v1.json",
+        "required": true
+      },
+      "lock": null,
+      "cadence": "MANUAL_ONLY_NO_SCHEDULE",
+      "database_writes": ["fast_rotation_c1_observation_v1"],
+      "artifact_publications": [],
+      "status_publications": [],
+      "downstream_state_changes": [],
+      "wrappers_invoked": [],
+      "modules_invoked": ["src.features.run_fast_rotation_c1_history_v1"],
+      "account_or_reporting_coupling": false,
+      "evaluated_separately": true,
+      "evaluated_separately_reason": "Manual acceptance-only canary capability for Issue #733. No scheduled runtime, service, timer, or lock exists; the runner is invoked manually per Issue #733 Phase C. Recurring cadence/runtime activation remains a separate, later reviewed decision.",
+      "candidate_host": "gurkdb",
+      "selected_host": "gurkdb",
+      "acceptance_host": "gurkdb",
+      "acceptance_status": "PENDING",
+      "acceptance_evidence": null,
+      "production_runtime_owner": "UNASSIGNED",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "UNASSIGNED",
+      "production_decision_evidence": "",
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": null
     }
   ],
   "consumers_with_zero_writer_capabilities": [

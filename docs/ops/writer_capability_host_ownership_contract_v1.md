@@ -153,6 +153,71 @@ production_authorized_lifecycle_requires_acceptance_and_production_decision_evid
 `UNASSIGNED` means no canonical production authorization. It does not mean no
 timer is installed or running on a host.
 
+## Runtime Shape (#748)
+
+Every capability declares a `runtime_shape`:
+
+```text
+SCHEDULED_SERVICE       has (or is intended to eventually have) a real
+                         systemd service/timer, wrapper, committed unit
+                         binding, and host-local lock. Every capability
+                         onboarded before #748 is this shape.
+MANUAL_ACCEPTANCE_ONLY  has no scheduled runtime at all. It may only ever be
+                         invoked manually, and only under a bounded ACCEPTANCE
+                         permit (see Mutation authorization contract below).
+```
+
+Absent `runtime_shape` on a capability is unchanged legacy semantics:
+`SCHEDULED_SERVICE`. This was a deliberate backward-compatible schema/semantic
+extension in #748: no existing capability was edited to add the field.
+
+For `SCHEDULED_SERVICE`, every previously-mandatory field and check is
+unchanged: `wrapper`, `service`, `timer`, `systemd_unit`, `timer_unit`,
+`committed_unit_binding`, and `lock` must all be non-null, and their
+referenced paths must exist on disk.
+
+For `MANUAL_ACCEPTANCE_ONLY`, the semantic validator
+(`src/operations/validate_writer_capability_ownership_v1.py`) requires the
+opposite and fails closed on any deviation:
+
+- `wrapper`, `service`, `timer`, `systemd_unit`, `timer_unit`,
+  `committed_unit_binding`, and `lock` must all be `null` -- a
+  `MANUAL_ACCEPTANCE_ONLY` capability must never declare a scheduled runtime
+  artifact it does not actually have.
+- `wrappers_invoked` must be empty; `modules_invoked` must name the real
+  canonical module.
+- `cadence` must be the literal sentinel `MANUAL_ONLY_NO_SCHEDULE`, not an
+  invented schedule string.
+- `observed_runtime_state` must be `[]` and `historical_runtime_assignment`
+  must be `null` -- there is no installed runtime to observe or supersede.
+- `production_runtime_owner`, `production_authorization_status`, and
+  `runtime_lifecycle` must all stay `UNASSIGNED`, and
+  `production_decision_evidence` must stay empty. This is enforced
+  unconditionally for this runtime_shape, independent of every other field --
+  a `MANUAL_ACCEPTANCE_ONLY` capability cannot be promoted to production
+  ownership by editing registry fields alone.
+
+`src/operations/writer_capability_authorization_v1.py` adds a second,
+independent layer of the same denial: its `PRODUCTION`-mode check denies any
+capability whose registry entry declares `runtime_shape=MANUAL_ACCEPTANCE_ONLY`
+before it even looks at a production authorization file, so the denial holds
+even if the registry-semantic check above were somehow bypassed. The
+`writer_capability_authorization_v1.schema.json` PRODUCTION authorization
+schema's `capability_id`/`capability_identity` enums are also never extended
+for a `MANUAL_ACCEPTANCE_ONLY` capability, so a well-formed-looking production
+authorization file naming one is rejected at the schema layer.
+
+Promoting a `MANUAL_ACCEPTANCE_ONLY` capability to a real scheduled production
+runtime is a separate, later reviewed runtime-shape conversion (adding real
+wrapper/service/timer/lock artifacts and flipping `runtime_shape` back to
+`SCHEDULED_SERVICE`), not a registry field edit.
+
+Acceptance evidence and production authorization remain the separate concerns
+they always were: a `MANUAL_ACCEPTANCE_ONLY` capability can still move through
+`acceptance_status` `PENDING` -> `ACCEPTED` under a bounded ACCEPTANCE permit
+(controlled manual canary runs) without that ever implying production
+ownership, exactly as for a `SCHEDULED_SERVICE` capability.
+
 ## Lifecycle Rules
 
 `UNASSIGNED`:
@@ -209,6 +274,7 @@ Summary:
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | ACTIVE |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
 | `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
+| `fast_rotation_c1_history` | public market-data writer, `runtime_shape=MANUAL_ACCEPTANCE_ONLY` | none (manual invocation only) | UNASSIGNED | UNASSIGNED |
 
 Public Price Snapshot is active on gurkDB.
 Public Candle Freshness passed strict gurkDB preflight and two controlled
@@ -264,6 +330,20 @@ matching the naming convention already used by `public_candle_freshness`,
 registry only; no authorization file was installed at either path by this
 correction, and `public_price_snapshot`'s existing artifact and `ACTIVE`
 authorization were not touched.
+
+`fast_rotation_c1_history` (#748) is `runtime_shape=MANUAL_ACCEPTANCE_ONLY`:
+it registers the writer capability required by
+`src/features/run_fast_rotation_c1_history_v1.py` (Issue #733's manual C1
+fast-Rotation history materializer, writing
+`fast_rotation_c1_observation_v1`) so that runner's mandatory
+`require_capability_write_authorization("fast_rotation_c1_history", ...)`
+call has a valid registry entry to authorize against. #748 registers the
+capability only -- it does not issue an acceptance permit, does not run the
+#733 canary write, and does not create any scheduled runtime. See
+`docs/architecture/fast_rotation_c1_history_contract_v1.md` for the C1
+market-semantics and materialization contract (owned there, not duplicated
+here); this document owns only the writer-capability registry/authorization
+shape.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public

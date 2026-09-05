@@ -31,6 +31,7 @@ _IDENTITY = {
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
     "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
+    "fast_rotation_c1_history": "fast-rotation-c1-history-writer",
 }
 
 

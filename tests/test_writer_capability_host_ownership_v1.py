@@ -96,6 +96,7 @@ def test_public_price_and_candle_are_active() -> None:
         "market_rotation_pressure",
         "native_short_4h_chain",
         "sector_rotation_snapshot",
+        "fast_rotation_c1_history",
     }
     price = _cap(_registry(), "public_price_snapshot")
     assert price["candidate_host"] == "gurkdb"
@@ -143,8 +144,7 @@ def test_public_price_and_candle_are_active() -> None:
             assert cap["observed_runtime_state"][0]["host"] == "gurkdb"
             assert cap["observed_runtime_state"][0]["current_state"] == "ACTIVE_OBSERVED"
             assert cap["historical_runtime_assignment"] is None
-        else:
-            assert cap["capability_id"] == "native_short_4h_chain"
+        elif cap["capability_id"] == "native_short_4h_chain":
             assert cap["candidate_host"] == "gurkdb"
             assert cap["selected_host"] == "gurkdb"
             assert cap["acceptance_host"] == "gurkdb"
@@ -153,6 +153,19 @@ def test_public_price_and_candle_are_active() -> None:
             assert cap["production_authorization_status"] == "AUTHORIZED"
             assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
             assert cap["production_decision_evidence"]
+        else:
+            assert cap["capability_id"] == "fast_rotation_c1_history"
+            assert cap["runtime_shape"] == "MANUAL_ACCEPTANCE_ONLY"
+            assert cap["wrapper"] is None
+            assert cap["service"] is None
+            assert cap["timer"] is None
+            assert cap["lock"] is None
+            assert cap["acceptance_status"] == "PENDING"
+            assert cap["acceptance_evidence"] is None
+            assert cap["production_runtime_owner"] == "UNASSIGNED"
+            assert cap["production_authorization_status"] == "UNASSIGNED"
+            assert cap["runtime_lifecycle"] == "UNASSIGNED"
+            assert cap["production_decision_evidence"] == ""
 
 
 def test_public_price_observations_preserve_inactive_and_append_active() -> None:
@@ -653,6 +666,12 @@ def test_preflight_uses_venv_python_for_capability_imports(monkeypatch: pytest.M
 
 def test_all_referenced_timer_service_wrapper_paths_exist() -> None:
     for cap in _capabilities():
+        if cap.get("runtime_shape") == "MANUAL_ACCEPTANCE_ONLY":
+            assert cap["wrapper"] is None, cap["capability_id"]
+            assert cap["service"] is None, cap["capability_id"]
+            assert cap["timer"] is None, cap["capability_id"]
+            assert cap["observed_runtime_state"] == [], cap["capability_id"]
+            continue
         assert Path(cap["wrapper"]).exists(), cap["capability_id"]
         assert Path(cap["service"]).exists(), cap["capability_id"]
         assert Path(cap["timer"]).exists(), cap["capability_id"]
@@ -672,6 +691,8 @@ def test_all_systemd_trees_are_searched_and_duplicate_capability_units_fail(tmp_
         target = tmp_path / tree
         target.mkdir(parents=True, exist_ok=True)
     for cap in _capabilities(registry):
+        if cap.get("runtime_shape") == "MANUAL_ACCEPTANCE_ONLY":
+            continue
         for key in ("wrapper", "service", "timer"):
             source = Path(cap[key])
             target = tmp_path / source
@@ -808,6 +829,172 @@ def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() ->
     native_short = _cap(registry, "native_short_4h_chain")
     assert native_short["production_authorization_status"] == "AUTHORIZED"
     assert native_short["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+
+
+LEGACY_SCHEDULED_CAPABILITY_IDS = {
+    "public_price_snapshot",
+    "public_candle_freshness",
+    "market_rotation_pressure",
+    "native_short_4h_chain",
+    "sector_rotation_snapshot",
+}
+
+
+def test_existing_capabilities_omit_runtime_shape_and_default_scheduled() -> None:
+    # Backward compatibility (#748): every capability that existed before the
+    # runtime_shape field was introduced omits it entirely and keeps its
+    # original scheduled-service semantics unchanged.
+    registry = _registry()
+    for cap in _capabilities(registry):
+        if cap["capability_id"] in LEGACY_SCHEDULED_CAPABILITY_IDS:
+            assert "runtime_shape" not in cap, cap["capability_id"]
+    assert validate_registry_payload(registry, repo_root=Path.cwd()).ok
+
+
+def test_fast_rotation_c1_history_manual_acceptance_only_entry_is_valid() -> None:
+    registry = _registry()
+    cap = _cap(registry, "fast_rotation_c1_history")
+    assert cap["runtime_shape"] == "MANUAL_ACCEPTANCE_ONLY"
+    assert cap["kind"] == "public_market_data_writer"
+    assert cap["capability_identity"] == "fast-rotation-c1-history-writer"
+    assert cap["database_writes"] == ["fast_rotation_c1_observation_v1"]
+    assert cap["modules_invoked"] == ["src.features.run_fast_rotation_c1_history_v1"]
+    assert cap["wrappers_invoked"] == []
+    assert cap["wrapper"] is None
+    assert cap["service"] is None
+    assert cap["timer"] is None
+    assert cap["systemd_unit"] is None
+    assert cap["timer_unit"] is None
+    assert cap["committed_unit_binding"] is None
+    assert cap["lock"] is None
+    assert cap["cadence"] == "MANUAL_ONLY_NO_SCHEDULE"
+    assert cap["candidate_host"] == "gurkdb"
+    assert cap["selected_host"] == "gurkdb"
+    assert cap["acceptance_host"] == "gurkdb"
+    assert cap["acceptance_status"] == "PENDING"
+    assert cap["acceptance_evidence"] is None
+    assert cap["production_runtime_owner"] == "UNASSIGNED"
+    assert cap["production_authorization_status"] == "UNASSIGNED"
+    assert cap["runtime_lifecycle"] == "UNASSIGNED"
+    assert cap["production_decision_evidence"] == ""
+    assert cap["observed_runtime_state"] == []
+    assert cap["historical_runtime_assignment"] is None
+    assert validate_registry_payload(registry, repo_root=Path.cwd()).ok
+
+
+def test_manual_acceptance_only_with_fake_scheduled_artifacts_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "fast_rotation_c1_history")
+    cap["wrapper"] = "scripts/run_market_price_snapshot_once.sh"
+    cap["service"] = "deploy/systemd/synth-market-price-snapshot-writer.service"
+    cap["timer"] = "deploy/systemd/synth-market-price-snapshot-writer.timer"
+    cap["systemd_unit"] = "synth-market-price-snapshot-writer.service"
+    cap["timer_unit"] = "synth-market-price-snapshot-writer.timer"
+    errors = _errors(registry)
+    assert any(
+        "must be null for runtime_shape=MANUAL_ACCEPTANCE_ONLY" in err for err in errors
+    )
+
+
+def test_manual_acceptance_only_with_fake_lock_or_binding_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "fast_rotation_c1_history")
+    cap["lock"] = {"path": "/tmp/fake.lock", "scope": "HOST_LOCAL"}
+    cap["committed_unit_binding"] = {
+        "host_bound_candidate_artifact": True,
+        "condition_host": "gurkdb",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2",
+    }
+    errors = _errors(registry)
+    assert any("lock must be null for runtime_shape=MANUAL_ACCEPTANCE_ONLY" in e for e in errors)
+    assert any(
+        "committed_unit_binding must be null for runtime_shape=MANUAL_ACCEPTANCE_ONLY" in e
+        for e in errors
+    )
+
+
+def test_manual_acceptance_only_invented_cadence_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "fast_rotation_c1_history")["cadence"] = "*:20:00 UTC"
+    errors = _errors(registry)
+    assert any("not an invented schedule" in e for e in errors)
+
+
+def test_manual_acceptance_only_with_production_state_fails_closed() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "fast_rotation_c1_history")
+    cap["production_runtime_owner"] = "gurkdb"
+    cap["production_authorization_status"] = "AUTHORIZED"
+    cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+    cap["production_decision_evidence"] = "docs/ops/fake_evidence.md"
+    errors = _errors(registry)
+    assert any(
+        "must keep production owner" in e and "MANUAL_ACCEPTANCE_ONLY" in e for e in errors
+    )
+
+
+def test_manual_acceptance_only_with_observed_runtime_or_history_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "fast_rotation_c1_history")
+    cap["observed_runtime_state"] = [
+        {
+            "host": "gurkdb",
+            "unit": "fake.timer",
+            "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "observed_at_utc": "2026-09-05T00:00:00Z",
+            "observed_at_precision": "exact",
+            "current_state": "ACTIVE_OBSERVED",
+            "authorization_status": "UNASSIGNED",
+            "runtime_state_classification": "NONE_OBSERVED",
+            "evidence_source": "nowhere",
+        }
+    ]
+    cap["historical_runtime_assignment"] = {
+        "host": "devlap",
+        "status": "SUPERSEDED",
+        "source": "fabricated",
+        "reason": "fabricated",
+        "preserved_evidence": "fabricated",
+        "grants_current_authority": False,
+    }
+    errors = _errors(registry)
+    assert any("observed_runtime_state must be empty" in e for e in errors)
+    assert any("historical_runtime_assignment must be null" in e for e in errors)
+
+
+def test_manual_acceptance_only_nonempty_wrappers_invoked_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "fast_rotation_c1_history")["wrappers_invoked"] = ["scripts/fake.sh"]
+    errors = _errors(registry)
+    assert any("wrappers_invoked must be empty" in e for e in errors)
+
+
+def test_invalid_runtime_shape_value_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "fast_rotation_c1_history")["runtime_shape"] = "SOMETHING_ELSE"
+    errors = _errors(registry)
+    assert any("invalid runtime_shape" in e for e in errors)
+
+
+def test_scheduled_service_capability_cannot_null_out_scheduled_fields() -> None:
+    # SCHEDULED_SERVICE (default/legacy) capabilities must keep wrapper/
+    # service/timer/lock/committed_unit_binding non-null -- runtime_shape
+    # does not loosen existing scheduled-writer validation.
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "public_price_snapshot")
+    cap["wrapper"] = None
+    cap["service"] = None
+    cap["timer"] = None
+    cap["systemd_unit"] = None
+    cap["timer_unit"] = None
+    cap["committed_unit_binding"] = None
+    cap["lock"] = None
+    errors = _errors(registry)
+    assert any("must not be null for runtime_shape=SCHEDULED_SERVICE" in e for e in errors)
 
 
 def test_contract_doc_contains_state_machine_and_installed_timer_warning() -> None:

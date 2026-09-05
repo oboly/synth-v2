@@ -1300,3 +1300,313 @@ def test_exact_mode_is_unaffected_default_when_field_absent(tmp_path: Path) -> N
     )
     assert not decision.allowed
     assert any("does not match expected commit" in e for e in decision.reasons)
+
+
+# ---------------------------------------------------------------------------
+# fast_rotation_c1_history (#748): MANUAL_ACCEPTANCE_ONLY runtime_shape.
+# ---------------------------------------------------------------------------
+
+C1_CAP = "fast_rotation_c1_history"
+C1_IDENTITY = "fast-rotation-c1-history-writer"
+
+
+def _c1_permit(head: str, **overrides: object) -> dict:
+    permit = {
+        "permit_version": "writer_capability_acceptance_permit_v1",
+        "permit_id": "permit-c1-0001",
+        "issued_at_utc": "2026-09-05T00:00:00Z",
+        "expiry_utc": "2099-01-01T00:00:00Z",
+        "purpose": "ACCEPTANCE",
+        "capability_id": C1_CAP,
+        "capability_identity": C1_IDENTITY,
+        "acceptance_host": "gurkdb",
+        "authorized_commit": head,
+        "approval_reference": "ref",
+    }
+    permit.update(overrides)
+    return permit
+
+
+def test_fast_rotation_c1_history_identity_resolves_exactly() -> None:
+    from src.operations import validate_writer_capability_ownership_v1 as reg_validator
+    from src.operations.writer_capability_authorization_v1 import CAPABILITY_IDENTITY
+
+    assert CAPABILITY_IDENTITY[C1_CAP] == C1_IDENTITY
+    assert reg_validator.CAPABILITY_IDENTITY[C1_CAP] == C1_IDENTITY
+
+
+def test_fast_rotation_c1_history_read_only_mode_blocks_mutation() -> None:
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.READ_ONLY,
+        repo_root=REPO,
+        checkout_path=REPO,
+    )
+    assert not decision.allowed
+    assert any("READ_ONLY" in reason for reason in decision.reasons)
+
+
+def test_fast_rotation_c1_history_acceptance_denied_without_permit() -> None:
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=REPO,
+    )
+    assert not decision.allowed
+    assert any("requires an acceptance permit path" in r for r in decision.reasons)
+
+
+def test_fast_rotation_c1_history_acceptance_denied_for_wrong_capability_permit(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    # A valid permit minted for a different capability must not authorize C1.
+    permit_path = _write_json(
+        tmp_path / "permit.json",
+        _sector_permit(head, acceptance_host="devlap"),
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("capability_id mismatch" in r for r in decision.reasons)
+
+
+def test_fast_rotation_c1_history_acceptance_denied_wrong_host(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(tmp_path / "permit.json", _c1_permit(head))
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("actual hostname does not match acceptance host" in r for r in decision.reasons)
+
+
+def test_fast_rotation_c1_history_acceptance_denied_expired_permit(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json",
+        _c1_permit(head, acceptance_host="gurkdb", expiry_utc="2020-01-01T00:00:00Z"),
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="gurkdb",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("acceptance permit has expired" in r for r in decision.reasons)
+
+
+def test_fast_rotation_c1_history_acceptance_permit_is_accepted(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json", _c1_permit(head, acceptance_host="gurkdb")
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="gurkdb",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+    assert decision.authorization is not None
+    assert decision.authorization.capability_id == C1_CAP
+
+
+def test_fast_rotation_c1_history_acceptance_denied_when_permit_and_actual_host_agree_but_differ_from_registry(
+    tmp_path: Path,
+) -> None:
+    # The canonical registry pins fast_rotation_c1_history's acceptance_host
+    # to gurkdb. A permit and actual host that internally agree with each
+    # other (devlap == devlap) but disagree with the registry-owned host must
+    # still be denied -- otherwise a valid permit minted for any host could
+    # authorize a MANUAL_ACCEPTANCE_ONLY capability outside its registered
+    # host.
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    assert _cap(registry, C1_CAP)["acceptance_host"] == "gurkdb"
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json", _c1_permit(head, acceptance_host="devlap")
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any(
+        "acceptance permit host does not match registry acceptance_host" in r
+        for r in decision.reasons
+    )
+    assert any(
+        "actual hostname does not match registry acceptance_host" in r
+        for r in decision.reasons
+    )
+
+
+def test_fast_rotation_c1_history_acceptance_denied_when_registry_host_unassigned(
+    tmp_path: Path,
+) -> None:
+    registry = copy.deepcopy(json.loads(REGISTRY_PATH.read_text(encoding="utf-8")))
+    _cap(registry, C1_CAP)["acceptance_host"] = "UNASSIGNED"
+    registry_path = _write_json(tmp_path / "registry.json", registry)
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json", _c1_permit(head, acceptance_host="gurkdb")
+    )
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="gurkdb",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any(
+        "registry acceptance_host is UNASSIGNED" in r for r in decision.reasons
+    )
+
+
+def test_sector_rotation_scheduled_service_acceptance_host_pinning_is_unaffected(
+    tmp_path: Path,
+) -> None:
+    # Regression guard: the new registry-acceptance_host pinning applies only
+    # to runtime_shape=MANUAL_ACCEPTANCE_ONLY. sector_rotation_snapshot is
+    # SCHEDULED_SERVICE (runtime_shape omitted) and its canonical registry
+    # acceptance_host is gurkdb, yet a permit/actual host of devlap (which
+    # disagrees with the registry) must still be accepted exactly as before.
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    sector_cap = _cap(registry, SECTOR_CAP)
+    assert "runtime_shape" not in sector_cap
+    assert sector_cap["acceptance_host"] == "gurkdb"
+
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(tmp_path / "permit.json", _sector_permit(head))
+    permit_path.chmod(0o644)
+    decision = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+
+
+def test_fast_rotation_c1_history_production_denied_while_manual_acceptance_only(
+    tmp_path: Path,
+) -> None:
+    # Layer 1: if the registry's other production fields were accidentally
+    # flipped toward an authorized-looking state, the registry itself becomes
+    # semantically invalid (validate_writer_capability_ownership_v1 requires
+    # MANUAL_ACCEPTANCE_ONLY capabilities to keep production owner/
+    # authorization/lifecycle/evidence fully unassigned), so the whole
+    # registry load fails and PRODUCTION is denied before any per-capability
+    # check even runs.
+    from tests.writer_auth_support import registry_with_auth_file
+
+    repo, head = _temp_git(tmp_path)
+    fake_auth_path = _write_json(tmp_path / "fake_auth.json", {"not": "used"})
+    registry_path = registry_with_auth_file(
+        tmp_path, C1_CAP, fake_auth_path, authorize=True, host="gurkdb"
+    )
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="gurkdb",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any(
+        "must keep production owner" in r and "MANUAL_ACCEPTANCE_ONLY" in r
+        for r in decision.reasons
+    )
+
+
+def test_fast_rotation_c1_history_production_denied_by_runtime_shape_independent_of_registry_state() -> None:
+    # Layer 2: the code-level structural denial in
+    # writer_capability_authorization_v1._verify_production runs purely off
+    # cap.get("runtime_shape") and is independent of the registry-semantic
+    # check above -- it is exercised directly here against the canonical,
+    # unmodified (fully UNASSIGNED) registry entry.
+    from src.operations.writer_capability_authorization_v1 import (
+        RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY,
+    )
+
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    cap = _cap(registry, C1_CAP)
+    assert cap["runtime_shape"] == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY
+    assert cap["production_runtime_owner"] == "UNASSIGNED"
+
+
+def test_fast_rotation_c1_history_production_denied_with_unmodified_canonical_registry() -> None:
+    # The as-shipped registry entry (production fields all UNASSIGNED) also
+    # denies PRODUCTION, independent of the explicit runtime_shape check above.
+    decision = verify_writer_execution_authorization(
+        capability_id=C1_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=REPO,
+    )
+    assert not decision.allowed
+
+
+def test_fast_rotation_c1_history_not_in_production_authorization_schema_enum() -> None:
+    # Deliberate: fast_rotation_c1_history is never added to the PRODUCTION
+    # authorization schema's capability enum, so a well-formed-looking
+    # PRODUCTION authorization file naming it is rejected at the schema layer,
+    # before any semantic check runs.
+    schema = json.loads(AUTH_SCHEMA.read_text(encoding="utf-8"))
+    assert C1_CAP not in schema["properties"]["capability_id"]["enum"]
+    assert C1_IDENTITY not in schema["properties"]["capability_identity"]["enum"]
+
+
+def test_fast_rotation_c1_history_in_acceptance_permit_schema_enum() -> None:
+    schema = json.loads(ACCEPT_SCHEMA.read_text(encoding="utf-8"))
+    assert C1_CAP in schema["properties"]["capability_id"]["enum"]
+    assert C1_IDENTITY in schema["properties"]["capability_identity"]["enum"]

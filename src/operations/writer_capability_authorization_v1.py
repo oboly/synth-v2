@@ -84,7 +84,19 @@ CAPABILITY_IDENTITY: dict[str, str] = {
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
     "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
+    "fast_rotation_c1_history": "fast-rotation-c1-history-writer",
 }
+
+# A capability whose registry entry declares this runtime_shape has no
+# scheduled service/timer at all -- it may only ever be invoked manually under
+# a bounded ACCEPTANCE permit (see writer_capability_ownership_v1.schema.json
+# and validate_writer_capability_ownership_v1.py). PRODUCTION authorization is
+# therefore always denied for it here, independent of any registry field
+# state, so accidentally flipping production_authorization_status/
+# runtime_lifecycle on such an entry can never grant production ownership.
+# Promoting a capability out of this shape requires a separate reviewed
+# runtime-shape conversion, not a registry field edit.
+RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY = "MANUAL_ACCEPTANCE_ONLY"
 
 # Untracked files under these repo-relative prefixes can affect imported or
 # executed code, configuration, authorization, registry, schema, service units,
@@ -601,6 +613,7 @@ def _verify_production(
 def _verify_acceptance(
     *,
     capability_id: str,
+    cap: dict[str, Any],
     permit: dict[str, Any],
     actual_host: str,
     checkout_path: Path,
@@ -618,6 +631,37 @@ def _verify_acceptance(
         reasons.append("acceptance permit capability_identity mismatch")
     if permit.get("acceptance_host") != actual_host:
         reasons.append("actual hostname does not match acceptance host")
+
+    if cap.get("runtime_shape") == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY:
+        # A MANUAL_ACCEPTANCE_ONLY capability has no scheduled runtime to pin
+        # it to a host, so the registry's declared acceptance_host is the only
+        # host binding it has. Without this, a valid permit for any host would
+        # authorize the capability regardless of which host the registry
+        # actually assigned it to.
+        registry_host = cap.get("acceptance_host")
+        if not isinstance(registry_host, str) or not registry_host.strip():
+            reasons.append(
+                "registry acceptance_host is missing or invalid for "
+                f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} capability"
+            )
+            registry_host = None
+        elif registry_host == "UNASSIGNED":
+            reasons.append(
+                "registry acceptance_host is UNASSIGNED for "
+                f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} capability"
+            )
+            registry_host = None
+        if registry_host is not None:
+            if permit.get("acceptance_host") != registry_host:
+                reasons.append(
+                    "acceptance permit host does not match registry acceptance_host "
+                    f"{registry_host!r}"
+                )
+            if actual_host != registry_host:
+                reasons.append(
+                    "actual hostname does not match registry acceptance_host "
+                    f"{registry_host!r}"
+                )
 
     issued = _utc_literal_to_datetime(str(permit.get("issued_at_utc")))
     expiry = _utc_literal_to_datetime(str(permit.get("expiry_utc")))
@@ -733,6 +777,21 @@ def verify_writer_execution_authorization(
         )
 
     if resolved_mode is ExecutionMode.PRODUCTION:
+        if cap.get("runtime_shape") == RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY:
+            # Structural denial, independent of any other registry field state
+            # (production_runtime_owner, production_authorization_status,
+            # runtime_lifecycle). A manual-acceptance-only capability has no
+            # scheduled runtime to authorize into production.
+            return AuthorizationDecision(
+                False,
+                capability_id,
+                resolved_mode,
+                [
+                    f"runtime_shape={RUNTIME_SHAPE_MANUAL_ACCEPTANCE_ONLY} may never receive "
+                    "PRODUCTION authorization; promotion requires a separate reviewed "
+                    "runtime-shape conversion"
+                ],
+            )
         # The production authorization path is derived solely from the validated
         # registry capability entry. There is no public/CLI/environment override;
         # tests exercise the real contract by pointing a temporary registry's
@@ -794,6 +853,7 @@ def verify_writer_execution_authorization(
     permit_payload = permit_result.payload or {}
     reasons = _verify_acceptance(
         capability_id=capability_id,
+        cap=cap,
         permit=permit_payload,
         actual_host=host,
         checkout_path=checkout_path,
