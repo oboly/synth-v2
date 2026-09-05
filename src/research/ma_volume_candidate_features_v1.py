@@ -71,16 +71,21 @@ def build_candidate_frame(
     """Build replay-safe raw candidate measurements at or before ``asof``.
 
     The caller supplies the evaluation boundary explicitly. Future candles are
-    removed before any rolling feature is calculated, preventing future-data
-    leakage. The function returns the full point-in-time feature frame up to the
-    boundary so downstream research can construct labels without recomputing the
-    feature family.
+    removed before scope validation and before any rolling feature is calculated,
+    so future rows cannot alter or invalidate a historical replay. The function
+    returns the full point-in-time feature frame up to the boundary so downstream
+    research can construct labels without recomputing the feature family.
     """
     if slope_bars <= 0:
         raise MAVolumeCandidateInputError("slope_bars must be positive")
-    _validate_scope(candles, interval_code=interval_code)
+    if interval_code != INPUT_INTERVAL:
+        raise MAVolumeCandidateInputError(f"unsupported input interval: {interval_code}")
     if candles.empty:
         return pd.DataFrame()
+    required_time = {"start_ts", "end_ts"}
+    missing_time = required_time.difference(candles.columns)
+    if missing_time:
+        raise MAVolumeCandidateInputError(f"input missing timestamp columns: {sorted(missing_time)}")
 
     asof = pd.Timestamp(_utc(asof_ts_utc))
     source = candles.copy()
@@ -89,6 +94,7 @@ def build_candidate_frame(
     source = source.loc[source["end_ts"] <= asof].copy()
     if source.empty:
         return pd.DataFrame()
+    _validate_scope(source, interval_code=interval_code)
 
     featured = build_candle_features(
         source,
@@ -114,9 +120,7 @@ def build_candidate_frame(
     featured["bullish_ma_stack"] = (
         (featured["sma_50"] > featured["sma_150"])
         & (featured["sma_150"] > featured["sma_200"])
-    ).where(
-        featured[["sma_50", "sma_150", "sma_200"]].notna().all(axis=1)
-    )
+    ).where(featured[["sma_50", "sma_150", "sma_200"]].notna().all(axis=1))
 
     featured["candidate_model_id"] = MODEL_ID
     featured["candidate_model_version"] = MODEL_VERSION
