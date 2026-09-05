@@ -22,7 +22,7 @@ from src.research.run_ma_volume_frozen_validation_v1 import (
     _Interrupted,
     _signal_handler,
     fetch_candles_for_asof,
-    fetch_unique_market_map,
+    frozen_grouping_market_map,
     has_durable_checkpoint,
     load_checkpointed_rows,
     run,
@@ -237,9 +237,11 @@ class _Conn:
     def cursor(self): return _Cursor(self.row_batches.pop(0), self.capture)
 
 
-def test_market_resolution_fails_closed_for_ambiguous_assets() -> None:
-    conn = _Conn([[{"asset_id": 1, "market": "BTC-EUR"}, {"asset_id": 2, "market": "AAA-EUR"}, {"asset_id": 2, "market": "AAA-USDC"}]])
-    assert fetch_unique_market_map(conn, venue="bitvavo", asset_ids=[1, 2]) == {1: "BTC-EUR"}
+def test_frozen_grouping_market_identity_is_independent_of_current_pair_state() -> None:
+    assert frozen_grouping_market_map(venue="bitvavo", asset_ids=[2, 1, 2]) == {
+        1: "asset:1@bitvavo",
+        2: "asset:2@bitvavo",
+    }
 
 
 def test_candle_query_is_bounded_before_asof_and_maps_canonical_market() -> None:

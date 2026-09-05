@@ -89,29 +89,19 @@ def jsonable(value: Any) -> Any:
     return value
 
 
-def fetch_unique_market_map(conn: Any, *, venue: str, asset_ids: Iterable[int]) -> dict[int, str]:
-    ids = sorted(set(int(asset_id) for asset_id in asset_ids))
-    result: dict[int, str] = {}
-    for start in range(0, len(ids), ASSET_BATCH_SIZE):
-        batch = ids[start : start + ASSET_BATCH_SIZE]
-        placeholders = ",".join(["%s"] * len(batch))
-        sql = f"""
-        SELECT base_asset_id AS asset_id, market
-        FROM venue_market
-        WHERE venue=%s AND is_tradeable=1 AND base_asset_id IN ({placeholders})
-        ORDER BY base_asset_id, market
-        """
-        with conn.cursor() as cur:
-            cur.execute(sql, (venue, *batch))
-            rows = cur.fetchall()
-        grouped: dict[int, list[str]] = defaultdict(list)
-        for row in rows:
-            grouped[int(row["asset_id"])].append(str(row["market"]))
-        for asset_id in batch:
-            markets = grouped.get(asset_id, [])
-            if len(markets) == 1:
-                result[asset_id] = markets[0]
-    return result
+def frozen_grouping_market_map(*, venue: str, asset_ids: Iterable[int]) -> dict[int, str]:
+    """Return a deterministic grouping key from frozen observation identity only.
+
+    ``ma_volume_candidate_features_v1`` requires a single market/group label, but
+    ``obs_market_candle`` itself is keyed by asset/venue/interval. Using current
+    ``venue_market`` state would make historical reruns depend on later pair
+    listings/delistings. The frozen asset_id + venue identity is sufficient and
+    stable for this single-asset feature frame.
+    """
+    return {
+        asset_id: f"asset:{asset_id}@{venue}"
+        for asset_id in sorted(set(int(value) for value in asset_ids))
+    }
 
 
 def fetch_candles_for_asof(
@@ -451,8 +441,7 @@ def _execute(
     candidate_path = output_dir / candidate_filename
     conn = get_db_connection()
     try:
-        market_by_asset = fetch_unique_market_map(
-            conn,
+        market_by_asset = frozen_grouping_market_map(
             venue=args.venue,
             asset_ids=[int(row["asset_id"]) for row in selected],
         )

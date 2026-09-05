@@ -102,10 +102,11 @@ an explicit status. No earlier latest-row fallback, interpolation or imputation
 is allowed.
 
 `obs_market_candle` is keyed by asset/venue/interval rather than market pair.
-The runner uses the current canonical `venue_market` table only to require one
-unambiguous display/grouping market for the asset. An ambiguous mapping fails
-closed for that observation; it does not duplicate the candle series across
-markets.
+The feature builder still requires a grouping label, so the runner derives a
+deterministic internal grouping key from the frozen observation identity:
+`asset:<asset_id>@<venue>`. It never reads current `venue_market` state. Later
+pair listings, delistings or quote-market changes therefore cannot alter a
+rerun of the same frozen population.
 
 ## Outcome contract
 
