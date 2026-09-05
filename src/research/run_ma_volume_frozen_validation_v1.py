@@ -212,7 +212,12 @@ def write_or_verify_json(path: Path, payload: dict[str, Any], *, resume: bool) -
     tmp.replace(path)
 
 
-def load_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any]]:
+def load_checkpointed_rows(
+    path: Path,
+    rows_written: int,
+    *,
+    expected_observation_ids: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
     if rows_written < 0:
         raise ValueError("checkpoint candidate_rows_written must be non-negative")
     if rows_written == 0:
@@ -225,6 +230,13 @@ def load_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any]
     if len(lines) < rows_written:
         raise ValueError("candidate_observations.jsonl shorter than checkpoint")
     rows = [json.loads(line) for line in lines[:rows_written]]
+    if expected_observation_ids is not None:
+        expected = [str(value) for value in expected_observation_ids]
+        if len(expected) < rows_written:
+            raise ValueError("checkpoint row count exceeds selected observation identity prefix")
+        actual = [str(row.get("observation_id")) for row in rows]
+        if actual != expected[:rows_written]:
+            raise ValueError("checkpoint candidate observation-id prefix mismatch")
     path.write_text("".join(row_line(row) for row in rows), encoding="utf-8")
     return rows
 
@@ -258,6 +270,7 @@ def prepare_output(
     args: argparse.Namespace,
     identity: dict[str, Any],
     candidate_filename: str,
+    expected_observation_ids: list[str],
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     candidate_path = output_dir / candidate_filename
     checkpoint_path = output_dir / "checkpoint.json"
@@ -273,7 +286,11 @@ def prepare_output(
         rows_written = int(checkpoint.get("candidate_rows_written", 0))
         if checkpoint.get("terminal_state") == "FINISHED" and not manifest_path.exists():
             raise ValueError("FINISHED checkpoint missing manifest.json")
-        return checkpoint, completed, load_checkpointed_rows(candidate_path, rows_written)
+        return checkpoint, completed, load_checkpointed_rows(
+            candidate_path,
+            rows_written,
+            expected_observation_ids=expected_observation_ids,
+        )
 
     if output_dir.exists():
         raise ValueError(f"immutable output directory already exists: {output_dir}")
@@ -375,7 +392,12 @@ def is_full_run(args: argparse.Namespace, selected_count: int, contract: dict[st
     )
 
 
-def _execute(args: argparse.Namespace, *, started: float) -> tuple[dict[str, Any], dict[str, Any]]:
+def _execute(
+    args: argparse.Namespace,
+    *,
+    started: float,
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     print("PHASE phase=load_frozen_inputs status=started", flush=True)
     contract = load_contract(Path(args.contract))
     population = load_population(Path(args.population), contract)
@@ -403,14 +425,17 @@ def _execute(args: argparse.Namespace, *, started: float) -> tuple[dict[str, Any
         args=args,
         identity=identity,
         candidate_filename=candidate_filename,
+        expected_observation_ids=[str(row["observation_id"]) for row in selected],
     )
-    state: dict[str, Any] = {
-        "output_dir": output_dir,
-        "identity": identity,
-        "asofs_completed": completed_asofs,
-        "candidate_rows_written": len(candidate_rows),
-        "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc"),
-    }
+    state.update(
+        {
+            "output_dir": output_dir,
+            "identity": identity,
+            "asofs_completed": completed_asofs,
+            "candidate_rows_written": len(candidate_rows),
+            "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc"),
+        }
+    )
     if checkpoint.get("terminal_state") == "FINISHED":
         manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
         return manifest, state
@@ -585,7 +610,7 @@ def run(args: argparse.Namespace) -> int:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, _signal_handler)
-        manifest, execution_state = _execute(args, started=started)
+        manifest, execution_state = _execute(args, started=started, state=state)
         state.update(execution_state)
         print(
             f"FINISHED runner={RUNNER_NAME} observations={manifest['selected_observations']} "

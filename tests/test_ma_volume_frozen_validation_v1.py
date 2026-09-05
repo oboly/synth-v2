@@ -256,8 +256,15 @@ def test_candle_query_is_bounded_before_asof_and_maps_canonical_market() -> None
 def test_resume_loader_truncates_uncheckpointed_tail(tmp_path: Path) -> None:
     path = tmp_path / "candidate_observations.jsonl"
     path.write_text(json.dumps({"observation_id": "a"}) + "\n" + json.dumps({"observation_id": "uncheckpointed"}) + "\n", encoding="utf-8")
-    assert load_checkpointed_rows(path, 1) == [{"observation_id": "a"}]
+    assert load_checkpointed_rows(path, 1, expected_observation_ids=["a"]) == [{"observation_id": "a"}]
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_resume_loader_rejects_corrupted_checkpoint_identity_prefix(tmp_path: Path) -> None:
+    path = tmp_path / "candidate_observations.jsonl"
+    path.write_text(json.dumps({"observation_id": "wrong"}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="observation-id prefix mismatch"):
+        load_checkpointed_rows(path, 1, expected_observation_ids=["expected"])
 
 
 def test_scope_identity_binds_exact_selected_observation_ids() -> None:
@@ -293,7 +300,22 @@ def test_signal_handler_and_terminal_checkpoint_are_resumable(tmp_path: Path) ->
 
 
 def test_run_emits_started_and_exactly_one_interrupted_terminal(monkeypatch, tmp_path: Path, capsys) -> None:
-    def interrupted(_args, *, started):
+    def interrupted(_args, *, started, state):
+        output = Path(_args.output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        identity = {"runner": runner.RUNNER_NAME, "contract_sha256": "x"}
+        state.update({
+            "output_dir": output,
+            "identity": identity,
+            "asofs_completed": 2,
+            "candidate_rows_written": 5,
+            "last_asof_ts_utc": "2026-08-02T00:00:00Z",
+        })
+        write_terminal_checkpoint(
+            output, identity=identity, terminal_state="RUNNING",
+            asofs_completed=2, candidate_rows_written=5,
+            last_asof_ts_utc="2026-08-02T00:00:00Z",
+        )
         raise _Interrupted(signal.SIGINT)
 
     monkeypatch.setattr(runner, "_execute", interrupted)
@@ -303,6 +325,10 @@ def test_run_emits_started_and_exactly_one_interrupted_terminal(monkeypatch, tmp
     assert sum(line.startswith("STARTED ") for line in lines) == 1
     assert sum(line.startswith("INTERRUPTED ") for line in lines) == 1
     assert not any(line.startswith("FINISHED ") or line.startswith("FAILED ") for line in lines)
+    checkpoint = json.loads((tmp_path / "output" / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["terminal_state"] == "INTERRUPTED"
+    assert checkpoint["asofs_completed"] == 2
+    assert checkpoint["candidate_rows_written"] == 5
 
 
 def test_run_emits_started_progress_and_exactly_one_finished_terminal(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -319,7 +345,7 @@ def test_run_emits_started_progress_and_exactly_one_finished_terminal(monkeypatc
         "full_frozen_run": 0,
         "candidate_rows_sha256": "abc",
     }
-    def finished(_args, *, started):
+    def finished(_args, *, started, state):
         print("PHASE phase=test status=started", flush=True)
         return manifest, state
 
