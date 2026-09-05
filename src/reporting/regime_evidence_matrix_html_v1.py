@@ -49,6 +49,11 @@ def _value_text(value: Any) -> str:
     return str(value)
 
 
+def _display_optional(value: Any) -> str:
+    """Render an unavailable value as an em-space marker, preserving real empty strings."""
+    return "—" if value is None else str(value)
+
+
 def _technical_tone(value: Any) -> str:
     """Map exact technical availability states to presentation tone only.
 
@@ -67,7 +72,7 @@ def _technical_tone(value: Any) -> str:
 
 
 def _pill(value: Any) -> str:
-    visible = "—" if value is None else str(value)
+    visible = _display_optional(value)
     return f"<span class='pill {_technical_tone(value)}'>{_esc(visible)}</span>"
 
 
@@ -104,12 +109,12 @@ def _row(cell: RegimeEvidenceCellV1) -> str:
         f"<td>{_esc(cell.market)}<div class='muted small'>{_esc(cell.scope_key)}</div></td>"
         f"<td>{_pill(cell.status)}</td>"
         f"<td>{_pill(cell.freshness)}</td>"
-        f"<td>{_esc(cell.input_interval or '—')}</td>"
-        f"<td>{_esc(cell.lookback_horizon or '—')}</td>"
-        f"<td>{_esc(cell.effective_horizon or '—')}</td>"
+        f"<td>{_esc(_display_optional(cell.input_interval))}</td>"
+        f"<td>{_esc(_display_optional(cell.lookback_horizon))}</td>"
+        f"<td>{_esc(_display_optional(cell.effective_horizon))}</td>"
         f"<td>{_lifecycle(cell)}</td>"
-        f"<td>{_esc(cell.asof_ts.isoformat() if cell.asof_ts else '—')}</td>"
-        f"<td>{_esc(cell.model_id or '—')}<div class='muted small'>{_esc(cell.model_version or '—')}</div></td>"
+        f"<td>{_esc(cell.asof_ts.isoformat() if cell.asof_ts is not None else '—')}</td>"
+        f"<td>{_esc(_display_optional(cell.model_id))}<div class='muted small'>{_esc(_display_optional(cell.model_version))}</div></td>"
         f"<td>{_raw(cell)}</td>"
         f"<td>{_reasons(cell)}</td>"
         "</tr>"
