@@ -58,8 +58,8 @@ The matrix deliberately does not normalize all producer statuses into one invent
 
 Examples:
 
-- `SignalHorizonV1Evidence.status` is copied verbatim.
-- `MomentumEvidenceSnapshot.status`, `freshness`, `data_quality`, raw MACD/signal/histogram values and reason codes are copied verbatim.
+- `SignalHorizonV1Evidence.status`, `freshness`, `effective_horizon`, `observed_lifecycle`, raw values, reason codes and provenance are copied verbatim.
+- `MomentumEvidenceSnapshot.status`, `freshness`, `observed_lifecycle_status`, `data_quality`, raw MACD/signal/histogram values and reason codes are copied verbatim. The read model does not synthesize a richer lifecycle object than the producer owns.
 - `MABreadthSnapshot.data_status`, `freshness_status`, `effective_horizon` and raw participation values are copied verbatim. `UNKNOWN` freshness/horizon is not upgraded in reporting.
 - `EthBtcLeadershipSnapshot` raw return/ratio evidence is copied verbatim. No `ETH_LED` or `BTC_LED` state is inferred by the matrix.
 
@@ -114,7 +114,9 @@ input_interval
 lookback_horizon
 ```
 
-Duplicate identities fail closed. Cells are sorted by this identity so identical input produces identical matrix ordering. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
+Duplicate identities fail closed. Duplicate detection uses those exact source values.
+
+For ordering only, nullable `input_interval` and `lookback_horizon` values are mapped to an empty comparison string so mixed `None`/string rows remain deterministically sortable without changing the canonical cell values. The explicit `scope_key` allows multiple assets with the same generic upstream `market` label to coexist safely.
 
 ## Phasing
 
