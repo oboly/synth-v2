@@ -55,7 +55,7 @@ No categorical momentum states are produced (no `EARLY_UP`, `BULLISH`,
 `CROSS_PENDING`, etc.) -- raw numeric primitives only, per this task's
 explicit constraint.
 
-## Warmup (explicit minimum-history requirements)
+## Warmup (explicit MINIMUM-history requirements, not the computation window)
 
 | Value | Minimum bars |
 | --- | --- |
@@ -66,12 +66,58 @@ explicit constraint.
 | histogram | 34 (bounded by signal) |
 | histogram_delta | 35 (needs two consecutive valid histogram values: bars 34 and 35) |
 
-`WARMUP_BARS = 35` is the single floor this producer enforces end to end,
-so that whenever raw values are emitted, all four
-(`macd_value`, `signal_value`, `histogram_value`, `histogram_delta`) are
-simultaneously valid -- never a partial row. Insufficient warmup is never
-treated as valid evidence (`data_quality = INSUFFICIENT_WARMUP`, all raw
-fields `None`).
+`WARMUP_BARS = 35` is a **floor**: fewer than 35 bars of usable pre-asof
+history fails closed to `data_quality = INSUFFICIENT_WARMUP` (all four raw
+fields `None`). It is **not** a fixed trailing computation window -- see
+"Computation window" immediately below.
+
+## Computation window: canonical recursive EMA over full contiguous history
+
+`fetch_candles_for_asof` applies **no lower time bound and no row LIMIT**:
+it returns every persisted `obs_market_candle` row for the
+(venue, asset_id, interval) identity with `close_ts_utc <= asof_ts_utc`.
+`build_momentum_evidence` computes EMA12/EMA26/MACD/signal-EMA9 by
+recursion over **that entire fetched series**, never a fixed trailing
+slice of the most recent `WARMUP_BARS` rows.
+
+This matters because the EMA convention used here
+(`ewm(..., adjust=False)`) is a true recursion: `y_t = alpha*x_t +
+(1-alpha)*y_{t-1}`, seeded at the very first sample. Truncating the input
+to a fixed N-bar window before computing would silently **reseed** that
+recursion at the window's first row, so the result for the exact same
+`asof_ts_utc` would change depending on how far back the caller's window
+happened to start. That is an approximation of a canonical recursive EMA,
+not the canonical value itself, and is exactly the defect this document's
+prior revision had (fetching only `WARMUP_BARS` bars and computing over
+that fixed slice).
+
+**"Complete contiguous pre-asof history" means exactly:** every row
+returned by `fetch_candles_for_asof`'s unbounded, unlimited query, with no
+narrower window applied afterward. `build_momentum_evidence` requires the
+**entire** fetched series to be gap-free at the fixed `4h` cadence (every
+consecutive pair of rows exactly `4h` apart). A single gap **anywhere** in
+that series -- even one far in the past, well before the 35-bar warmup
+floor -- fails the whole evaluation closed
+(`data_quality = MALFORMED_SOURCE_CANDLE`,
+`NON_CONTIGUOUS_SOURCE_WINDOW` reason code) rather than silently narrowing
+to the contiguous suffix that remains after the gap. This producer does
+not "stitch across" a missing candle by skipping it and treating its
+neighbors as adjacent, and it does not silently fall back to a shorter
+window either -- both would misrepresent what history the recursion
+actually ran over.
+
+`provenance["bar_count"]`, `provenance["window_start_ts_utc"]`, and
+`provenance["window_end_ts_utc"]` always reflect the true number of rows
+and true timestamp span actually used for a given evaluation -- never a
+hardcoded `35`.
+
+This is a deliberate scope decision, not an oversight: for an asset with a
+very long, otherwise-clean candle history, this fetch and computation grow
+with the full history length on every call. Bounding that (e.g. an
+explicit, reviewed "effective start" cutoff, or an incremental/cached
+recursion) is an explicit non-goal of this minimal v1 and is left for a
+separate, equivalence-tested optimization follow-up; this document does
+not claim such an optimization exists yet.
 
 ## asof / replay discipline
 
