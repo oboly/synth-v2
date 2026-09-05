@@ -163,12 +163,19 @@ primary truth; no categorical volatility states are proposed by this audit.
   common daily-equivalent basis. This is realized-return volatility, not
   ATR/true-range based.
 - Persistence: `asset_profile_snapshot` table
-  (`db/migrations/20260501_asset_profile_snapshot_v1.sql`). Notably has real
+  (`db/migrations/20260501_asset_profile_snapshot_v1.sql`). Has real
   point-in-time shape: `asof_ts_utc DATETIME(6) NOT NULL` (with a migration
   comment explicitly requiring `asof_ts_utc <= replay time` for backtests),
-  `lookback_days`, `profile_version VARCHAR(64)`, append-only unique key on
+  `lookback_days`, `profile_version VARCHAR(64)`. **However,
+  `src/asset_profile/repository.py::upsert_snapshots` writes via
+  `INSERT ... ON DUPLICATE KEY UPDATE` keyed on the identical unique key
   `(asset_id, venue, interval_code, asof_ts_utc, lookback_days,
-  profile_version)` — i.e. no upsert-over-latest, genuinely versioned rows.
+  profile_version)` — this is upsert-over-same-key, not append-only.
+  Re-running the engine for an already-written `(…, asof_ts_utc, …,
+  profile_version)` tuple overwrites `realized_volatility` and every other
+  derived column of that row in place rather than adding a new row; only a
+  genuinely new key tuple (new `asof_ts_utc` or a bumped `profile_version`)
+  produces a new row.**
 - Market scope: per asset, per `(venue, interval_code, asof_ts_utc,
   lookback_days)`.
 - `model_id`/`model_version`: only a single composite `profile_version`
@@ -179,9 +186,14 @@ primary truth; no categorical volatility states are proposed by this audit.
   (`lookback_days`). `effective_horizon`: absent, not mapped to the #243
   enum. `observed_lifecycle`: absent/unmeasured.
 - `asof_ts`: explicit and real (`asof_ts_utc`), with a documented
-  point-in-time replay contract at the table level (migration comment) —
-  this is the strongest asof/replay discipline found in this audit for any
-  volatility-adjacent field. However, no `evaluated_at` distinct from
+  point-in-time replay contract at the table/migration-comment level — the
+  strongest *labeled* asof intent found in this audit for any
+  volatility-adjacent field. However, the write path is an upsert keyed on
+  `(asset_id, venue, interval_code, asof_ts_utc, lookback_days,
+  profile_version)` (see persistence note above), so a row already written
+  for a given `asof_ts_utc` is silently overwritten by a later re-run rather
+  than preserved as an immutable historical fact — this is a real replay-safety
+  gap, not append-only durability. No `evaluated_at` distinct from
   `asof_ts_utc`, no documented future-asof fail-closed behavior, no explicit
   freshness/staleness classification, and no fail-closed contiguity check
   were found in `asset_profile_engine_v1.py` itself.
@@ -200,9 +212,10 @@ primary truth; no categorical volatility states are proposed by this audit.
   270`/`line 81` reference `realized_volatility` for display). No
   `selection_engine`/`decision_gate`/`execution_planner`/`executor` consumer
   found.
-- **Classification: `REUSABLE_PRIMITIVE_ONLY`** (with the strongest
-  point-in-time discipline of any candidate found, but still not a
-  dedicated, independently versioned VOLATILITY owner — `realized_volatility`
+- **Classification: `REUSABLE_PRIMITIVE_ONLY`** (with the only explicit
+  `asof_ts_utc` labeling of any candidate found, but an upsert-over-same-key
+  write path that overwrites rather than preserves historical rows, and not
+  a dedicated, independently versioned VOLATILITY owner — `realized_volatility`
   is one field inside a multi-purpose asset-profile composite whose
   `profile_version` covers liquidity/beta/sector together, not volatility
   alone, and it has no `effective_horizon`/`observed_lifecycle`/freshness/
@@ -346,7 +359,8 @@ obs_market_candle (independent path)
   -> asset_profile_engine_v1.py::build_asset_profiles (realized-return pstdev,
                                                         interval-normalized)
      -> asset_profile_snapshot.realized_volatility (asof_ts_utc + profile_version,
-                                                     append-only, but composite-scoped
+                                                     upsert-keyed on that same tuple
+                                                     (not append-only), composite-scoped
                                                      profile_version, no dedicated
                                                      volatility model identity)
         -> src/ui_chart/*, docs/architecture/asset_profile_layer_v1.md (reporting/display)
