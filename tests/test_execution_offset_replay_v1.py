@@ -131,3 +131,19 @@ def test_buy_excursions_include_zero_baseline() -> None:
     )
     assert row.max_favorable_excursion_pct == Decimal("0")
     assert row.max_adverse_excursion_pct == Decimal("2")
+
+
+def test_static_sell_offset_rejects_non_positive_execution_price() -> None:
+    with pytest.raises(ExecutionOffsetReplayError, match="NON_POSITIVE_EXECUTION_PRICE"):
+        execution_price_for_policy(
+            episode(),
+            ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("1")),
+        )
+
+
+def test_volatility_sell_offset_rejects_non_positive_execution_price() -> None:
+    with pytest.raises(ExecutionOffsetReplayError, match="NON_POSITIVE_EXECUTION_PRICE"):
+        execution_price_for_policy(
+            episode(),
+            ExecutionOffsetPolicyV1(POLICY_VOLATILITY_SCALED_BUFFER, "v1", atr_multiple=Decimal("25")),
+        )

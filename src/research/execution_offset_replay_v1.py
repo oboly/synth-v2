@@ -102,7 +102,10 @@ def execution_price_for_policy(
         if episode.atr_at_issue is None or episode.atr_at_issue <= 0:
             raise ExecutionOffsetReplayError("ATR_REQUIRED_FOR_POLICY")
         delta = episode.atr_at_issue * policy.atr_multiple
-    return episode.canonical_level + delta if episode.side == SIDE_BUY else episode.canonical_level - delta
+    execution_price = episode.canonical_level + delta if episode.side == SIDE_BUY else episode.canonical_level - delta
+    if execution_price <= 0:
+        raise ExecutionOffsetReplayError("NON_POSITIVE_EXECUTION_PRICE")
+    return execution_price
 
 def _validate_episode(episode: ExecutionOffsetEpisodeV1) -> None:
     if not episode.episode_id.strip() or not episode.source_map_id.strip():
