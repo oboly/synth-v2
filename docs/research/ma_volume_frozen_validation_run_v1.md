@@ -2,7 +2,7 @@
 
 Issue: #310
 
-Status: research-only executable evidence lane
+Status: completed research-only executable evidence lane
 
 ## Purpose
 
@@ -183,6 +183,10 @@ Per `src/research/AGENTS.override.md`:
 6. only then execute the full 45-as-of frozen population.
 
 The broad run remains read-only against the database.
+
+## Frozen result
+
+The completed empirical result is canonical in `docs/research/ma_volume_frozen_validation_result_v1.md`.
 
 ## Result disposition
 
