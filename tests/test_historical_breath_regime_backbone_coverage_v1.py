@@ -37,6 +37,7 @@ def test_exact_asof_match_counts_and_high_score_coverage():
     assert summary["matched_context_count"] == 1
     assert summary["coverage_pct"] == 100.0
     assert summary["high_score_coverage"]["buyer_70_plus_matched"] == 1
+    assert summary["high_score_coverage"]["buyer_70_plus_market_regime_known"] == 1
     assert summary["field_known_count"]["market_regime"] == 1
 
 
@@ -76,8 +77,10 @@ def test_buyer_and_seller_high_score_coverage_are_separate():
     assert summary["high_score_coverage"] == {
         "buyer_70_plus_total": 1,
         "buyer_70_plus_matched": 1,
+        "buyer_70_plus_market_regime_known": 1,
         "seller_70_plus_total": 1,
         "seller_70_plus_matched": 1,
+        "seller_70_plus_market_regime_known": 1,
     }
 
 

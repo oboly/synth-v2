@@ -88,8 +88,10 @@ def audit_coverage(
     high_score = {
         "buyer_70_plus_total": 0,
         "buyer_70_plus_matched": 0,
+        "buyer_70_plus_market_regime_known": 0,
         "seller_70_plus_total": 0,
         "seller_70_plus_matched": 0,
+        "seller_70_plus_market_regime_known": 0,
     }
 
     for row in exhaustion_rows:
@@ -114,8 +116,12 @@ def audit_coverage(
         ages.append(age_seconds or 0)
         if buyer_high:
             high_score["buyer_70_plus_matched"] += 1
+            if str(context.get("market_regime") or UNKNOWN).upper() != UNKNOWN:
+                high_score["buyer_70_plus_market_regime_known"] += 1
         if seller_high:
             high_score["seller_70_plus_matched"] += 1
+            if str(context.get("market_regime") or UNKNOWN).upper() != UNKNOWN:
+                high_score["seller_70_plus_market_regime_known"] += 1
         for field in CONTEXT_FIELDS:
             if str(context.get(field) or UNKNOWN).upper() != UNKNOWN:
                 field_known[field] += 1
