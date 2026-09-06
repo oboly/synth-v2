@@ -48,6 +48,16 @@ V1 fill semantics, deliberately minimal and deterministic:
   really placed) ``RECONCILIATION_REQUIRED`` on the next attempt -- the same
   reviewed terminal safety state used for a real ambiguous broker failure,
   not a new bespoke state.
+- Every ``ACTIVE``/``REJECTED`` acknowledgement is durably recorded by
+  ``placement_repository`` (``src/executor/paper_order_placement_repository_v1.py``)
+  *before* ``place_order`` returns it, keyed by the already-globally-unique,
+  deterministic ``client_order_id``. ``find_order_by_client_order_id`` reads
+  that same record. This closes the #753 B5.5 PR #776 review finding: a
+  crash between this adapter's ``ACTIVE`` acknowledgement and
+  ``executor_execution_leg`` persistence used to be unrecoverable --
+  ``find_order_by_client_order_id`` always reported no order, dead-lettering
+  an acknowledged order to ``RECONCILIATION_REQUIRED``. A retry now recovers
+  the exact recorded acknowledgement instead.
 
 ``paper_broker_cumulative_fill_evidence_from_leg_v1`` remains a pure
 FILLED-leg -> fill-evidence converter, preserved for forward compatibility
@@ -97,6 +107,27 @@ class PaperMarketQuoteProviderV1(Protocol):
     def latest_quote(self, *, market: str) -> PaperMarketQuoteV1 | None: ...
 
 
+class PaperOrderPlacementRepository(Protocol):
+    """Durable, replay-safe store for this adapter's own ACTIVE/REJECTED
+    placement decisions. See ``paper_order_placement_repository_v1.py`` for
+    the concrete, executor-owned implementation."""
+
+    def record_placement(
+        self,
+        *,
+        market: str,
+        client_order_id: str,
+        side: str,
+        price: Decimal,
+        quantity: Decimal,
+        ack: OrderAckV1,
+    ) -> OrderAckV1: ...
+
+    def find_order_by_client_order_id(
+        self, *, market: str, client_order_id: str
+    ) -> OrderAckV1 | None: ...
+
+
 def _aware(value: object) -> bool:
     return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
 
@@ -128,14 +159,18 @@ def _would_cross(*, side: str, order_price: Decimal, quote: PaperMarketQuoteV1) 
 @dataclass(frozen=True)
 class PaperOrderPlacementAdapterV1:
     """Deterministic, evidence-gated PAPER adapter for one shared-executor
-    submission call. Stateless across calls by design: ``find_order_by_client_order_id``
-    always reports no order, which is truthful -- when ``place_order`` fails
-    closed on bad evidence, no order was ever really placed anywhere to find.
+    submission call. ``place_order`` durably records every ``ACTIVE``/
+    ``REJECTED`` acknowledgement it makes into ``placement_repository``
+    before returning it; ``find_order_by_client_order_id`` reads that same
+    record. When ``place_order`` fails closed on bad evidence, no
+    acknowledgement is ever recorded, so a later lookup truthfully reports no
+    order -- but an acknowledged order is always recoverable.
     """
 
     quote_provider: PaperMarketQuoteProviderV1
     max_quote_age_seconds: int
     now_fn: Callable[[], datetime]
+    placement_repository: PaperOrderPlacementRepository
 
     def __post_init__(self) -> None:
         if (
@@ -155,7 +190,7 @@ class PaperOrderPlacementAdapterV1:
         client_order_id: str,
         operator_id: int,
     ) -> OrderAckV1:
-        del quantity, operator_id
+        del operator_id
         if side not in (SIDE_BUY, SIDE_SELL):
             raise ValueError("side must be BUY or SELL")
         quote = self.quote_provider.latest_quote(market=market)
@@ -177,22 +212,35 @@ class PaperOrderPlacementAdapterV1:
             # A real exchange rejects a crossing post-only order outright; it
             # never fills it synchronously. No broker order was ever really
             # placed, so there is no broker_order_id to report.
-            return OrderAckV1(
+            ack = OrderAckV1(
                 broker_order_id=None,
                 state=BrokerAckStateV1.REJECTED,
                 broker_raw_status=PAPER_RAW_STATUS_REJECTED_POST_ONLY_WOULD_CROSS,
             )
-        return OrderAckV1(
-            broker_order_id=f"paper-{client_order_id}",
-            state=BrokerAckStateV1.ACTIVE,
-            broker_raw_status=PAPER_RAW_STATUS_ACTIVE,
+        else:
+            ack = OrderAckV1(
+                broker_order_id=f"paper-{client_order_id}",
+                state=BrokerAckStateV1.ACTIVE,
+                broker_raw_status=PAPER_RAW_STATUS_ACTIVE,
+            )
+        # Recorded before returning so a crash after this acknowledgement but
+        # before executor_execution_leg persistence is still recoverable by
+        # find_order_by_client_order_id below (#753 B5.5 PR #776 review fix).
+        return self.placement_repository.record_placement(
+            market=market,
+            client_order_id=client_order_id,
+            side=side,
+            price=price,
+            quantity=quantity,
+            ack=ack,
         )
 
     def find_order_by_client_order_id(
         self, *, market: str, client_order_id: str
     ) -> OrderAckV1 | None:
-        del market, client_order_id
-        return None
+        return self.placement_repository.find_order_by_client_order_id(
+            market=market, client_order_id=client_order_id,
+        )
 
 
 def paper_broker_cumulative_fill_evidence_from_leg_v1(

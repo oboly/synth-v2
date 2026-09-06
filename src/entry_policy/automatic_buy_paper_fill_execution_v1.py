@@ -65,6 +65,7 @@ from src.executor.execution_submission_orchestrator_v1 import (
 from src.executor.paper_order_adapter_v1 import (
     PaperMarketQuoteProviderV1,
     PaperOrderPlacementAdapterV1,
+    PaperOrderPlacementRepository,
     paper_broker_cumulative_fill_evidence_from_leg_v1,
 )
 
@@ -115,6 +116,7 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
     quote_provider: PaperMarketQuoteProviderV1,
     max_quote_age_seconds: int,
     now_fn: Callable[[], datetime],
+    placement_repository: PaperOrderPlacementRepository,
 ) -> AutomaticBuyPaperFillExecutionResultV1:
     """Submit one approved automatic-BUY plan through the shared PAPER path.
 
@@ -145,6 +147,7 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
         quote_provider=quote_provider,
         max_quote_age_seconds=max_quote_age_seconds,
         now_fn=now_fn,
+        placement_repository=placement_repository,
     )
     submission = submit_execution_plan(
         handoff=handoff,

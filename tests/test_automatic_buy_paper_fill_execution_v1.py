@@ -33,7 +33,9 @@ from src.executor.execution_leg_v1 import (
     ExecutionLegConflictError,
     ExecutionLegV1,
 )
+from src.executor.broker_ack_classification_v1 import BrokerAckStateV1
 from src.executor.paper_order_adapter_v1 import PaperMarketQuoteV1
+from src.executor.paper_order_placement_repository_v1 import PaperOrderPlacementConflictError
 from tests.automatic_buy_account_allocation_evidence_fixtures_v1 import FakeConnection
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
@@ -183,6 +185,46 @@ class MemoryLegRepository:
             return None if leg_id is None else self.rows[leg_id]
 
 
+class MemoryPlacementRepository:
+    """In-memory double for ``PaperOrderPlacementRepositoryV1``, standing in
+    for the durable store that survives a simulated crash between this
+    adapter's acknowledgement and executor_execution_leg persistence."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str], dict[str, object]] = {}
+
+    def record_placement(self, *, market, client_order_id, side, price, quantity, ack):
+        key = (market, client_order_id)
+        existing = self.rows.get(key)
+        if existing is not None:
+            if (existing["side"], existing["price"], existing["quantity"]) != (side, price, quantity):
+                raise PaperOrderPlacementConflictError("PAPER_ORDER_CLIENT_ORDER_ID_IDENTITY_CONFLICT")
+            return existing["ack"]
+        self.rows[key] = {"side": side, "price": price, "quantity": quantity, "ack": ack}
+        return ack
+
+    def find_order_by_client_order_id(self, *, market, client_order_id):
+        row = self.rows.get((market, client_order_id))
+        return None if row is None else row["ack"]
+
+
+class CrashOnceAfterAckLegRepository(MemoryLegRepository):
+    """Simulates a process crash after the PAPER adapter's ACTIVE
+    acknowledgement but before executor_execution_leg persistence: the first
+    ``persist_accepted`` call (the write ``persist_order_ack`` makes right
+    after ``place_order`` returns) raises instead of writing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.crash_pending = True
+
+    def persist_accepted(self, leg_id: int, state: str, broker_order_id: str, **evidence: object) -> ExecutionLegV1:
+        if self.crash_pending:
+            self.crash_pending = False
+            raise ConnectionError("SIMULATED_CRASH_BEFORE_LEG_ACK_PERSISTENCE")
+        return super().persist_accepted(leg_id, state, broker_order_id, **evidence)
+
+
 class FixedQuoteProvider:
     def __init__(self, quote: PaperMarketQuoteV1 | None) -> None:
         self.quote = quote
@@ -202,6 +244,7 @@ def _run(
     leg_repository: MemoryLegRepository | None = None,
     conn: FakeConnection | None = None,
     quote: PaperMarketQuoteV1 | None = "default",  # type: ignore[assignment]
+    placement_repository: MemoryPlacementRepository | None = None,
 ):
     if quote == "default":
         quote = _marketable_quote(plan.market)
@@ -215,6 +258,7 @@ def _run(
         quote_provider=FixedQuoteProvider(quote),
         max_quote_age_seconds=30,
         now_fn=lambda: NOW,
+        placement_repository=placement_repository or MemoryPlacementRepository(),
     )
 
 
@@ -302,6 +346,51 @@ def test_non_paper_handoff_is_rejected_before_any_submission() -> None:
     handoff = _handoff(plan, executor_mode="DRY_RUN")
     with pytest.raises(AutomaticBuyPaperFillExecutionError, match="HANDOFF_NOT_PAPER_MODE"):
         _run(plan, handoff)
+
+
+def test_crash_between_active_ack_and_leg_persistence_recovers_without_duplicate_placement() -> None:
+    """#753 B5.5 PR #776 review fix: PaperOrderPlacementAdapterV1 acknowledged
+    ACTIVE but find_order_by_client_order_id always reported None, so a crash
+    between that acknowledgement and executor_execution_leg persistence
+    dead-lettered the leg to RECONCILIATION_REQUIRED, losing the modeled
+    active order. Simulate that exact crash window (a non-marketable BUY
+    quote so place_order acknowledges ACTIVE, then persist_accepted -- the
+    write right after the ack -- raises once) and assert a retry through the
+    same shared submission orchestrator recovers the identical ACTIVE order
+    (same broker_order_id) with no second place_order/duplicate modeled
+    placement and no RECONCILIATION_REQUIRED dead end."""
+    plan = _plan()
+    handoff = _handoff(plan)
+    conn = FakeConnection()
+    leg_repository = CrashOnceAfterAckLegRepository()
+    placement_repository = MemoryPlacementRepository()
+    quote = PaperMarketQuoteV1(market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("110"), observed_ts_utc=NOW - timedelta(seconds=5))
+
+    with pytest.raises(ConnectionError, match="SIMULATED_CRASH_BEFORE_LEG_ACK_PERSISTENCE"):
+        _run(plan, handoff, leg_repository=leg_repository, conn=conn, quote=quote, placement_repository=placement_repository)
+
+    leg_id = leg_repository.ids_by_key[(handoff.handoff_id, 1)]
+    crashed_leg = leg_repository.rows[leg_id]
+    assert crashed_leg.state == SUBMISSION_UNCERTAIN
+    assert crashed_leg.broker_order_id is None
+
+    # The durable placement repository already recorded the acknowledged
+    # ACTIVE order before the crash -- this is exactly what makes recovery
+    # possible instead of a silent, unrecoverable dead-lettering.
+    recorded = placement_repository.find_order_by_client_order_id(
+        market=plan.market, client_order_id=crashed_leg.client_order_id,
+    )
+    assert recorded is not None
+    assert recorded.state == BrokerAckStateV1.ACTIVE
+
+    result = _run(plan, handoff, leg_repository=leg_repository, conn=conn, quote=quote, placement_repository=placement_repository)
+
+    assert result.submission.leg_states == (ACTIVE,)
+    recovered_leg = leg_repository.rows[leg_id]
+    assert recovered_leg.state == ACTIVE
+    assert recovered_leg.broker_order_id == recorded.broker_order_id
+    assert result.fills == ()
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
 
 
 def test_sell_side_plan_is_rejected_before_the_plan_adapter_runs() -> None:

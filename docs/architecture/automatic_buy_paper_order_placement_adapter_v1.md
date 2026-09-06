@@ -31,6 +31,13 @@ composition, and does not weaken or bypass `PAPER_ADAPTER_NOT_CONFIGURED` in
   reaches `FILLED`, builds the identity #753 B5 requires
   (`AutomaticBuyFillPlanIdentityV1`, copied verbatim from the plan) and calls
   the existing, unchanged `reconcile_and_persist_automatic_buy_paper_fill_v1`.
+- `src/executor/paper_order_placement_repository_v1.py` (new, PR #776 review
+  fix) -- `PaperOrderPlacementRepositoryV1`: durable, replay-safe store for
+  this adapter's own `ACTIVE`/`REJECTED` placement decisions, keyed by
+  `(market, client_order_id)`. See "Crash-window recovery" below.
+- `db/migrations/20260906_paper_order_placement_v1.sql` (new, PR #776 review
+  fix) -- schema for `executor_paper_order_placement`; schema only, not yet
+  applied.
 - `tests/test_paper_order_adapter_v1.py`, `tests/test_automatic_buy_paper_fill_execution_v1.py`
   (new).
 
@@ -87,11 +94,18 @@ mode can know:
   `place_order` raises `PaperMarketEvidenceUnavailableError` rather than
   guessing. The existing, unchanged submission orchestrator already turns an
   adapter exception into `SUBMISSION_UNCERTAIN`, and this adapter's
-  `find_order_by_client_order_id` always truthfully reports no order (no
-  broker order was ever really placed when placement raised), so the leg
-  then resolves to `RECONCILIATION_REQUIRED` -- the same reviewed terminal
-  safety state already used for a real ambiguous broker failure, not a new
-  bespoke state.
+  `find_order_by_client_order_id` truthfully reports no order when placement
+  raised (no broker order was ever really placed), so the leg then resolves
+  to `RECONCILIATION_REQUIRED` -- the same reviewed terminal safety state
+  already used for a real ambiguous broker failure, not a new bespoke state.
+- **Every acknowledged `ACTIVE`/`REJECTED` placement is durably recorded and
+  recoverable (post-review fix, PR #776).** `place_order` writes its
+  acknowledgement to `src/executor/paper_order_placement_repository_v1.py`
+  (`executor_paper_order_placement`, migration
+  `db/migrations/20260906_paper_order_placement_v1.sql`) *before* returning
+  it, keyed by the already-globally-unique, deterministic `client_order_id`.
+  `find_order_by_client_order_id` reads that same record. See "Crash-window
+  recovery" below.
 
 `paper_broker_cumulative_fill_evidence_from_leg_v1` is preserved unchanged as
 a pure FILLED-leg -> fill-evidence converter for forward compatibility with a
@@ -131,6 +145,50 @@ This also means automatic-BUY is never routed onto the legacy per-plan
 `src/executor/repository.py`; only the shared
 `executor_execution_handoff`/`executor_execution_leg` contract B3/B4 already
 use is exercised.
+
+## Crash-window recovery (PR #776 review fix)
+
+Automated review correctly flagged: `PaperOrderPlacementAdapterV1` could
+return an `ACTIVE` acknowledgement while `find_order_by_client_order_id`
+always reported `None`. If the process crashed after that acknowledgement
+but before `execution_submission_orchestrator_v1.py` persisted it onto
+`executor_execution_leg`, the leg stayed `SUBMISSION_UNCERTAIN`, and the next
+attempt's reconciliation lookup found nothing -- silently dead-lettering an
+already-acknowledged `ACTIVE` order to `RECONCILIATION_REQUIRED`.
+
+Fix: `place_order` now durably records its `ACTIVE`/`REJECTED`
+acknowledgement into `PaperOrderPlacementRepositoryV1` before returning it,
+and `find_order_by_client_order_id` reads that same durable record instead
+of always reporting `None`. This is executor-owned bookkeeping of what this
+adapter itself already decided -- not a broker call, not a second leg-state
+machine, and it never produces or transitions `FILLED`/`PARTIALLY_FILLED`.
+
+- **Deterministic identity, no new uniqueness scheme.** `client_order_id` is
+  already a globally unique, deterministic UUIDv5
+  (`derive_execution_client_order_id`); the new table's unique key is
+  `(market, client_order_id)`.
+- **Immutable, no-delete.** The migration's triggers forbid `UPDATE`/`DELETE`
+  on `executor_paper_order_placement`, matching `executor_execution_leg`'s
+  own identity-immutability convention.
+- **Idempotent replay.** Re-placing the identical
+  `(market, client_order_id, side, price, quantity)` returns the
+  already-recorded acknowledgement rather than re-evaluating against
+  possibly different current market evidence or writing a duplicate row.
+- **Fail-closed on identity reuse.** Reusing `(market, client_order_id)` for
+  a *different* order identity raises `PaperOrderPlacementConflictError`
+  instead of guessing; the shared submission orchestrator's existing
+  generic-exception handling already turns that into no state change /
+  `SUBMISSION_UNCERTAIN`, never a silent overwrite.
+- **Regression coverage:** `tests/test_paper_order_adapter_v1.py` covers
+  crash-window recovery of an acknowledged `ACTIVE` order, recovery of a
+  `REJECTED` order, identical-identity idempotency, and conflicting-identity
+  fail-closed behavior directly on the adapter.
+  `tests/test_automatic_buy_paper_fill_execution_v1.py` covers the same
+  crash window through the real shared `submit_execution_plan` orchestrator:
+  a simulated crash between the `ACTIVE` acknowledgement and
+  `executor_execution_leg` persistence, followed by a retry that recovers
+  the identical order (same `broker_order_id`) with no second `place_order`
+  call and no `RECONCILIATION_REQUIRED` dead end.
 
 ## Idempotency and replay
 
