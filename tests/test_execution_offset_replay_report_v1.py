@@ -196,8 +196,8 @@ def test_min_sample_threshold_controls_confidence_state() -> None:
     assert at["overall"]["confidence_state"] == CONFIDENCE_SUFFICIENT
 
 
-@pytest.mark.parametrize("threshold", [0, -1, False])
-def test_invalid_min_sample_threshold_fails_closed(threshold: int) -> None:
+@pytest.mark.parametrize("threshold", [0, -1, False, 0.5, Decimal("1.5"), "30", None])
+def test_invalid_min_sample_threshold_fails_closed(threshold: object) -> None:
     episodes, candles, _policies = fixture_inputs()
     rows = build_replay_dataset(episodes, candles, [EXACT])
     with pytest.raises(ExecutionOffsetReportError, match="INVALID_MIN_SAMPLE_THRESHOLD"):

@@ -185,7 +185,11 @@ def _rate_pct(numerator: int, denominator: int) -> Decimal | None:
 
 
 def _validate_min_sample_threshold(min_sample_threshold: int) -> None:
-    if isinstance(min_sample_threshold, bool) or min_sample_threshold <= 0:
+    if (
+        isinstance(min_sample_threshold, bool)
+        or not isinstance(min_sample_threshold, int)
+        or min_sample_threshold <= 0
+    ):
         raise ExecutionOffsetReportError("INVALID_MIN_SAMPLE_THRESHOLD")
 
 
