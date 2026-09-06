@@ -7734,6 +7734,55 @@ def test_operator_state_banner_regression_current_58_unavailable_7_never_mention
     assert "stale" not in headline.lower()
 
 
+def test_operator_state_summary_live_navigation_and_stale_regression() -> None:
+    native_current = _fresh_canonical_card()
+    canonical_navigation = build_profit_plan_card(
+        symbol="DGB",
+        market="DGB-EUR",
+        current_price=Decimal("0.01"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+        reentry=_canonical_market_context_reentry(),
+        evidence=CardEvidence(),
+    )
+    stale = dataclasses.replace(
+        native_current,
+        symbol="SXT",
+        evidence=dataclasses.replace(
+            native_current.evidence,
+            native_context_freshness_status="STALE",
+        ),
+    )
+    unavailable = _ldo_like_card()
+    cards = (
+        [
+            dataclasses.replace(native_current, symbol=f"CURRENT-{index}")
+            for index in range(60)
+        ]
+        + [
+            dataclasses.replace(canonical_navigation, symbol=symbol)
+            for symbol in ("DGB", "KITE", "NOT", "ZAMA")
+        ]
+        + [stale]
+        + [
+            dataclasses.replace(unavailable, symbol=symbol)
+            for symbol in ("BILL", "CHIP", "MDT")
+        ]
+    )
+
+    summary = _pp_module.build_operator_state_summary(cards)
+
+    assert canonical_navigation.actionability_state == "NAVIGATION_ONLY"
+    assert len(cards) == 68
+    assert summary.current_evidence_count == 64
+    assert summary.stale_evidence_count == 1
+    assert summary.unavailable_evidence_count == 3
+    assert summary.current_non_actionable_context_count == 4
+
+
 def test_card_candidate_evidence_preserves_fresh_price_and_unavailable_map() -> None:
     card = _ldo_like_card()
     card = dataclasses.replace(
