@@ -10,6 +10,7 @@ from src.research.run_momentum_flow_exhaustion_phase_d_context_v1 import (
     UNKNOWN,
     build_interaction_summary,
     enrich_with_regime_context,
+    fetch_regime_rows,
 )
 
 BASE = datetime(2026, 4, 1, 12, tzinfo=UTC)
@@ -78,3 +79,29 @@ def test_duplicate_timestamp_rows_have_deterministic_last_row_precedence():
     second = _regime(BASE-timedelta(hours=1), "SECOND")
     rows = enrich_with_regime_context([_exhaustion()], [first, second])
     assert rows[0]["global_regime"] == "SECOND"
+
+
+class _BatchCursor:
+    def __init__(self):
+        self.calls = 0
+        self.params = None
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+    def execute(self, sql, params): self.params = params
+    def fetchmany(self, size):
+        self.calls += 1
+        if self.calls == 1:
+            return [{"symbol":"BTC","interval_code":"4h","asof_ts_utc":BASE,"global_regime":"RISK_ON","asset_class_regime":"X","global_class_regime":"Y","asset_class":"CRYPTO","regime_selector_backtest_observation_v1_id":1}]
+        return []
+    def fetchall(self):
+        raise AssertionError("fetchall must not be used")
+
+class _BatchConn:
+    def __init__(self): self.cur = _BatchCursor()
+    def cursor(self): return self.cur
+
+def test_fetch_regime_rows_uses_bounded_fetchmany():
+    conn = _BatchConn()
+    rows = fetch_regime_rows(conn, symbols=["BTC"], interval="4h", start_ts=BASE-timedelta(hours=4), end_ts=BASE)
+    assert len(rows) == 1
+    assert conn.cur.calls == 2

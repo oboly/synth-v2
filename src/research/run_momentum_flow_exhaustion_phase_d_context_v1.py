@@ -132,9 +132,15 @@ def fetch_regime_rows(conn: Any, *, symbols: list[str], interval: str, start_ts:
     {symbol_sql}
     ORDER BY symbol, asof_ts_utc, regime_selector_backtest_observation_v1_id
     """
+    rows: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         cur.execute(sql, params)
-        return list(cur.fetchall())
+        while True:
+            batch = cur.fetchmany(1000)
+            if not batch:
+                break
+            rows.extend(batch)
+    return rows
 
 
 def read_csv(path: Path) -> list[dict[str, Any]]:
@@ -157,6 +163,8 @@ def main() -> None:
     p.add_argument("--interval", default="4h"); p.add_argument("--max-context-age-hours", type=int, default=4)
     p.add_argument("--output-dir", required=True)
     args = p.parse_args()
+    if args.max_context_age_hours < 0:
+        raise ValueError("--max-context-age-hours must be nonnegative")
     print(f"STARTED runner={MODEL_VERSION} interval={args.interval} max_context_age_hours={args.max_context_age_hours}", flush=True)
     print("PHASE_STARTED phase=read_input", flush=True)
     rows = read_csv(Path(args.input_csv))
