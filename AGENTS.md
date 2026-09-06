@@ -154,6 +154,22 @@ Token and context discipline:
 
 ### Branch/worktree hygiene
 
+The gurkDB checkout at `/home/gurk/projects/synth-v2` is production-only. It
+must remain clean on `main`; never switch it to a feature branch, create a
+feature branch there, or write development/research artifacts into it. Do
+implementation work on devlap or in a separate gurkDB worktree outside that
+path. Before agent/development branch work on gurkDB, run:
+
+```bash
+python -m src.operations.verify_agent_worktree_v1 \
+  --worktree-path "$PWD" \
+  --requested-branch '<intended-branch>'
+```
+
+The full recovery and operating contract is
+`docs/ops/gurkdb_canonical_runtime_checkout_guard_v1.md`. Never weaken or
+bypass a runtime writer authorization guard to accommodate development work.
+
 - Before starting an implementation branch, fetch `origin` and verify the
   exact intended base SHA against `origin/main`.
 - Never create a feature branch from an unrelated feature/docs branch, a
