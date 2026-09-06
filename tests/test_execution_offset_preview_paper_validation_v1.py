@@ -161,6 +161,40 @@ def test_invalidation_after_fill_is_measured():
     assert row.post_fill_outcome == OUTCOME_INVALIDATION
 
 
+def test_buy_profit_target_on_loss_side_is_rejected_even_without_invalidation():
+    ep=episode()
+    ep=ep.__class__(**{**ep.__dict__, "invalidation_price": None})
+    inp=PaperValidationInputV1(
+        ep,
+        (candle(0,"99","102"), candle(1,"94","105")),
+        tick(),
+        PaperOutcomeContextV1(ep.episode_id, Decimal("95")),
+    )
+    with pytest.raises(ExecutionOffsetValidationError, match="INVALID_OUTCOME_GEOMETRY"):
+        build_paper_validation_report([inp], POLICIES, costs=COSTS, min_sample_threshold=1)
+
+
+def test_sell_profit_target_on_loss_side_is_rejected_even_without_invalidation():
+    ep=episode(side=SIDE_SELL)
+    ep=ep.__class__(**{**ep.__dict__, "invalidation_price": None})
+    inp=PaperValidationInputV1(
+        ep,
+        (candle(0,"98","101"), candle(1,"95","106")),
+        tick(),
+        PaperOutcomeContextV1(ep.episode_id, Decimal("105")),
+    )
+    with pytest.raises(ExecutionOffsetValidationError, match="INVALID_OUTCOME_GEOMETRY"):
+        build_paper_validation_report([inp], POLICIES, costs=COSTS, min_sample_threshold=1)
+
+
+def test_paper_invalidation_must_be_on_loss_side_for_entry_side():
+    bad_buy=episode()
+    bad_buy=bad_buy.__class__(**{**bad_buy.__dict__, "invalidation_price": Decimal("105")})
+    inp=PaperValidationInputV1(bad_buy,(candle(0,"99","102"),),tick(),None)
+    with pytest.raises(ExecutionOffsetValidationError, match="INVALID_OUTCOME_GEOMETRY"):
+        build_paper_validation_report([inp], POLICIES, costs=COSTS, min_sample_threshold=1)
+
+
 def test_same_candle_target_invalidation_after_fill_is_explicit_ambiguity():
     inp=paper_input(candles=(candle(0,"99","102"),candle(1,"89","111")))
     report=build_paper_validation_report([inp], POLICIES, costs=COSTS, min_sample_threshold=1)

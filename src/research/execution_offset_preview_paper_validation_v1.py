@@ -264,14 +264,15 @@ def _post_fill_outcome(
         raise ExecutionOffsetValidationError("INVALID_PROFIT_TARGET_PRICE")
     if invalidation is not None and invalidation <= 0:
         raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
-    if target is not None and target == replay.execution_price:
-        raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
-    if invalidation is not None and invalidation == replay.execution_price:
-        raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
-    if target is not None and invalidation is not None:
-        target_delta = target - replay.execution_price
-        invalidation_delta = invalidation - replay.execution_price
-        if target_delta * invalidation_delta >= 0:
+    if target is not None:
+        if episode.side == SIDE_BUY and target <= replay.execution_price:
+            raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
+        if episode.side == SIDE_SELL and target >= replay.execution_price:
+            raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
+    if invalidation is not None:
+        if episode.side == SIDE_BUY and invalidation >= replay.execution_price:
+            raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
+        if episode.side == SIDE_SELL and invalidation <= replay.execution_price:
             raise ExecutionOffsetValidationError("INVALID_OUTCOME_GEOMETRY")
     if not target_available and not invalidation_available:
         return OUTCOME_NOT_AVAILABLE, False, False, None, None

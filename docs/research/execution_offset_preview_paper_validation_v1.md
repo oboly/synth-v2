@@ -35,7 +35,7 @@ The round-trip research cost proxy is `(2 * fee_bps_per_side + 2 * slippage_bps_
 
 ## Post-fill outcomes
 
-A profit target is never invented. When `PaperOutcomeContextV1.profit_target_price` is absent, target-hit metrics have no eligible denominator. The episode invalidation remains independently measurable after fill whenever it exists. When both target and invalidation are supplied, they must lie on opposite sides of the policy execution price.
+A profit target is never invented. When `PaperOutcomeContextV1.profit_target_price` is absent, target-hit metrics have no eligible denominator. The episode invalidation remains independently measurable after fill whenever it exists. Paper validation is specifically an entry-policy simulation: BUY requires profit target above the tick-valid execution price and invalidation below it; SELL requires target below and invalidation above. Reversed target/invalidation geometry fails closed even when only one of those levels is supplied.
 
 The fill timestamp is taken from #224 `time_to_fill_seconds`. Post-fill scanning re-applies the episode full-interval boundary: candle open must be at/after issuance, candle close must be at/before `valid_until_ts_utc`, and candle close must be strictly after the fill candle. Outcomes can therefore never leak beyond the episode validity horizon. If one OHLC candle spans both target and invalidation, the result is explicit `AMBIGUOUS_TARGET_INVALIDATION_SAME_CANDLE`; no intrabar order is guessed.
 
