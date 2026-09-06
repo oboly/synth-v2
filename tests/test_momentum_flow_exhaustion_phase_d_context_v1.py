@@ -11,6 +11,7 @@ from src.research.run_momentum_flow_exhaustion_phase_d_context_v1 import (
     build_interaction_summary,
     enrich_with_regime_context,
     fetch_regime_rows,
+    main,
 )
 
 BASE = datetime(2026, 4, 1, 12, tzinfo=UTC)
@@ -105,3 +106,11 @@ def test_fetch_regime_rows_uses_bounded_fetchmany():
     rows = fetch_regime_rows(conn, symbols=["BTC"], interval="4h", start_ts=BASE-timedelta(hours=4), end_ts=BASE)
     assert len(rows) == 1
     assert conn.cur.calls == 2
+
+
+def test_cli_negative_max_age_fails_before_io(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("src.research.run_momentum_flow_exhaustion_phase_d_context_v1.argparse.ArgumentParser.parse_args", lambda self: SimpleNamespace(input_csv="never.csv", database="synth", interval="4h", max_context_age_hours=-1, output_dir="never"))
+    monkeypatch.setattr("src.research.run_momentum_flow_exhaustion_phase_d_context_v1.read_csv", lambda path: (_ for _ in ()).throw(AssertionError("IO must not happen")))
+    with pytest.raises(ValueError, match="nonnegative"):
+        main()
