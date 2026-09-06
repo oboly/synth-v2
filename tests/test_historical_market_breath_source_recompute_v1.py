@@ -11,6 +11,7 @@ from src.research.run_historical_market_breath_source_recompute_v1 import (
     SAFETY_MARKERS,
     build_manifest,
     build_recomputed_row,
+    resolve_assets,
     parse_ts,
     print_summary,
 )
@@ -146,6 +147,16 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
                 "quality_state_distribution": {"HIGH": 1},
             },
         )
+
+    def test_requested_btc_is_preserved_as_output_asset(self) -> None:
+        from src.research.run_market_breath_analysis_v1 import Asset
+        import unittest.mock as mock
+
+        assets = [Asset(asset_id=1, symbol="BTC"), Asset(asset_id=2, symbol="ETH")]
+        with mock.patch("src.research.run_historical_market_breath_source_recompute_v1.fetch_assets", return_value=assets):
+            selected, btc = resolve_assets(object(), requested_symbols=["BTC", "ETH"])
+        self.assertEqual([asset.symbol for asset in selected], ["BTC", "ETH"])
+        self.assertEqual(btc.symbol, "BTC")
 
     def test_no_forbidden_imports(self) -> None:
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))

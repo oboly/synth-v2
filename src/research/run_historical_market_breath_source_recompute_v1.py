@@ -87,7 +87,7 @@ def resolve_assets(
         missing = [symbol for symbol in requested_symbols if symbol.upper() not in asset_by_symbol]
         if missing:
             raise RuntimeError(f"Requested symbols not available in asset universe: {','.join(sorted(missing))}")
-        selected = [asset_by_symbol[symbol.upper()] for symbol in requested_symbols if symbol.upper() != "BTC"]
+        selected = [asset_by_symbol[symbol.upper()] for symbol in requested_symbols]
 
     if not selected:
         raise RuntimeError("No replay assets selected")
@@ -248,7 +248,12 @@ def recompute_rows(
         raise RuntimeError("No candle timestamps available for requested replay scope")
 
     rows: list[dict[str, Any]] = []
-    for asof_ts in timestamps:
+    print(
+        f"PHASE_STARTED phase=replay timestamps={len(timestamps)} assets={len(selected_assets)} interval={interval}",
+        flush=True,
+    )
+    progress_every = max(1, len(timestamps) // 10)
+    for timestamp_index, asof_ts in enumerate(timestamps, start=1):
         rows.extend(
             replay_rows_for_timestamp(
                 conn,
@@ -260,13 +265,22 @@ def recompute_rows(
                 asof_ts=asof_ts,
             )
         )
+        if timestamp_index == 1 or timestamp_index % progress_every == 0 or timestamp_index == len(timestamps):
+            print(
+                f"PHASE_PROGRESS phase=replay timestamp_index={timestamp_index}/{len(timestamps)} rows={len(rows)} asof_ts_utc={fmt_ts(asof_ts)}",
+                flush=True,
+            )
         if max_rows > 0 and len(rows) >= max_rows:
             rows = rows[:max_rows]
             break
 
+    print(f"PHASE_FINISHED phase=replay rows={len(rows)}", flush=True)
     rows.sort(key=lambda item: (item["symbol"], item["asof_ts_utc"]))
     measures = {
         "row_count": len(rows),
+        "symbol_count": len({row["symbol"] for row in rows}),
+        "min_asof_ts_utc": min((row["asof_ts_utc"] for row in rows), default=None),
+        "max_asof_ts_utc": max((row["asof_ts_utc"] for row in rows), default=None),
         "breath_phase_distribution": dict(Counter(row["breath_phase"] for row in rows)),
         "breath_alignment_distribution": dict(Counter(row["breath_alignment"] for row in rows)),
         "symbol_regime_distribution": dict(Counter(row["symbol_regime"] for row in rows)),
@@ -331,6 +345,10 @@ def print_summary(*, rows: list[dict[str, Any]], measures: dict[str, Any]) -> No
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    print(
+        f"STARTED runner={REPORT_NAME} version={REPORT_VERSION} venue={args.venue} interval={args.interval} start_ts={args.start_ts} end_ts={args.end_ts}",
+        flush=True,
+    )
     symbols = parse_symbols_arg(args.symbols)
     venue = str(args.venue).lower()
     interval = str(args.interval)
@@ -338,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     start_ts = parse_ts(args.start_ts)
     end_ts = parse_ts(args.end_ts)
 
+    print("PHASE_STARTED phase=db_recompute", flush=True)
     conn = get_connection()
     try:
         rows, measures = recompute_rows(
@@ -351,9 +370,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         conn.close()
+    print(f"PHASE_FINISHED phase=db_recompute rows={len(rows)}", flush=True)
 
     output_paths: dict[str, str] = {}
     if args.write_files:
+        print("PHASE_STARTED phase=write_outputs", flush=True)
         csv_path = output_dir / ROWS_CSV
         jsonl_path = output_dir / ROWS_JSONL
         manifest_path = output_dir / MANIFEST_JSON
@@ -366,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
         write_json(manifest_path, manifest)
+        print(f"PHASE_FINISHED phase=write_outputs output_dir={output_dir}", flush=True)
     else:
         manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
 
@@ -373,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"rows": rows, "manifest": manifest}, indent=2, sort_keys=True))
     else:
         print_summary(rows=rows, measures=measures)
+    print(f"FINISHED runner={REPORT_NAME} rows={len(rows)}", flush=True)
     return 0
 
 
