@@ -34,9 +34,10 @@ the new module.
 ## Input contract (smallest explicit shape)
 
 - `verified_first_fill: VerifiedFirstBuyFillV1` -- produced only by
-  `verify_first_buy_fill_v1(...)` after validating the supplied
-  `StrategyOwnedInventoryEventV1` against the authoritative persisted #752
-  event set for its exact lineage. The supplied event must be present
+  `verify_first_buy_fill_v1(fill_event=..., inventory_conn=...)`. The verifier
+  itself loads the complete persisted #752 account event set through
+  `load_strategy_owned_inventory_events_v1(...)`; callers cannot substitute a
+  hand-picked history list. The supplied event must be present
   verbatim and must be the earliest BUY under deterministic
   `(occurred_ts_utc, event_id)` ordering. Every binding identity field is
   copied verbatim from this verified event -- never re-derived or separately
@@ -53,19 +54,19 @@ the new module.
   `DEFAULT_PRIMARY_STALE_HOURS` from `native_short_fib_context_v1.py`
   (12h), exactly the same freshness bar market_data already applies to the
   primary 4h authority. B7 exposes no caller override for this boundary.
-- First-fill verification requires authoritative persisted #752 history.
-  B8 must load the account event set through
-  `load_strategy_owned_inventory_events_v1(...)` and pass that complete
-  durable set (or an authoritative exact-lineage subset derived from it) to
-  `verify_first_buy_fill_v1(...)`. A partial/in-flight event batch is not an
-  authoritative input.
+- First-fill verification requires the canonical persisted #752 repository.
+  B8 passes the repository connection to `verify_first_buy_fill_v1(...)`; the
+  verifier loads the complete durable account event set itself. There is no
+  public API that accepts a caller-supplied partial/in-flight event batch as
+  authoritative history.
 
 ## First-fill / no-rebind semantics
 
 B7 now separates ordering proof from persistence uniqueness:
 
-- `verify_first_buy_fill_v1(...)` validates every authoritative event with
-  #752's public validator, requires the supplied fill to be present exactly,
+- `verify_first_buy_fill_v1(...)` loads #752 history through the canonical
+  repository, validates every loaded event with #752's public validator,
+  requires the supplied fill to be present exactly,
   filters to its exact `(account, venue, market, bucket, strategy, version,
   trade_id)` lineage, and requires it to be the earliest BUY by
   `(occurred_ts_utc, event_id)`. A later out-of-order BUY or RE_ENTER on an

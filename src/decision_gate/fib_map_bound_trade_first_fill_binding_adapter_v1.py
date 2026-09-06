@@ -5,11 +5,9 @@ at the first strategy-owned BUY fill, from B4/B5 ownership/fill lineage
 Fib map evidence, persisted through the existing B6 repository
 (``src/decision_gate/fib_map_bound_trade_repository_v1.py``).
 
-Smallest explicit input contract: one real ``StrategyOwnedInventoryEventV1``
-(the BUY fill establishing lineage/ownership -- trading_account_id, venue,
-market, strategy_bucket_id, strategy_id, strategy_version, trade_id,
-source_execution_plan_id, source_fill_id, occurred_ts_utc, all copied
-verbatim, never re-derived) and one caller-supplied ``CanonicalFibMapEvidenceV1``
+Smallest explicit input contract: one ``VerifiedFirstBuyFillV1`` produced by
+repository-backed #752 verification of the real BUY fill establishing lineage
+and ownership, plus one caller-supplied ``CanonicalFibMapEvidenceV1``
 (the already-selected canonical ShortTF Fib map's identity/geometry/full
 target ladder). This module never selects, recomputes, or re-derives a map,
 never infers ownership from wallet balance, and never creates execution
@@ -41,8 +39,8 @@ really is the *earliest* BUY for its lineage -- a later BUY fill delivered
 permanently bind the wrong map. To close that gap, construction and
 persistence never accept a bare ``StrategyOwnedInventoryEventV1`` directly.
 They accept only a ``VerifiedFirstBuyFillV1``, produced exclusively by
-``verify_first_buy_fill_v1`` after replaying the authoritative persisted
-#752 event set for the exact lineage and confirming the supplied event is
+``verify_first_buy_fill_v1`` after loading the authoritative persisted #752
+account event set through the canonical repository and confirming the event is
 present verbatim and is that lineage's earliest BUY (deterministic
 tie-break: ``(occurred_ts_utc, event_id)``, identical to
 ``project_strategy_owned_inventory_v1``'s replay order). A RE_ENTER that
@@ -64,7 +62,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
-from typing import Final, Iterable
+from typing import Any, Final, Iterable
 
 from src.decision_gate.fib_map_bound_trade_repository_v1 import (
     FibMapBoundTradeRepositoryV1,
@@ -72,6 +70,10 @@ from src.decision_gate.fib_map_bound_trade_repository_v1 import (
 from src.decision_gate.fib_map_bound_trade_v1 import (
     FibMapBoundTradeV1,
     validate_fib_map_bound_trade_v1,
+)
+from src.decision_gate.strategy_owned_inventory_repository_v1 import (
+    StrategyOwnedInventoryRepositoryError,
+    load_strategy_owned_inventory_events_v1,
 )
 from src.decision_gate.strategy_owned_inventory_v1 import (
     StrategyOwnedInventoryError,
@@ -214,37 +216,12 @@ class VerifiedFirstBuyFillV1:
             raise FibMapBoundTradeBindingAdapterError("UNVERIFIED_FIRST_FILL_EVENT")
 
 
-def verify_first_buy_fill_v1(
+def _verify_first_buy_fill_against_events_v1(
     *,
     fill_event: StrategyOwnedInventoryEventV1,
     authoritative_events: Iterable[StrategyOwnedInventoryEventV1],
 ) -> VerifiedFirstBuyFillV1:
-    """The sole producer of ``VerifiedFirstBuyFillV1``.
-
-    ``authoritative_events`` must be the authoritative persisted #752
-    ``StrategyOwnedInventoryEventV1`` set for ``fill_event``'s exact
-    ``(trading_account_id, venue, market, strategy_bucket_id, strategy_id,
-    strategy_version, trade_id)`` lineage, read from the durable #752 store
-    (or a superset of it) -- never a partial, in-flight, or streaming batch.
-    B8's harness must load this set from the real #752 repository before
-    calling this function; see
-    ``docs/architecture/fib_map_bound_trade_first_fill_binding_adapter_v1.md``.
-
-    Every candidate in ``authoritative_events`` is validated with the public
-    #752 validator (``validate_strategy_owned_inventory_event_v1``) before
-    use, so one malformed authoritative row fails the whole verification
-    closed rather than silently being skipped. ``fill_event`` must appear in
-    that validated set exactly (full field equality, not just a matching
-    id), and must be the earliest BUY for its lineage under the same
-    deterministic tie-break ``project_strategy_owned_inventory_v1`` replay
-    uses: sort by ``(occurred_ts_utc, event_id)``. A later BUY processed or
-    supplied first, or a RE_ENTER continuing a lineage whose authoritative
-    set already has an earlier BUY, both fail closed here.
-    """
-    if not isinstance(fill_event, StrategyOwnedInventoryEventV1):
-        raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_EVENT")
-    _validate_fill_event_for_binding(fill_event)
-
+    """Pure verifier over an already-loaded authoritative #752 event set."""
     validated_events: list[StrategyOwnedInventoryEventV1] = []
     for candidate in authoritative_events:
         if not isinstance(candidate, StrategyOwnedInventoryEventV1):
@@ -274,8 +251,39 @@ def verify_first_buy_fill_v1(
         raise FibMapBoundTradeBindingAdapterError(
             "FIRST_FILL_EVENT_IS_NOT_EARLIEST_BUY_FOR_LINEAGE"
         )
-
     return VerifiedFirstBuyFillV1(fill_event=fill_event, _verification_token=_VERIFICATION_TOKEN)
+
+
+def verify_first_buy_fill_v1(
+    *,
+    fill_event: StrategyOwnedInventoryEventV1,
+    inventory_conn: Any,
+) -> VerifiedFirstBuyFillV1:
+    """Verify earliest BUY from the canonical persisted #752 repository.
+
+    The caller cannot substitute a hand-picked event list. This function loads
+    the complete persisted event set for ``fill_event.trading_account_id`` via
+    ``load_strategy_owned_inventory_events_v1`` and then verifies exact-event
+    presence plus earliest-BUY ordering for the exact lineage using
+    ``(occurred_ts_utc, event_id)``. A later out-of-order BUY or RE_ENTER with
+    an earlier BUY already persisted therefore fails closed before B6 binding.
+    """
+    if not isinstance(fill_event, StrategyOwnedInventoryEventV1):
+        raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_EVENT")
+    _validate_fill_event_for_binding(fill_event)
+    try:
+        authoritative_events = load_strategy_owned_inventory_events_v1(
+            inventory_conn,
+            trading_account_id=fill_event.trading_account_id,
+        )
+    except StrategyOwnedInventoryRepositoryError as exc:
+        raise FibMapBoundTradeBindingAdapterError(
+            "AUTHORITATIVE_INVENTORY_HISTORY_UNREADABLE"
+        ) from exc
+    return _verify_first_buy_fill_against_events_v1(
+        fill_event=fill_event,
+        authoritative_events=authoritative_events,
+    )
 
 
 def _validate_identity_consistency(

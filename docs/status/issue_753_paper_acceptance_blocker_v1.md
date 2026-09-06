@@ -62,8 +62,8 @@ native-map field names, no parallel geometry), pure
 identity mismatch / non-BUY source fill / stale or future map evidence), and
 `bind_fib_map_bound_trade_on_first_fill_v1` which persists through the
 unchanged B6 repository. First-fill ordering is now verified explicitly
-against authoritative persisted #752 event history using deterministic
-`(occurred_ts_utc, event_id)` ordering; build/bind accept only a
+against history loaded directly from the canonical persisted #752 repository
+using deterministic `(occurred_ts_utc, event_id)` ordering; build/bind accept only a
 `VerifiedFirstBuyFillV1`. B6 unique keys remain the independent replay and
 no-rebind backstop. The full target ladder is frozen verbatim -- B7 never
 filters to currently-active or unconsumed targets. See

@@ -31,7 +31,11 @@ from src.decision_gate.fib_map_bound_trade_repository_v1 import (
     FibMapBoundTradeRepositoryV1,
 )
 from src.decision_gate.fib_map_bound_trade_v1 import FibMapBoundTradeError
+from src.decision_gate.strategy_owned_inventory_repository_v1 import (
+    append_strategy_owned_inventory_event_v1,
+)
 from src.decision_gate.strategy_owned_inventory_v1 import StrategyOwnedInventoryEventV1
+from tests.automatic_buy_account_allocation_evidence_fixtures_v1 import FakeConnection
 
 FILL_TS = datetime(2026, 9, 6, 9, 45, tzinfo=UTC)
 
@@ -141,11 +145,19 @@ def make_repository() -> tuple[FibMapBoundTradeRepositoryV1, MemoryDatabase]:
     return FibMapBoundTradeRepositoryV1(cursor_factory=database.cursor_factory), database
 
 
-def _verified(fill: StrategyOwnedInventoryEventV1, authoritative_events=None) -> VerifiedFirstBuyFillV1:
-    return verify_first_buy_fill_v1(
-        fill_event=fill,
-        authoritative_events=authoritative_events if authoritative_events is not None else (fill,),
-    )
+def _inventory_conn(*events: StrategyOwnedInventoryEventV1) -> FakeConnection:
+    conn = FakeConnection()
+    for event in events:
+        append_strategy_owned_inventory_event_v1(conn, event=event)
+    return conn
+
+
+def _verified(
+    fill: StrategyOwnedInventoryEventV1,
+    authoritative_events: tuple[StrategyOwnedInventoryEventV1, ...] | None = None,
+) -> VerifiedFirstBuyFillV1:
+    events = authoritative_events if authoritative_events is not None else (fill,)
+    return verify_first_buy_fill_v1(fill_event=fill, inventory_conn=_inventory_conn(*events))
 
 
 def test_happy_path_binds_and_persists_full_target_ladder():
@@ -245,14 +257,14 @@ def test_malformed_first_fill_event_fails_closed_before_binding(changes: dict[st
     fill = _fill_event(**changes)
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="INVALID_FIRST_FILL_EVENT"):
-        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill,))
+        verify_first_buy_fill_v1(fill_event=fill, inventory_conn=_inventory_conn(fill))
 
 
 def test_source_fill_that_is_not_a_buy_fails_closed():
     fill = _fill_event(side="SELL")
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="SOURCE_FILL_NOT_BUY_SIDE"):
-        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill,))
+        verify_first_buy_fill_v1(fill_event=fill, inventory_conn=_inventory_conn(fill))
 
 
 def test_already_bound_conflict_with_different_map_evidence_fails_closed():
@@ -307,9 +319,9 @@ def test_later_buy_fill_processed_first_is_rejected_as_not_earliest_for_lineage(
         FibMapBoundTradeBindingAdapterError,
         match="FIRST_FILL_EVENT_IS_NOT_EARLIEST_BUY_FOR_LINEAGE",
     ):
-        verify_first_buy_fill_v1(fill_event=later, authoritative_events=authoritative)
+        verify_first_buy_fill_v1(fill_event=later, inventory_conn=_inventory_conn(*authoritative))
 
-    verified_earlier = verify_first_buy_fill_v1(fill_event=earlier, authoritative_events=authoritative)
+    verified_earlier = verify_first_buy_fill_v1(fill_event=earlier, inventory_conn=_inventory_conn(*authoritative))
     assert verified_earlier.fill_event == earlier
 
 
@@ -327,7 +339,7 @@ def test_re_enter_with_prior_buy_in_lineage_cannot_rebind_to_later_map():
         FibMapBoundTradeBindingAdapterError,
         match="FIRST_FILL_EVENT_IS_NOT_EARLIEST_BUY_FOR_LINEAGE",
     ):
-        verify_first_buy_fill_v1(fill_event=re_enter_buy, authoritative_events=authoritative)
+        verify_first_buy_fill_v1(fill_event=re_enter_buy, inventory_conn=_inventory_conn(*authoritative))
 
 
 def test_fill_event_missing_from_authoritative_set_fails_closed():
@@ -337,7 +349,7 @@ def test_fill_event_missing_from_authoritative_set_fails_closed():
     with pytest.raises(
         FibMapBoundTradeBindingAdapterError, match="FIRST_FILL_EVENT_NOT_IN_AUTHORITATIVE_SET",
     ):
-        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(other,))
+        verify_first_buy_fill_v1(fill_event=fill, inventory_conn=_inventory_conn(other))
 
 
 def test_malformed_authoritative_event_fails_closed():
@@ -347,7 +359,7 @@ def test_malformed_authoritative_event_fails_closed():
     with pytest.raises(
         FibMapBoundTradeBindingAdapterError, match="MALFORMED_AUTHORITATIVE_INVENTORY_EVENT",
     ):
-        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill, malformed))
+        verify_first_buy_fill_v1(fill_event=fill, inventory_conn=_inventory_conn(fill, malformed))
 
 
 def test_verified_first_fill_replay_end_to_end_binds_earliest_buy_only():
@@ -358,7 +370,7 @@ def test_verified_first_fill_replay_end_to_end_binds_earliest_buy_only():
     later = _fill_event(event_id="event-1", source_fill_id="fill-1", occurred_ts_utc=FILL_TS)
     authoritative = (later, earlier)  # delivered/processed out of order
 
-    verified = verify_first_buy_fill_v1(fill_event=earlier, authoritative_events=authoritative)
+    verified = verify_first_buy_fill_v1(fill_event=earlier, inventory_conn=_inventory_conn(*authoritative))
     evidence = _map_evidence(
         map_asof_ts_utc=earlier.occurred_ts_utc, map_published_at_utc=earlier.occurred_ts_utc,
         anchor_end_ts_utc=earlier.occurred_ts_utc,
