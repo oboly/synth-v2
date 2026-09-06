@@ -5,6 +5,7 @@ import bisect
 import json
 import os
 import signal
+import time
 from collections import Counter
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -399,6 +400,11 @@ def recompute_rows(
     checkpoint_callback: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_assets, btc_asset = resolve_assets(conn, requested_symbols=symbols)
+    timestamp_query_started = time.monotonic()
+    print(
+        f"QUERY_STARTED query=timestamp_spine venue={venue} interval={interval} asset_count={len(selected_assets)}",
+        flush=True,
+    )
     timestamps = fetch_timestamp_spine(
         conn,
         asset_ids=[asset.asset_id for asset in selected_assets],
@@ -407,15 +413,24 @@ def recompute_rows(
         start_ts=start_ts,
         end_ts=end_ts,
     )
+    print(
+        f"QUERY_FINISHED query=timestamp_spine rows={len(timestamps)} elapsed_seconds={time.monotonic() - timestamp_query_started:.3f}",
+        flush=True,
+    )
     if not timestamps:
         raise RuntimeError("No candle timestamps available for requested replay scope")
 
     breadth_history = None
     breadth_asset_count = len(selected_assets)
     if breadth_scope == "all-enabled":
-        print("PHASE_STARTED phase=load_breadth_history", flush=True)
+        breadth_started = time.monotonic()
+        print("PHASE_STARTED phase=load_breadth_history worker_count=1", flush=True)
         breadth_assets = fetch_assets(conn)
         breadth_asset_count = len(breadth_assets)
+        print(
+            f"QUERY_STARTED query=breadth_close_history asset_count={breadth_asset_count} batch_size=5000",
+            flush=True,
+        )
         breadth_history = fetch_breadth_close_history(
             conn,
             assets=breadth_assets,
@@ -425,8 +440,15 @@ def recompute_rows(
             end_ts=timestamps[-1],
             lookback_candles=lookback_candles,
         )
+        breadth_source_rows = sum(len(values[0]) for values in breadth_history.values())
         print(
-            f"PHASE_FINISHED phase=load_breadth_history assets={breadth_asset_count} assets_with_history={len(breadth_history)}",
+            f"QUERY_FINISHED query=breadth_close_history rows={breadth_source_rows} assets_with_history={len(breadth_history)} "
+            f"elapsed_seconds={time.monotonic() - breadth_started:.3f}",
+            flush=True,
+        )
+        print(
+            f"PHASE_FINISHED phase=load_breadth_history assets={breadth_asset_count} assets_with_history={len(breadth_history)} "
+            f"source_rows={breadth_source_rows} elapsed_seconds={time.monotonic() - breadth_started:.3f}",
             flush=True,
         )
     elif breadth_scope != "selected":
@@ -435,8 +457,12 @@ def recompute_rows(
     if start_timestamp_index < 0 or start_timestamp_index > len(timestamps):
         raise ValueError("start_timestamp_index outside timestamp spine")
     rows: list[dict[str, Any]] = list(initial_rows or [])
+    replay_started = time.monotonic()
+    selected_query_asset_count = len(selected_assets) + (0 if any(asset.asset_id == btc_asset.asset_id for asset in selected_assets) else 1)
+    selected_query_bound_rows = selected_query_asset_count * lookback_candles
     print(
-        f"PHASE_STARTED phase=replay timestamps={len(timestamps)} assets={len(selected_assets)} interval={interval} resume_from={start_timestamp_index}",
+        f"PHASE_STARTED phase=replay timestamps={len(timestamps)} assets={len(selected_assets)} interval={interval} "
+        f"resume_from={start_timestamp_index} worker_count=1 selected_query_bound_rows={selected_query_bound_rows}",
         flush=True,
     )
     progress_every = max(1, len(timestamps) // 10)
@@ -460,14 +486,21 @@ def recompute_rows(
         if checkpoint_callback is not None:
             checkpoint_callback(timestamp_index, asof_ts, batch_rows, len(rows))
         if timestamp_index == 1 or timestamp_index % progress_every == 0 or timestamp_index == len(timestamps):
+            elapsed = time.monotonic() - replay_started
             print(
-                f"PHASE_PROGRESS phase=replay timestamp_index={timestamp_index}/{len(timestamps)} rows={len(rows)} asof_ts_utc={fmt_ts(asof_ts)}",
+                f"PHASE_PROGRESS phase=replay timestamp_index={timestamp_index}/{len(timestamps)} rows={len(rows)} "
+                f"asof_ts_utc={fmt_ts(asof_ts)} elapsed_seconds={elapsed:.3f}",
+                flush=True,
+            )
+            print(
+                f"HEARTBEAT runner={REPORT_NAME} phase=replay worker_count=1 timestamp_index={timestamp_index}/{len(timestamps)} "
+                f"output_rows={len(rows)} selected_query_bound_rows={selected_query_bound_rows} elapsed_seconds={elapsed:.3f}",
                 flush=True,
             )
         if max_rows > 0 and len(rows) >= max_rows:
             break
 
-    print(f"PHASE_FINISHED phase=replay rows={len(rows)}", flush=True)
+    print(f"PHASE_FINISHED phase=replay rows={len(rows)} elapsed_seconds={time.monotonic() - replay_started:.3f}", flush=True)
     rows.sort(key=lambda item: (item["symbol"], item["asof_ts_utc"]))
     measures = {
         "row_count": len(rows),
@@ -541,13 +574,15 @@ def print_summary(*, rows: list[dict[str, Any]], measures: dict[str, Any]) -> No
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    run_started = time.monotonic()
     previous_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
     for signum in previous_handlers:
         signal.signal(signum, _signal_handler)
 
     print(
         f"STARTED runner={REPORT_NAME} version={REPORT_VERSION} mode={'RESUME' if args.resume else 'FRESH'} "
-        f"venue={args.venue} interval={args.interval} start_ts={args.start_ts} end_ts={args.end_ts}",
+        f"scope=historical_market_breath_recompute worker_count=1 breadth_scope={args.breadth_scope} "
+        f"venue={args.venue} interval={args.interval} symbols={args.symbols or 'ALL'} start_ts={args.start_ts} end_ts={args.end_ts}",
         flush=True,
     )
     output_dir = Path(args.output_dir)
@@ -613,7 +648,8 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
 
-        print("PHASE_STARTED phase=db_recompute", flush=True)
+        db_phase_started = time.monotonic()
+        print("PHASE_STARTED phase=db_recompute worker_count=1", flush=True)
         conn = get_connection()
         rows, measures = recompute_rows(
             conn=conn,
@@ -630,11 +666,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         conn.close()
         conn = None
-        print(f"PHASE_FINISHED phase=db_recompute rows={len(rows)}", flush=True)
+        print(
+            f"PHASE_FINISHED phase=db_recompute rows={len(rows)} elapsed_seconds={time.monotonic() - db_phase_started:.3f}",
+            flush=True,
+        )
 
         output_paths: dict[str, str] = {}
         if args.write_files:
-            print("PHASE_STARTED phase=write_outputs", flush=True)
+            write_started = time.monotonic()
+            print("PHASE_STARTED phase=write_outputs worker_count=1", flush=True)
             csv_path = output_dir / ROWS_CSV
             jsonl_path = output_dir / ROWS_JSONL
             manifest_path = output_dir / MANIFEST_JSON
@@ -643,7 +683,10 @@ def main(argv: list[str] | None = None) -> int:
             output_paths = {"csv": str(csv_path), "jsonl": str(jsonl_path), "manifest": str(manifest_path)}
             manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
             write_json(manifest_path, manifest)
-            print(f"PHASE_FINISHED phase=write_outputs output_dir={output_dir}", flush=True)
+            print(
+                f"PHASE_FINISHED phase=write_outputs output_dir={output_dir} elapsed_seconds={time.monotonic() - write_started:.3f}",
+                flush=True,
+            )
         else:
             manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
 
@@ -668,7 +711,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             f"INTERRUPTED runner={REPORT_NAME} signal={signal.Signals(exc.signum).name} resumable=1 "
-            f"rows_written={int(checkpoint.get('rows_written', 0))} db_writes=0 broker_calls=0 order_submission=0",
+            f"rows_written={int(checkpoint.get('rows_written', 0))} elapsed_seconds={time.monotonic() - run_started:.3f} "
+            "db_writes=0 broker_calls=0 order_submission=0",
             flush=True,
         )
         return 130
@@ -690,7 +734,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
         print(
             f"FAILED runner={REPORT_NAME} error_type={type(exc).__name__} error={str(exc)!r} resumable={1 if checkpoint else 0} "
-            "db_writes=0 broker_calls=0 order_submission=0",
+            f"elapsed_seconds={time.monotonic() - run_started:.3f} db_writes=0 broker_calls=0 order_submission=0",
             flush=True,
         )
         return 1
@@ -700,7 +744,10 @@ def main(argv: list[str] | None = None) -> int:
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)
 
-    print(f"FINISHED runner={REPORT_NAME} rows={len(rows)}", flush=True)
+    print(
+        f"FINISHED runner={REPORT_NAME} rows={len(rows)} worker_count=1 elapsed_seconds={time.monotonic() - run_started:.3f}",
+        flush=True,
+    )
     return 0
 
 

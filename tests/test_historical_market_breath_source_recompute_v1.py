@@ -260,6 +260,55 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "resume identity mismatch"):
             mod._validate_checkpoint_identity({"runner": REPORT_NAME, "interval": "1h"}, {"runner": REPORT_NAME, "interval": "4h"})
 
+    def test_recompute_emits_query_bounds_heartbeat_and_elapsed_markers(self) -> None:
+        import contextlib
+        import io
+        from datetime import datetime
+        from unittest.mock import patch
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        from src.research.run_market_breath_analysis_v1 import Asset
+
+        row = {
+            "symbol": "BTC", "asof_ts_utc": "2026-01-01T00:00:00Z",
+            "breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN",
+            "symbol_regime": "UNKNOWN", "quality_state": "MEDIUM",
+        }
+        buffer = io.StringIO()
+        with patch.object(mod, "resolve_assets", return_value=([Asset(1, "BTC")], Asset(1, "BTC"))), \
+             patch.object(mod, "fetch_timestamp_spine", return_value=[datetime(2026, 1, 1, 0, 0)]), \
+             patch.object(mod, "replay_rows_for_timestamp", return_value=[row]), \
+             contextlib.redirect_stdout(buffer):
+            rows, measures = mod.recompute_rows(
+                conn=object(), symbols=["BTC"], venue="bitvavo", interval="4h",
+                start_ts=None, end_ts=None, max_rows=0, breadth_scope="selected",
+            )
+        out = buffer.getvalue()
+        self.assertEqual(rows, [row])
+        self.assertEqual(measures["row_count"], 1)
+        self.assertIn("QUERY_FINISHED query=timestamp_spine rows=1 elapsed_seconds=", out)
+        self.assertIn("HEARTBEAT runner=historical_market_breath_source_recompute_v1", out)
+        self.assertIn("worker_count=1", out)
+        self.assertIn("selected_query_bound_rows=120", out)
+        self.assertIn("PHASE_FINISHED phase=replay rows=1 elapsed_seconds=", out)
+
+    def test_started_marker_includes_scope_worker_and_breadth_scope(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = SimpleNamespace(close=lambda: None)
+            with patch.object(mod, "get_connection", return_value=conn), \
+                 patch.object(mod, "recompute_rows", return_value=([], {
+                     "breath_phase_distribution": {}, "breath_alignment_distribution": {},
+                     "symbol_regime_distribution": {}, "quality_state_distribution": {},
+                 })), patch("builtins.print") as mocked_print:
+                rc = mod.main(["--symbols", "BTC", "--output-dir", tmp, "--breadth-scope", "all-enabled"])
+        self.assertEqual(rc, 0)
+        started = next(str(call) for call in mocked_print.call_args_list if "STARTED runner=" in str(call))
+        self.assertIn("scope=historical_market_breath_recompute", started)
+        self.assertIn("worker_count=1", started)
+        self.assertIn("breadth_scope=all-enabled", started)
+
     def test_no_forbidden_imports(self) -> None:
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         imports: list[str] = []
