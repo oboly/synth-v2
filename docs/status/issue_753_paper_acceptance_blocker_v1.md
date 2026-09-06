@@ -2,10 +2,14 @@
 
 ## Status
 
-BLOCKED for the exact-path PAPER acceptance harness (B8) and for B7. B5.5
-(the PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
+BLOCKED for the exact-path PAPER acceptance harness (B8) only. B5.5 (the
+PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
 B6 (the `fib_map_bound_trade_v1` repository) is also now resolved -- see
-Update 3 below.
+Update 3 below. B7 (the first-fill binding adapter) is now resolved -- see
+Update 4 below. B8 remains BLOCKED: no code path yet produces a real
+automatic-BUY PAPER fill reaching `FILLED` (B5.5's adapter is explicitly
+submission-time-only and never returns `FILLED`), so B8's harness still has
+no real end-to-end fill to exercise B7 with.
 Documenting the precise remaining gap instead of inventing a shortcut, per
 task contract and `AGENTS.md` (do not fabricate ownership from wallet
 balance, do not invent parallel logic, do not revive #707/#723).
@@ -43,9 +47,32 @@ is built and tested: insert-at-first-fill semantics, exact-lineage load
 `Decimal`-fidelity JSON target levels and UTC-aware timestamp restoration,
 and fail-closed conflict errors for lineage/source-fill/binding-id reuse
 with different immutable content. No schema change was needed; the existing
-migration's unique keys were sufficient. B7 and B8 (the exact-path PAPER
-acceptance harness this document was originally about) remain separate,
-not-yet-started phases.
+migration's unique keys were sufficient. B8 (the exact-path PAPER acceptance
+harness this document was originally about) remains a separate, not-yet-
+started phase, now additionally blocked on the B5.5-documented
+`ACTIVE -> FILLED` PAPER reconciliation gap (see Update 4).
+
+**Update 4:** B7
+(`src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`) is
+built and tested: `CanonicalFibMapEvidenceV1` (a narrow, explicit
+caller-supplied canonical map evidence contract mirroring existing
+native-map field names, no parallel geometry), pure
+`build_fib_map_bound_trade_v1_from_first_fill` (deterministic `binding_id`,
+`bound_ts_utc` always the fill's own `occurred_ts_utc`, fail-closed on
+identity mismatch / non-BUY source fill / stale or future map evidence), and
+`bind_fib_map_bound_trade_on_first_fill_v1` which persists through the
+unchanged B6 repository. First-fill/no-rebind semantics are enforced
+entirely by B6's existing unique keys, not re-implemented in B7. The full
+target ladder is frozen verbatim -- B7 never filters to currently-active or
+unconsumed targets. See
+`docs/architecture/fib_map_bound_trade_first_fill_binding_adapter_v1.md`.
+**B8 remains BLOCKED** -- B7 only closes the construct+persist path from a
+real `StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`; it does not
+and cannot produce the real automatic-BUY PAPER fill B8's harness needs,
+because B5.5's PAPER order-placement adapter is explicitly
+submission-time-only and never returns `FILLED` -- there is still no
+`ACTIVE -> FILLED` PAPER reconciliation anywhere in the shared executor
+handoff path. Do not treat B7 as unblocking B8.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -70,6 +97,11 @@ not-yet-started phases.
   first-fill, idempotent replay) + `load_by_binding_id` / `load_by_lineage` /
   `load_by_source_fill` against the existing
   `db/migrations/20260906_fib_map_bound_trade_v1.sql` unique keys.
+- B7 `src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`
+  — `build_fib_map_bound_trade_v1_from_first_fill` / `bind_fib_map_bound_trade_on_first_fill_v1`.
+  Constructs and persists one `FibMapBoundTradeV1` from a real
+  `StrategyOwnedInventoryEventV1` (B5) plus caller-supplied
+  `CanonicalFibMapEvidenceV1`, through the unchanged B6 repository.
 
 The B1→B2→B3 chain, given a `FibMapBoundTradeV1` and a
 `StrategyOwnedInventoryPositionV1`, already produces a correct, idempotent,
@@ -167,9 +199,10 @@ the existing B1/B2/B3 unit tests already prove).
    (insert-at-first-fill, load-by-lineage) matching the existing migration's
    unique keys. Independent of B5.5.~~ DONE, see
    `src/decision_gate/fib_map_bound_trade_repository_v1.py`.
-4. `#753 B7` — adapter that constructs a `FibMapBoundTradeV1` from a
+4. ~~`#753 B7` — adapter that constructs a `FibMapBoundTradeV1` from a
    strategy-owned inventory position + canonical Fib map evidence at first
-   fill, using B4-B6.
+   fill, using B4-B6.~~ DONE, see
+   `src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`.
 5. `#753 B8` — the exact-path PAPER acceptance harness this task was asked to
    build, once B7 gives it a real (not fabricated) identity bridge to
    exercise end-to-end.
