@@ -176,12 +176,12 @@ class FibMapBoundTradeRepositoryV1:
             binding.trade_id, binding.source_execution_plan_id, binding.source_buy_fill_id,
             binding.native_map_id, binding.map_cycle_id, binding.map_structure_hash,
             binding.map_source_name, binding.map_source_version,
-            binding.map_asof_ts_utc, binding.map_published_at_utc,
-            binding.anchor_start_ts_utc, binding.anchor_end_ts_utc,
+            _aware_utc(binding.map_asof_ts_utc), _aware_utc(binding.map_published_at_utc),
+            _aware_utc(binding.anchor_start_ts_utc), _aware_utc(binding.anchor_end_ts_utc),
             binding.anchor_low_price, binding.anchor_high_price,
             binding.breakout_gate_price, binding.invalidation_price,
             _encode_target_levels(binding.target_levels),
-            binding.target_ladder_semantics_version, binding.bound_ts_utc,
+            binding.target_ladder_semantics_version, _aware_utc(binding.bound_ts_utc),
         )
         try:
             with self.cursor_factory(commit=True) as db_obj:

@@ -9,7 +9,7 @@ No real DB, no broker, no execution.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -242,6 +242,30 @@ def test_target_levels_decimal_fidelity_round_trips_through_json():
     assert loaded is not None
     assert loaded.target_levels == binding.target_levels
     assert all(isinstance(level, Decimal) for level in loaded.target_levels)
+
+
+def test_non_utc_offset_timestamps_normalize_before_insert_and_replay_idempotently():
+    repo, database = make_repository()
+    plus_two = timezone(timedelta(hours=2))
+    local_time = datetime(2026, 9, 6, 11, 45, tzinfo=plus_two)
+    binding = _binding(
+        map_asof_ts_utc=local_time, map_published_at_utc=local_time,
+        anchor_start_ts_utc=local_time, anchor_end_ts_utc=local_time, bound_ts_utc=local_time,
+    )
+
+    first = repo.record_fib_map_bound_trade_v1(binding=binding)
+    persisted = database.by_binding_id["bind-1"]
+    for column in (
+        "map_asof_ts_utc", "map_published_at_utc", "anchor_start_ts_utc",
+        "anchor_end_ts_utc", "bound_ts_utc",
+    ):
+        assert persisted[column] == NOW
+
+    replay = repo.record_fib_map_bound_trade_v1(binding=binding)
+    assert replay == _binding()
+    loaded = repo.load_by_binding_id(binding_id="bind-1")
+    assert loaded == _binding()
+    assert first == binding
 
 
 def test_naive_persisted_timestamps_are_restored_as_utc_aware():
