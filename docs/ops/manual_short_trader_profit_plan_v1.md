@@ -531,3 +531,22 @@ db_writes=0
 db_reads=0
 executor=none
 ```
+
+
+### Native ladder exhausted at live price: independent navigation references
+
+An AVAILABLE native SHORT map may retain an active target until closed 4h
+candles confirm its completion, while the current price has already exceeded
+that ladder. Profit Plan independently reads a fresh persisted canonical 4h
+navigation map for this case (issue #760). It does not rebuild a swing or
+change native lifecycle truth to obtain those reference levels.
+
+The reader validates venue, symbol, quote, interval, source freshness, source
+candle/as-of age, supported direction, map/publication identity, and finite
+ordered geometry. Targets above current price and retracements below it can
+be shown through the existing NAVIGATION_ONLY presentation. Native evidence
+keeps its native map/cycle identity; planning provenance and navigation JSON
+identify the separate canonical map and as-of, with publication ID in the
+navigation payload. These references do not authorize orders, make Actionable
+PPP eligible, or create missing-order prompts. With no usable navigation map,
+the existing unavailable/waiting behavior remains.

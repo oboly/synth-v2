@@ -539,3 +539,113 @@ def test_html_and_json_expose_identical_provenance_semantics() -> None:
     json_provenance = snapshot["symbols"][0]["planning_provenance"]
     assert json_provenance["reference_source"] == ref_match.group(1)
     assert json_provenance["is_hybrid_reference_only"] is True
+
+
+# Refs #760: live spot exhausted the native ladder before closed-4h completion.
+_ARB_NOW = datetime(2026, 9, 6, 0, 0, tzinfo=UTC)
+
+
+def _arb_canonical_navigation_row():
+    return {
+        "symbol": "ARB", "venue": "bitvavo", "quote_currency": "EUR",
+        "map_id": 5227, "publication_id": "fibnav-verified-arb",
+        "interval_code": "4h", "asof_ts_utc": datetime(2026, 9, 5, 20, tzinfo=UTC),
+        "input_latest_candle_ts_utc": datetime(2026, 9, 5, 20, tzinfo=UTC),
+        "source_freshness_state": "FRESH", "map_status": "EMERGENCY_REBUILT",
+        "current_leg": "UP", "anchor_low_price": Decimal("0.11126"),
+        "anchor_high_price": Decimal("0.12913"), "entry_zone_low": Decimal("0.11808634"),
+        "entry_zone_high": Decimal("0.12230366"), "entry_zone_mid": Decimal("0.120195"),
+        "support_reaction_zone_low": Decimal("0.11508418"),
+        "support_reaction_zone_high": Decimal("0.11808634"),
+        "target_t1": Decimal("0.13399064"), "target_t2": Decimal("0.14017366"),
+        "target_extension": Decimal("0.15804366"), "invalidation_level": Decimal("0.11126"),
+    }
+
+
+def _arb_navigation_card(tmp_path, canonical_row):
+    native = replace(
+        _native_short_row(symbol="ARB"),
+        anchor_low_price=Decimal("0.07177"), anchor_high_price=Decimal("0.10323"),
+        breakout_gate_price=Decimal("0.10323"),
+        ext_1_272_price=Decimal("0.11178712"), ext_1_618_price=Decimal("0.12267228"),
+        ext_2_000_price=Decimal("0.13469"), active_target_levels=(Decimal("0.13469"),),
+        reload_r382_price=Decimal("0.09121228"), reload_r500_price=Decimal("0.0875"),
+        reload_r618_price=Decimal("0.08378772"), reload_r786_price=Decimal("0.07850244"),
+        latest_primary_close_ts_utc=datetime(2026, 9, 5, 20, tzinfo=UTC),
+        latest_support_close_ts_utc=datetime(2026, 9, 5, 23, tzinfo=UTC),
+    )
+    paths = write_context_rows(rows=[native], output_dir=tmp_path / "native")
+    loaded = profit_plan_runner.load_zone_contexts(
+        markets=["ARB-EUR"], prices={"ARB-EUR": Decimal("0.1535")},
+        swing_anchors={}, recent_lows={}, native_short_rows_path=paths["rows_csv"],
+        fib_map_rows_path=_empty_fib_map_rows(str(tmp_path)), now_utc=_ARB_NOW,
+        native_short_snapshot_status="loaded", native_short_snapshot_id="verified-arb",
+        canonical_fib_rows_by_symbol={"ARB": canonical_row} if canonical_row else {},
+    )
+    cards = profit_plan_runner.build_cards(
+        ["ARB-EUR"], {"ARB-EUR": Decimal("0.1535")}, {"ARB-EUR": "FRESH"},
+        {"ARB-EUR": Decimal("0.1")}, loaded.input_status_by_symbol,
+        loaded.coverage_status_by_symbol, loaded.display_state_by_symbol,
+        loaded.fib_ext_by_symbol, loaded.reentry_by_symbol, {}, {},
+        prior_map_meta_by_symbol=loaded.prior_map_meta_by_symbol,
+        canonical_nav_by_symbol=loaded.canonical_nav_by_symbol,
+        inclusion_reasons_by_market={"ARB-EUR": frozenset({"POSITION_HELD"})},
+        now_utc=_ARB_NOW, evidence_by_symbol=loaded.evidence_by_symbol,
+        planning_provenance_by_symbol=loaded.planning_provenance_by_symbol,
+    )
+    return loaded, cards[0]
+
+
+def test_arb_active_native_map_does_not_hide_fresh_canonical_navigation(tmp_path):
+    loaded, card = _arb_navigation_card(tmp_path, _arb_canonical_navigation_row())
+    assert loaded.prior_map_meta_by_symbol == {}  # native top is still active
+    assert loaded.reentry_by_symbol["ARB"].r500_price == Decimal("0.0875")
+    assert card.evidence.lifecycle_state == "ACTIVE_4H_EXTENSION"
+    assert card.evidence.map_cycle_id == "ARB|SHORT|4h|demo"
+    assert card.reload_reentry_zone == tuple(map(Decimal, ("0.12230366", "0.120195", "0.11808634", "0.11508418")))
+    assert card.target_exit_zone == (Decimal("0.15804366"),)
+    assert card.action_label == "NAVIGATION_ONLY"
+    assert card.planning_provenance.reference_source == pp.PLANNING_SOURCE_CANONICAL_4H_NAVIGATION
+    assert "2026-09-05" in card.planning_provenance.source_as_of_ts_utc
+    assert card.planning_provenance.source_map_id == "5227"
+    snapshot = build_json_snapshot([card], broker_mode="db_snapshot")["symbols"][0]
+    assert snapshot["fib_nav_context"]["source_publication_id"] == "fibnav-verified-arb"
+    assert "0.122304" in render_plan_card(card)
+    assert "0.115084" in render_plan_card(card)
+    assert pp._planning_ppp(card) is not None
+    assert not pp._actionable_ppp_eligible(card)
+    assert "LADDER_MISSING" not in card.ladder_states
+    assert card.presentation_mode == "POSITION_HELD"
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    # Only historical native misses remain; no navigation order suggestions.
+    assert card.order_summary.missing_suggested == ("missed sell level @ 0.10323", "missed sell level @ 0.13469")
+    assert "0.158044" in render_plan_card(card, monitor_link="") or "0.15804366" in render_plan_card(card, monitor_link="")
+
+
+def test_arb_without_canonical_navigation_keeps_waiting(tmp_path):
+    _, card = _arb_navigation_card(tmp_path, None)
+    assert card.reload_reentry_zone == ()
+    assert card.fib_nav_context is None
+    assert card.action_label == "WAIT_FOR_NEW_MAP"
+
+
+def test_arb_canonical_navigation_rejects_stale_or_incoherent_evidence(tmp_path):
+    changes = (
+        {"symbol": "ETH"}, {"venue": "other"}, {"quote_currency": "USD"},
+        {"interval_code": "1h"}, {"source_freshness_state": "STALE"},
+        {"map_status": "NO_DATA"},
+        {"asof_ts_utc": datetime(2026, 9, 4, tzinfo=UTC)},
+        {"asof_ts_utc": datetime(2026, 9, 7, tzinfo=UTC)},
+        {"input_latest_candle_ts_utc": datetime(2026, 9, 4, tzinfo=UTC)},
+        {"input_latest_candle_ts_utc": None},
+        {"target_extension": Decimal("NaN")}, {"anchor_high_price": Decimal("0.01")},
+        {"current_leg": "UNKNOWN"}, {"map_id": None}, {"publication_id": None},
+        {"target_t2": Decimal("0.17")}, {"invalidation_level": Decimal("0.15")},
+        {"entry_zone_high": Decimal("0.2")},
+        {"input_latest_candle_ts_utc": datetime(2026, 9, 5, 21, tzinfo=UTC)},
+    )
+    for index, change in enumerate(changes):
+        _, card = _arb_navigation_card(tmp_path / str(index), {**_arb_canonical_navigation_row(), **change})
+        assert card.fib_nav_context is None, change
+        assert card.reload_reentry_zone == (), change
+        assert card.action_label == "WAIT_FOR_NEW_MAP", change
