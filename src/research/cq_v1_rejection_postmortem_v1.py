@@ -204,30 +204,38 @@ def _jaccard(a: set[str], b: set[str]) -> float | None:
     return None if not union else len(a & b) / len(union)
 
 
-def bucket_stability_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Measure adjacent-asof stability of candidate top/bottom ranked deciles."""
-    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    for r in paired:
-        grouped[(r['split'], r['horizon'], r['asof_ts_utc'])].append(r)
+def bucket_stability_rows(population: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Measure adjacent-asof bucket stability from frozen score population only.
+
+    Outcome completion is deliberately irrelevant: bucket membership is defined by
+    score-eligible frozen observations, not by whether a forward label completed.
+    """
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for r in population:
+        scores = r.get('scores') if isinstance(r.get('scores'), dict) else core.score_values(r)
+        grouped[(str(r['split']), str(r['asof_ts_utc']))].append({
+            'observation_id': str(r['observation_id']),
+            'asset_id': int(r['asset_id']),
+            'scores': scores,
+        })
     out: list[dict[str, Any]] = []
     for split in SPLITS:
-        for horizon in HORIZONS:
-            asofs = sorted(a for (sp, h, a) in grouped if sp == split and h == horizon)
-            for candidate in CANDIDATES:
-                prev_asof: str | None = None
-                prev_lo: set[str] = set()
-                prev_hi: set[str] = set()
-                for asof in asofs:
-                    lo, hi = _bucket_members(grouped[(split, horizon, asof)], candidate)
-                    if prev_asof is not None:
-                        out.append({
-                            'split': split, 'horizon': horizon, 'candidate': candidate,
-                            'previous_asof_ts_utc': prev_asof, 'asof_ts_utc': asof,
-                            'bottom_bucket_n': len(lo), 'top_bucket_n': len(hi),
-                            'bottom_jaccard': _jaccard(prev_lo, lo),
-                            'top_jaccard': _jaccard(prev_hi, hi),
-                        })
-                    prev_asof, prev_lo, prev_hi = asof, lo, hi
+        asofs = sorted(a for (sp, a) in grouped if sp == split)
+        for candidate in CANDIDATES:
+            prev_asof: str | None = None
+            prev_lo: set[str] = set()
+            prev_hi: set[str] = set()
+            for asof in asofs:
+                lo, hi = _bucket_members(grouped[(split, asof)], candidate)
+                if prev_asof is not None:
+                    out.append({
+                        'split': split, 'candidate': candidate,
+                        'previous_asof_ts_utc': prev_asof, 'asof_ts_utc': asof,
+                        'bottom_bucket_n': len(lo), 'top_bucket_n': len(hi),
+                        'bottom_jaccard': _jaccard(prev_lo, lo),
+                        'top_jaccard': _jaccard(prev_hi, hi),
+                    })
+                prev_asof, prev_lo, prev_hi = asof, lo, hi
     return out
 
 

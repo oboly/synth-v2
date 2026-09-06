@@ -75,16 +75,21 @@ def test_asset_concentration_reports_top_share_and_hhi():
     assert got['asset_hhi'] == pytest.approx((2 / 3) ** 2 + (1 / 3) ** 2)
 
 
-def test_bucket_stability_tracks_asset_membership_not_observation_identity():
-    rows = []
+def test_bucket_stability_tracks_population_membership_independent_of_outcomes():
+    population = []
     for asof, suffix in [('2026-01-01', 'a'), ('2026-01-02', 'b')]:
         for i in range(10):
-            rows.append(row(f'{suffix}{i}', asof, 'discovery', '1h', i, i, i, i, asset_id=i + 1))
-    got = p.bucket_stability_rows(rows)
-    balanced = [r for r in got if r['candidate'] == 'cq_v1_balanced' and r['split'] == 'discovery' and r['horizon'] == '1h']
+            population.append(row(f'{suffix}{i}', asof, 'discovery', '1h', i, i, i, i, asset_id=i + 1))
+    # Simulate incomplete outcome coverage by noting that only the low half would
+    # have COMPLETE labels; bucket construction never receives that filtered set.
+    incomplete_outcome_ids = {f'a{i}' for i in range(5)} | {f'b{i}' for i in range(5)}
+    assert len(incomplete_outcome_ids) == 10
+    got = p.bucket_stability_rows(population)
+    balanced = [r for r in got if r['candidate'] == 'cq_v1_balanced' and r['split'] == 'discovery']
     assert len(balanced) == 1
     assert balanced[0]['top_jaccard'] == 1.0
     assert balanced[0]['bottom_jaccard'] == 1.0
+    assert 'horizon' not in balanced[0]
 
 
 def test_stratified_rows_pool_multiple_asofs_with_same_mrp_state():

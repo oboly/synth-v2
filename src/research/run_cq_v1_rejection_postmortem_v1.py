@@ -53,7 +53,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     paired = post.pair_rows(population, outcomes)
     per_asof = post.per_asof_rows(paired)
     stratified = post.stratified_rows(paired)
-    buckets = post.bucket_stability_rows(paired)
+    buckets = post.bucket_stability_rows(population)
     coverage = post.coverage_missingness_rows(paired)
     concentration = post.asset_concentration_rows(paired)
     summary = post.summarize(per_asof)
