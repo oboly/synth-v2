@@ -285,6 +285,18 @@ def test_missing_market_evidence_fails_closed_without_reconciliation() -> None:
     assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
 
 
+def test_non_post_only_plan_is_rejected_before_submission() -> None:
+    base = _plan()
+    non_post_only_leg = replace(base.legs[0], post_only=False)
+    plan = replace(base, legs=(non_post_only_leg,))
+    handoff = _handoff(base)
+    leg_repository = MemoryLegRepository()
+
+    with pytest.raises(AutomaticBuyPaperFillExecutionError, match="PLAN_LEG_NOT_POST_ONLY"):
+        _run(plan, handoff, leg_repository=leg_repository)
+
+    assert leg_repository.rows == {}
+
 def test_non_paper_handoff_is_rejected_before_any_submission() -> None:
     plan = _plan()
     handoff = _handoff(plan, executor_mode="DRY_RUN")

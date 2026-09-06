@@ -129,6 +129,8 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
     """
     if plan.side != SIDE_BUY:
         raise AutomaticBuyPaperFillExecutionError("PLAN_SIDE_NOT_BUY")
+    if any(leg.post_only is not True for leg in plan.legs):
+        raise AutomaticBuyPaperFillExecutionError("PLAN_LEG_NOT_POST_ONLY")
     if handoff.executor_mode != RUNTIME_MODE_PAPER:
         raise AutomaticBuyPaperFillExecutionError("HANDOFF_NOT_PAPER_MODE")
 
