@@ -1,15 +1,15 @@
-# Issue #753 — exact-path PAPER acceptance: technically PASS pending PR #806 merge
+# Issue #753 — exact-path PAPER acceptance: technically complete
 
 ## Status
 
 B5.5, B6, B7, B7.5, and B7.6 are resolved and merged. B8 is now built and
 run on PR #806 using the exact production PAPER paths for BUY and SELL fill
-reconciliation, with all ten #753 acceptance cases covered. The current B8
-head is **technically PASS**: canonical + adjacent suite 146 passed, no direct
+reconciliation, with all ten #753 acceptance cases covered. The final B8
+head passed canonical + adjacent acceptance with 146 tests, no direct
 fill-reconciliation/inventory-event shortcut remains in the acceptance test,
-and no LIVE/broker/wallet authority is activated. #753 must not be treated as
-technically complete until PR #806 itself clears final review and is merged.
-See Updates 5-7 below for the progression and exact evidence.
+and no LIVE/broker/wallet authority is activated. PR #806 merged as
+`e3872373b5c611afa35adb2fc7b7279bedfdd7bb`; #753 is therefore technically
+complete. See Updates 5-7 below for the progression and exact evidence.
 
 **Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
 by Phase B4, see
