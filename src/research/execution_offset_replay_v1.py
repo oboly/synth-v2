@@ -168,11 +168,11 @@ def replay_episode(
     mfe = mae = None
     if fill_ts is not None and post_fill:
         if episode.side == SIDE_BUY:
-            mfe = (max(c.high_price for c in post_fill) - execution_price) / execution_price * Decimal("100")
-            mae = (execution_price - min(c.low_price for c in post_fill)) / execution_price * Decimal("100")
+            mfe = max(Decimal("0"), (max(c.high_price for c in post_fill) - execution_price) / execution_price * Decimal("100"))
+            mae = max(Decimal("0"), (execution_price - min(c.low_price for c in post_fill)) / execution_price * Decimal("100"))
         else:
-            mfe = (execution_price - min(c.low_price for c in post_fill)) / execution_price * Decimal("100")
-            mae = (max(c.high_price for c in post_fill) - execution_price) / execution_price * Decimal("100")
+            mfe = max(Decimal("0"), (execution_price - min(c.low_price for c in post_fill)) / execution_price * Decimal("100"))
+            mae = max(Decimal("0"), (max(c.high_price for c in post_fill) - execution_price) / execution_price * Decimal("100"))
 
     return ExecutionOffsetReplayRowV1(
         episode_id=episode.episode_id, policy_id=policy.policy_id, policy_version=policy.version,

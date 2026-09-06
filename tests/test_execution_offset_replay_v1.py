@@ -112,3 +112,21 @@ def test_excursions_exclude_fill_candle() -> None:
     assert row.filled is True
     assert row.max_favorable_excursion_pct == Decimal("1")
     assert row.max_adverse_excursion_pct == Decimal("1")
+
+
+def test_sell_excursions_include_zero_baseline() -> None:
+    row = replay_episode(
+        episode(), [candle(1, "100", "100"), candle(2, "101", "102")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.max_favorable_excursion_pct == Decimal("0")
+    assert row.max_adverse_excursion_pct == Decimal("2")
+
+
+def test_buy_excursions_include_zero_baseline() -> None:
+    row = replay_episode(
+        episode(SIDE_BUY), [candle(1, "100", "100"), candle(2, "98", "99")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.max_favorable_excursion_pct == Decimal("0")
+    assert row.max_adverse_excursion_pct == Decimal("2")
