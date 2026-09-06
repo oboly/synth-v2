@@ -47,6 +47,14 @@ class MemoryPlacementRepository:
         self.rows[key] = {"side": side, "price": price, "quantity": quantity, "ack": ack}
         return ack
 
+    def recover_existing_placement(self, *, market, client_order_id, side, price, quantity):
+        row = self.rows.get((market, client_order_id))
+        if row is None:
+            return None
+        if (row["side"], row["price"], row["quantity"]) != (side, price, quantity):
+            raise PaperOrderPlacementConflictError("PAPER_ORDER_CLIENT_ORDER_ID_IDENTITY_CONFLICT")
+        return row["ack"]
+
     def find_order_by_client_order_id(self, *, market, client_order_id):
         row = self.rows.get((market, client_order_id))
         return None if row is None else row["ack"]
@@ -177,6 +185,20 @@ def test_find_order_recovers_acknowledged_rejected_order() -> None:
     assert recovered is not None
     assert recovered.state == BrokerAckStateV1.REJECTED
     assert recovered.broker_order_id is None
+
+
+def test_replay_recovers_existing_active_before_missing_or_stale_quote_validation() -> None:
+    repository = MemoryPlacementRepository()
+    fresh = PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
+    first = _place(_adapter(fresh, placement_repository=repository), side="BUY", price=Decimal("100"))
+    assert first.state == BrokerAckStateV1.ACTIVE
+
+    missing_replay = _place(_adapter(None, placement_repository=repository), side="BUY", price=Decimal("100"))
+    assert missing_replay == first
+
+    stale = PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=120))
+    stale_replay = _place(_adapter(stale, placement_repository=repository), side="BUY", price=Decimal("100"))
+    assert stale_replay == first
 
 
 def test_replaying_the_same_client_order_id_is_idempotent() -> None:

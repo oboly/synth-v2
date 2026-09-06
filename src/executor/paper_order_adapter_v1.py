@@ -123,6 +123,10 @@ class PaperOrderPlacementRepository(Protocol):
         ack: OrderAckV1,
     ) -> OrderAckV1: ...
 
+    def recover_existing_placement(
+        self, *, market: str, client_order_id: str, side: str, price: Decimal, quantity: Decimal
+    ) -> OrderAckV1 | None: ...
+
     def find_order_by_client_order_id(
         self, *, market: str, client_order_id: str
     ) -> OrderAckV1 | None: ...
@@ -193,6 +197,11 @@ class PaperOrderPlacementAdapterV1:
         del operator_id
         if side not in (SIDE_BUY, SIDE_SELL):
             raise ValueError("side must be BUY or SELL")
+        existing = self.placement_repository.recover_existing_placement(
+            market=market, client_order_id=client_order_id, side=side, price=price, quantity=quantity
+        )
+        if existing is not None:
+            return existing
         quote = self.quote_provider.latest_quote(market=market)
         if quote is None:
             raise PaperMarketEvidenceUnavailableError("PAPER_MARKET_EVIDENCE_MISSING")

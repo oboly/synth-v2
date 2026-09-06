@@ -137,6 +137,19 @@ class PaperOrderPlacementRepositoryV1:
                 ) from None
             return _row_to_ack(row)
 
+
+    def recover_existing_placement(
+        self, *, market: str, client_order_id: str, side: str, price: Decimal, quantity: Decimal
+    ) -> OrderAckV1 | None:
+        row = self._find_row(market=market, client_order_id=client_order_id)
+        if row is None:
+            return None
+        if not _same_identity(row, side=side, price=price, quantity=quantity):
+            raise PaperOrderPlacementConflictError(
+                "PAPER_ORDER_CLIENT_ORDER_ID_IDENTITY_CONFLICT"
+            )
+        return _row_to_ack(row)
+
     def find_order_by_client_order_id(
         self, *, market: str, client_order_id: str
     ) -> OrderAckV1 | None:

@@ -203,6 +203,14 @@ class MemoryPlacementRepository:
         self.rows[key] = {"side": side, "price": price, "quantity": quantity, "ack": ack}
         return ack
 
+    def recover_existing_placement(self, *, market, client_order_id, side, price, quantity):
+        row = self.rows.get((market, client_order_id))
+        if row is None:
+            return None
+        if (row["side"], row["price"], row["quantity"]) != (side, price, quantity):
+            raise PaperOrderPlacementConflictError("PAPER_ORDER_CLIENT_ORDER_ID_IDENTITY_CONFLICT")
+        return row["ack"]
+
     def find_order_by_client_order_id(self, *, market, client_order_id):
         row = self.rows.get((market, client_order_id))
         return None if row is None else row["ack"]
