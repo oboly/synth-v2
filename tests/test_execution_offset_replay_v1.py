@@ -60,6 +60,35 @@ def test_sell_near_miss_exact_but_static_buffer_fills() -> None:
     assert buffered.near_miss_distance_pct is None
 
 
+
+def test_sell_target_exit_allows_invalidation_below_execution_price() -> None:
+    target_exit = replace(episode(SIDE_SELL), invalidation_price=Decimal("90"))
+    row = replay_episode(
+        target_exit, [candle(1, "95", "100")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.filled is True
+    assert row.invalidated_before_fill is False
+
+
+def test_buy_target_exit_allows_invalidation_above_execution_price() -> None:
+    target_exit = replace(episode(SIDE_BUY), invalidation_price=Decimal("110"))
+    row = replay_episode(
+        target_exit, [candle(1, "100", "105")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.filled is True
+    assert row.invalidated_before_fill is False
+
+
+def test_candidate_execution_price_cannot_cross_invalidation_barrier() -> None:
+    target_exit = replace(episode(SIDE_SELL), invalidation_price=Decimal("99.5"))
+    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_GEOMETRY"):
+        replay_episode(
+            target_exit, [candle(1, "95", "100")],
+            ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("0.01")),
+        )
+
 def test_same_candle_sell_fill_and_invalidation_is_ambiguous() -> None:
     row = replay_episode(
         episode(), [candle(1, "95", "111")],
@@ -178,15 +207,15 @@ def test_overlapping_forward_candles_fail_closed() -> None:
         replay_episode(episode(), [first, second], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
 
 
-def test_buy_invalidation_must_be_below_execution_price() -> None:
+def test_invalidation_cannot_equal_canonical_level_for_buy() -> None:
     bad = replace(episode(SIDE_BUY), invalidation_price=Decimal("100"))
-    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_DIRECTION"):
+    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_GEOMETRY"):
         replay_episode(bad, [candle(1, "99", "101")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
 
 
-def test_sell_invalidation_must_be_above_execution_price() -> None:
+def test_invalidation_cannot_equal_canonical_level_for_sell() -> None:
     bad = replace(episode(SIDE_SELL), invalidation_price=Decimal("100"))
-    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_DIRECTION"):
+    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_GEOMETRY"):
         replay_episode(bad, [candle(1, "99", "101")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
 
 
