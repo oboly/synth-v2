@@ -135,9 +135,16 @@ class _Connection:
 def test_fetch_uses_exact_market_keys_and_never_reads_legacy_view():
     conn = _Connection()
 
-    rows = runner.fetch_quality_rows(conn, venue="bitvavo", now_utc=NOW)
+    progress_events = []
+    rows = runner.fetch_quality_rows(
+        conn,
+        venue="bitvavo",
+        now_utc=NOW,
+        progress=lambda *event: progress_events.append(event),
+    )
 
     assert len(rows) == 3
+    assert progress_events == [(1, 1, 3, 9)]
     sql_text = "\n".join(sql for sql, _params in conn.cur.calls)
     assert "v_asset_interval_quality" not in sql_text
     candle_calls = [
@@ -162,13 +169,20 @@ def test_fetch_uses_exact_market_keys_and_never_reads_legacy_view():
 def test_main_emits_flushed_phase_and_single_finished_summary(monkeypatch, capsys):
     conn = _Connection()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
-    monkeypatch.setattr(runner, "fetch_quality_rows", lambda *_args, **_kwargs: [])
+
+    def fetch_with_progress(*_args, **kwargs):
+        kwargs["progress"](1, 1, 0, 1)
+        return []
+
+    monkeypatch.setattr(runner, "fetch_quality_rows", fetch_with_progress)
 
     assert runner.main(["--output", "none"]) == 0
 
     output = capsys.readouterr().out
     assert output.count("STARTED runner=asset_interval_quality_snapshot") == 1
     assert output.count("PHASE_START runner=asset_interval_quality_snapshot") == 1
+    assert output.count("PROGRESS runner=asset_interval_quality_snapshot") == 1
+    assert "assets=1/1 rows=0 query_count=1" in output
     assert output.count("PHASE_END runner=asset_interval_quality_snapshot") == 1
     assert output.count("FINISHED runner=asset_interval_quality_snapshot") == 1
     assert "FAILED runner=" not in output

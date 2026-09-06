@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
@@ -288,6 +289,7 @@ def fetch_quality_rows(
     *,
     venue: str,
     now_utc: datetime | None = None,
+    progress: Callable[[int, int, int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Calculate v3-compatible rows with index-bounded per-market windows.
 
@@ -299,11 +301,19 @@ def fetch_quality_rows(
     rows: list[dict[str, Any]] = []
     with conn.cursor() as cur:
         cur.execute("SELECT asset_id FROM asset WHERE is_enabled = 1 ORDER BY asset_id")
+        query_count = 1
         asset_ids = [int(row["asset_id"]) for row in cur.fetchall()]
-        for asset_id in asset_ids:
+        asset_total = len(asset_ids)
+
+        def execute(sql: str, params: tuple[Any, ...]) -> None:
+            nonlocal query_count
+            cur.execute(sql, params)
+            query_count += 1
+
+        for asset_index, asset_id in enumerate(asset_ids, start=1):
             for interval_code in _INTERVALS:
                 key_params = (asset_id, interval_code, venue)
-                cur.execute(
+                execute(
                     """
                     SELECT open_ts_utc, close_ts_utc
                     FROM obs_market_candle
@@ -315,7 +325,7 @@ def fetch_quality_rows(
                     key_params,
                 )
                 first = cur.fetchone()
-                cur.execute(
+                execute(
                     """
                     SELECT open_ts_utc, close_ts_utc
                     FROM obs_market_candle
@@ -329,7 +339,7 @@ def fetch_quality_rows(
                 latest = cur.fetchone()
                 latest_close = None
                 if latest is not None:
-                    cur.execute(
+                    execute(
                         """
                         SELECT close_ts_utc
                         FROM obs_market_candle
@@ -344,7 +354,7 @@ def fetch_quality_rows(
                 open_times: list[datetime] = []
                 if latest is not None:
                     latest_open = latest["open_ts_utc"]
-                    cur.execute(
+                    execute(
                         """
                         SELECT open_ts_utc
                         FROM obs_market_candle
@@ -380,6 +390,10 @@ def fetch_quality_rows(
                         open_times=open_times,
                     )
                 )
+            if progress is not None and (
+                asset_index % 50 == 0 or asset_index == asset_total
+            ):
+                progress(asset_index, asset_total, len(rows), query_count)
     return rows
 
 
@@ -562,7 +576,26 @@ def main(argv: list[str] | None = None) -> int:
             f"PHASE_START runner={ENGINE_NAME} phase=fetch_quality_rows",
             flush=True,
         )
-        rows = fetch_quality_rows(conn, venue=args.venue, now_utc=snapshot_ts_utc)
+
+        def report_progress(
+            assets_complete: int,
+            asset_total: int,
+            row_count: int,
+            query_count: int,
+        ) -> None:
+            print(
+                f"PROGRESS runner={ENGINE_NAME} phase=fetch_quality_rows "
+                f"assets={assets_complete}/{asset_total} rows={row_count} "
+                f"query_count={query_count} elapsed={_elapsed(phase_started)}",
+                flush=True,
+            )
+
+        rows = fetch_quality_rows(
+            conn,
+            venue=args.venue,
+            now_utc=snapshot_ts_utc,
+            progress=report_progress,
+        )
         print(
             f"PHASE_END runner={ENGINE_NAME} phase=fetch_quality_rows "
             f"rows={len(rows)} elapsed={_elapsed(phase_started)}",
