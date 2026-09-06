@@ -115,31 +115,41 @@ def _encode_target_levels(target_levels: tuple[Decimal, ...]) -> str:
     return json.dumps([str(level) for level in target_levels])
 
 
+def _required_nonempty_string(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError("expected nonempty string")
+    return value
+
+
 def _decode_target_levels(raw: Any) -> tuple[Decimal, ...]:
     parsed = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-    if not isinstance(parsed, list) or not parsed:
-        raise ValueError("FIB_MAP_TARGET_LEVELS_JSON_NOT_A_NONEMPTY_LIST")
-    return tuple(Decimal(str(item)) for item in parsed)
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or not all(isinstance(item, str) for item in parsed)
+    ):
+        raise ValueError("FIB_MAP_TARGET_LEVELS_JSON_NOT_A_NONEMPTY_STRING_LIST")
+    return tuple(Decimal(item) for item in parsed)
 
 
 def _row_to_binding(row: Any) -> FibMapBoundTradeV1:
     try:
         binding = FibMapBoundTradeV1(
-            binding_id=str(row["binding_id"]),
+            binding_id=_required_nonempty_string(row["binding_id"]),
             trading_account_id=int(row["trading_account_id"]),
-            venue=str(row["venue"]),
-            market=str(row["market"]),
-            strategy_bucket_id=str(row["strategy_bucket_id"]),
-            strategy_id=str(row["strategy_id"]),
-            strategy_version=str(row["strategy_version"]),
-            trade_id=str(row["trade_id"]),
-            source_execution_plan_id=str(row["source_execution_plan_id"]),
-            source_buy_fill_id=str(row["source_buy_fill_id"]),
-            native_map_id=str(row["native_map_id"]),
-            map_cycle_id=str(row["map_cycle_id"]),
-            map_structure_hash=str(row["map_structure_hash"]),
-            map_source_name=str(row["map_source_name"]),
-            map_source_version=str(row["map_source_version"]),
+            venue=_required_nonempty_string(row["venue"]),
+            market=_required_nonempty_string(row["market"]),
+            strategy_bucket_id=_required_nonempty_string(row["strategy_bucket_id"]),
+            strategy_id=_required_nonempty_string(row["strategy_id"]),
+            strategy_version=_required_nonempty_string(row["strategy_version"]),
+            trade_id=_required_nonempty_string(row["trade_id"]),
+            source_execution_plan_id=_required_nonempty_string(row["source_execution_plan_id"]),
+            source_buy_fill_id=_required_nonempty_string(row["source_buy_fill_id"]),
+            native_map_id=_required_nonempty_string(row["native_map_id"]),
+            map_cycle_id=_required_nonempty_string(row["map_cycle_id"]),
+            map_structure_hash=_required_nonempty_string(row["map_structure_hash"]),
+            map_source_name=_required_nonempty_string(row["map_source_name"]),
+            map_source_version=_required_nonempty_string(row["map_source_version"]),
             map_asof_ts_utc=_aware_utc(row["map_asof_ts_utc"]),
             map_published_at_utc=_aware_utc(row["map_published_at_utc"]),
             anchor_start_ts_utc=_aware_utc(row["anchor_start_ts_utc"]),
@@ -149,7 +159,9 @@ def _row_to_binding(row: Any) -> FibMapBoundTradeV1:
             breakout_gate_price=Decimal(str(row["breakout_gate_price"])),
             invalidation_price=Decimal(str(row["invalidation_price"])),
             target_levels=_decode_target_levels(row["target_levels_json"]),
-            target_ladder_semantics_version=str(row["target_ladder_semantics_version"]),
+            target_ladder_semantics_version=_required_nonempty_string(
+                row["target_ladder_semantics_version"]
+            ),
             bound_ts_utc=_aware_utc(row["bound_ts_utc"]),
         )
     except (KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError) as exc:

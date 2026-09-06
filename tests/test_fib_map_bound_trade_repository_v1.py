@@ -226,10 +226,26 @@ def test_malformed_persisted_row_missing_field_fails_closed_on_load():
         repo.load_by_binding_id(binding_id="bind-1")
 
 
+def test_null_persisted_identity_fails_closed_on_load():
+    repo, database = make_repository()
+    repo.record_fib_map_bound_trade_v1(binding=_binding())
+    database.corrupt("bind-1", column="native_map_id", value=None)
+    with pytest.raises(FibMapBoundTradeRepositoryError, match="INVALID_PERSISTED_FIB_MAP_BOUND_TRADE"):
+        repo.load_by_binding_id(binding_id="bind-1")
+
+
 def test_empty_target_levels_json_list_fails_closed_on_load():
     repo, database = make_repository()
     repo.record_fib_map_bound_trade_v1(binding=_binding())
     database.corrupt("bind-1", column="target_levels_json", value=json.dumps([]))
+    with pytest.raises(FibMapBoundTradeRepositoryError, match="INVALID_PERSISTED_FIB_MAP_BOUND_TRADE"):
+        repo.load_by_binding_id(binding_id="bind-1")
+
+
+def test_numeric_target_levels_json_fails_closed_on_load():
+    repo, database = make_repository()
+    repo.record_fib_map_bound_trade_v1(binding=_binding())
+    database.corrupt("bind-1", column="target_levels_json", value=json.dumps([227.2]))
     with pytest.raises(FibMapBoundTradeRepositoryError, match="INVALID_PERSISTED_FIB_MAP_BOUND_TRADE"):
         repo.load_by_binding_id(binding_id="bind-1")
 
