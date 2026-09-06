@@ -384,7 +384,7 @@ def fetch_quality_rows(
                         FROM obs_market_candle
                         FORCE INDEX (idx_omc_asset_interval_venue_open)
                         WHERE asset_id = %s AND interval_code = %s AND venue = %s
-                          AND open_ts_utc > %s AND open_ts_utc <= %s
+                          AND open_ts_utc >= %s AND open_ts_utc <= %s
                         ORDER BY open_ts_utc
                         """,
                         (

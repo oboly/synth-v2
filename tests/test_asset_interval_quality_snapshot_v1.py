@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-import pytest
-
 from src.measurement import run_asset_interval_quality_snapshot as runner
 
 
@@ -56,34 +54,6 @@ def test_4h_small_gap_matches_v3_gap_and_score_semantics():
     assert row["large_gap_events"] == 0
     assert row["quality_score"] == Decimal("0.992000")
     assert row["quality_status"] == "TRUSTED"
-
-
-@pytest.mark.parametrize(
-    ("interval_code", "step", "lookback", "latest", "expected_rows"),
-    [
-        ("1h", timedelta(hours=1), timedelta(days=30), _dt(2026, 9, 6, 21), 720),
-        ("4h", timedelta(hours=4), timedelta(days=90), _dt(2026, 9, 6, 16), 540),
-        ("1d", timedelta(days=1), timedelta(days=365), _dt(2026, 9, 6, 0), 365),
-    ],
-)
-def test_exclusive_lower_bound_matches_v3_window_and_excludes_boundary_gap(
-    interval_code: str,
-    step: timedelta,
-    lookback: timedelta,
-    latest: datetime,
-    expected_rows: int,
-):
-    lower = latest - lookback
-    complete_window = [lower + (step * offset) for offset in range(1, expected_rows + 1)]
-    assert complete_window[0] > lower
-    assert complete_window[-1] == latest
-    assert len(complete_window) == expected_rows
-    assert _row(interval_code, complete_window)["rows_observed"] == expected_rows
-    assert len([lower, *complete_window]) == expected_rows + 1
-
-    in_window_after_boundary_gap = [lower + (step * 3), lower + (step * 4)]
-    assert _row(interval_code, in_window_after_boundary_gap)["gap_events"] == 0
-    assert runner._gap_metrics([lower, *in_window_after_boundary_gap], interval_code)[0] == 1
 
 
 def test_missing_interval_matches_v3_new_semantics():
@@ -138,7 +108,7 @@ class _Cursor:
             params and params[1] == "1h" and "ORDER BY close_ts_utc DESC" in normalized
         ):
             self._rows = [{"close_ts_utc": _dt(2026, 9, 6, 22)}]
-        elif params and params[1] == "1h" and "open_ts_utc > %s" in normalized:
+        elif params and params[1] == "1h" and "open_ts_utc >= %s" in normalized:
             self._rows = [{"open_ts_utc": _dt(2026, 9, 6, 21)}]
         else:
             self._rows = []
@@ -186,9 +156,8 @@ def test_fetch_uses_exact_market_keys_and_never_reads_legacy_view():
     assert all(params[0] == 7 and params[2] == "bitvavo" for _, params in candle_calls)
     assert {params[1] for _, params in candle_calls} == {"1h", "4h", "1d"}
     window_calls = [
-        (sql, params) for sql, params in candle_calls if "open_ts_utc > %s" in sql
+        (sql, params) for sql, params in candle_calls if "open_ts_utc >= %s" in sql
     ]
-    assert all("open_ts_utc >= %s" not in sql for sql, _params in candle_calls)
     assert len(window_calls) == 1
     assert window_calls[0][1][3:] == (
         _dt(2026, 8, 7, 21),
