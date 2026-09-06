@@ -261,3 +261,11 @@ No execution-planner or executor policy was moved or duplicated. No LIVE or
 broker-private path is activated. B8 remains NOT accepted until PR #806 is
 updated to exercise this merged production bridge across all ten acceptance
 cases without test-only ownership mutation.
+
+**B7.6 review hardening:** SELL reduction persistence is atomic and serialized.
+The exact #752 lineage rows are locked `FOR UPDATE`; authorization, reconciliation
+fact append, and optional SELL inventory-event append share one transaction.
+Failure rolls back both writes. Concurrent reductions against the same lineage
+serialize, so the later transaction observes the earlier committed reduction
+before authorization. Regression coverage includes the fact/event crash window
+and competing reductions whose combined quantity exceeds current ownership.

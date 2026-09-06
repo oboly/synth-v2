@@ -36,3 +36,16 @@ cannot over-reduce or cross-sell another strategy bucket.
 
 Safety markers: `broker_private_calls=0`, `broker_writes=0`, `live_orders=0`,
 `wallet_balance_sell_authority=0`, `production_runtime_activation=0`.
+
+## Atomic reduction persistence
+
+The SELL ownership mutation is one transaction. Before reading current #752
+state, the persistence seam takes `SELECT ... FOR UPDATE` on the existing exact
+inventory lineage `(account, venue, market, bucket, strategy, version, trade)`.
+A valid SELL must already have a BUY-owned lineage, so a missing lock row fails
+closed. The lock remains held while current facts/events are loaded, the exact
+SELL delta is authorized, and both the reconciliation fact and optional
+inventory event are appended. Commit occurs only after both writes; any
+exception rolls the entire transaction back. This prevents both the
+fact-without-event crash window and concurrent reductions authorizing against
+the same stale owned quantity.
