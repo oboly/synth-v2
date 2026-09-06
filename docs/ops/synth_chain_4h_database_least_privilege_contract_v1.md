@@ -256,7 +256,7 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | signal state | two `SELECT` statements from `feat_candle JOIN asset`; `UPSERT` `signal_engine_state` | `src/signal_engine/run_signal_state_etl.py:42-143`; `src/engine/write_signal_engine_state.py:51-180` |
 | advice state | three `SELECT` statements from `signal_engine_state`/`asset`; `UPSERT` `advice_state` | `src/advice/run_advice_engine.py:152-276,295-340` |
 | ranking state | three `SELECT` statements from `signal_engine_state`/`asset`/`advice_state`; `INSERT ... ON DUPLICATE KEY UPDATE` `ranking_state` (requires `SELECT` on the target table) | `src/ranking/run_ranking_engine.py:37-198,345-401` |
-| quality snapshot | `SELECT` from `v_asset_interval_quality_v3`; `UPSERT` `asset_interval_quality` | `src/measurement/run_asset_interval_quality_snapshot.py:29-54,57-147` |
+| quality snapshot | exact-key bounded `SELECT` from `asset` + `obs_market_candle`; `UPSERT` `asset_interval_quality` | `src/measurement/run_asset_interval_quality_snapshot.py` |
 | selection state | `SELECT` from `asset_interval_quality`/`signal_engine_state`/`asset`; `UPSERT` `selection_state` | `src/selection/run_selection_engine_v2.py:61-179,369-433` |
 | zone context | `SELECT` from `asset`; `SELECT` from `obs_market_candle` | `src/zone/repository.py:26-101` |
 | zone context | `INSERT ... ON DUPLICATE KEY UPDATE` `fib_observation_v2`; `INSERT ... ON DUPLICATE KEY UPDATE` `zone_observation_v2` (both require `SELECT` on the target table) | `src/zone/repository.py:107-278` |
@@ -312,10 +312,16 @@ sequences, DDL, or administrative statements.
 | `strategy_runtime_snapshot` | no | yes | no | no | runtime metadata append |
 | `trade_setup_filter_observation` | yes | yes | yes | no | filter upsert; policy/advice reads |
 | `trade_setup_policy_preview_observation` | yes | yes | yes | no | policy upsert; advice read |
-| `v_asset_interval_quality_v3` | yes | no | no | no | quality view read |
 | `venue_market` | yes | no | no | no | public tick precision read |
 | `vw_paper_advice_execution_zone_context_v1` | yes | no | no | no | paper-advice zone view read |
 | `zone_observation_v2` | yes | yes | yes | no | zone upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
+
+The quality snapshot no longer reads `v_asset_interval_quality_v3`; it reads only
+exact-key bounded candle windows from `asset` and `obs_market_candle`. The canonical
+authority contract and DBA artifact therefore no longer require that view grant.
+Any obsolete grant already present on a deployed runtime identity must be revoked only
+through a separately authorized production privilege change; this source change does
+not mutate deployed grants.
 
 No table-level `CREATE`, `ALTER`, `DROP`, `INDEX`, `REFERENCES`, `TRIGGER`,
 `EXECUTE`, `LOCK TABLES`, or `GRANT OPTION` is required.

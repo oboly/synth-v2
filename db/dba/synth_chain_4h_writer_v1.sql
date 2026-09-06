@@ -139,9 +139,6 @@ GRANT SELECT, INSERT, UPDATE
     ON `synth`.`trade_setup_policy_preview_observation`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT
-    ON `synth`.`v_asset_interval_quality_v3`
-    TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT SELECT
     ON `synth`.`venue_market`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT
