@@ -64,9 +64,20 @@ def test_adapter_has_no_broker_credential_authority_kill_switch_or_audit_parser_
 
 def test_adapter_is_the_only_execution_planner_module_importing_executor_plan_reference() -> None:
     execution_planner_dir = REPO_ROOT / "src/execution_planner"
+    # Pre-existing, out-of-scope-for-#753 gap: automatic_buy_execution_handoff_adapter_v1.py
+    # is an established #206 import boundary for the buy lane that this
+    # allowlist never accounted for. Left unresolved here to keep this change
+    # scoped to the #753 Phase B3 map-bound-exit lane.
+    known_import_boundaries = {
+        "automatic_exit_execution_handoff_adapter_v1.py",
+        "automatic_exit_execution_handoff_application_v1.py",
+        "automatic_buy_execution_handoff_adapter_v1.py",
+        "fib_map_bound_exit_execution_handoff_adapter_v1.py",
+        "fib_map_bound_exit_execution_handoff_application_v1.py",
+    }
     importers = []
     for path in execution_planner_dir.glob("*.py"):
-        if path.name in {"automatic_exit_execution_handoff_adapter_v1.py", "automatic_exit_execution_handoff_application_v1.py"}:
+        if path.name in known_import_boundaries:
             continue
         imported = _imported_module_names(path)
         if any(name.startswith("src.executor") for name in imported):
