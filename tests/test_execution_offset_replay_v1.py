@@ -64,3 +64,12 @@ def test_future_only_and_invalidated_before_fill() -> None:
 def test_no_forward_candles_fails_closed() -> None:
     with pytest.raises(ExecutionOffsetReplayError, match="NO_FORWARD_CANDLES"):
         replay_episode(episode(), [candle(5, "90", "120")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
+
+
+def test_duplicate_forward_candle_timestamp_fails_closed_independent_of_input_order() -> None:
+    duplicate_a = candle(1, "97", "99.2")
+    duplicate_b = candle(1, "95", "111")
+    policy = ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1")
+    for rows in ([duplicate_a, duplicate_b], [duplicate_b, duplicate_a]):
+        with pytest.raises(ExecutionOffsetReplayError, match="DUPLICATE_FORWARD_CANDLE_TIMESTAMP"):
+            replay_episode(episode(), rows, policy)

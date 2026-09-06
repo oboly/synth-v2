@@ -129,6 +129,9 @@ def replay_episode(
     )
     if not future:
         raise ExecutionOffsetReplayError("NO_FORWARD_CANDLES")
+    close_times = [c.close_ts_utc for c in future]
+    if len(set(close_times)) != len(close_times):
+        raise ExecutionOffsetReplayError("DUPLICATE_FORWARD_CANDLE_TIMESTAMP")
 
     fill_ts: datetime | None = None
     invalidated_before_fill = False
