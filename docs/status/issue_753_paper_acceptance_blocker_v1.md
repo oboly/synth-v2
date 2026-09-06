@@ -2,9 +2,16 @@
 
 ## Status
 
-BLOCKED. Documenting the precise gap instead of inventing a shortcut, per task
-contract and `AGENTS.md` (do not fabricate ownership from wallet balance, do
-not invent parallel logic, do not revive #707/#723).
+BLOCKED for the exact-path PAPER acceptance harness (B8). Documenting the
+precise gap instead of inventing a shortcut, per task contract and
+`AGENTS.md` (do not fabricate ownership from wallet balance, do not invent
+parallel logic, do not revive #707/#723).
+
+**Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
+by Phase B4, see
+`docs/architecture/automatic_buy_trade_lineage_identity_v1.md`. Gaps 3 and 4
+(fill -> ownership wiring, `fib_map_bound_trade_v1` repository) remain open
+for B5/B6.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -35,20 +42,20 @@ There is no reviewed path from a real automatic_buy (#399) PAPER fill to the
 identity that B1/B2 require. Four concrete gaps, each its own architectural
 decision:
 
-1. **`AutomaticBuyPlanV1` carries no `trade_id`.**
-   `src/execution_planner/automatic_buy_planner_v1.py:126-142` — fields are
-   `strategy_id`, `strategy_version`, `setup_id`, but no `trade_id`. B1's
-   lineage key and B2's ownership match both require `trade_id`.
+1. ~~**`AutomaticBuyPlanV1` carries no `trade_id`.**~~ RESOLVED by B4:
+   `AutomaticBuyPlanV1.trade_id` is now bound deterministically by the
+   planner at APPROVED-decision time, per
+   `docs/architecture/automatic_buy_trade_lineage_identity_v1.md`. Note the
+   documented open follow-on: this V1 rule mints a genesis id per accepted
+   decision and does not yet resolve RE_ENTER continuity onto an
+   already-open position — that remains B5's job.
 
-2. **`strategy_bucket_id` is computed at gate time and dropped before the
-   plan.** `src/decision_gate/automatic_buy_gate_v1.py:101,198,272` —
-   `strategy_bucket_id` lives on the gate's context/decision object but is
-   never copied onto `AutomaticBuyPlanV1` or into
-   `automatic_buy_execution_handoff_adapter_v1.py`'s payload. #752's own
-   reconciliation lineage (`StrategyOwnedFillLineageV1`,
-   `src/decision_gate/strategy_owned_fill_reconciliation_v1.py:23-34`)
-   requires exactly this field plus `trade_id` — confirming the gap is real,
-   not incidental.
+2. ~~**`strategy_bucket_id` is computed at gate time and dropped before the
+   plan.**~~ RESOLVED by B4: `AutomaticBuyGateDecisionV1.strategy_bucket_id`
+   is copied exactly from `AutomaticBuyGateContextV1.strategy_bucket_id` on
+   every APPROVED decision, and `AutomaticBuyPlanV1.strategy_bucket_id`
+   copies it again from the decision. Both flow into the shared execution
+   handoff's identity payload.
 
 3. **No code creates a `StrategyOwnedInventoryEventV1` from a BUY fill.**
    `grep -rn "StrategyOwnedInventoryEventV1("` across `src/` matches only
@@ -95,9 +102,10 @@ the existing B1/B2/B3 unit tests already prove).
 
 ## Recommended next bounded slices (for separate review/PRs)
 
-1. `#753 B4` — add `trade_id` + `strategy_bucket_id` to `AutomaticBuyPlanV1`
+1. ~~`#753 B4` — add `trade_id` + `strategy_bucket_id` to `AutomaticBuyPlanV1`
    and the automatic_buy execution handoff payload; document the `trade_id`
-   generation rule.
+   generation rule.~~ DONE, see
+   `docs/architecture/automatic_buy_trade_lineage_identity_v1.md`.
 2. `#753 B5` — wire automatic_buy PAPER fill handling to #752 reconciliation
    so a real fill produces a `StrategyOwnedInventoryEventV1`.
 3. `#753 B6` — add a `fib_map_bound_trade_v1` repository
@@ -111,6 +119,10 @@ the existing B1/B2/B3 unit tests already prove).
    exercise.
 
 ## Safety markers
+
+Markers below are for the original (pre-B4) blocked state. See
+`docs/architecture/automatic_buy_trade_lineage_identity_v1.md` for B4's own
+safety markers.
 
 ```text
 broker_private_calls=0

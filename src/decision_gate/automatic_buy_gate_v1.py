@@ -131,6 +131,11 @@ class AutomaticBuyGateDecisionV1:
     strategy_bucket_reason_code: str | None = None
     protection_reason_code: str | None = None
     protection_code: str | None = None
+    # Issue #753 B4: strategy_bucket_id is copied exactly from the gate's own
+    # account-aware context evidence -- never inferred or recomputed -- so it
+    # survives into AutomaticBuyPlanV1 and the shared execution handoff. Only
+    # populated on APPROVED; a non-approved decision never reaches the planner.
+    strategy_bucket_id: str | None = None
 
 
 def _is_aware(value: datetime) -> bool:
@@ -153,6 +158,7 @@ def _decision(
     *,
     ceiling: Decimal | None = None,
     bucket_reason: str | None = None,
+    strategy_bucket_id: str | None = None,
 ) -> AutomaticBuyGateDecisionV1:
     return AutomaticBuyGateDecisionV1(
         state=state,
@@ -160,6 +166,7 @@ def _decision(
         candidate=candidate,
         approved_notional_ceiling_eur=(ceiling if state == STATE_APPROVED else None),
         strategy_bucket_reason_code=bucket_reason,
+        strategy_bucket_id=(strategy_bucket_id if state == STATE_APPROVED else None),
     )
 
 
@@ -316,6 +323,7 @@ def _evaluate_automatic_buy_candidate_permission_base_v1(
         candidate,
         ceiling=ceiling,
         bucket_reason=bucket_decision.reason_code,
+        strategy_bucket_id=context.strategy_bucket_id,
     )
 
 
@@ -350,6 +358,7 @@ def evaluate_automatic_buy_candidate_permission_v1(
             reason_code=REASON_INVALID_PROTECTION_EVALUATION_BINDING,
             approved_notional_ceiling_eur=None,
             protection_reason_code=REASON_INVALID_PROTECTION_EVALUATION_BINDING,
+            strategy_bucket_id=None,
         )
 
     enriched = replace(
@@ -364,4 +373,5 @@ def evaluate_automatic_buy_candidate_permission_v1(
         state=STATE_DENIED,
         reason_code=protection.reason_code,
         approved_notional_ceiling_eur=None,
+        strategy_bucket_id=None,
     )

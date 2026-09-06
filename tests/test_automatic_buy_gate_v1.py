@@ -136,6 +136,17 @@ def test_healthy_candidate_is_approved_with_account_safe_ceiling_and_preserved_p
     assert result.candidate is candidate
     assert result.approved_notional_ceiling_eur == Decimal("100")
     assert result.reason_code == "OK"
+    assert result.strategy_bucket_id == BUCKET
+
+
+def test_strategy_bucket_id_is_absent_from_non_approved_decisions() -> None:
+    denied = _evaluate(account_enabled=False)
+    assert denied.state == STATE_DENIED
+    assert denied.strategy_bucket_id is None
+
+    non_actionable = _evaluate(trading_account_id=0)
+    assert non_actionable.state == STATE_NON_ACTIONABLE
+    assert non_actionable.strategy_bucket_id is None
 
 
 def test_re_enter_action_is_also_a_valid_candidate_action() -> None:
@@ -149,12 +160,14 @@ def test_manual_lock_denies_buy() -> None:
     result = _evaluate(account_protection_evaluation=_protection(ACTION_BUY, manual=True))
     assert result.state == STATE_DENIED
     assert result.protection_code == PROTECTION_MANUAL_ACCOUNT_LOCK
+    assert result.strategy_bucket_id is None
 
 
 def test_drawdown_protection_denies_buy() -> None:
     result = _evaluate(account_protection_evaluation=_protection(ACTION_BUY))
     assert result.state == STATE_DENIED
     assert result.protection_code == PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK
+    assert result.strategy_bucket_id is None
 
 
 def test_protection_evaluation_binding_mismatch_denies_an_otherwise_approved_candidate() -> None:
@@ -162,6 +175,7 @@ def test_protection_evaluation_binding_mismatch_denies_an_otherwise_approved_can
     result = _evaluate(account_protection_evaluation=mismatched)
     assert result.state == STATE_DENIED
     assert result.reason_code == "INVALID_PROTECTION_EVALUATION_BINDING"
+    assert result.strategy_bucket_id is None
 
 
 def test_stale_account_or_free_quote_balance_is_non_actionable() -> None:

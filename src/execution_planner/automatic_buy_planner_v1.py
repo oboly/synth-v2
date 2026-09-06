@@ -44,6 +44,8 @@ order_submission=0
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -66,6 +68,13 @@ from src.market_rules.venue_execution_constraints_v1 import (
 
 PLANNER_VERSION: Final[str] = "automatic_buy_planner_v1"
 SIDE_BUY: Final[str] = "BUY"
+
+# Issue #753 B4: versioned contract for the trade_id this planner binds onto
+# every APPROVED BUY plan. See
+# docs/architecture/automatic_buy_trade_lineage_identity_v1.md for the full
+# reviewed contract, guarantees, and the explicitly deferred follow-on
+# decision (RE_ENTER lineage continuity onto an already-open position).
+TRADE_ID_CONTRACT_VERSION: Final[str] = "automatic_buy_trade_id_v1"
 
 # Fixed V1 execution mechanics only: two passive BUY limits, equally sized,
 # at reference and 25 bps below it. This is not entry-policy zone selection.
@@ -137,6 +146,8 @@ class AutomaticBuyPlanV1:
     strategy_id: str
     strategy_version: str
     setup_id: str
+    strategy_bucket_id: str
+    trade_id: str
     gate_approval: AutomaticBuyGateApprovalProvenanceV1
     planner_version: str
     planning_ts_utc: datetime
@@ -166,6 +177,7 @@ def _validate_gate_and_context(
     _reject(decision.state != STATE_APPROVED, "GATE_DECISION_NOT_APPROVED")
     ceiling = decision.approved_notional_ceiling_eur
     _reject(ceiling is None or ceiling <= 0, "APPROVED_NOTIONAL_CEILING_INVALID")
+    _reject(not _nonempty(decision.strategy_bucket_id), "GATE_DECISION_STRATEGY_BUCKET_ID_MISSING")
     candidate = decision.candidate
     _reject(
         candidate.candidate_action not in SUPPORTED_CANDIDATE_ACTIONS
@@ -221,6 +233,56 @@ def _validate_gate_and_context(
         "VENUE_CONSTRAINTS_INVALID",
     )
     return ceiling
+
+
+def derive_automatic_buy_trade_id_v1(
+    *,
+    trading_account_id: int,
+    venue: str,
+    asset_id: int,
+    market: str,
+    strategy_bucket_id: str,
+    strategy_id: str,
+    strategy_version: str,
+    setup_id: str,
+    candidate_action: str,
+    candidate_evidence_id: str,
+) -> str:
+    """Bind a deterministic genesis trade_id for exactly one APPROVED BUY decision.
+
+    Issue #753 B4 reviewed contract (see
+    docs/architecture/automatic_buy_trade_lineage_identity_v1.md):
+
+    - Same accepted BUY lineage (identical candidate/decision identity)
+      always derives the same trade_id, so a crash/restart replay of the
+      exact same evaluation is idempotent.
+    - Distinct candidate evidence (a different evaluation cycle, including a
+      later RE_ENTER of the same setup) always derives a different trade_id,
+      so this rule never merges two genuinely different acceptances under
+      one identity -- the unsafe direction the reviewed contract forbids.
+    - This is a genesis identity for the evaluation cycle that produced the
+      plan. Whether a RE_ENTER that targets an already-open strategy-owned
+      position should instead reuse that position's existing trade_id is an
+      explicitly deferred decision: it requires the #752 inventory
+      projection (open/closed state) this pure planner does not have, and
+      must not be fabricated here.
+    """
+    payload = {
+        "contract_version": TRADE_ID_CONTRACT_VERSION,
+        "trading_account_id": trading_account_id,
+        "venue": venue.strip().lower(),
+        "asset_id": asset_id,
+        "market": market.strip().upper(),
+        "strategy_bucket_id": strategy_bucket_id,
+        "strategy_id": strategy_id,
+        "strategy_version": strategy_version,
+        "setup_id": setup_id,
+        "candidate_action": candidate_action,
+        "candidate_evidence_id": candidate_evidence_id,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"{TRADE_ID_CONTRACT_VERSION}:{trading_account_id}:{digest}"
 
 
 def _allocate_quantity_steps(total: Decimal, step: Decimal) -> tuple[Decimal, ...]:
@@ -283,6 +345,18 @@ def build_automatic_buy_plan_v1(
     _reject(planned_total_notional > ceiling, "PLANNED_NOTIONAL_EXCEEDS_GATE_CEILING")
 
     candidate = decision.candidate
+    trade_id = derive_automatic_buy_trade_id_v1(
+        trading_account_id=context.trading_account_id,
+        venue=context.venue,
+        asset_id=context.asset_id,
+        market=context.market,
+        strategy_bucket_id=decision.strategy_bucket_id,
+        strategy_id=candidate.strategy_id,
+        strategy_version=candidate.strategy_version,
+        setup_id=candidate.setup_id,
+        candidate_action=candidate.candidate_action,
+        candidate_evidence_id=candidate.evidence_id,
+    )
     return AutomaticBuyPlanV1(
         trading_account_id=context.trading_account_id,
         venue=context.venue,
@@ -297,6 +371,8 @@ def build_automatic_buy_plan_v1(
         strategy_id=candidate.strategy_id,
         strategy_version=candidate.strategy_version,
         setup_id=candidate.setup_id,
+        strategy_bucket_id=decision.strategy_bucket_id,
+        trade_id=trade_id,
         gate_approval=AutomaticBuyGateApprovalProvenanceV1(
             state=decision.state,
             reason_code=decision.reason_code,
