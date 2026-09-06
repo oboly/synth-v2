@@ -275,7 +275,8 @@ def test_non_utc_offset_timestamps_normalize_before_insert_and_replay_idempotent
         "map_asof_ts_utc", "map_published_at_utc", "anchor_start_ts_utc",
         "anchor_end_ts_utc", "bound_ts_utc",
     ):
-        assert persisted[column] == NOW
+        assert persisted[column] == NOW.replace(tzinfo=None)
+        assert persisted[column].tzinfo is None
 
     replay = repo.record_fib_map_bound_trade_v1(binding=binding)
     assert replay == _binding()
