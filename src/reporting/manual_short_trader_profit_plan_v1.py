@@ -1857,10 +1857,21 @@ def _operator_candidate_evidence_health(card: ProfitPlanCard) -> str:
     missing narrower account projection must not relabel a fresh price/map
     observation as unavailable.
     """
-    if card.evidence.native_context_freshness_status in _NATIVE_SOURCE_STALE_FRESHNESS_STATES:
+    native_freshness_status = str(
+        card.evidence.native_context_freshness_status or ""
+    ).strip().upper()
+    if (
+        native_freshness_status == "STALE"
+        or native_freshness_status in _NATIVE_SOURCE_STALE_FRESHNESS_STATES
+    ):
         return "STALE"
     if not _price_is_fresh_enough(card):
         return "STALE" if card.evidence.price_freshness_state == "STALE" else DATA_UNAVAILABLE
+    if (
+        card.short_context_coverage_status
+        == SHORT_CONTEXT_COVERAGE_CANONICAL_4H_AVAILABLE
+    ):
+        return "CURRENT"
     if not _canonical_native_map_truth_available(card.evidence):
         return DATA_UNAVAILABLE
     return "CURRENT"
