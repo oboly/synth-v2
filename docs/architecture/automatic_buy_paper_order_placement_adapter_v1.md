@@ -62,8 +62,8 @@ mode can know:
   state this phase must avoid).
 - **Every order is modeled as post-only, because every order that reaches
   this adapter is post-only.** A quote that would cross the book on arrival
-  (a BUY leg whose limit price is at or above the quote; a SELL leg whose
-  limit price is at or below it) is `REJECTED`, matching the real exchange
+  (a BUY leg whose limit price is at or above the best ask; a SELL leg whose
+  limit price is at or below the best bid) is `REJECTED`, matching the real exchange
   behavior for a crossing post-only order. `place_order` never returns
   `FILLED`: a post-only order cannot fill synchronously at placement, so V1
   does not invent one.
@@ -82,6 +82,7 @@ mode can know:
   here. Consequence: in V1, an automatic-BUY PAPER submission either
   `REJECTED`s immediately (crossed) or rests `ACTIVE` forever (not crossed);
   it never reaches `FILLED` through this adapter alone.
+- **Crossing uses explicit spread evidence.** `PaperMarketQuoteV1` carries validated `best_bid` and `best_ask`; BUY compares only with best ask and SELL only with best bid. Inverted spreads fail closed.
 - **Missing, mismatched, future-dated, or stale evidence fails closed.**
   `place_order` raises `PaperMarketEvidenceUnavailableError` rather than
   guessing. The existing, unchanged submission orchestrator already turns an

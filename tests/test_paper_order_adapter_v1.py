@@ -48,7 +48,7 @@ def test_crossed_post_only_buy_is_rejected_not_filled() -> None:
     """Every leg reaching this adapter is post-only (#753 B5.5 review fix):
     a BUY quote at or below the limit price would cross the book, so a real
     exchange rejects the post-only order outright instead of filling it."""
-    quote = PaperMarketQuoteV1(market=MARKET, price=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=5))
+    quote = PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("100"), observed_ts_utc=NOW - timedelta(seconds=5))
     adapter = _adapter(quote)
     ack = _place(adapter, side="BUY", price=Decimal("100"))
     assert ack.state == BrokerAckStateV1.REJECTED
@@ -56,28 +56,47 @@ def test_crossed_post_only_buy_is_rejected_not_filled() -> None:
 
 
 def test_non_marketable_buy_stays_active() -> None:
-    quote = PaperMarketQuoteV1(market=MARKET, price=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
+    quote = PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
     adapter = _adapter(quote)
     ack = _place(adapter, side="BUY", price=Decimal("100"))
     assert ack.state == BrokerAckStateV1.ACTIVE
 
 
 def test_crossed_post_only_sell_is_rejected_not_filled() -> None:
-    quote = PaperMarketQuoteV1(market=MARKET, price=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
+    quote = PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("100"), best_ask=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
     adapter = _adapter(quote)
     ack = _place(adapter, side="SELL", price=Decimal("100"))
     assert ack.state == BrokerAckStateV1.REJECTED
     assert ack.broker_order_id is None
 
 
+def test_buy_uses_ask_not_bid_at_spread_boundary() -> None:
+    quote = PaperMarketQuoteV1(
+        market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("101"),
+        observed_ts_utc=NOW - timedelta(seconds=5),
+    )
+    assert _place(_adapter(quote), side="BUY", price=Decimal("100")).state == BrokerAckStateV1.ACTIVE
+    assert _place(_adapter(quote), side="BUY", price=Decimal("101")).state == BrokerAckStateV1.REJECTED
+
+
+def test_sell_uses_bid_not_ask_at_spread_boundary() -> None:
+    quote = PaperMarketQuoteV1(
+        market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("101"),
+        observed_ts_utc=NOW - timedelta(seconds=5),
+    )
+    assert _place(_adapter(quote), side="SELL", price=Decimal("100")).state == BrokerAckStateV1.ACTIVE
+    assert _place(_adapter(quote), side="SELL", price=Decimal("99")).state == BrokerAckStateV1.REJECTED
+
+
 @pytest.mark.parametrize(
     "quote",
     [
         None,
-        PaperMarketQuoteV1(market="ETH-EUR", price=Decimal("99"), observed_ts_utc=NOW),  # market mismatch
-        PaperMarketQuoteV1(market=MARKET, price=Decimal("-1"), observed_ts_utc=NOW),  # malformed price
-        PaperMarketQuoteV1(market=MARKET, price=Decimal("99"), observed_ts_utc=NOW + timedelta(seconds=5)),  # future
-        PaperMarketQuoteV1(market=MARKET, price=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=120)),  # stale
+        PaperMarketQuoteV1(market="ETH-EUR", best_bid=Decimal("99"), best_ask=Decimal("99"), observed_ts_utc=NOW),  # market mismatch
+        PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("-1"), best_ask=Decimal("1"), observed_ts_utc=NOW),  # malformed bid
+        PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("101"), best_ask=Decimal("100"), observed_ts_utc=NOW),  # inverted spread
+        PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("100"), observed_ts_utc=NOW + timedelta(seconds=5)),  # future
+        PaperMarketQuoteV1(market=MARKET, best_bid=Decimal("99"), best_ask=Decimal("100"), observed_ts_utc=NOW - timedelta(seconds=120)),  # stale
     ],
 )
 def test_missing_or_conflicting_evidence_fails_closed(quote: PaperMarketQuoteV1 | None) -> None:

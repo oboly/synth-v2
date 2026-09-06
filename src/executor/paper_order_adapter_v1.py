@@ -24,7 +24,7 @@ V1 fill semantics, deliberately minimal and deterministic:
 - A real post-only order can never fill at placement: an exchange rejects a
   post-only order outright if it would immediately cross the book (that is
   what "post-only" means), it never fills it synchronously. So when the
-  caller-supplied, repository-backed market quote for the leg's market
+  caller-supplied, repository-backed best-bid/best-ask market quote for the leg's market
   (``PaperMarketQuoteProviderV1``) shows the order would cross on arrival --
   a BUY leg whose limit price is at or above the quote, or a SELL leg whose
   limit price is at or below it -- ``place_order`` returns ``REJECTED``, not
@@ -85,10 +85,11 @@ class PaperMarketEvidenceUnavailableError(RuntimeError):
 
 @dataclass(frozen=True)
 class PaperMarketQuoteV1:
-    """One caller-supplied/repository-backed current price for one market."""
+    """One caller-supplied/repository-backed best-bid/best-ask snapshot."""
 
     market: str
-    price: Decimal
+    best_bid: Decimal
+    best_ask: Decimal
     observed_ts_utc: datetime
 
 
@@ -104,21 +105,23 @@ def _valid_quote_shape(quote: PaperMarketQuoteV1) -> bool:
     return (
         isinstance(quote.market, str)
         and bool(quote.market.strip())
-        and isinstance(quote.price, Decimal)
-        and quote.price.is_finite()
-        and quote.price > 0
+        and isinstance(quote.best_bid, Decimal)
+        and quote.best_bid.is_finite()
+        and quote.best_bid > 0
+        and isinstance(quote.best_ask, Decimal)
+        and quote.best_ask.is_finite()
+        and quote.best_ask > 0
+        and quote.best_bid <= quote.best_ask
         and _aware(quote.observed_ts_utc)
     )
 
 
-def _would_cross(*, side: str, order_price: Decimal, quote_price: Decimal) -> bool:
-    """True when a post-only order at ``order_price`` would immediately cross
-    the book against ``quote_price`` -- the condition a real exchange rejects
-    a post-only order for, rather than filling it."""
+def _would_cross(*, side: str, order_price: Decimal, quote: PaperMarketQuoteV1) -> bool:
+    """Evaluate post-only crossing against the correct side of the spread."""
     if side == SIDE_BUY:
-        return quote_price <= order_price
+        return order_price >= quote.best_ask
     if side == SIDE_SELL:
-        return quote_price >= order_price
+        return order_price <= quote.best_bid
     raise ValueError("side must be BUY or SELL")
 
 
@@ -170,7 +173,7 @@ class PaperOrderPlacementAdapterV1:
             raise PaperMarketEvidenceUnavailableError("PAPER_MARKET_EVIDENCE_FUTURE_TIMESTAMP")
         if age_seconds > self.max_quote_age_seconds:
             raise PaperMarketEvidenceUnavailableError("PAPER_MARKET_EVIDENCE_STALE")
-        if _would_cross(side=side, order_price=price, quote_price=quote.price):
+        if _would_cross(side=side, order_price=price, quote=quote):
             # A real exchange rejects a crossing post-only order outright; it
             # never fills it synchronously. No broker order was ever really
             # placed, so there is no broker_order_id to report.

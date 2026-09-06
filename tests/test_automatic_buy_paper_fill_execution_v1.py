@@ -192,7 +192,7 @@ class FixedQuoteProvider:
 
 
 def _marketable_quote(market: str = "BTC-EUR") -> PaperMarketQuoteV1:
-    return PaperMarketQuoteV1(market=market, price=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=5))
+    return PaperMarketQuoteV1(market=market, best_bid=Decimal("99"), best_ask=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=5))
 
 
 def _run(
@@ -266,7 +266,7 @@ def test_non_marketable_quote_leaves_leg_active_and_reconciles_nothing() -> None
     plan = _plan()
     handoff = _handoff(plan)
     conn = FakeConnection()
-    quote = PaperMarketQuoteV1(market=plan.market, price=Decimal("1000"), observed_ts_utc=NOW - timedelta(seconds=5))
+    quote = PaperMarketQuoteV1(market=plan.market, best_bid=Decimal("1000"), best_ask=Decimal("1000"), observed_ts_utc=NOW - timedelta(seconds=5))
     result = _run(plan, handoff, conn=conn, quote=quote)
 
     assert result.submission.leg_states == (ACTIVE,)
