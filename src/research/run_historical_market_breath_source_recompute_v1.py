@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 from collections import Counter
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-ts", default=None)
     parser.add_argument("--end-ts", default=None)
     parser.add_argument("--max-rows", type=int, default=0)
+    parser.add_argument("--breadth-scope", choices=("selected", "all-enabled"), default="selected")
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -181,6 +183,73 @@ def build_recomputed_row(
     return row
 
 
+def fetch_breadth_close_history(
+    conn: Any,
+    *,
+    assets: list[Asset],
+    venue: str,
+    interval_code: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    lookback_candles: int,
+) -> dict[int, tuple[list[datetime], list[float]]]:
+    """Load close-only history for full-universe breadth using bounded DB fetches."""
+    if not assets:
+        return {}
+    interval_seconds = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval_code, 14400)
+    history_start = start_ts - timedelta(seconds=interval_seconds * lookback_candles * 4)
+    asset_ids = [asset.asset_id for asset in assets]
+    placeholders = ",".join(["%s"] * len(asset_ids))
+    sql = f"""
+        SELECT asset_id, close_ts_utc, close_price
+        FROM obs_market_candle
+        WHERE venue=%s AND interval_code=%s
+          AND close_ts_utc > %s AND close_ts_utc <= %s
+          AND asset_id IN ({placeholders})
+        ORDER BY asset_id, close_ts_utc
+    """
+    params: list[Any] = [venue, interval_code, history_start, end_ts, *asset_ids]
+    grouped: dict[int, tuple[list[datetime], list[float]]] = {}
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        while True:
+            batch = cur.fetchmany(5000)
+            if not batch:
+                break
+            for row in batch:
+                asset_id = int(row["asset_id"])
+                if asset_id not in grouped:
+                    grouped[asset_id] = ([], [])
+                grouped[asset_id][0].append(row["close_ts_utc"])
+                grouped[asset_id][1].append(float(row["close_price"]))
+    return grouped
+
+
+def breadth_dummy_rows_at_asof(
+    history: dict[int, tuple[list[datetime], list[float]]],
+    *,
+    asof_ts: datetime,
+    exclude_asset_ids: set[int],
+) -> list[dict[str, Any]]:
+    """Return minimal rows whose return_6 participates in canonical breadth logic."""
+    rows: list[dict[str, Any]] = []
+    for asset_id, (times, closes) in history.items():
+        if asset_id in exclude_asset_ids:
+            continue
+        idx = bisect.bisect_right(times, asof_ts) - 1
+        if idx < 6:
+            continue
+        old = closes[idx - 6]
+        new = closes[idx]
+        if old <= 0:
+            continue
+        rows.append({
+            "return_6": (new / old - 1.0) * 100.0,
+            "market_breath_phase": "INSUFFICIENT_DATA",
+        })
+    return rows
+
+
 def replay_rows_for_timestamp(
     conn: Any,
     *,
@@ -190,6 +259,7 @@ def replay_rows_for_timestamp(
     interval_code: str,
     lookback_candles: int,
     asof_ts: datetime,
+    breadth_history: dict[int, tuple[list[datetime], list[float]]] | None = None,
 ) -> list[dict[str, Any]]:
     candle_assets = list(selected_assets)
     if all(asset.asset_id != btc_asset.asset_id for asset in candle_assets):
@@ -220,7 +290,14 @@ def replay_rows_for_timestamp(
         )
         for asset in selected_assets
     ]
-    observations = add_breadth_and_scores(base_rows, lookback_candles)
+    breadth_rows = []
+    if breadth_history is not None:
+        breadth_rows = breadth_dummy_rows_at_asof(
+            breadth_history,
+            asof_ts=asof_ts,
+            exclude_asset_ids={asset.asset_id for asset in selected_assets},
+        )
+    observations = add_breadth_and_scores(base_rows + breadth_rows, lookback_candles)[: len(base_rows)]
     return [build_recomputed_row(observation) for observation in observations]
 
 
@@ -234,6 +311,7 @@ def recompute_rows(
     end_ts: datetime | None,
     max_rows: int = 0,
     lookback_candles: int = DEFAULT_LOOKBACK_CANDLES,
+    breadth_scope: str = "selected",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_assets, btc_asset = resolve_assets(conn, requested_symbols=symbols)
     timestamps = fetch_timestamp_spine(
@@ -246,6 +324,28 @@ def recompute_rows(
     )
     if not timestamps:
         raise RuntimeError("No candle timestamps available for requested replay scope")
+
+    breadth_history = None
+    breadth_asset_count = len(selected_assets)
+    if breadth_scope == "all-enabled":
+        print("PHASE_STARTED phase=load_breadth_history", flush=True)
+        breadth_assets = fetch_assets(conn)
+        breadth_asset_count = len(breadth_assets)
+        breadth_history = fetch_breadth_close_history(
+            conn,
+            assets=breadth_assets,
+            venue=venue,
+            interval_code=interval,
+            start_ts=timestamps[0],
+            end_ts=timestamps[-1],
+            lookback_candles=lookback_candles,
+        )
+        print(
+            f"PHASE_FINISHED phase=load_breadth_history assets={breadth_asset_count} assets_with_history={len(breadth_history)}",
+            flush=True,
+        )
+    elif breadth_scope != "selected":
+        raise ValueError(f"unsupported breadth_scope: {breadth_scope}")
 
     rows: list[dict[str, Any]] = []
     print(
@@ -263,6 +363,7 @@ def recompute_rows(
                 interval_code=interval,
                 lookback_candles=lookback_candles,
                 asof_ts=asof_ts,
+                breadth_history=breadth_history,
             )
         )
         if timestamp_index == 1 or timestamp_index % progress_every == 0 or timestamp_index == len(timestamps):
@@ -279,6 +380,8 @@ def recompute_rows(
     measures = {
         "row_count": len(rows),
         "symbol_count": len({row["symbol"] for row in rows}),
+        "breadth_scope": breadth_scope,
+        "breadth_asset_count": breadth_asset_count,
         "min_asof_ts_utc": min((row["asof_ts_utc"] for row in rows), default=None),
         "max_asof_ts_utc": max((row["asof_ts_utc"] for row in rows), default=None),
         "breath_phase_distribution": dict(Counter(row["breath_phase"] for row in rows)),
@@ -306,6 +409,7 @@ def build_manifest(
         "start_ts": args.start_ts,
         "end_ts": args.end_ts,
         "row_count": len(rows),
+        "breadth_scope": args.breadth_scope,
         "measures": measures,
         "output_paths": output_paths,
         "safety_markers": SAFETY_MARKERS,
@@ -367,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
             start_ts=start_ts,
             end_ts=end_ts,
             max_rows=int(args.max_rows or 0),
+            breadth_scope=args.breadth_scope,
         )
     finally:
         conn.close()

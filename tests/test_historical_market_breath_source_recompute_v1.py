@@ -10,6 +10,7 @@ from src.research.run_historical_market_breath_source_recompute_v1 import (
     REPORT_NAME,
     SAFETY_MARKERS,
     build_manifest,
+    breadth_dummy_rows_at_asof,
     build_recomputed_row,
     resolve_assets,
     parse_ts,
@@ -114,6 +115,7 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
                     "interval": "4h",
                     "start_ts": None,
                     "end_ts": None,
+                    "breadth_scope": "selected",
                 },
             )(),
             rows=[],
@@ -147,6 +149,21 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
                 "quality_state_distribution": {"HIGH": 1},
             },
         )
+
+    def test_breadth_dummy_rows_use_nonselected_full_universe_returns(self) -> None:
+        from datetime import datetime, timedelta
+
+        base = datetime(2026, 5, 1, 0, 0)
+        times = [base + timedelta(hours=4 * i) for i in range(7)]
+        history = {
+            1: (times, [100.0] * 7),
+            2: (times, [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 110.0]),
+            3: (times, [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0]),
+        }
+        rows = breadth_dummy_rows_at_asof(history, asof_ts=times[-1], exclude_asset_ids={1})
+        self.assertEqual(len(rows), 2)
+        returns = sorted(round(row["return_6"], 6) for row in rows)
+        self.assertEqual(returns, [-10.0, 10.0])
 
     def test_requested_btc_is_preserved_as_output_asset(self) -> None:
         from src.research.run_market_breath_analysis_v1 import Asset
