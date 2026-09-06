@@ -24,7 +24,11 @@
       "expected_unique_asofs": 9
     }
   },
-  "forward_horizons": ["1h", "4h", "24h"],
+  "forward_horizons": [
+    "1h",
+    "4h",
+    "24h"
+  ],
   "label_source_interval": "15m",
   "population_outcome_blind": true,
   "feature_registry_frozen_before_score_materialization": true,
@@ -42,5 +46,9 @@
     "production_ranking_changes": 0,
     "db_writes": 0,
     "runtime_activation": 0
-  }
+  },
+  "max_forward_horizon_hours": 24,
+  "final_label_maturity_ts_utc": "2026-10-16T00:00:00Z",
+  "final_holdout_evaluation_not_before": "2026-10-16T00:00:00Z",
+  "label_maturity_required_before_final_holdout": true
 }
