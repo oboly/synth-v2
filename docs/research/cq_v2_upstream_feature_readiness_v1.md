@@ -20,7 +20,7 @@ A context may therefore be PIT/replayable while still scoring `0` for numerical 
 | Candidate context | Owner | Version / contract | PIT / replayable status | Historical coverage observed on gurkdb | Numeric / semantic domain | Missingness semantics | eligible_for_future_CQ_v2 |
 | --- | --- | --- | --- | --- | --- | --- | ---: |
 | CQ v0 / local baseline | #568 CQ baseline; frozen #684 population contract | CQ v0 as carried in frozen CQ observations | PIT value carried with immutable CQ observation identity; no future lookup needed | #684 already materialized the canonical temporal population; future CQ v2 must create a later cohort | `[0,1]` | null CQ v0 => `INSUFFICIENT_DATA` | 1 |
-| Aggregate Market Rotation Pressure V1 | #676 / #547, `market_rotation_pressure_v1` | model `1.0`; effective horizon `REGIME`; producer freshness 90m | canonical persisted rows, exact venue, `as_of_ts_utc <= observation_asof`; no current-truth fallback | 596 snapshot as-ofs, 2026-07-13 22:00Z through 2026-09-06 19:00Z; 74,787 per-asset rows | `market_score [-100,100]`; breadth ratios; categorical evidence states | missing row/version => unavailable; stale >90m => stale; future/malformed fails closed | 1 |
+| Aggregate Market Rotation Pressure V1 | #676 / #547, `market_rotation_pressure_v1` | model `1.0`; effective horizon `REGIME`; producer freshness 90m | canonical persisted rows, exact venue, `as_of_ts_utc <= observation_asof`; no current-truth fallback | 596 snapshot as-ofs, 2026-07-13 22:00Z through 2026-09-06 19:00Z; 74,787 per-asset rows | per-asset evidence is canonically mapped; aggregate evidence remains separately deferred by #676 | missing row/version => unavailable; stale >90m => stale; future/malformed fails closed | 0 |
 | Fast / multi-horizon per-asset Rotation (#593 C1/C2/C3) | #593 | research candidates only; C1 final holdout rejected; C2 rejected pre-holdout; C3 insufficient | research replay exists, but no accepted canonical fast variant was promoted | no canonical `fast_rotation_c1_history` production table exists on gurkdb | candidate-specific research scores | rejected/insufficient candidates remain non-canonical; dormant writer capability is not evidence ownership | 0 |
 | Sector Rotation / sector leadership context | sector rotation owner; frozen CQ v1 extractor contract | `sector-rotation-v1.0.0`; CQ extractor freezes `window_code=4h` | persisted PIT snapshot plus PIT PRIMARY sector-membership join; deterministic `input_hash` and taxonomy provenance | 48,256 rows, 416 distinct as-ofs, 2026-07-16 18:00Z through 2026-09-06 19:00Z | canonical hard numeric domain for `rotation_score` not yet established; participation, BTC/ETH relative strength, volume share, persistence, coverage are available as persisted evidence | explicit `INSUFFICIENT_PARTICIPATION` / `DATA_UNAVAILABLE`; no current membership backfill | 0 |
 | Canonical BTC/global regime alignment | active regime observation owner | `active_regime_observation`; versioned global/class regime fields | contract is PIT/replayable by venue + interval + asset class + latest row at/before event as-of | only 8 rows at one distinct as-of (`2026-05-14T18:09:53.918851Z`) | categorical `global_regime`, `asset_class_regime`, validation status | source docs allow `regime_freshness=UNKNOWN`; no historical freshness threshold | 0 |
@@ -53,12 +53,13 @@ Numerically CQ-ready upstream contexts today:
 
 ```text
 CQ v0 baseline
-Market Rotation Pressure V1 broad/regime evidence
 ```
 
-PIT-ready but not yet numerically CQ-ready:
+PIT-ready/context-ready but not yet numerically CQ-ready:
 
 ```text
+Market Rotation Pressure V1 aggregate evidence
+  blocker: #676 separately defers aggregate evidence mapping/contract
 Sector Rotation 4h evidence through PIT sector membership
   blocker: canonical numeric-domain/normalization contract not yet frozen
 ```
