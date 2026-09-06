@@ -7,7 +7,7 @@ This contract is research-only and does not change planner, executor, broker, or
 
 Each immutable episode preserves market identity, source map identity, canonical Fib level, side, horizon, issuance time, validity window, invalidation, ATR-at-issue, and optional regime context.
 
-Only candles strictly after `issued_ts_utc` and no later than `valid_until_ts_utc` may label an episode. Future candles are labels only.
+Only candles whose full interval starts at or after `issued_ts_utc` and closes no later than `valid_until_ts_utc` may label an episode. A candle opened before issuance is excluded even if it closes later. Future candles are labels only.
 
 When one OHLC candle spans both the candidate execution price and invalidation price before any prior fill, intrabar ordering is unknowable. The replay records `same_candle_fill_invalidation_ambiguous=true`, claims neither fill nor invalidation-before-fill, and stops that episode rather than inventing an order of events.
 

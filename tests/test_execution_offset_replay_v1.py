@@ -19,8 +19,12 @@ def episode(side: str = SIDE_SELL) -> ExecutionOffsetEpisodeV1:
         Decimal("4"), "RANGE", "map-1",
     )
 
-def candle(hours: int, low: str, high: str, close: str = "100") -> ReplayCandle:
-    return ReplayCandle(T0 + timedelta(hours=hours), Decimal(high), Decimal(low), Decimal(close))
+def candle(hours: int, low: str, high: str, close: str | None = None) -> ReplayCandle:
+    close_ts = T0 + timedelta(hours=hours)
+    low_price = Decimal(low)
+    high_price = Decimal(high)
+    close_price = Decimal(close) if close is not None else (low_price + high_price) / Decimal("2")
+    return ReplayCandle(close_ts - timedelta(hours=1), close_ts, high_price, low_price, close_price)
 
 
 def test_policy_sign_semantics() -> None:
@@ -147,3 +151,25 @@ def test_volatility_sell_offset_rejects_non_positive_execution_price() -> None:
             episode(),
             ExecutionOffsetPolicyV1(POLICY_VOLATILITY_SCALED_BUFFER, "v1", atr_multiple=Decimal("25")),
         )
+
+
+def test_mid_candle_issuance_excludes_preissuance_ohlc() -> None:
+    ep = ExecutionOffsetEpisodeV1(
+        "ep-mid", "PROM", "bitvavo", "4h", SIDE_SELL, "F1.618", Decimal("100"),
+        T0 + timedelta(minutes=30), T0 + timedelta(hours=4), Decimal("110"),
+        Decimal("4"), "RANGE", "map-mid",
+    )
+    row = replay_episode(
+        ep,
+        [candle(1, "95", "100"), candle(2, "95", "99")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.filled is False
+    assert row.near_miss_distance_pct == Decimal("1")
+
+
+def test_overlapping_forward_candles_fail_closed() -> None:
+    first = ReplayCandle(T0, T0 + timedelta(hours=2), Decimal("101"), Decimal("99"), Decimal("100"))
+    second = ReplayCandle(T0 + timedelta(hours=1), T0 + timedelta(hours=3), Decimal("101"), Decimal("99"), Decimal("100"))
+    with pytest.raises(ExecutionOffsetReplayError, match="OVERLAPPING_FORWARD_CANDLE_INTERVAL"):
+        replay_episode(episode(), [first, second], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))

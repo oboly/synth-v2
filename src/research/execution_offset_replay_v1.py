@@ -24,6 +24,7 @@ class ExecutionOffsetReplayError(ValueError):
 
 @dataclass(frozen=True)
 class ReplayCandle:
+    open_ts_utc: datetime
     close_ts_utc: datetime
     high_price: Decimal
     low_price: Decimal
@@ -120,6 +121,18 @@ def _validate_episode(episode: ExecutionOffsetEpisodeV1) -> None:
         raise ExecutionOffsetReplayError("INVALID_CANONICAL_LEVEL")
 
 
+
+
+def _validate_candle(candle: ReplayCandle) -> None:
+    if candle.open_ts_utc.tzinfo is None or candle.close_ts_utc.tzinfo is None:
+        raise ExecutionOffsetReplayError("AWARE_CANDLE_TIMESTAMPS_REQUIRED")
+    if candle.close_ts_utc <= candle.open_ts_utc:
+        raise ExecutionOffsetReplayError("INVALID_CANDLE_INTERVAL")
+    if candle.low_price <= 0 or candle.high_price <= 0 or candle.close_price <= 0:
+        raise ExecutionOffsetReplayError("NON_POSITIVE_CANDLE_PRICE")
+    if candle.high_price < candle.low_price or not (candle.low_price <= candle.close_price <= candle.high_price):
+        raise ExecutionOffsetReplayError("INVALID_CANDLE_OHLC")
+
 def replay_episode(
     episode: ExecutionOffsetEpisodeV1,
     candles: Iterable[ReplayCandle],
@@ -127,8 +140,11 @@ def replay_episode(
 ) -> ExecutionOffsetReplayRowV1:
     _validate_episode(episode)
     execution_price = execution_price_for_policy(episode, policy)
+    candle_rows = list(candles)
+    for candle in candle_rows:
+        _validate_candle(candle)
     future = sorted(
-        (c for c in candles if episode.issued_ts_utc < c.close_ts_utc <= episode.valid_until_ts_utc),
+        (c for c in candle_rows if episode.issued_ts_utc <= c.open_ts_utc and c.close_ts_utc <= episode.valid_until_ts_utc),
         key=lambda c: c.close_ts_utc,
     )
     if not future:
@@ -136,6 +152,9 @@ def replay_episode(
     close_times = [c.close_ts_utc for c in future]
     if len(set(close_times)) != len(close_times):
         raise ExecutionOffsetReplayError("DUPLICATE_FORWARD_CANDLE_TIMESTAMP")
+    for previous, current in zip(future, future[1:]):
+        if current.open_ts_utc < previous.close_ts_utc:
+            raise ExecutionOffsetReplayError("OVERLAPPING_FORWARD_CANDLE_INTERVAL")
 
     fill_ts: datetime | None = None
     invalidated_before_fill = False
