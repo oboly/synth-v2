@@ -8413,3 +8413,31 @@ def test_render_full_html_threads_existing_orders_to_card_ladder() -> None:
     assert "13.25" in html
     assert "12.75" in html
     assert ">Remove</button>" in html
+
+
+def test_real_ladder_order_row_derives_remaining_quantity_in_rendered_html() -> None:
+    from src.reporting.manual_short_trader_dashboard_v1 import LadderOrderRow
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    order = LadderOrderRow(
+        order_id="broker-real-row-1",
+        market=card.market,
+        side="sell",
+        limit_price=Decimal("0.620000"),
+        amount=Decimal("20"),
+        filled_amount=Decimal("3.5"),
+        quote_value=Decimal("12.4"),
+        distance_pct=Decimal("40.9"),
+        status="NEW",
+        labels=("MANUAL_ONLY",),
+    )
+    html = render_full_html(
+        [card],
+        rendered_at="now",
+        broker_mode="test",
+        orders_by_symbol={card.symbol: ((), (order,))},
+    )
+    assert "broker-real-row-1" in html
+    assert "20" in html
+    assert "16.5" in html
+    assert "NEW" in html

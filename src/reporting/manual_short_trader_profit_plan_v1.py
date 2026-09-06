@@ -5846,10 +5846,15 @@ def build_order_rows(
 
     def _existing_fields(order: Any) -> dict[str, Any]:
         raw_order_id = getattr(order, "order_id", None)
+        amount = getattr(order, "amount", None)
+        filled_amount = getattr(order, "filled_amount", None)
+        remaining = getattr(order, "remaining_amount", None)
+        if remaining is None and amount is not None and filled_amount is not None:
+            remaining = max(Decimal(0), amount - filled_amount)
         return {
             "broker_order_id": str(raw_order_id).strip() if raw_order_id else None,
-            "quantity": getattr(order, "amount", None),
-            "remaining_quantity": getattr(order, "remaining_amount", None),
+            "quantity": amount,
+            "remaining_quantity": remaining,
             "broker_status": getattr(order, "status", None),
             "created_at_ms": getattr(order, "created_at_ms", None),
         }
