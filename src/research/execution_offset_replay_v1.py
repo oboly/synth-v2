@@ -164,7 +164,7 @@ def replay_episode(
         if fill_ts is not None:
             post_fill.append(candle)
 
-    near_miss = None if touched else (closest / execution_price * Decimal("100") if closest is not None else None)
+    near_miss = None if touched or fill_ts is not None else (closest / execution_price * Decimal("100") if closest is not None else None)
     mfe = mae = None
     if fill_ts is not None and post_fill:
         if episode.side == SIDE_BUY:

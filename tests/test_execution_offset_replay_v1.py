@@ -50,6 +50,7 @@ def test_sell_near_miss_exact_but_static_buffer_fills() -> None:
     assert exact.near_miss_distance_pct == Decimal("0.800")
     assert buffered.filled is True
     assert buffered.execution_price == Decimal("99.00")
+    assert buffered.near_miss_distance_pct is None
 
 
 def test_same_candle_sell_fill_and_invalidation_is_ambiguous() -> None:
