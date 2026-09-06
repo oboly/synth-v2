@@ -49,10 +49,10 @@ the new module.
   point: every map evidence timestamp (`map_asof_ts_utc`,
   `map_published_at_utc`, `anchor_start_ts_utc`, `anchor_end_ts_utc`) must be
   `<= bound_ts_utc`, and `map_asof_ts_utc` must be no older than
-  the canonical maximum age from `DEFAULT_PRIMARY_STALE_HOURS` in
-  `native_short_fib_context_v1.py` (12h, the same freshness bar market_data
-  already applies to the primary 4h authority). Callers cannot relax this
-  boundary.
+  `max_map_evidence_age_seconds` (default: `DEFAULT_PRIMARY_STALE_HOURS`
+  from `native_short_fib_context_v1.py`, i.e. the same 12h freshness bar
+  market_data already applies to the primary 4h authority). Callers may
+  tighten this boundary, but may never relax it beyond the canonical limit.
 - No `StrategyOwnedInventoryPositionV1` or prior-events history is required.
   "Owned position" and "fill lineage" identity are the same source here (the
   fill event itself); B6's existing unique keys (lineage, source fill,
@@ -143,6 +143,3 @@ submission-time-only and never returns `FILLED` -- there is still no
 `ACTIVE -> FILLED` PAPER reconciliation for a resting automatic-BUY order.
 See `docs/status/issue_753_paper_acceptance_blocker_v1.md` for the full
 detail; B7 does not change that blocker.
-
-
-Freshness override semantics: callers may only tighten the canonical market-data freshness limit. Any value above `DEFAULT_MAX_MAP_EVIDENCE_AGE_SECONDS` fails closed; B7 can never relax the canonical boundary.
