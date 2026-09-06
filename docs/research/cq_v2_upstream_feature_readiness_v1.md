@@ -1,6 +1,6 @@
 # CQ v2 upstream feature readiness audit v1
 
-Issue: #777 Phase B  
+Issue: #777 Phase B
 Status: research-only, market-only, no CQ v2 candidate selection
 
 ## Purpose
