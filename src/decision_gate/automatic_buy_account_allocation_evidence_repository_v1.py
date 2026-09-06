@@ -38,6 +38,18 @@ from src.decision_gate.automatic_buy_account_permission_repository_v1 import (
     load_automatic_buy_account_permission_revocation_history_v1,
 )
 from src.decision_gate.strategy_bucket_account_config_contract_v1 import StrategyBucketAccountConfigV1
+from src.decision_gate.strategy_bucket_buy_reservation_v1 import (
+    StrategyBucketBuyReservationRepositoryError,
+    load_bucket_active_buy_reservations_eur_v1,
+)
+from src.decision_gate.strategy_owned_inventory_ledger_repository_v1 import (
+    StrategyOwnedInventoryLedgerRepositoryError,
+    load_strategy_owned_fill_events_for_bucket_v1,
+)
+from src.decision_gate.strategy_owned_inventory_ledger_v1 import (
+    StrategyOwnedInventoryLedgerError,
+    compute_bucket_owned_exposure_eur_v1,
+)
 from src.market_data.held_market_coverage_v1 import (
     AssetRegistryRow,
     HeldBalance,
@@ -489,6 +501,35 @@ def load_automatic_buy_account_allocation_evidence_v1(
         else Decimal("0")
     )
 
+    # Issue #752: strategy_owned_exposure_eur is the exact bucket's own
+    # attributed exposure from strategy_owned_inventory_ledger_v1 -- never
+    # the whole-account current_bucket_amount_eur approximation above.
+    try:
+        bucket_fill_events = load_strategy_owned_fill_events_for_bucket_v1(
+            conn, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+        strategy_owned_exposure_eur = compute_bucket_owned_exposure_eur_v1(
+            bucket_fill_events, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+    except (StrategyOwnedInventoryLedgerRepositoryError, StrategyOwnedInventoryLedgerError) as exc:
+        raise AutomaticBuyAccountAllocationEvidenceRepositoryError(
+            "STRATEGY_OWNED_EXPOSURE_EVIDENCE_INVALID"
+        ) from exc
+
+    # Issue #756 Codex block: bucket-scoped pending-BUY reservation exposure,
+    # summed across every market sharing this bucket (never market-scoped --
+    # market-scoped conflict, checked separately above by
+    # _load_blocking_conflict, is not a substitute for bucket-wide
+    # reservation accounting).
+    try:
+        active_buy_reservations_eur = load_bucket_active_buy_reservations_eur_v1(
+            conn, trading_account_id=trading_account_id, strategy_bucket_id=strategy_bucket_id,
+        )
+    except StrategyBucketBuyReservationRepositoryError as exc:
+        raise AutomaticBuyAccountAllocationEvidenceRepositoryError(
+            "STRATEGY_BUCKET_BUY_RESERVATION_EVIDENCE_INVALID"
+        ) from exc
+
     evidence = AutomaticBuyAccountAllocationEvidenceV1(
         evidence_contract_version=EVIDENCE_CONTRACT_VERSION,
         trading_account_id=trading_account_id,
@@ -512,6 +553,9 @@ def load_automatic_buy_account_allocation_evidence_v1(
         unavailable_position_asset_ids=unavailable_position_asset_ids,
         account_state_snapshot_run_id=bundle.account_state_snapshot_run_id,
         trading_account_balance_snapshot_id=balance_snapshot_id,
+        account_equity_eur=nav_eur,
+        strategy_owned_exposure_eur=strategy_owned_exposure_eur,
+        active_buy_reservations_eur=active_buy_reservations_eur,
     )
     try:
         validate_automatic_buy_account_allocation_evidence_v1(evidence, max_age_seconds=max_account_state_age_seconds)

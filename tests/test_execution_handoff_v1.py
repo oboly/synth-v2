@@ -111,10 +111,14 @@ class MemoryCursor:
                 "venue": params[4],
                 "market": params[5],
                 "side": params[6],
-                "executor_mode": params[7],
-                "executor_identity": params[8],
-                "runtime_owner": params[9],
-                "executor_credential_binding_id": params[10],
+                "strategy_bucket_id": params[7],
+                "strategy_id": params[8],
+                "strategy_version": params[9],
+                "setup_id": params[10],
+                "executor_mode": params[11],
+                "executor_identity": params[12],
+                "runtime_owner": params[13],
+                "executor_credential_binding_id": params[14],
             }
             return
         if sql.startswith("INSERT INTO executor_execution_handoff_plan_leg"):

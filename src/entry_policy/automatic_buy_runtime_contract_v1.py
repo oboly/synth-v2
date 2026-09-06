@@ -69,6 +69,16 @@ class AutomaticBuyRuntimeInputV1:
     max_automatic_buy_notional_eur: Decimal | None
     source_provenance: str
     live_trading_enabled: bool = False
+    # Issue #752: capital-sleeve capacity evidence, replaced with the
+    # decision-gate-owned canonical value from
+    # ``AutomaticBuyAccountAllocationEvidenceV1`` the same way every other
+    # account-owned field on this snapshot already is (see
+    # ``automatic_buy_runtime_repository_v1.build_runtime_item_v1``).
+    # Defaults to 0 so every pre-#752 constructor/persisted row remains
+    # valid unchanged.
+    account_equity_eur: Decimal = Decimal("0")
+    strategy_owned_exposure_eur: Decimal = Decimal("0")
+    active_buy_reservations_eur: Decimal = Decimal("0")
 
 
 def _aware(value: datetime) -> bool:
@@ -118,6 +128,9 @@ def validate_runtime_input_v1(
         or value.current_asset_exposure_pct < 0
         or value.current_asset_exposure_pct > 100
         or (value.max_automatic_buy_notional_eur is not None and value.max_automatic_buy_notional_eur < 0)
+        or value.account_equity_eur < 0
+        or value.strategy_owned_exposure_eur < 0
+        or value.active_buy_reservations_eur < 0
     ):
         raise AutomaticBuyRuntimeContractError("INVALID_AUTOMATIC_BUY_RUNTIME_INPUT")
 

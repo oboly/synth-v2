@@ -45,6 +45,16 @@ class ExecutionLegV1:
     broker_raw_status: str | None = None
     restatement_reason: str | None = None
     last_reconciled_ts_utc: Any | None = None
+    # Issue #756 Codex block: the persisted, replay-stable instant of this
+    # leg's most recent state transition. FILLED is a terminal state (the
+    # leg's own immutability trigger permits no further transition out of
+    # it), so this stays fixed forever once a leg reaches FILLED -- used as
+    # the deterministic ``occurred_ts_utc`` for strategy-owned fill
+    # attribution instead of a fresh wall-clock read, so a reconciliation
+    # replay observing the same already-FILLED leg twice always builds the
+    # bit-for-bit identical event (idempotent), never a false
+    # CONFLICTING_DUPLICATE_ORDER_IDENTITY from a different "now" each time.
+    updated_ts_utc: Any | None = None
 
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
@@ -80,6 +90,7 @@ def _row_to_leg(row: Any) -> ExecutionLegV1:
             None if row.get("restatement_reason") is None else str(row["restatement_reason"])
         ),
         last_reconciled_ts_utc=row.get("last_reconciled_ts_utc"),
+        updated_ts_utc=row.get("updated_ts_utc"),
     )
 
 
@@ -341,4 +352,5 @@ def replace_leg_id(leg: ExecutionLegV1, leg_id: int) -> ExecutionLegV1:
         broker_raw_status=leg.broker_raw_status,
         restatement_reason=leg.restatement_reason,
         last_reconciled_ts_utc=leg.last_reconciled_ts_utc,
+        updated_ts_utc=leg.updated_ts_utc,
     )

@@ -72,6 +72,13 @@ class ExecutionHandoffV1:
     executor_identity: str
     runtime_owner: str
     executor_credential_binding_id: int | None
+    # Issue #756 Codex block: minimum immutable strategy-ownership lineage
+    # carried through from ApprovedExecutionPlanV1. None for every
+    # non-automatic-buy (e.g. manual execution) handoff.
+    strategy_bucket_id: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    setup_id: str | None = None
 
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
@@ -81,6 +88,10 @@ def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
 
 def _cursor(value: Any) -> Any:
     return value[1] if isinstance(value, tuple) else value
+
+
+def _optional_str(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _row_to_handoff(row: Any) -> ExecutionHandoffV1:
@@ -95,6 +106,10 @@ def _row_to_handoff(row: Any) -> ExecutionHandoffV1:
         executor_mode=str(row["executor_mode"]), executor_identity=str(row["executor_identity"]),
         runtime_owner=str(row["runtime_owner"]),
         executor_credential_binding_id=None if binding_id is None else int(binding_id),
+        strategy_bucket_id=_optional_str(row.get("strategy_bucket_id")),
+        strategy_id=_optional_str(row.get("strategy_id")),
+        strategy_version=_optional_str(row.get("strategy_version")),
+        setup_id=_optional_str(row.get("setup_id")),
     )
 
 
@@ -128,6 +143,10 @@ def _handoff_value(
         identity,
         owner,
         binding_id,
+        strategy_bucket_id=plan.strategy_bucket_id,
+        strategy_id=plan.strategy_id,
+        strategy_version=plan.strategy_version,
+        setup_id=plan.setup_id,
     )
 
 
@@ -241,7 +260,19 @@ class ExecutionHandoffRepositoryV1:
         try:
             with self.cursor_factory(commit=True) as db_obj:
                 cursor = _cursor(db_obj)
-                cursor.execute("INSERT INTO executor_execution_handoff (plan_source, plan_reference_id, plan_content_hash, trading_account_id, venue, market, side, executor_mode, executor_identity, runtime_owner, executor_credential_binding_id, created_ts_utc) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", [handoff_value.plan_source, handoff_value.plan_reference_id, handoff_value.plan_content_hash, handoff_value.trading_account_id, handoff_value.venue, handoff_value.market, handoff_value.side, handoff_value.executor_mode, handoff_value.executor_identity, handoff_value.runtime_owner, handoff_value.executor_credential_binding_id, trusted_clock.utc_now()])
+                cursor.execute(
+                    "INSERT INTO executor_execution_handoff (plan_source, plan_reference_id, plan_content_hash, "
+                    "trading_account_id, venue, market, side, strategy_bucket_id, strategy_id, strategy_version, "
+                    "setup_id, executor_mode, executor_identity, runtime_owner, executor_credential_binding_id, "
+                    "created_ts_utc) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [
+                        handoff_value.plan_source, handoff_value.plan_reference_id, handoff_value.plan_content_hash,
+                        handoff_value.trading_account_id, handoff_value.venue, handoff_value.market, handoff_value.side,
+                        handoff_value.strategy_bucket_id, handoff_value.strategy_id, handoff_value.strategy_version,
+                        handoff_value.setup_id, handoff_value.executor_mode, handoff_value.executor_identity,
+                        handoff_value.runtime_owner, handoff_value.executor_credential_binding_id, trusted_clock.utc_now(),
+                    ],
+                )
                 handoff_id = int(cursor.lastrowid)
                 for leg in plan.legs:
                     cursor.execute(
@@ -265,6 +296,10 @@ class ExecutionHandoffRepositoryV1:
                     executor_identity=handoff_value.executor_identity,
                     runtime_owner=handoff_value.runtime_owner,
                     executor_credential_binding_id=handoff_value.executor_credential_binding_id,
+                    strategy_bucket_id=handoff_value.strategy_bucket_id,
+                    strategy_id=handoff_value.strategy_id,
+                    strategy_version=handoff_value.strategy_version,
+                    setup_id=handoff_value.setup_id,
                 )
         except IntegrityError:
             existing = self.find_by_plan_reference(plan.plan_source, plan.plan_reference_id)

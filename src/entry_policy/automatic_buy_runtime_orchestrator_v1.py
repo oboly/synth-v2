@@ -199,6 +199,9 @@ def evaluate_automatic_buy_runtime_item_v1(
         account_protection_evaluation=item.account_protection_evaluation,
         live_trading_enabled=runtime_input.live_trading_enabled,
         automatic_buy_live_permission_evaluation=item.automatic_buy_live_permission_evaluation,
+        account_equity_eur=runtime_input.account_equity_eur,
+        strategy_owned_exposure_eur=runtime_input.strategy_owned_exposure_eur,
+        active_buy_reservations_eur=runtime_input.active_buy_reservations_eur,
     )
     decision = evaluate_automatic_buy_candidate_permission_v1(
         candidate=candidate,

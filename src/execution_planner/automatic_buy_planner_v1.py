@@ -140,6 +140,13 @@ class AutomaticBuyPlanV1:
     gate_approval: AutomaticBuyGateApprovalProvenanceV1
     planner_version: str
     planning_ts_utc: datetime
+    # Issue #752: the account-scoped capital sleeve this plan was approved
+    # against, carried from the gate decision so downstream fill attribution
+    # can record exactly which sleeve owns the resulting quantity. Defaults
+    # to "" only for dataclass-construction convenience (e.g. pre-#752
+    # fixtures); ``build_automatic_buy_plan_v1`` always rejects an empty
+    # value on the gate decision it builds from.
+    strategy_bucket_id: str = ""
 
 
 def _nonempty(value: object) -> bool:
@@ -175,6 +182,7 @@ def _validate_gate_and_context(
         or not _nonempty(candidate.setup_id),
         "CANDIDATE_PROVENANCE_INVALID",
     )
+    _reject(not _nonempty(decision.strategy_bucket_id), "GATE_DECISION_STRATEGY_BUCKET_ID_INVALID")
     _reject(
         not _aware(context.planning_ts_utc)
         or context.reference_price <= 0
@@ -297,6 +305,7 @@ def build_automatic_buy_plan_v1(
         strategy_id=candidate.strategy_id,
         strategy_version=candidate.strategy_version,
         setup_id=candidate.setup_id,
+        strategy_bucket_id=decision.strategy_bucket_id,
         gate_approval=AutomaticBuyGateApprovalProvenanceV1(
             state=decision.state,
             reason_code=decision.reason_code,
