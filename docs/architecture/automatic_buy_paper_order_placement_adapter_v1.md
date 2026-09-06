@@ -129,10 +129,12 @@ It has no per-plan strategy identity (`strategy_bucket_id`, `strategy_id`,
 `strategy_version`, `trade_id`) available to reconcile ownership with, since
 that identity lives only on the in-memory `AutomaticBuyPlanV1` the producer
 already holds -- it is never persisted independently of the plan's content
-hash. Because PAPER fills are deterministic and instantaneous (no async
-broker), the correct place to submit-and-reconcile is the same call that
-already holds that plan identity, exactly like the existing DRY_RUN/LIVE
-*intake* seam (`src/entry_policy/automatic_buy_execution_handoff_application_v1.py`).
+hash. The composition seam still belongs in the same call that already holds that
+plan identity, exactly like the existing DRY_RUN/LIVE *intake* seam
+(`src/entry_policy/automatic_buy_execution_handoff_application_v1.py`). This
+B5.5 adapter itself never produces `FILLED`: fill reconciliation remains
+unreachable until a later reviewed PAPER `ACTIVE -> FILLED` reconciliation
+path exists.
 `src/entry_policy/automatic_buy_paper_fill_execution_v1.py` adds the missing
 *submission + reconciliation* step for PAPER only, using only the existing
 public `submit_execution_plan` and `reconcile_and_persist_automatic_buy_paper_fill_v1`
