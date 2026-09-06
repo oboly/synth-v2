@@ -107,12 +107,23 @@ def test_manual_refresh_behaviorally_contends_on_shared_lock(tmp_path: Path) -> 
     home = tmp_path / "home"
     lock = home / ".local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock"
     lock.parent.mkdir(parents=True)
+    ready = tmp_path / "holder-ready"
     holder = subprocess.Popen(
-        ["flock", str(lock), "sleep", "10"],
+        [
+            "bash", "-c",
+            'exec 9>"$1"; flock 9; : > "$2"; sleep 10',
+            "bash", str(lock), str(ready),
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            import time
+            time.sleep(0.01)
+        assert ready.exists(), "lock holder did not acquire the shared lock"
         env = os.environ.copy()
         env["HOME"] = str(home)
         env["SYNTH_REPO_DIR"] = str(tmp_path / "must-not-be-entered")

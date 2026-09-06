@@ -81,7 +81,7 @@ SHORT union snapshot were **unchanged** (identical sha256 + mtime before/after).
 
 `run_linked_profile_dashboard_refresh_once.sh` is retained as manual/acceptance
 -only; its only executable caller is `run_odroid_deployment_acceptance_v1.sh`;
-no systemd unit owns it. The manual/acceptance path also shares the canonical `SYNTH_LINKED_PROFILE_RUNTIME_LOCK` / `/tmp/synth-linked-profile-runtime-orchestrator.lock` lock domain and skips when the scheduled owner is active, preventing concurrent legacy writes. Cockpit timer re-enabled at its prior cadence
+no systemd unit owns it. The manual/acceptance path also shares the canonical `SYNTH_LINKED_PROFILE_RUNTIME_LOCK` / `${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock` lock domain and skips when the scheduled owner is active, preventing concurrent legacy writes. Cockpit timer re-enabled at its prior cadence
 (`OnBootSec=2min`, `OnUnitActiveSec=5min`).
 
 ## Final single-ownership (post rollout)
