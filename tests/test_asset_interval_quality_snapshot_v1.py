@@ -56,6 +56,23 @@ def test_4h_small_gap_matches_v3_gap_and_score_semantics():
     assert row["quality_status"] == "TRUSTED"
 
 
+def test_inclusive_lower_bound_preserves_v3_window_semantics():
+    cases = (
+        ("1h", timedelta(hours=1), timedelta(days=30), 720, _dt(2026, 9, 6, 21)),
+        ("4h", timedelta(hours=4), timedelta(days=90), 540, _dt(2026, 9, 6, 16)),
+        ("1d", timedelta(days=1), timedelta(days=365), 365, _dt(2026, 9, 6)),
+    )
+    for interval, step, lookback, expected_rows, latest in cases:
+        lower = latest - lookback
+        opens = [lower + (step * offset) for offset in range(expected_rows + 1)]
+
+        row = _row(interval, opens)
+
+        assert row["rows_observed"] == expected_rows + 1
+        assert row["coverage_ratio"] == Decimal("1.000000")
+        assert row["gap_events"] == 0
+
+
 def test_missing_interval_matches_v3_new_semantics():
     row = _row("1d", [])
 
