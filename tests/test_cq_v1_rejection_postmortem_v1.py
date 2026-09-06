@@ -87,6 +87,23 @@ def test_bucket_stability_tracks_asset_membership_not_observation_identity():
     assert balanced[0]['bottom_jaccard'] == 1.0
 
 
+def test_stratified_rows_pool_multiple_asofs_with_same_mrp_state():
+    rows = [
+        row('a', '2026-01-01', 'discovery', '1h', .1, .2, .15, 1, asset_id=1),
+        row('b', '2026-01-01', 'discovery', '1h', .2, .3, .25, 2, asset_id=2),
+        row('c', '2026-01-02', 'discovery', '1h', .3, .4, .35, 3, asset_id=3),
+        row('d', '2026-01-02', 'discovery', '1h', .4, .5, .45, 4, asset_id=4),
+    ]
+    got = p.stratified_rows(rows)
+    balanced = [r for r in got if r['candidate'] == 'cq_v1_balanced']
+    assert len(balanced) == 1
+    assert balanced[0]['split'] == 'discovery'
+    assert balanced[0]['horizon'] == '1h'
+    assert balanced[0]['mrp_state'] == 'POSITIVE'
+    assert balanced[0]['n'] == 4
+    assert 'asof_ts_utc' not in balanced[0]
+
+
 def test_mrp_state_uses_sign_only():
     assert p._mrp_state({'mrp_aggregate': {'market_score': -1}}) == 'NEGATIVE'
     assert p._mrp_state({'mrp_aggregate': {'market_score': 0}}) == 'ZERO'

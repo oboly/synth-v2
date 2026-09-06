@@ -134,14 +134,15 @@ def per_asof_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def stratified_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    """Pool rows by frozen split/horizon and aggregate MRP sign state."""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for r in paired:
-        grouped[(r['split'], r['horizon'], r['mrp_state'], r['asof_ts_utc'])].append(r)
+        grouped[(r['split'], r['horizon'], r['mrp_state'])].append(r)
     out: list[dict[str, Any]] = []
-    for (split, horizon, state, asof), rows in sorted(grouped.items()):
+    for (split, horizon, state), rows in sorted(grouped.items()):
         for candidate in CANDIDATES:
             d = comparison(rows, candidate, 'forward_return_pct')
-            out.append({'split': split, 'horizon': horizon, 'mrp_state': state, 'asof_ts_utc': asof, 'candidate': candidate, **d})
+            out.append({'split': split, 'horizon': horizon, 'mrp_state': state, 'candidate': candidate, **d})
     return out
 
 
