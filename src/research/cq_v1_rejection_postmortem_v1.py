@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from math import sqrt
 from statistics import mean
-from typing import Any, Iterable
+from typing import Any
 
 from src.research import cq_v1_discovery_validation_evaluator_v1 as core
 
@@ -96,6 +96,8 @@ def pair_rows(population: list[dict[str, Any]], outcomes: list[dict[str, Any]]) 
             'split': str(o['split']),
             'horizon': str(o['horizon']),
             'mrp_state': _mrp_state(p),
+            'mrp_aggregate_status': str(p.get('mrp_aggregate_status', 'UNKNOWN')),
+            'mrp_asset_status': str(p.get('mrp_asset_status', 'UNKNOWN')),
             'scores': core.score_values(p),
             **{m: o.get(m) for m in OUTCOMES},
         })
@@ -143,17 +145,119 @@ def stratified_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def coverage_missingness_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Describe frozen CQ-v1 feature availability without altering eligibility."""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for r in paired:
+        grouped[(r['split'], r['asof_ts_utc'], r['horizon'])].append(r)
+    out: list[dict[str, Any]] = []
+    for (split, asof, horizon), rows in sorted(grouped.items()):
+        total = len(rows)
+        agg_available = sum(r['mrp_aggregate_status'] == 'AVAILABLE' for r in rows)
+        asset_available = sum(r['mrp_asset_status'] == 'AVAILABLE' for r in rows)
+        candidate_available = sum(_num(r['scores'].get(core.CQ_V1_BALANCED)) is not None for r in rows)
+        out.append({
+            'split': split, 'asof_ts_utc': asof, 'horizon': horizon, 'n': total,
+            'mrp_aggregate_available_n': agg_available,
+            'mrp_aggregate_missing_n': total - agg_available,
+            'mrp_asset_available_n': asset_available,
+            'mrp_asset_missing_n': total - asset_available,
+            'cq_v1_candidate_available_n': candidate_available,
+            'cq_v1_candidate_missing_n': total - candidate_available,
+        })
+    return out
+
+
+def asset_concentration_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Report concentration of COMPLETE paired rows by asset, split and horizon."""
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for r in paired:
+        grouped[(r['split'], r['horizon'])].append(r)
+    out: list[dict[str, Any]] = []
+    for (split, horizon), rows in sorted(grouped.items()):
+        counts = Counter(int(r['asset_id']) for r in rows)
+        n = len(rows)
+        top_asset_id, top_n = (counts.most_common(1)[0] if counts else (None, 0))
+        shares = [(count / n) for count in counts.values()] if n else []
+        out.append({
+            'split': split, 'horizon': horizon, 'n': n,
+            'unique_assets': len(counts),
+            'top_asset_id': top_asset_id,
+            'top_asset_share': None if not n else top_n / n,
+            'asset_hhi': None if not n else sum(share * share for share in shares),
+        })
+    return out
+
+
+def _bucket_members(rows: list[dict[str, Any]], candidate: str) -> tuple[set[str], set[str]]:
+    eligible = [r for r in rows if _num(r['scores'].get(candidate)) is not None]
+    if not eligible:
+        return set(), set()
+    ordered = sorted(eligible, key=lambda r: (_num(r['scores'][candidate]), r['observation_id']))
+    k = max(1, len(ordered) // 10)
+    return ({str(r['asset_id']) for r in ordered[:k]}, {str(r['asset_id']) for r in ordered[-k:]})
+
+
+def _jaccard(a: set[str], b: set[str]) -> float | None:
+    union = a | b
+    return None if not union else len(a & b) / len(union)
+
+
 def bucket_stability_rows(paired: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [r for r in per_asof_rows(paired) if r['outcome_metric'] == 'forward_return_pct']
+    """Measure adjacent-asof stability of candidate top/bottom ranked deciles."""
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for r in paired:
+        grouped[(r['split'], r['horizon'], r['asof_ts_utc'])].append(r)
+    out: list[dict[str, Any]] = []
+    for split in SPLITS:
+        for horizon in HORIZONS:
+            asofs = sorted(a for (sp, h, a) in grouped if sp == split and h == horizon)
+            for candidate in CANDIDATES:
+                prev_asof: str | None = None
+                prev_lo: set[str] = set()
+                prev_hi: set[str] = set()
+                for asof in asofs:
+                    lo, hi = _bucket_members(grouped[(split, horizon, asof)], candidate)
+                    if prev_asof is not None:
+                        out.append({
+                            'split': split, 'horizon': horizon, 'candidate': candidate,
+                            'previous_asof_ts_utc': prev_asof, 'asof_ts_utc': asof,
+                            'bottom_bucket_n': len(lo), 'top_bucket_n': len(hi),
+                            'bottom_jaccard': _jaccard(prev_lo, lo),
+                            'top_jaccard': _jaccard(prev_hi, hi),
+                        })
+                    prev_asof, prev_lo, prev_hi = asof, lo, hi
+    return out
 
 
 def summarize(per_asof: list[dict[str, Any]]) -> dict[str, Any]:
-    summary: dict[str, Any] = {'candidate_horizon': {}}
-    for candidate in CANDIDATES:
+    """Preserve split boundaries and directly compare balanced vs anchor instability."""
+    summary: dict[str, Any] = {'candidate_split_horizon': {}, 'balanced_vs_anchor': {}}
+    for split in SPLITS:
         for horizon in HORIZONS:
-            rows = [r for r in per_asof if r['candidate'] == candidate and r['horizon'] == horizon and r['outcome_metric'] == 'forward_return_pct' and r['spearman_delta'] is not None]
-            signs = Counter('POSITIVE' if r['spearman_delta'] > 0 else 'NEGATIVE' if r['spearman_delta'] < 0 else 'ZERO' for r in rows)
-            seq = [0 if r['spearman_delta'] == 0 else (1 if r['spearman_delta'] > 0 else -1) for r in rows]
-            flips = sum(1 for a, b in zip(seq, seq[1:]) if a and b and a != b)
-            summary['candidate_horizon'][f'{candidate}:{horizon}'] = {'dates_with_metric': len(rows), 'sign_counts': dict(signs), 'adjacent_sign_flips': flips}
+            candidate_stats: dict[str, dict[str, Any]] = {}
+            for candidate in CANDIDATES:
+                rows = [
+                    r for r in per_asof
+                    if r['split'] == split and r['candidate'] == candidate and r['horizon'] == horizon
+                    and r['outcome_metric'] == 'forward_return_pct' and r['spearman_delta'] is not None
+                ]
+                rows = sorted(rows, key=lambda r: r['asof_ts_utc'])
+                signs = Counter('POSITIVE' if r['spearman_delta'] > 0 else 'NEGATIVE' if r['spearman_delta'] < 0 else 'ZERO' for r in rows)
+                seq = [0 if r['spearman_delta'] == 0 else (1 if r['spearman_delta'] > 0 else -1) for r in rows]
+                flips = sum(1 for a, b in zip(seq, seq[1:]) if a and b and a != b)
+                stats = {
+                    'dates_with_metric': len(rows), 'sign_counts': dict(signs),
+                    'adjacent_sign_flips': flips,
+                    'mean_spearman_delta': None if not rows else mean(r['spearman_delta'] for r in rows),
+                }
+                candidate_stats[candidate] = stats
+                summary['candidate_split_horizon'][f'{candidate}:{split}:{horizon}'] = stats
+            b = candidate_stats[core.CQ_V1_BALANCED]
+            a = candidate_stats[core.CQ_V1_ANCHOR]
+            summary['balanced_vs_anchor'][f'{split}:{horizon}'] = {
+                'balanced_minus_anchor_adjacent_sign_flips': b['adjacent_sign_flips'] - a['adjacent_sign_flips'],
+                'balanced_minus_anchor_negative_dates': b['sign_counts'].get('NEGATIVE', 0) - a['sign_counts'].get('NEGATIVE', 0),
+                'balanced_minus_anchor_mean_spearman_delta': None if b['mean_spearman_delta'] is None or a['mean_spearman_delta'] is None else b['mean_spearman_delta'] - a['mean_spearman_delta'],
+            }
     return summary

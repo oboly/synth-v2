@@ -54,6 +54,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     per_asof = post.per_asof_rows(paired)
     stratified = post.stratified_rows(paired)
     buckets = post.bucket_stability_rows(paired)
+    coverage = post.coverage_missingness_rows(paired)
+    concentration = post.asset_concentration_rows(paired)
     summary = post.summarize(per_asof)
     manifest = {
         'runner': RUNNER,
@@ -68,6 +70,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         'per_asof_rows': len(per_asof),
         'stratified_rows': len(stratified),
         'bucket_stability_rows': len(buckets),
+        'coverage_missingness_rows': len(coverage),
+        'asset_concentration_rows': len(concentration),
         'diagnostic_only': 1,
         **SAFETY,
     }
@@ -76,6 +80,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     _csv(out / 'per_asof.csv', per_asof)
     _csv(out / 'stratified_metrics.csv', stratified)
     _csv(out / 'bucket_stability.csv', buckets)
+    _csv(out / 'coverage_missingness.csv', coverage)
+    _csv(out / 'asset_concentration.csv', concentration)
     _json(out / 'manifest.json', manifest)
     lines = [
         '# CQ v1 rejection post-mortem (#778)', '',
