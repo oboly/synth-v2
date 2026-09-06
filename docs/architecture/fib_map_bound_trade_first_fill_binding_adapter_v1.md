@@ -33,13 +33,14 @@ the new module.
 
 ## Input contract (smallest explicit shape)
 
-- `fill_event: StrategyOwnedInventoryEventV1` (#752/#753 B5) -- the real BUY
-  fill establishing ownership and lineage. Every identity field on the
-  binding (`trading_account_id`, `venue`, `market`, `strategy_bucket_id`,
-  `strategy_id`, `strategy_version`, `trade_id`, `source_execution_plan_id`,
-  `source_buy_fill_id`) is copied verbatim from this event -- never
-  re-derived, never separately supplied, so there is no code path that could
-  disagree with the real fill lineage about its own identity.
+- `verified_first_fill: VerifiedFirstBuyFillV1` -- produced only by
+  `verify_first_buy_fill_v1(...)` after validating the supplied
+  `StrategyOwnedInventoryEventV1` against the authoritative persisted #752
+  event set for its exact lineage. The supplied event must be present
+  verbatim and must be the earliest BUY under deterministic
+  `(occurred_ts_utc, event_id)` ordering. Every binding identity field is
+  copied verbatim from this verified event -- never re-derived or separately
+  supplied.
 - `map_evidence: CanonicalFibMapEvidenceV1` -- the canonical map evidence
   (see above). `venue`/`market` are cross-checked against the fill event's
   own `venue`/`market`.
@@ -52,26 +53,29 @@ the new module.
   `DEFAULT_PRIMARY_STALE_HOURS` from `native_short_fib_context_v1.py`
   (12h), exactly the same freshness bar market_data already applies to the
   primary 4h authority. B7 exposes no caller override for this boundary.
-- No `StrategyOwnedInventoryPositionV1` or prior-events history is required.
-  "Owned position" and "fill lineage" identity are the same source here (the
-  fill event itself); B6's existing unique keys (lineage, source fill,
-  binding_id), not a second position lookup in this module, are what enforce
-  first-fill/no-rebind semantics (see below).
+- First-fill verification requires authoritative persisted #752 history.
+  B8 must load the account event set through
+  `load_strategy_owned_inventory_events_v1(...)` and pass that complete
+  durable set (or an authoritative exact-lineage subset derived from it) to
+  `verify_first_buy_fill_v1(...)`. A partial/in-flight event batch is not an
+  authoritative input.
 
 ## First-fill / no-rebind semantics
 
-This module does not re-implement "is this really the first fill" as a
-separate history-scanning check. Enforcement is entirely the B6 repository's
-existing unique keys, which this adapter relies on unchanged:
+B7 now separates ordering proof from persistence uniqueness:
 
-- Replaying the identical fill + identical map evidence is idempotent --
-  `record_fib_map_bound_trade_v1` returns the already-persisted row, no
-  second insert.
-- Calling this adapter again for the same lineage with materially different
-  map evidence (e.g. a rolled-over map cycle) fails closed with
-  `FibMapBoundTradeConflictError("FIB_MAP_BOUND_TRADE_LINEAGE_CONFLICT")`.
-- Calling it for a different lineage that happens to reuse the same source
-  fill fails closed the same way (`..._SOURCE_FILL_CONFLICT`).
+- `verify_first_buy_fill_v1(...)` validates every authoritative event with
+  #752's public validator, requires the supplied fill to be present exactly,
+  filters to its exact `(account, venue, market, bucket, strategy, version,
+  trade_id)` lineage, and requires it to be the earliest BUY by
+  `(occurred_ts_utc, event_id)`. A later out-of-order BUY or RE_ENTER on an
+  already-open trade fails closed before persistence.
+- `build_fib_map_bound_trade_v1_from_first_fill(...)` and
+  `bind_fib_map_bound_trade_on_first_fill_v1(...)` accept only the verified
+  wrapper, not a raw inventory event.
+- B6 unique keys remain the independent replay/no-rebind backstop: identical
+  replay is idempotent; materially different map evidence for the same
+  lineage or source-fill reuse fails closed.
 
 ## Target-ladder immutability
 
@@ -90,11 +94,9 @@ B2, which this adapter must not do.
   owned entirely by B1's `validate_fib_map_bound_trade_v1` and is not
   duplicated here -- this adapter builds the full candidate binding, then
   calls B1's validator once.
-- This adapter owns only what B1 cannot see from a bare `FibMapBoundTradeV1`:
-  fill-lineage shape (`_validate_fill_event_for_binding`), that the fill is
-  actually a BUY (`SOURCE_FILL_NOT_BUY_SIDE`), fill/map identity cross-check
-  (`FIB_MAP_EVIDENCE_IDENTITY_MISMATCH`), and map-evidence freshness
-  (`FIB_MAP_EVIDENCE_FROM_THE_FUTURE`, `FIB_MAP_EVIDENCE_STALE`).
+- This adapter owns what B1 cannot see from a bare `FibMapBoundTradeV1`:
+  authoritative earliest-BUY verification, fill-lineage shape, BUY-side
+  enforcement, fill/map identity cross-check, and map-evidence freshness.
 
 ## Layer boundaries respected
 
@@ -111,7 +113,7 @@ executor                 -> untouched
 
 - Does not select or recompute a canonical Fib map.
 - Does not infer ownership from wallet balance -- lineage comes only from a
-  real, caller-supplied `StrategyOwnedInventoryEventV1`.
+  real #752 event that passed authoritative earliest-BUY verification.
 - Does not create execution intent, does not import `execution_planner` or
   `executor` (enforced by a static-import test).
 - Does not build or wire the exact-path PAPER acceptance harness (B8) -- see
@@ -134,8 +136,8 @@ production_runtime_activation=0
 ## Next slice
 
 `#753 B8` -- the exact-path PAPER acceptance harness -- remains blocked. B7
-gives it a real (not fabricated) construct+persist path from a
-`StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`, but B8 still needs
+gives it a real (not fabricated) authoritative-first-fill construct+persist
+path from #752 inventory history to a `FibMapBoundTradeV1`, but B8 still needs
 a real automatic-BUY PAPER fill to reach `FILLED` end-to-end, and no code
 path produces that yet: B5.5's PAPER order-placement adapter is explicitly
 submission-time-only and never returns `FILLED` -- there is still no

@@ -20,9 +20,11 @@ from pymysql.err import IntegrityError
 from src.decision_gate.fib_map_bound_trade_first_fill_binding_adapter_v1 import (
     CanonicalFibMapEvidenceV1,
     FibMapBoundTradeBindingAdapterError,
+    VerifiedFirstBuyFillV1,
     bind_fib_map_bound_trade_on_first_fill_v1,
     build_fib_map_bound_trade_v1_from_first_fill,
     derive_fib_map_bound_trade_binding_id_v1,
+    verify_first_buy_fill_v1,
 )
 from src.decision_gate.fib_map_bound_trade_repository_v1 import (
     FibMapBoundTradeConflictError,
@@ -139,13 +141,20 @@ def make_repository() -> tuple[FibMapBoundTradeRepositoryV1, MemoryDatabase]:
     return FibMapBoundTradeRepositoryV1(cursor_factory=database.cursor_factory), database
 
 
+def _verified(fill: StrategyOwnedInventoryEventV1, authoritative_events=None) -> VerifiedFirstBuyFillV1:
+    return verify_first_buy_fill_v1(
+        fill_event=fill,
+        authoritative_events=authoritative_events if authoritative_events is not None else (fill,),
+    )
+
+
 def test_happy_path_binds_and_persists_full_target_ladder():
     repo, database = make_repository()
     fill = _fill_event()
     evidence = _map_evidence()
 
     bound = bind_fib_map_bound_trade_on_first_fill_v1(
-        fill_event=fill, map_evidence=evidence, repository=repo,
+        verified_first_fill=_verified(fill), map_evidence=evidence, repository=repo,
     )
 
     assert bound.trade_id == "trade-1"
@@ -165,10 +174,10 @@ def test_replay_with_identical_evidence_is_idempotent_no_duplicate_row():
     evidence = _map_evidence()
 
     first = bind_fib_map_bound_trade_on_first_fill_v1(
-        fill_event=fill, map_evidence=evidence, repository=repo,
+        verified_first_fill=_verified(fill), map_evidence=evidence, repository=repo,
     )
     second = bind_fib_map_bound_trade_on_first_fill_v1(
-        fill_event=fill, map_evidence=evidence, repository=repo,
+        verified_first_fill=_verified(fill), map_evidence=evidence, repository=repo,
     )
 
     assert first == second
@@ -181,7 +190,9 @@ def test_identity_mismatch_between_fill_and_map_evidence_fails_closed():
     evidence = _map_evidence(market="BTC-EUR")
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="FIB_MAP_EVIDENCE_IDENTITY_MISMATCH"):
-        bind_fib_map_bound_trade_on_first_fill_v1(fill_event=fill, map_evidence=evidence, repository=repo)
+        bind_fib_map_bound_trade_on_first_fill_v1(
+            verified_first_fill=_verified(fill), map_evidence=evidence, repository=repo,
+        )
 
 
 def test_stale_map_evidence_fails_closed():
@@ -189,7 +200,7 @@ def test_stale_map_evidence_fails_closed():
     evidence = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=13))
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="FIB_MAP_EVIDENCE_STALE"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+        build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=evidence)
 
 
 
@@ -199,11 +210,11 @@ def test_canonical_map_freshness_boundary_is_fixed_at_12h():
     at_limit = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=12))
     beyond_limit = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=12, microseconds=1))
 
-    bound = build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=at_limit)
+    bound = build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=at_limit)
     assert bound.map_asof_ts_utc == at_limit.map_asof_ts_utc
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="FIB_MAP_EVIDENCE_STALE"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=beyond_limit)
+        build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=beyond_limit)
 
 
 def test_future_map_evidence_relative_to_fill_fails_closed():
@@ -211,7 +222,7 @@ def test_future_map_evidence_relative_to_fill_fails_closed():
     evidence = _map_evidence(map_asof_ts_utc=FILL_TS + timedelta(minutes=1))
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="FIB_MAP_EVIDENCE_FROM_THE_FUTURE"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+        build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=evidence)
 
 
 def test_structurally_invalid_map_evidence_fails_closed_via_b1_validator():
@@ -219,8 +230,7 @@ def test_structurally_invalid_map_evidence_fails_closed_via_b1_validator():
     evidence = _map_evidence(anchor_high_price=Decimal("50"))  # high <= low
 
     with pytest.raises(FibMapBoundTradeError, match="INVALID_FIB_MAP_ANCHOR_GEOMETRY"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
-
+        build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=evidence)
 
 
 @pytest.mark.parametrize(
@@ -233,30 +243,29 @@ def test_structurally_invalid_map_evidence_fails_closed_via_b1_validator():
 )
 def test_malformed_first_fill_event_fails_closed_before_binding(changes: dict[str, object]):
     fill = _fill_event(**changes)
-    evidence = _map_evidence()
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="INVALID_FIRST_FILL_EVENT"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill,))
+
 
 def test_source_fill_that_is_not_a_buy_fails_closed():
     fill = _fill_event(side="SELL")
-    evidence = _map_evidence()
 
     with pytest.raises(FibMapBoundTradeBindingAdapterError, match="SOURCE_FILL_NOT_BUY_SIDE"):
-        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill,))
 
 
 def test_already_bound_conflict_with_different_map_evidence_fails_closed():
     repo, _ = make_repository()
     fill = _fill_event()
     bind_fib_map_bound_trade_on_first_fill_v1(
-        fill_event=fill, map_evidence=_map_evidence(), repository=repo,
+        verified_first_fill=_verified(fill), map_evidence=_map_evidence(), repository=repo,
     )
 
     rolled_evidence = _map_evidence(native_map_id="native-map-8", map_cycle_id="cycle-8")
     with pytest.raises(FibMapBoundTradeConflictError, match="FIB_MAP_BOUND_TRADE_LINEAGE_CONFLICT"):
         bind_fib_map_bound_trade_on_first_fill_v1(
-            fill_event=fill, map_evidence=rolled_evidence, repository=repo,
+            verified_first_fill=_verified(fill), map_evidence=rolled_evidence, repository=repo,
         )
 
 
@@ -265,10 +274,102 @@ def test_target_ladder_freezes_full_ladder_not_a_currently_active_subset():
     full_ladder = (Decimal("227.2"), Decimal("261.8"), Decimal("300"))
     evidence = _map_evidence(target_levels=full_ladder)
 
-    bound = build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+    bound = build_fib_map_bound_trade_v1_from_first_fill(verified_first_fill=_verified(fill), map_evidence=evidence)
 
     assert bound.target_levels == full_ladder
     assert len(bound.target_levels) == 3
+
+
+def test_verify_rejects_bare_construction_of_verified_wrapper():
+    fill = _fill_event()
+    with pytest.raises(FibMapBoundTradeBindingAdapterError, match="UNVERIFIED_FIRST_FILL_EVENT"):
+        VerifiedFirstBuyFillV1(fill_event=fill, _verification_token=object())  # type: ignore[arg-type]
+
+
+def test_build_rejects_bare_strategy_owned_inventory_event_not_verified_wrapper():
+    fill = _fill_event()
+    evidence = _map_evidence()
+    with pytest.raises(FibMapBoundTradeBindingAdapterError, match="UNVERIFIED_FIRST_FILL_EVENT"):
+        build_fib_map_bound_trade_v1_from_first_fill(
+            verified_first_fill=fill,  # type: ignore[arg-type]
+            map_evidence=evidence,
+        )
+
+
+def test_later_buy_fill_processed_first_is_rejected_as_not_earliest_for_lineage():
+    earlier = _fill_event(
+        event_id="event-0", source_fill_id="fill-0", occurred_ts_utc=FILL_TS - timedelta(minutes=5),
+    )
+    later = _fill_event(event_id="event-1", source_fill_id="fill-1", occurred_ts_utc=FILL_TS)
+    authoritative = (earlier, later)
+
+    with pytest.raises(
+        FibMapBoundTradeBindingAdapterError,
+        match="FIRST_FILL_EVENT_IS_NOT_EARLIEST_BUY_FOR_LINEAGE",
+    ):
+        verify_first_buy_fill_v1(fill_event=later, authoritative_events=authoritative)
+
+    verified_earlier = verify_first_buy_fill_v1(fill_event=earlier, authoritative_events=authoritative)
+    assert verified_earlier.fill_event == earlier
+
+
+def test_re_enter_with_prior_buy_in_lineage_cannot_rebind_to_later_map():
+    original_buy = _fill_event(
+        event_id="event-original", source_fill_id="fill-original",
+        occurred_ts_utc=FILL_TS - timedelta(days=1),
+    )
+    re_enter_buy = _fill_event(
+        event_id="event-re-enter", source_fill_id="fill-re-enter", occurred_ts_utc=FILL_TS,
+    )
+    authoritative = (original_buy, re_enter_buy)
+
+    with pytest.raises(
+        FibMapBoundTradeBindingAdapterError,
+        match="FIRST_FILL_EVENT_IS_NOT_EARLIEST_BUY_FOR_LINEAGE",
+    ):
+        verify_first_buy_fill_v1(fill_event=re_enter_buy, authoritative_events=authoritative)
+
+
+def test_fill_event_missing_from_authoritative_set_fails_closed():
+    fill = _fill_event()
+    other = _fill_event(event_id="event-other", source_fill_id="fill-other")
+
+    with pytest.raises(
+        FibMapBoundTradeBindingAdapterError, match="FIRST_FILL_EVENT_NOT_IN_AUTHORITATIVE_SET",
+    ):
+        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(other,))
+
+
+def test_malformed_authoritative_event_fails_closed():
+    fill = _fill_event()
+    malformed = _fill_event(event_id="event-bad", source_fill_id="fill-bad", filled_base_quantity=Decimal("-1"))
+
+    with pytest.raises(
+        FibMapBoundTradeBindingAdapterError, match="MALFORMED_AUTHORITATIVE_INVENTORY_EVENT",
+    ):
+        verify_first_buy_fill_v1(fill_event=fill, authoritative_events=(fill, malformed))
+
+
+def test_verified_first_fill_replay_end_to_end_binds_earliest_buy_only():
+    repo, database = make_repository()
+    earlier = _fill_event(
+        event_id="event-0", source_fill_id="fill-0", occurred_ts_utc=FILL_TS - timedelta(hours=1),
+    )
+    later = _fill_event(event_id="event-1", source_fill_id="fill-1", occurred_ts_utc=FILL_TS)
+    authoritative = (later, earlier)  # delivered/processed out of order
+
+    verified = verify_first_buy_fill_v1(fill_event=earlier, authoritative_events=authoritative)
+    evidence = _map_evidence(
+        map_asof_ts_utc=earlier.occurred_ts_utc, map_published_at_utc=earlier.occurred_ts_utc,
+        anchor_end_ts_utc=earlier.occurred_ts_utc,
+    )
+    bound = bind_fib_map_bound_trade_on_first_fill_v1(
+        verified_first_fill=verified, map_evidence=evidence, repository=repo,
+    )
+
+    assert bound.source_buy_fill_id == "fill-0"
+    assert bound.bound_ts_utc == earlier.occurred_ts_utc
+    assert len(database.by_binding_id) == 1
 
 
 def test_no_broker_or_execution_imports():

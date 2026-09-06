@@ -1,4 +1,4 @@
-# Issue #753 — exact-path PAPER acceptance: blocked on missing identity bridge
+# Issue #753 — exact-path PAPER acceptance: blocked on PAPER ACTIVE -> FILLED reconciliation
 
 ## Status
 
@@ -61,10 +61,12 @@ native-map field names, no parallel geometry), pure
 `bound_ts_utc` always the fill's own `occurred_ts_utc`, fail-closed on
 identity mismatch / non-BUY source fill / stale or future map evidence), and
 `bind_fib_map_bound_trade_on_first_fill_v1` which persists through the
-unchanged B6 repository. First-fill/no-rebind semantics are enforced
-entirely by B6's existing unique keys, not re-implemented in B7. The full
-target ladder is frozen verbatim -- B7 never filters to currently-active or
-unconsumed targets. See
+unchanged B6 repository. First-fill ordering is now verified explicitly
+against authoritative persisted #752 event history using deterministic
+`(occurred_ts_utc, event_id)` ordering; build/bind accept only a
+`VerifiedFirstBuyFillV1`. B6 unique keys remain the independent replay and
+no-rebind backstop. The full target ladder is frozen verbatim -- B7 never
+filters to currently-active or unconsumed targets. See
 `docs/architecture/fib_map_bound_trade_first_fill_binding_adapter_v1.md`.
 **B8 remains BLOCKED** -- B7 only closes the construct+persist path from a
 real `StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`; it does not
@@ -99,9 +101,9 @@ handoff path. Do not treat B7 as unblocking B8.
   `db/migrations/20260906_fib_map_bound_trade_v1.sql` unique keys.
 - B7 `src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`
   — `build_fib_map_bound_trade_v1_from_first_fill` / `bind_fib_map_bound_trade_on_first_fill_v1`.
-  Constructs and persists one `FibMapBoundTradeV1` from a real
-  `StrategyOwnedInventoryEventV1` (B5) plus caller-supplied
-  `CanonicalFibMapEvidenceV1`, through the unchanged B6 repository.
+  Verifies the earliest BUY against authoritative persisted #752 history,
+  then constructs and persists one `FibMapBoundTradeV1` from that verified
+  fill plus caller-supplied `CanonicalFibMapEvidenceV1`, through B6.
 
 The B1→B2→B3 chain, given a `FibMapBoundTradeV1` and a
 `StrategyOwnedInventoryPositionV1`, already produces a correct, idempotent,
