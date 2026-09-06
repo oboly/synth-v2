@@ -335,6 +335,9 @@ class FibNavContext:
     anchor_low: Decimal
     anchor_high: Decimal
     direction: str
+    source_as_of_ts_utc: str = "DATA_UNAVAILABLE"
+    source_map_id: str = "DATA_UNAVAILABLE"
+    source_publication_id: str = "DATA_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -4265,14 +4268,16 @@ def build_profit_plan_card(
             invalidation_level = fib_nav_context.nav_invalidation
             action_label = "NAVIGATION_ONLY"
             reasons = (
-                "Old sell targets are historically completed. Navigation levels from the extended cycle map are shown for reference.",
+                "Old sell targets are historically completed. Separate navigation levels are shown for reference; native map lifecycle is unchanged.",
                 *reasons,
             )
-            # Both entry and target now come from the same candle-driven
-            # navigation rebuild -- coherent, but never native map authority.
+            # Both displayed sides come from the same navigation source,
+            # independently of native map lifecycle authority.
             planning_provenance = make_planning_provenance(
                 entry_source=PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
                 target_source=PLANNING_SOURCE_CANONICAL_4H_NAVIGATION,
+                source_as_of_ts_utc=fib_nav_context.source_as_of_ts_utc,
+                source_map_id=fib_nav_context.source_map_id,
             )
 
     (
@@ -6826,6 +6831,9 @@ def build_json_snapshot(
                     normalization_audit_by_symbol.get(c.symbol) if normalization_audit_by_symbol else None
                 ),
                 "fib_nav_context": {
+                    "source_as_of_ts_utc": c.fib_nav_context.source_as_of_ts_utc,
+                    "source_map_id": c.fib_nav_context.source_map_id,
+                    "source_publication_id": c.fib_nav_context.source_publication_id,
                     "map_state": c.fib_nav_context.map_state,
                     "rebuild_trigger": c.fib_nav_context.rebuild_trigger,
                     "direction": c.fib_nav_context.direction,

@@ -154,6 +154,7 @@ class ZoneContextLoadResult:
     source_missing: bool
     native_source_missing: bool = False
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = field(default_factory=dict)
+    canonical_nav_by_symbol: dict[str, FibNavContext] = field(default_factory=dict)
     evidence_by_symbol: dict[str, CardEvidence] = field(default_factory=dict)
     planning_provenance_by_symbol: dict[str, PlanningProvenance] = field(default_factory=dict)
 
@@ -963,6 +964,84 @@ def _build_reentry_context(
     )
 
 
+def _canonical_navigation_reference(
+    row: dict[str, Any] | None,
+    *,
+    market: str,
+    venue: str,
+    current_price: Decimal | None,
+    now_utc: datetime,
+    stale_after: timedelta,
+) -> FibNavContext | None:
+    """Read persisted reference geometry independently of native map completion.
+
+    This does not rebuild a swing or change native SHORT lifecycle authority.
+    Identity and source-candle age are checked even when a publication is recent.
+    """
+    if row is None or current_price is None or not current_price.is_finite() or current_price <= 0:
+        return None
+    symbol, quote = market.rsplit("-", 1)
+    if (
+        str(row.get("symbol", "")).upper() != symbol.upper()
+        or str(row.get("venue", "")).lower() != venue.lower()
+        or str(row.get("quote_currency", "")).upper() != quote.upper()
+        or row.get("interval_code") != "4h"
+        or row.get("source_freshness_state") != "FRESH"
+        or _canonical_fib_row_status(row, now_utc=now_utc, stale_after=stale_after) != "AVAILABLE"
+    ):
+        return None
+    for field_name in ("asof_ts_utc", "input_latest_candle_ts_utc"):
+        ts = _canonical_row_ts(row.get(field_name))
+        if ts is None or ts > now_utc or now_utc - ts > stale_after:
+            return None
+    direction = str(row.get("current_leg") or "").strip().upper()
+    if direction != "UP" or not row.get("map_id") or not row.get("publication_id"):
+        return None
+    if _canonical_row_ts(row["input_latest_candle_ts_utc"]) > _canonical_row_ts(row["asof_ts_utc"]):
+        return None
+    fields = (
+        "anchor_low_price", "anchor_high_price", "target_t1", "target_t2",
+        "target_extension", "entry_zone_low", "entry_zone_high", "entry_zone_mid",
+        "support_reaction_zone_low", "support_reaction_zone_high", "invalidation_level",
+    )
+    try:
+        values = {name: _parse_decimal(row.get(name)) for name in fields}
+        if any(value is None or not value.is_finite() or value <= 0 for value in values.values()):
+            return None
+        if not (
+            values["anchor_low_price"] < values["anchor_high_price"]
+            and values["entry_zone_low"] <= values["entry_zone_mid"] <= values["entry_zone_high"]
+            and values["support_reaction_zone_low"] <= values["support_reaction_zone_high"]
+        ):
+            return None
+    except (ValueError, ArithmeticError):
+        return None
+    low, high = values["anchor_low_price"], values["anchor_high_price"]
+    t1, t2, extension = (values[k] for k in ("target_t1", "target_t2", "target_extension"))
+    if not (low <= values["entry_zone_low"] <= values["entry_zone_high"] <= high
+            and low <= values["support_reaction_zone_low"] <= values["support_reaction_zone_high"] <= high):
+        return None
+    if not (high < t1 < t2 < extension and values["invalidation_level"] == low):
+        return None
+    built = _build_zone_context_from_canonical_row(row, current_price=current_price)
+    if built is None:
+        return None
+    ext, reentry = built
+    return FibNavContext(
+        nav_sell_levels=tuple(sorted({p for p in (ext.ext_1_272, ext.ext_1_618, ext.ext_2_000) if p > current_price})),
+        nav_buy_levels=tuple(sorted({p for p in (reentry.r382_price, reentry.r500_price, reentry.r618_price, reentry.r786_price) if p < current_price}, reverse=True)),
+        nav_invalidation=values["invalidation_level"],
+        map_state=str(row["map_status"]),
+        rebuild_trigger="PERSISTED_CANONICAL_REFERENCE",
+        anchor_low=values["anchor_low_price"],
+        anchor_high=values["anchor_high_price"],
+        direction="BULLISH",
+        source_as_of_ts_utc=_fmt_ts(_canonical_row_ts(row["asof_ts_utc"])),
+        source_map_id=str(row["map_id"]),
+        source_publication_id=str(row["publication_id"]),
+    )
+
+
 def _build_prior_map_meta_from_native_row(
     native_row: "Any",
     now_utc: datetime,
@@ -1110,6 +1189,7 @@ def load_zone_contexts(
     coverage_status_by_symbol: dict[str, str] = {}
     display_state_by_symbol: dict[str, str] = {}
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = {}
+    canonical_nav_by_symbol: dict[str, FibNavContext] = {}
     evidence_by_symbol: dict[str, CardEvidence] = {}
     # Per-symbol Planning PPP source attribution (Issue #457). load_zone_contexts()
     # is the only layer that sees which authority actually produced each of
@@ -1193,6 +1273,13 @@ def load_zone_contexts(
                 display_state_by_symbol[symbol] = "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
             activation_ts_by_symbol[symbol] = native_row.anchor_end_ts_utc
             if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE:
+                canonical_nav = _canonical_navigation_reference(
+                    canonical_fib_rows_by_symbol.get(symbol), market=market,
+                    venue=native_row.venue, current_price=prices.get(market),
+                    now_utc=_now, stale_after=canonical_fib_stale_after,
+                )
+                if canonical_nav is not None:
+                    canonical_nav_by_symbol[symbol] = canonical_nav
                 swing_low = native_row.anchor_low_price
                 swing_high = native_row.anchor_high_price
                 current_price = prices.get(market) or native_row.latest_primary_close_price
@@ -1423,6 +1510,7 @@ def load_zone_contexts(
         source_missing=source_missing,
         native_source_missing=native_source_missing,
         prior_map_meta_by_symbol=prior_map_meta_by_symbol,
+        canonical_nav_by_symbol=canonical_nav_by_symbol,
         evidence_by_symbol=evidence_by_symbol,
         planning_provenance_by_symbol=planning_provenance_by_symbol,
     )
@@ -1666,6 +1754,7 @@ def build_cards(
     history_by_symbol: dict[str, MarketTargetHistory],
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] | None = None,
+    canonical_nav_by_symbol: Mapping[str, FibNavContext] | None = None,
     now_utc: datetime | None = None,
     inclusion_reasons_by_market: Mapping[str, frozenset[str]] | None = None,
     account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] | None = None,
@@ -1696,9 +1785,9 @@ def build_cards(
         # Candle-driven nav rebuild: primary path uses history candles to detect a fresh
         # swing (build_fib_navigation_map); anchor-only fallback when candles are
         # insufficient or stale. Only triggered when prior map is MAP_COMPLETED.
-        nav_context: FibNavContext | None = None
+        nav_context = (canonical_nav_by_symbol or {}).get(symbol)
         prior_meta = _prior.get(symbol)
-        if prior_meta is not None and current is not None:
+        if nav_context is None and prior_meta is not None and current is not None:
             fib_nav_candles = _candles_to_fib_nav(
                 history.candles_since_activation if history is not None else ()
             )
@@ -2014,6 +2103,7 @@ def main() -> int:
         history_by_symbol,
         orders_by_symbol,
         prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
+        canonical_nav_by_symbol=zone_contexts.canonical_nav_by_symbol,
         inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
         account_plan_policy_by_market=context.account_plan_policy_by_market,
         breath_curve_by_symbol=breath_curve_by_symbol,
