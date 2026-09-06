@@ -36,14 +36,6 @@ from src.decision_gate.fib_map_bound_trade_repository_v1 import (
     FibMapBoundTradeConflictError,
     FibMapBoundTradeRepositoryV1,
 )
-from src.decision_gate.strategy_owned_fill_reconciliation_repository_v1 import (
-    append_strategy_owned_fill_reconciliation_fact_v1,
-    load_strategy_owned_fill_reconciliation_facts_v1,
-)
-from src.decision_gate.strategy_owned_fill_reconciliation_v1 import (
-    StrategyOwnedFillLineageV1,
-    reconcile_cumulative_fill_v1,
-)
 from src.decision_gate.strategy_owned_inventory_repository_v1 import (
     append_strategy_owned_inventory_event_v1,
     load_strategy_owned_inventory_events_v1,
@@ -54,9 +46,6 @@ from src.entry_policy.automatic_buy_candidate_v1 import (
     evaluate_automatic_buy_candidate_v1,
 )
 from src.execution_planner.automatic_buy_planner_v1 import build_automatic_buy_plan_v1
-from src.execution_planner.fib_map_bound_exit_execution_handoff_adapter_v1 import (
-    adapt_fib_map_bound_exit_plan_to_approved_execution_plan_v1,
-)
 from src.execution_planner.fib_map_bound_exit_execution_handoff_application_v1 import (
     submit_fib_map_bound_exit_plan_to_execution_handoff_v1,
 )
@@ -65,13 +54,10 @@ from src.execution_planner.fib_map_bound_exit_planner_v1 import (
     build_fib_map_bound_exit_plan_v1,
 )
 from src.executor.execution_handoff_v1 import RUNTIME_MODE_PAPER
-from src.executor.execution_submission_orchestrator_v1 import submit_execution_plan
-from src.executor.paper_order_adapter_v1 import (
-    PaperMarketQuoteV1,
-    PaperOrderPlacementAdapterV1,
-    paper_broker_cumulative_fill_evidence_from_leg_v1,
+from src.executor.paper_order_adapter_v1 import PaperMarketQuoteV1
+from src.orchestration.fib_map_bound_exit_paper_fill_execution_v1 import (
+    submit_and_reconcile_fib_map_bound_exit_paper_plan_v1,
 )
-from src.executor.paper_resting_order_reconciliation_v1 import reconcile_paper_resting_leg_v1
 from src.market_rules.venue_execution_constraints_v1 import STATUS_FRESH, VenueExecutionConstraints
 from tests.automatic_buy_account_allocation_evidence_fixtures_v1 import FakeConnection
 from tests.test_automatic_buy_paper_fill_execution_v1 import (
@@ -222,109 +208,70 @@ def _execute_paper_sell(
         runtime_owner="devlap",
         handoff_repository=exit_handoff_repo,
     )
-    approved = adapt_fib_map_bound_exit_plan_to_approved_execution_plan_v1(exit_plan)
     leg_repo = MemoryLegRepository()
     placement_repo = MemoryPlacementRepository()
+    handoff_repo = MemoryHandoffRepository(handoff)
+
     resting_quote = PaperMarketQuoteV1(
         market=MARKET,
         best_bid=exit_plan.legs[0].limit_price - Decimal("1"),
         best_ask=exit_plan.legs[0].limit_price,
         observed_ts_utc=at - timedelta(milliseconds=200),
     )
-    adapter = PaperOrderPlacementAdapterV1(
+    first = submit_and_reconcile_fib_map_bound_exit_paper_plan_v1(
+        plan=exit_plan,
+        handoff=handoff,
+        operator_id=73,
+        handoff_repository=handoff_repo,
+        leg_repository=leg_repo,
+        conn=inventory_conn,
         quote_provider=FixedQuoteProvider(resting_quote),
         max_quote_age_seconds=30,
         now_fn=lambda: at,
         placement_repository=placement_repo,
     )
-    submitted = submit_execution_plan(
-        handoff=handoff,
-        plan=approved,
-        operator_id=73,
-        handoff_repository=MemoryHandoffRepository(handoff),
-        leg_repository=leg_repo,
-        adapter=adapter,
-    )
-    assert submitted.leg_states == ("ACTIVE",)
+    assert first.submission.leg_states == ("ACTIVE",)
+    assert first.fills == ()
+
     leg = leg_repo.find_by_handoff_and_index(handoff.handoff_id or 0, 1)
     assert leg is not None and leg.state == "ACTIVE"
-
     through_quote = PaperMarketQuoteV1(
         market=MARKET,
         best_bid=leg.price + Decimal("1"),
         best_ask=leg.price + Decimal("2"),
         observed_ts_utc=at - timedelta(milliseconds=50),
     )
-    filled = reconcile_paper_resting_leg_v1(
-        leg,
-        handoff_repository=MemoryHandoffRepository(handoff),
+    second = submit_and_reconcile_fib_map_bound_exit_paper_plan_v1(
+        plan=exit_plan,
+        handoff=handoff,
+        operator_id=73,
+        handoff_repository=handoff_repo,
+        leg_repository=leg_repo,
+        conn=inventory_conn,
         quote_provider=FixedQuoteProvider(through_quote),
-        placement_repository=placement_repo,
         max_quote_age_seconds=30,
         now_fn=lambda: at,
-        leg_repository=leg_repo,
+        placement_repository=placement_repo,
     )
-    assert filled.state == "FILLED"
-    assert filled.broker_order_id is not None
+    assert second.fills and second.fills[0].event is not None
+    filled = leg_repo.find_by_handoff_and_index(handoff.handoff_id or 0, 1)
+    assert filled is not None and filled.state == "FILLED"
 
-    evidence = paper_broker_cumulative_fill_evidence_from_leg_v1(
-        filled,
-        observed_ts_utc=at,
-    )
-    lineage = StrategyOwnedFillLineageV1(
-        trading_account_id=exit_plan.trading_account_id,
-        venue=exit_plan.venue,
-        market=exit_plan.market,
-        strategy_bucket_id=exit_plan.strategy_bucket_id,
-        strategy_id=exit_plan.strategy_id,
-        strategy_version=exit_plan.strategy_version,
-        trade_id=exit_plan.trade_id,
-        source_execution_plan_id=approved.plan_reference_id,
-        source_order_id=filled.broker_order_id,
-        side="SELL",
-    )
-    prior = load_strategy_owned_fill_reconciliation_facts_v1(
-        inventory_conn,
-        trading_account_id=lineage.trading_account_id,
-        venue=lineage.venue,
-        source_order_id=lineage.source_order_id,
-    )
-    fact, event = reconcile_cumulative_fill_v1(
-        prior,
-        lineage=lineage,
-        evidence=evidence,
-    )
-    if fact not in prior:
-        append_strategy_owned_fill_reconciliation_fact_v1(inventory_conn, fact=fact)
-        assert event is not None
-        append_strategy_owned_inventory_event_v1(inventory_conn, event=event)
-
-    # Replay the same resolved execution path: no second PAPER placement/order,
-    # no second #752 event/fact, and no second handoff row.
-    replay_submission = submit_execution_plan(
+    replay = submit_and_reconcile_fib_map_bound_exit_paper_plan_v1(
+        plan=exit_plan,
         handoff=handoff,
-        plan=approved,
         operator_id=73,
-        handoff_repository=MemoryHandoffRepository(handoff),
+        handoff_repository=handoff_repo,
         leg_repository=leg_repo,
-        adapter=adapter,
+        conn=inventory_conn,
+        quote_provider=FixedQuoteProvider(through_quote),
+        max_quote_age_seconds=30,
+        now_fn=lambda: at,
+        placement_repository=placement_repo,
     )
-    assert replay_submission.leg_states == ("FILLED",)
-    replay_prior = load_strategy_owned_fill_reconciliation_facts_v1(
-        inventory_conn,
-        trading_account_id=lineage.trading_account_id,
-        venue=lineage.venue,
-        source_order_id=lineage.source_order_id,
-    )
-    replay_fact, replay_event = reconcile_cumulative_fill_v1(
-        replay_prior,
-        lineage=lineage,
-        evidence=evidence,
-    )
-    assert replay_fact == fact
-    assert replay_event is None
+    assert replay.fills and replay.fills[0].event is None
     assert len(placement_repo.rows) == 1
-    return handoff, filled, fact
+    return handoff, filled, second.fills[0].fact
 
 
 def _position(events, *, bucket=BUCKET, trade_id=None):
