@@ -8,9 +8,11 @@ resolves the RE_ENTER lineage-continuity decision Phase B4 explicitly
 deferred (`docs/architecture/automatic_buy_trade_lineage_identity_v1.md`,
 "Explicitly deferred: RE_ENTER lineage continuity").
 
-This phase does **not** add a `fib_map_bound_trade_v1` repository (B6), does
-not build the exact-path PAPER acceptance harness (B8), and -- see "What
-remains blocked" below -- does not build a PAPER order-placement adapter.
+This phase does **not** add a `fib_map_bound_trade_v1` repository (B6) and
+does not build the exact-path PAPER acceptance harness (B8). It also did not,
+at the time it was written, build a PAPER order-placement adapter -- see
+"What remained blocked (resolved by B5.5)" below for the follow-on phase that
+closed that gap.
 
 ## What changed
 
@@ -63,11 +65,18 @@ different strategy's fill can never absorb or be absorbed by an automatic-BUY
 position, even in the same account/venue/market (see the unrelated-fill test
 in `tests/test_automatic_buy_fill_reconciliation_v1.py`).
 
-## What remains blocked
+## What remained blocked (resolved by B5.5)
+
+**Update (Issue #753 Phase B5.5):** the gap described below is resolved --
+see `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md` for
+the PAPER order-placement adapter and the composition that calls this
+module's `reconcile_and_persist_automatic_buy_paper_fill_v1` with a real,
+deterministic `BrokerCumulativeFillEvidenceV1`. The description below is kept
+as the historical record of the blocker this phase closed.
 
 Wiring this bridge to a real trigger requires a real
 `BrokerCumulativeFillEvidenceV1` for an automatic-BUY PAPER order. That
-evidence does not exist anywhere in reviewed code today:
+evidence did not exist anywhere in reviewed code before B5.5:
 
 - The shared executor handoff path automatic-BUY plans flow through
   (`src/executor/execution_handoff_v1.py`,
@@ -130,10 +139,8 @@ production_runtime_activation=0
 
 ## Next slice
 
-A PAPER order-placement adapter for the shared executor handoff path is a
-prerequisite for any real invocation of this bridge (and therefore for B8,
-the exact-path PAPER acceptance harness). That decision is out of scope here
-and should be its own reviewed slice. Independently, B6
-(`fib_map_bound_trade_v1` repository) and B7 (binding adapter) remain next
-per `docs/status/issue_753_paper_acceptance_blocker_v1.md`'s original
-sequencing and do not depend on the PAPER adapter gap above.
+DONE: see `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`
+(Issue #753 Phase B5.5) for the PAPER order-placement adapter and its wiring
+to this bridge. Independently, B6 (`fib_map_bound_trade_v1` repository) and B7
+(binding adapter) remain next per
+`docs/status/issue_753_paper_acceptance_blocker_v1.md`'s original sequencing.

@@ -2,10 +2,11 @@
 
 ## Status
 
-BLOCKED for the exact-path PAPER acceptance harness (B8). Documenting the
-precise gap instead of inventing a shortcut, per task contract and
-`AGENTS.md` (do not fabricate ownership from wallet balance, do not invent
-parallel logic, do not revive #707/#723).
+BLOCKED for the exact-path PAPER acceptance harness (B8) and for B6/B7. B5.5
+(the PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
+Documenting the precise remaining gap instead of inventing a shortcut, per
+task contract and `AGENTS.md` (do not fabricate ownership from wallet
+balance, do not invent parallel logic, do not revive #707/#723).
 
 **Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
 by Phase B4, see
@@ -16,8 +17,14 @@ reconciliation bridge (including the RE_ENTER lineage-continuity decision B4
 deferred) is built and tested, but B5 also surfaced a **new, deeper blocker**
 -- no PAPER order-placement adapter exists anywhere in the shared executor
 handoff path automatic-BUY plans flow through, so there is still no real
-`BrokerCumulativeFillEvidenceV1` to call the new bridge with. Gap 4
-(`fib_map_bound_trade_v1` repository) remains open for B6.
+`BrokerCumulativeFillEvidenceV1` to call the new bridge with.
+
+**Update 2:** the B5.5 PAPER order-placement adapter this new blocker called
+for is now built, tested, and wired to the B5 bridge -- see
+`docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`. Gap 3
+is now fully resolved for PAPER. Gap 4 (`fib_map_bound_trade_v1` repository)
+remains open for B6; B7 and B8 (the exact-path PAPER acceptance harness this
+document was originally about) remain separate, not-yet-started phases.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -123,10 +130,11 @@ the existing B1/B2/B3 unit tests already prove).
    PARTIALLY DONE, see
    `docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md`: the
    reconciliation bridge is built, tested, and reusable, but B5 surfaced that
-   no PAPER order-placement adapter exists to actually trigger it. **New
-   recommended slice `#753 B5.5`** — design and build a reviewed PAPER
-   order-placement adapter for the shared executor handoff path (decide the
-   truthful-fill simulation contract), then wire it to call the B5 bridge.
+   no PAPER order-placement adapter exists to actually trigger it.
+2b. ~~`#753 B5.5` — design and build a reviewed PAPER order-placement
+   adapter for the shared executor handoff path (decide the truthful-fill
+   simulation contract), then wire it to call the B5 bridge.~~ DONE, see
+   `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`.
 3. `#753 B6` — add a `fib_map_bound_trade_v1` repository
    (insert-at-first-fill, load-by-lineage) matching the existing migration's
    unique keys. Independent of B5.5.
