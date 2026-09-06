@@ -96,6 +96,10 @@ def execution_price_for_policy(
         raise ExecutionOffsetReplayError("UNSUPPORTED_SIDE")
     if episode.canonical_level <= 0:
         raise ExecutionOffsetReplayError("INVALID_CANONICAL_LEVEL")
+    if episode.invalidation_price is not None and episode.invalidation_price <= 0:
+        raise ExecutionOffsetReplayError("INVALID_INVALIDATION_PRICE")
+    if episode.atr_at_issue is not None and episode.atr_at_issue <= 0:
+        raise ExecutionOffsetReplayError("INVALID_ATR_AT_ISSUE")
     if policy.policy_id == POLICY_EXACT_LEVEL:
         return episode.canonical_level
     if policy.policy_id == POLICY_STATIC_BUFFER:
@@ -141,6 +145,11 @@ def replay_episode(
 ) -> ExecutionOffsetReplayRowV1:
     _validate_episode(episode)
     execution_price = execution_price_for_policy(episode, policy)
+    if episode.invalidation_price is not None:
+        if episode.side == SIDE_BUY and episode.invalidation_price >= execution_price:
+            raise ExecutionOffsetReplayError("INVALID_INVALIDATION_DIRECTION")
+        if episode.side == SIDE_SELL and episode.invalidation_price <= execution_price:
+            raise ExecutionOffsetReplayError("INVALID_INVALIDATION_DIRECTION")
     candle_rows = list(candles)
     for candle in candle_rows:
         _validate_candle(candle)

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -175,3 +176,15 @@ def test_overlapping_forward_candles_fail_closed() -> None:
     second = ReplayCandle(T0 + timedelta(hours=1), T0 + timedelta(hours=3), Decimal("101"), Decimal("99"), Decimal("100"))
     with pytest.raises(ExecutionOffsetReplayError, match="OVERLAPPING_FORWARD_CANDLE_INTERVAL"):
         replay_episode(episode(), [first, second], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
+
+
+def test_buy_invalidation_must_be_below_execution_price() -> None:
+    bad = replace(episode(SIDE_BUY), invalidation_price=Decimal("100"))
+    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_DIRECTION"):
+        replay_episode(bad, [candle(1, "99", "101")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
+
+
+def test_sell_invalidation_must_be_above_execution_price() -> None:
+    bad = replace(episode(SIDE_SELL), invalidation_price=Decimal("100"))
+    with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_DIRECTION"):
+        replay_episode(bad, [candle(1, "99", "101")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
