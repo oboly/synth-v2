@@ -1,18 +1,15 @@
-# Issue #753 — exact-path PAPER acceptance: blocked on PAPER ACTIVE -> FILLED reconciliation
+# Issue #753 — exact-path PAPER acceptance: technically PASS pending PR #806 merge
 
 ## Status
 
-B5.5 (the PAPER order-placement adapter gap), B6 (the
-`fib_map_bound_trade_v1` repository), B7 (the first-fill binding adapter),
-and now B7.5 (resting-order `ACTIVE -> FILLED` reconciliation) are resolved
--- see Update 5 below. B8 (the exact-path PAPER acceptance harness) is now
-**technically runnable**: a real automatic-BUY PAPER order can reach
-`FILLED` end-to-end for the first time. B8 itself is **not yet built or
-run** and is not accepted by this update -- see Update 5 for exactly what is
-and is not proven.
-Documenting the precise remaining gap instead of inventing a shortcut, per
-task contract and `AGENTS.md` (do not fabricate ownership from wallet
-balance, do not invent parallel logic, do not revive #707/#723).
+B5.5, B6, B7, B7.5, and B7.6 are resolved and merged. B8 is now built and
+run on PR #806 using the exact production PAPER paths for BUY and SELL fill
+reconciliation, with all ten #753 acceptance cases covered. The current B8
+head is **technically PASS**: canonical + adjacent suite 146 passed, no direct
+fill-reconciliation/inventory-event shortcut remains in the acceptance test,
+and no LIVE/broker/wallet authority is activated. #753 must not be treated as
+technically complete until PR #806 itself clears final review and is merged.
+See Updates 5-7 below for the progression and exact evidence.
 
 **Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
 by Phase B4, see
@@ -76,6 +73,10 @@ fill B8's harness needs. That specific gap is closed by Update 5 below.
 **Update 5:** B7.5 (`src/executor/paper_resting_order_reconciliation_v1.py`) is built and tested. The B5.5 resting-order gap is closed with conservative PAPER-only semantics: BUY fills only after a later `best_ask < resting price`, SELL only after `best_bid > resting price`; equality remains `ACTIVE` because queue priority is unknown. Reconciliation requires the exact PAPER handoff, an identity-matching persisted `ACTIVE` placement from `executor_paper_order_placement`, and a valid quote observed strictly after that placement. Temporary/missing/conflicting evidence never changes structural `ACTIVE` state. The executor leg write is an explicit broker-order-id-guarded CAS `ACTIVE -> FILLED`; placement history remains immutable. `automatic_buy_paper_fill_execution_v1.py` reconciles only legs that were already ACTIVE before the current submission call, then routes a resulting persisted FILLED leg through the unchanged #752/B5 ownership bridge. Replay emits no duplicate ownership event. See `docs/architecture/paper_resting_order_active_fill_reconciliation_v1.md`.
 
 **B8 is now technically runnable, but explicitly NOT accepted by Update 5.** A real automatic-BUY PAPER path can now produce persisted `FILLED` plus strategy-owned inventory without fixture mutation. B8 still must build and run the single exact-path acceptance lifecycle required by #753; do not treat B7.5 as that acceptance having passed.
+
+**Update 6:** B7.6 is merged via PR #807. `src/orchestration/fib_map_bound_exit_paper_fill_execution_v1.py` now provides the missing production PAPER SELL composition: a pre-existing resting SELL leg may reconcile `ACTIVE -> FILLED` only on strict post-placement price-through, then the exact Fib-bound lineage is reduced through decision_gate-owned #752 reconciliation. Reduction authorization plus reconciliation fact and optional SELL inventory event are atomic under exact-lineage `FOR UPDATE` serialization. Failure rolls back the whole mutation; concurrent reductions cannot both authorize against stale owned quantity. Existing bounded Fib exit plan references preserve their legacy identity; oversized new identities fall back to a deterministic persistence-safe hash. No LIVE/broker/wallet authority was added.
+
+**Update 7:** PR #806 now contains the complete B8 exact-path PAPER acceptance matrix. The canonical test starts at market-only setup -> automatic BUY candidate -> decision_gate -> BUY planner -> real PAPER ACTIVE -> later strict-through FILLED -> #752 BUY ownership -> authoritative first-fill verification -> immutable B6/B7 Fib binding. It then exercises real PAPER target SELL fills through the merged B7.6 production bridge, deterministic next-target order, invalidation precedence, target-fill then invalidation of only the exact remaining owned quantity, immutable old-map binding under newer maps, restart/replay preservation, stale/missing/conflicting evidence fail-closed, same-asset cross-bucket isolation, and duplicate-cycle idempotency. The acceptance test contains no direct `reconcile_cumulative_fill_v1`/fact-append shortcut and no synthetic FILLED fixture mutation. Focused+adjacent B8 suite: 146 passed; py_compile + `git diff --check` PASS. B8 is technically PASS on the current #806 branch, but #753 must not be treated as technically complete until #806 itself clears review and is merged.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
