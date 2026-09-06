@@ -113,3 +113,15 @@ def test_context_identity_conflict_fails_closed() -> None:
     bad = CalibrationInputV1(item.episode, TargetEpisodeAnalysisContextV1("other", item.context.source_map_id, "T1", item.context.reference_price, item.context.direction), item.candles)
     with pytest.raises(TargetCaptureCalibrationError, match="EPISODE_CONTEXT_IDENTITY_CONFLICT"):
         build_calibration_report([bad], min_sample_threshold=1)
+
+
+def test_candidate_crossing_invalidation_is_explicitly_excluded_not_report_fatal() -> None:
+    item = make_input(1, peak=Decimal("99"))
+    from dataclasses import replace
+    tight = CalibrationInputV1(replace(item.episode, invalidation_price=Decimal("99.4")), item.context, item.candles)
+    report = build_calibration_report([tight], min_sample_threshold=1)
+    half = next(c for c in report["overall"]["candidates"] if c["buffer_pct_fraction"] == Decimal("0.005"))
+    one = next(c for c in report["overall"]["candidates"] if c["buffer_pct_fraction"] == Decimal("0.01"))
+    assert half["candidate_geometry_excluded_count"] == 0
+    assert one["candidate_geometry_excluded_count"] == 1
+    assert any(e["buffer_pct_fraction"] == Decimal("0.01") for e in report["candidate_geometry_exclusions"])
