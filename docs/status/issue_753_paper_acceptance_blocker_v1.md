@@ -237,3 +237,27 @@ execution_planner=unchanged
 executor=unchanged
 production_code_changed=0
 ```
+
+## Update 6 — B7.6 PAPER SELL fill ownership bridge
+
+B8 hardening exposed a real missing production seam: a FILLED PAPER SELL leg
+could be converted to cumulative fill evidence, and #752 reconciliation was
+side-neutral, but no reviewed application path connected those two for
+Fib-map-bound exits. A test-only direct call to generic reconciliation would
+not count as exact-path acceptance.
+
+B7.6 closes that gap with:
+
+- `src/decision_gate/fib_map_bound_exit_fill_reconciliation_v1.py` — exact
+  SELL lineage + current-owned-quantity authorization before any emitted
+  reduction delta;
+- `src/decision_gate/fib_map_bound_exit_fill_reconciliation_persistence_v1.py`
+  — append-only/replay-safe #752 persistence;
+- `src/orchestration/fib_map_bound_exit_paper_fill_execution_v1.py` — PAPER-only
+  composition of existing handoff, placement, resting reconciliation, FILLED
+  evidence, and decision_gate persistence.
+
+No execution-planner or executor policy was moved or duplicated. No LIVE or
+broker-private path is activated. B8 remains NOT accepted until PR #806 is
+updated to exercise this merged production bridge across all ten acceptance
+cases without test-only ownership mutation.
