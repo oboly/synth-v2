@@ -141,9 +141,12 @@ executor=unchanged
 production_runtime_activation=0
 ```
 
-## Next slice (B5)
+## Next slice (B5) -- done
 
-Wire automatic-BUY PAPER fill handling to #752's
-`reconcile_cumulative_fill_v1`, resolving the RE_ENTER continuity decision
-above using the inventory projection, per
+Phase B5 wired automatic-BUY PAPER fill handling to #752's
+`reconcile_cumulative_fill_v1` and resolved the RE_ENTER continuity decision
+above using the inventory projection. See
+`docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md`. B5 also
+surfaced that no PAPER order-placement adapter exists yet to actually trigger
+that bridge with a real fill -- tracked as `#753 B5.5` in
 `docs/status/issue_753_paper_acceptance_blocker_v1.md`.
