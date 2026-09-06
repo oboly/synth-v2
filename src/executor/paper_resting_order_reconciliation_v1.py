@@ -205,6 +205,12 @@ def reconcile_paper_resting_leg_v1(
 
     if leg.state == FILLED:
         return leg
+    if (
+        isinstance(max_quote_age_seconds, bool)
+        or not isinstance(max_quote_age_seconds, int)
+        or max_quote_age_seconds <= 0
+    ):
+        raise ValueError("max_quote_age_seconds must be a positive integer")
     if leg.state != ACTIVE:
         raise PaperRestingLegNotReconcilableError(
             "PAPER_RESTING_RECONCILIATION_REQUIRES_ACTIVE_OR_FILLED_LEG"

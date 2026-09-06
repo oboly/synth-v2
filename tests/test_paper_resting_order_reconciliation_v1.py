@@ -449,3 +449,24 @@ def test_no_broker_or_network_import_in_reconciliation_module() -> None:
     }
     for forbidden in ("bitvavo", "requests", "httpx", "socket", "credential_adapter", "broker_client"):
         assert not any(forbidden in name.lower() for name in imported_modules)
+
+@pytest.mark.parametrize("invalid_max_age", [True, False, 0, -1, 1.5, "30", None])
+def test_invalid_max_quote_age_configuration_fails_closed_before_quote(invalid_max_age: object) -> None:
+    leg = _leg()
+    provider = FixedQuoteProvider(
+        PaperMarketQuoteV1(
+            market=MARKET, best_bid=Decimal("98"), best_ask=Decimal("99"),
+            observed_ts_utc=NOW - timedelta(seconds=5),
+        )
+    )
+    with pytest.raises(ValueError, match="max_quote_age_seconds must be a positive integer"):
+        reconcile_paper_resting_leg_v1(
+            leg,
+            handoff_repository=FakeHandoffRepository(_handoff()),
+            quote_provider=provider,
+            placement_repository=FakePlacementRepository(_placement()),
+            max_quote_age_seconds=invalid_max_age,  # type: ignore[arg-type]
+            now_fn=lambda: NOW,
+            leg_repository=FakeLegRepository(leg),
+        )
+    assert provider.calls == 0
