@@ -85,6 +85,18 @@ def test_no_systemd_unit_owns_refresh() -> None:
     assert not offenders, f"systemd unit(s) must not own the refresh pipeline: {offenders}"
 
 
+
+def test_manual_refresh_shares_canonical_orchestrator_lock_domain() -> None:
+    manual = REFRESH_SCRIPT.read_text(encoding="utf-8")
+    orchestrator = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh").read_text(encoding="utf-8")
+    default_lock = "/tmp/synth-linked-profile-runtime-orchestrator.lock"
+    assert default_lock in manual
+    assert default_lock in orchestrator
+    assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in manual
+    assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in orchestrator
+    assert "flock -n 9" in manual
+    assert "flock -n 9" in orchestrator
+
 def main() -> None:
     for test in (
         test_refresh_script_still_present,
@@ -92,6 +104,7 @@ def main() -> None:
         test_allowed_caller_actually_calls_it_and_is_acceptance_only,
         test_key_runtime_scripts_do_not_invoke_refresh,
         test_no_systemd_unit_owns_refresh,
+        test_manual_refresh_shares_canonical_orchestrator_lock_domain,
     ):
         test()
     print("ok")
