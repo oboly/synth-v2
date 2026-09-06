@@ -649,3 +649,15 @@ def test_arb_canonical_navigation_rejects_stale_or_incoherent_evidence(tmp_path)
         assert card.fib_nav_context is None, change
         assert card.reload_reentry_zone == (), change
         assert card.action_label == "WAIT_FOR_NEW_MAP", change
+
+
+def test_bearish_canonical_map_cannot_become_upward_native_navigation():
+    from datetime import timedelta
+    row = {**_arb_canonical_navigation_row(), "current_leg": "DOWN",
+           "target_t1": Decimal("0.10639936"), "target_t2": Decimal("0.10021634"),
+           "target_extension": Decimal("0.08234634"),
+           "invalidation_level": Decimal("0.12913")}
+    assert profit_plan_runner._canonical_navigation_reference(
+        row, market="ARB-EUR", venue="bitvavo", current_price=Decimal("0.08"),
+        now_utc=_ARB_NOW, stale_after=timedelta(hours=8),
+    ) is None

@@ -995,7 +995,7 @@ def _canonical_navigation_reference(
         if ts is None or ts > now_utc or now_utc - ts > stale_after:
             return None
     direction = str(row.get("current_leg") or "").strip().upper()
-    if direction not in {"UP", "DOWN"} or not row.get("map_id") or not row.get("publication_id"):
+    if direction != "UP" or not row.get("map_id") or not row.get("publication_id"):
         return None
     if _canonical_row_ts(row["input_latest_candle_ts_utc"]) > _canonical_row_ts(row["asof_ts_utc"]):
         return None
@@ -1021,10 +1021,7 @@ def _canonical_navigation_reference(
     if not (low <= values["entry_zone_low"] <= values["entry_zone_high"] <= high
             and low <= values["support_reaction_zone_low"] <= values["support_reaction_zone_high"] <= high):
         return None
-    if direction == "UP":
-        if not (high < t1 < t2 < extension and values["invalidation_level"] == low):
-            return None
-    elif not (extension < t2 < t1 < low and values["invalidation_level"] == high):
+    if not (high < t1 < t2 < extension and values["invalidation_level"] == low):
         return None
     built = _build_zone_context_from_canonical_row(row, current_price=current_price)
     if built is None:
@@ -1038,7 +1035,7 @@ def _canonical_navigation_reference(
         rebuild_trigger="PERSISTED_CANONICAL_REFERENCE",
         anchor_low=values["anchor_low_price"],
         anchor_high=values["anchor_high_price"],
-        direction="BULLISH" if direction == "UP" else "BEARISH",
+        direction="BULLISH",
         source_as_of_ts_utc=_fmt_ts(_canonical_row_ts(row["asof_ts_utc"])),
         source_map_id=str(row["map_id"]),
         source_publication_id=str(row["publication_id"]),
