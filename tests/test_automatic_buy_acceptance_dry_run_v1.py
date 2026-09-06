@@ -56,6 +56,8 @@ def _plan() -> AutomaticBuyPlanV1:
         strategy_id="strategy-a",
         strategy_version="1",
         setup_id="setup-1",
+        strategy_bucket_id="SHORT_TERM_ROTATION",
+        trade_id="automatic_buy_trade_id_v1:101:test-fixture",
         gate_approval=AutomaticBuyGateApprovalProvenanceV1(
             state="APPROVED",
             reason_code="OK",

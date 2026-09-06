@@ -32,7 +32,10 @@ def _candidate(**overrides: object) -> AutomaticBuyCandidateV1:
 
 
 def _decision(**overrides: object) -> AutomaticBuyGateDecisionV1:
-    values: dict[str, object] = dict(state=STATE_APPROVED, reason_code="OK", candidate=_candidate(), approved_notional_ceiling_eur=Decimal("257.03"))
+    values: dict[str, object] = dict(
+        state=STATE_APPROVED, reason_code="OK", candidate=_candidate(),
+        approved_notional_ceiling_eur=Decimal("257.03"), strategy_bucket_id="SHORT_TERM_ROTATION",
+    )
     values.update(overrides)
     return AutomaticBuyGateDecisionV1(**values)  # type: ignore[arg-type]
 
@@ -165,6 +168,46 @@ def test_planning_context_invalid_fields_fail_closed() -> None:
         build_automatic_buy_plan_v1(decision=_decision(), context=_context(trading_account_id=0))
     with pytest.raises(AutomaticBuyPlanningError, match="PLANNING_CONTEXT_INVALID"):
         build_automatic_buy_plan_v1(decision=_decision(), context=_context(planning_ts_utc=NOW.replace(tzinfo=None)))
+
+
+def test_strategy_bucket_id_is_copied_exactly_from_gate_decision() -> None:
+    plan = build_automatic_buy_plan_v1(decision=_decision(strategy_bucket_id="OTHER_BUCKET"), context=_context())
+    assert plan.strategy_bucket_id == "OTHER_BUCKET"
+
+
+def test_missing_strategy_bucket_id_on_approved_decision_fails_closed() -> None:
+    with pytest.raises(AutomaticBuyPlanningError, match="GATE_DECISION_STRATEGY_BUCKET_ID_MISSING"):
+        build_automatic_buy_plan_v1(decision=_decision(strategy_bucket_id=None), context=_context())
+    with pytest.raises(AutomaticBuyPlanningError, match="GATE_DECISION_STRATEGY_BUCKET_ID_MISSING"):
+        build_automatic_buy_plan_v1(decision=_decision(strategy_bucket_id=""), context=_context())
+
+
+def test_trade_id_is_deterministic_for_the_same_accepted_buy_lineage() -> None:
+    first = build_automatic_buy_plan_v1(decision=_decision(), context=_context())
+    second = build_automatic_buy_plan_v1(decision=_decision(), context=_context())
+    assert first.trade_id == second.trade_id
+    assert first.trade_id
+
+
+def test_trade_id_is_distinct_across_genuinely_different_lineages() -> None:
+    base = build_automatic_buy_plan_v1(decision=_decision(), context=_context())
+    different_bucket = build_automatic_buy_plan_v1(
+        decision=_decision(strategy_bucket_id="OTHER_BUCKET"), context=_context()
+    )
+    different_evidence = build_automatic_buy_plan_v1(
+        decision=_decision(candidate=_candidate(evidence_id="evidence-2")), context=_context()
+    )
+    different_action = build_automatic_buy_plan_v1(
+        decision=_decision(candidate=_candidate(candidate_action="RE_ENTER")), context=_context()
+    )
+    different_account = build_automatic_buy_plan_v1(
+        decision=_decision(), context=_context(trading_account_id=99)
+    )
+    trade_ids = {
+        base.trade_id, different_bucket.trade_id, different_evidence.trade_id,
+        different_action.trade_id, different_account.trade_id,
+    }
+    assert len(trade_ids) == 5
 
 
 def test_planner_has_no_manual_executor_broker_or_raw_candidate_entrypoint() -> None:

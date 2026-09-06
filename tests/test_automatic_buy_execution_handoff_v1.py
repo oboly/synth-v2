@@ -51,6 +51,8 @@ def _plan() -> AutomaticBuyPlanV1:
         strategy_id="strategy-a",
         strategy_version="1",
         setup_id="setup-1",
+        strategy_bucket_id="SHORT_TERM_ROTATION",
+        trade_id="automatic_buy_trade_id_v1:101:test-fixture",
         gate_approval=AutomaticBuyGateApprovalProvenanceV1("APPROVED", "OK", Decimal("10")),
         planner_version="automatic_buy_planner_v1",
         planning_ts_utc=now,
@@ -150,6 +152,22 @@ def test_plan_reference_is_retry_stable_but_provenance_sensitive() -> None:
     assert derive_automatic_buy_plan_reference_id_v1(plan) == derive_automatic_buy_plan_reference_id_v1(plan)
     changed = AutomaticBuyPlanV1(**{**plan.__dict__, "candidate_action": "RE_ENTER"})
     assert derive_automatic_buy_plan_reference_id_v1(plan) != derive_automatic_buy_plan_reference_id_v1(changed)
+
+
+def test_plan_reference_id_is_sensitive_to_strategy_bucket_id_and_trade_id() -> None:
+    plan = _plan()
+    different_bucket = AutomaticBuyPlanV1(**{**plan.__dict__, "strategy_bucket_id": "OTHER_BUCKET"})
+    different_trade = AutomaticBuyPlanV1(**{**plan.__dict__, "trade_id": "automatic_buy_trade_id_v1:101:other"})
+    assert derive_automatic_buy_plan_reference_id_v1(plan) != derive_automatic_buy_plan_reference_id_v1(different_bucket)
+    assert derive_automatic_buy_plan_reference_id_v1(plan) != derive_automatic_buy_plan_reference_id_v1(different_trade)
+
+
+def test_missing_strategy_bucket_id_or_trade_id_fails_closed_in_adapter() -> None:
+    plan = _plan()
+    for field in ("strategy_bucket_id", "trade_id"):
+        broken = AutomaticBuyPlanV1(**{**plan.__dict__, field: ""})
+        with pytest.raises(Exception, match="PLAN_IDENTITY_LINEAGE_FIELD_EMPTY"):
+            adapt_automatic_buy_plan_to_approved_execution_plan_v1(broken)
 
 
 def test_duplicate_paper_handoff_reuses_same_shared_plan_identity() -> None:

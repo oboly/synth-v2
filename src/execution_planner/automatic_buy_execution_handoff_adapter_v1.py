@@ -19,7 +19,10 @@ PLAN_SOURCE_AUTOMATIC_BUY_V1: Final[str] = "automatic_buy_planner_v1"
 SIDE_BUY: Final[str] = "BUY"
 SUPPORTED_CANDIDATE_ACTIONS: Final[frozenset[str]] = frozenset({"ENTER", "RE_ENTER"})
 REQUIRED_GATE_APPROVAL_STATE: Final[str] = "APPROVED"
-_PLAN_REFERENCE_ID_CONTRACT_VERSION: Final[str] = "automatic_buy_execution_handoff_adapter_v1"
+# Issue #753 B4 bumps this contract version because the identity payload now
+# includes strategy_bucket_id and trade_id; any pre-existing plan_reference_id
+# computed under the prior version is intentionally not reproducible.
+_PLAN_REFERENCE_ID_CONTRACT_VERSION: Final[str] = "automatic_buy_execution_handoff_adapter_v1_b4"
 
 
 class AutomaticBuyPlanAdapterError(ValueError):
@@ -59,6 +62,10 @@ def _validate_plan_structure(plan: AutomaticBuyPlanV1) -> None:
             plan.planner_version,
         )),
         "PLAN_PROVENANCE_FIELD_EMPTY",
+    )
+    _reject(
+        not all(_nonempty(v) for v in (plan.strategy_bucket_id, plan.trade_id)),
+        "PLAN_IDENTITY_LINEAGE_FIELD_EMPTY",
     )
     gate = plan.gate_approval
     _reject(gate is None or gate.state != REQUIRED_GATE_APPROVAL_STATE, "PLAN_GATE_APPROVAL_NOT_APPROVED")
@@ -103,6 +110,8 @@ def _identity_payload(plan: AutomaticBuyPlanV1) -> dict[str, object]:
         "strategy_id": plan.strategy_id,
         "strategy_version": plan.strategy_version,
         "setup_id": plan.setup_id,
+        "strategy_bucket_id": plan.strategy_bucket_id,
+        "trade_id": plan.trade_id,
         "gate_approval": {
             "state": gate.state,
             "reason_code": gate.reason_code,

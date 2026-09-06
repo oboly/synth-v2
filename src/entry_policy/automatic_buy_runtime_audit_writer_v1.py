@@ -53,6 +53,8 @@ def build_immutable_buy_plan_json(plan: AutomaticBuyPlanV1) -> dict[str, Any]:
         "strategy_id": plan.strategy_id,
         "strategy_version": plan.strategy_version,
         "setup_id": plan.setup_id,
+        "strategy_bucket_id": plan.strategy_bucket_id,
+        "trade_id": plan.trade_id,
         "gate_approval": {
             "state": plan.gate_approval.state,
             "reason_code": plan.gate_approval.reason_code,
