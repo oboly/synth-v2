@@ -34,7 +34,7 @@ order_submission=0
 live_orders=0
 decision_gate=unchanged (calls existing #753 B5 bridge only)
 execution_planner=unchanged
-executor=unchanged (calls existing public submit_execution_plan only)
+executor=extended (new PAPER adapter only; shared submission orchestrator unchanged)
 """
 from __future__ import annotations
 

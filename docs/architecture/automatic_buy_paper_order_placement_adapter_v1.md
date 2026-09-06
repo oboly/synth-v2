@@ -143,7 +143,7 @@ order_submission=0
 live_orders=0
 decision_gate=unchanged
 execution_planner=unchanged
-executor=unchanged
+executor=extended (new PAPER adapter only; shared submission orchestrator unchanged)
 production_runtime_activation=0
 paper_adapter_not_configured_guard=unchanged (shared_execution_runtime_v1.py)
 ```
