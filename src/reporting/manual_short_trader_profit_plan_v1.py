@@ -30,6 +30,7 @@ from src.reporting.market_rotation_pressure_dashboard_v1 import (
     format_history_window_label as format_rotation_history_window_label,
 )
 from src.reporting.chart_axis_v1 import decimal_places_for_step, format_tick_label, nice_domain_and_ticks
+from src.market_models.retracement_reload_v0 import RetracementReloadV0
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -624,6 +625,23 @@ class ProfitPlanCard:
     # must both read this field; no separate count logic is permitted.
     attention_required: bool = False
     attention_reason_code: str | None = None
+    reload_strength_state: str | None = None
+    preferred_reload_1_level: str | None = None
+    preferred_reload_1_price: Decimal | None = None
+    preferred_reload_2_level: str | None = None
+    preferred_reload_2_price: Decimal | None = None
+
+
+def apply_retracement_reload_overlay(card: "ProfitPlanCard", reload: RetracementReloadV0) -> "ProfitPlanCard":
+    """Attach already-prepared market-only reload guidance; reporting never recomputes it."""
+    return dataclasses.replace(
+        card,
+        reload_strength_state=reload.continuation_strength_state,
+        preferred_reload_1_level=reload.preferred_reload_1_level,
+        preferred_reload_1_price=reload.preferred_reload_1_price,
+        preferred_reload_2_level=reload.preferred_reload_2_level,
+        preferred_reload_2_price=reload.preferred_reload_2_price,
+    )
 
 
 @dataclass(frozen=True)
@@ -906,6 +924,11 @@ def _card_delta_payload(card: "ProfitPlanCard") -> dict[str, Any]:
             for level in card.target_level_statuses
         ],
         "reload_reentry_zone": [str(p) for p in card.reload_reentry_zone],
+        "reload_strength_state": card.reload_strength_state,
+        "preferred_reload_1_level": card.preferred_reload_1_level,
+        "preferred_reload_1_price": str(card.preferred_reload_1_price) if card.preferred_reload_1_price is not None else None,
+        "preferred_reload_2_level": card.preferred_reload_2_level,
+        "preferred_reload_2_price": str(card.preferred_reload_2_price) if card.preferred_reload_2_price is not None else None,
         "invalidation_risk_zone": str(card.invalidation_risk_zone) if card.invalidation_risk_zone is not None else None,
         "primary_state": card.primary_state,
         "secondary_state": card.secondary_state,
@@ -3698,6 +3721,13 @@ def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, 
     order_ladder_label = "Order ladder"
     open_orders_label = "Existing open orders:"
     reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
+    if card.reload_strength_state:
+        bits = [f"STATE {card.reload_strength_state}"]
+        if card.preferred_reload_1_level and card.preferred_reload_1_price is not None:
+            bits.append(f"RELOAD 1 {card.preferred_reload_1_level.upper()} {_eur(card.preferred_reload_1_price)}")
+        if card.preferred_reload_2_level and card.preferred_reload_2_price is not None:
+            bits.append(f"RELOAD 2 {card.preferred_reload_2_level.upper()} {_eur(card.preferred_reload_2_price)}")
+        reentry_line = " · ".join(bits)
     target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
 
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
