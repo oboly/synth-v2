@@ -54,6 +54,12 @@ def _row_to_config(row: dict[str, Any]) -> StrategyBucketAccountConfigRowV1:
                 _aware(row["effective_until_ts_utc"]) if row["effective_until_ts_utc"] is not None else None
             ),
             source_provenance=str(row["source_provenance"]),
+            allocation_target_pct=(
+                Decimal(str(row["allocation_target_pct"])) if row.get("allocation_target_pct") is not None else None
+            ),
+            allocation_max_pct=(
+                Decimal(str(row["allocation_max_pct"])) if row.get("allocation_max_pct") is not None else None
+            ),
         )
     except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
         raise StrategyBucketAccountConfigRepositoryError("INVALID_PERSISTED_STRATEGY_BUCKET_CONFIG_ROW") from exc
@@ -94,7 +100,8 @@ def load_strategy_bucket_account_config_rows_v1(
            config_version, is_enabled, risk_profile, max_position_amount_eur,
            max_bucket_amount_eur, max_asset_exposure_pct, max_open_positions,
            allow_new_entries, allow_reduce_reviews,
-           effective_from_ts_utc, effective_until_ts_utc, source_provenance
+           effective_from_ts_utc, effective_until_ts_utc, source_provenance,
+           allocation_target_pct, allocation_max_pct
     FROM strategy_bucket_account_config_v1
     WHERE trading_account_id = %s
     ORDER BY effective_from_ts_utc, strategy_bucket_account_config_id

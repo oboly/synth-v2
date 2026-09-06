@@ -7,6 +7,7 @@ from src.decision_gate.strategy_bucket_account_config_contract_v1 import (
     StrategyBucketAccountConfigError,
     StrategyBucketAccountConfigRevocationV1,
     StrategyBucketAccountConfigRowV1,
+    effective_bucket_ceiling_eur_v1,
     resolve_strategy_bucket_account_config_v1,
 )
 
@@ -273,3 +274,73 @@ def test_revocation_account_mismatch_fails_closed():
         resolve_strategy_bucket_account_config_v1(
             (row_a, row_b), (mismatched,), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
         )
+
+
+# --- #752 capital sleeve semantics -------------------------------------------
+
+def test_allocation_target_is_advisory_and_does_not_raise_effective_ceiling():
+    row = _row(
+        allocation_target_pct=Decimal("0.80"),
+        allocation_max_pct=Decimal("0.40"),
+        max_bucket_amount_eur=Decimal("3000"),
+    )
+    with pytest.raises(StrategyBucketAccountConfigError, match="STRATEGY_BUCKET_ALLOCATION_TARGET_EXCEEDS_MAX"):
+        resolve_strategy_bucket_account_config_v1(
+            (row,), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
+        )
+
+
+def test_effective_bucket_ceiling_uses_stricter_percentage_or_absolute_bound():
+    row = _row(
+        allocation_target_pct=Decimal("0.20"),
+        allocation_max_pct=Decimal("0.40"),
+        max_bucket_amount_eur=Decimal("3000"),
+    )
+    config = resolve_strategy_bucket_account_config_v1(
+        (row,), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
+    )
+    assert effective_bucket_ceiling_eur_v1(config, account_equity_eur=Decimal("10000")) == Decimal("3000")
+    assert config.allocation_target_pct == Decimal("0.20")
+
+
+def test_percentage_only_bucket_ceiling_scales_with_account_equity():
+    row = _row(allocation_target_pct=Decimal("0.25"), allocation_max_pct=Decimal("0.40"))
+    config = resolve_strategy_bucket_account_config_v1(
+        (row,), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
+    )
+    assert effective_bucket_ceiling_eur_v1(config, account_equity_eur=Decimal("12500")) == Decimal("5000.00")
+
+
+def test_enabled_allocation_maxima_above_one_hundred_percent_fail_closed():
+    row_a = _row(
+        strategy_bucket_account_config_id=1,
+        strategy_bucket_id=BUCKET_A,
+        allocation_max_pct=Decimal("0.60"),
+    )
+    row_b = _row(
+        strategy_bucket_account_config_id=2,
+        strategy_bucket_id=BUCKET_B,
+        allocation_max_pct=Decimal("0.50"),
+    )
+    with pytest.raises(StrategyBucketAccountConfigError, match="STRATEGY_BUCKET_ALLOCATION_OVERCOMMITTED"):
+        resolve_strategy_bucket_account_config_v1(
+            (row_a, row_b), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
+        )
+
+
+def test_disabled_bucket_does_not_consume_hard_allocation_authority():
+    row_a = _row(
+        strategy_bucket_account_config_id=1,
+        strategy_bucket_id=BUCKET_A,
+        allocation_max_pct=Decimal("0.60"),
+    )
+    row_b = _row(
+        strategy_bucket_account_config_id=2,
+        strategy_bucket_id=BUCKET_B,
+        is_enabled=False,
+        allocation_max_pct=Decimal("0.50"),
+    )
+    config = resolve_strategy_bucket_account_config_v1(
+        (row_a, row_b), trading_account_id=ACCOUNT_A, strategy_bucket_id=BUCKET_A, at=NOW,
+    )
+    assert config.allocation_max_pct == Decimal("0.60")

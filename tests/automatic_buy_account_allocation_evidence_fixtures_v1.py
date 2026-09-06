@@ -133,7 +133,9 @@ CREATE TABLE strategy_bucket_account_config_v1 (
     allow_reduce_reviews INTEGER NOT NULL,
     effective_from_ts_utc TEXT NOT NULL,
     effective_until_ts_utc TEXT,
-    source_provenance TEXT NOT NULL
+    source_provenance TEXT NOT NULL,
+    allocation_target_pct TEXT,
+    allocation_max_pct TEXT
 );
 
 CREATE TABLE strategy_bucket_account_config_revocation_v1 (
@@ -452,14 +454,16 @@ def insert_bucket_config(
     allow_new_entries: bool = True, allow_reduce_reviews: bool = True,
     effective_from_ts_utc: datetime = TS, effective_until_ts_utc: datetime | None = None,
     source_provenance: str = "manual_review",
+    allocation_target_pct: Decimal | None = None, allocation_max_pct: Decimal | None = None,
 ) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO strategy_bucket_account_config_v1 (trading_account_id, strategy_bucket_id, config_version, is_enabled, risk_profile, max_position_amount_eur, max_bucket_amount_eur, max_asset_exposure_pct, max_open_positions, allow_new_entries, allow_reduce_reviews, effective_from_ts_utc, effective_until_ts_utc, source_provenance) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "INSERT INTO strategy_bucket_account_config_v1 (trading_account_id, strategy_bucket_id, config_version, is_enabled, risk_profile, max_position_amount_eur, max_bucket_amount_eur, max_asset_exposure_pct, max_open_positions, allow_new_entries, allow_reduce_reviews, effective_from_ts_utc, effective_until_ts_utc, source_provenance, allocation_target_pct, allocation_max_pct) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 account_id, strategy_bucket_id, config_version, is_enabled, risk_profile,
                 max_position_amount_eur, max_bucket_amount_eur, max_asset_exposure_pct, max_open_positions,
                 allow_new_entries, allow_reduce_reviews, effective_from_ts_utc, effective_until_ts_utc, source_provenance,
+                allocation_target_pct, allocation_max_pct,
             ),
         )
         return cur.lastrowid
