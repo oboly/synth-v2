@@ -11,9 +11,9 @@ Audit base: `main` at `520b31a0030a84a13cfee660214f7a7a93100320` on 2026-09-06. 
 
 ## Eligibility rule
 
-`eligible_for_future_CQ_v2=1` means the context already has a canonical, account-agnostic, point-in-time/replayable owner with deterministic source identity and enough persisted temporal history to be used as an upstream input without ad-hoc recomputation inside a future evaluator. It does **not** mean that the feature is predictive or should be selected.
+`eligible_for_future_CQ_v2=1` is **numerical CQ-input readiness**, not merely replayability. It requires a canonical, account-agnostic, point-in-time/replayable owner with deterministic source identity, enough persisted temporal history, and a canonical numeric-domain/normalization contract for any numeric value consumed by CQ. It does **not** mean that the feature is predictive or should be selected.
 
-Unknown effective horizon, missing producer-owned freshness, absent provenance, rejected research status, or insufficient persisted temporal coverage keeps the context at `0` until its owner closes that gap.
+A context may therefore be PIT/replayable while still scoring `0` for numerical CQ readiness. Unknown effective horizon, missing producer-owned freshness, absent provenance, missing numeric-domain/normalization semantics, rejected research status, or insufficient persisted temporal coverage keeps the context at `0` until its owner closes that gap.
 
 ## Readiness matrix
 
@@ -49,7 +49,7 @@ Only use freshness/coherence as CQ inputs when the upstream owner defines them a
 
 ## Phase B conclusion
 
-Ready upstream contexts today:
+Numerically CQ-ready upstream contexts today:
 
 ```text
 CQ v0 baseline
