@@ -391,6 +391,32 @@ def test_b8_exact_path_paper_acceptance_matrix() -> None:
     assert before_target_invalidation.state == STATE_PROTECTIVE_EXIT
     assert before_target_invalidation.decision_quantity_base == owned_before_exit.owned_base_quantity
 
+    # Case 6: while target-1 has reduced but not closed the lineage, a newer
+    # canonical map cannot rewrite the still-open old-map trade or alter its
+    # remaining strategy-owned quantity.
+    assert owned_after_target.owned_base_quantity > 0
+    rolled_map = replace(
+        map_evidence,
+        native_map_id="native-map-b8-2",
+        map_cycle_id="cycle-b8-2",
+        map_structure_hash="b8-map-structure-2",
+        target_levels=(Decimal("125"), Decimal("135"), Decimal("145")),
+    )
+    with pytest.raises(FibMapBoundTradeConflictError):
+        bind_fib_map_bound_trade_on_first_fill_v1(
+            verified_first_fill=verified,
+            map_evidence=rolled_map,
+            repository=fib_repo,
+        )
+    assert fib_repo.load_by_binding_id(binding_id=binding.binding_id) == binding
+    after_failed_rebind = _position(
+        load_strategy_owned_inventory_events_v1(
+            inventory_conn, trading_account_id=ACCOUNT_ID
+        ),
+        trade_id=binding.trade_id,
+    )
+    assert after_failed_rebind.owned_base_quantity == owned_after_target.owned_base_quantity
+
     # Case 5: after target-1 actually filled, invalidation exits exactly the
     # remaining strategy-owned quantity and reaches terminal owned=0.
     protective = _decision(
@@ -418,22 +444,6 @@ def test_b8_exact_path_paper_acceptance_matrix() -> None:
     )
     terminal_position = _position(terminal_events, trade_id=binding.trade_id)
     assert terminal_position.owned_base_quantity == 0
-
-    # Case 6: a new canonical map cannot rewrite the still-bound old-map trade.
-    rolled_map = replace(
-        map_evidence,
-        native_map_id="native-map-b8-2",
-        map_cycle_id="cycle-b8-2",
-        map_structure_hash="b8-map-structure-2",
-        target_levels=(Decimal("125"), Decimal("135"), Decimal("145")),
-    )
-    with pytest.raises(FibMapBoundTradeConflictError):
-        bind_fib_map_bound_trade_on_first_fill_v1(
-            verified_first_fill=verified,
-            map_evidence=rolled_map,
-            repository=fib_repo,
-        )
-    assert fib_repo.load_by_binding_id(binding_id=binding.binding_id) == binding
 
     # Case 7: restart/replay over the same persisted stores preserves both the
     # immutable map binding and remaining/terminal #752 quantity.
