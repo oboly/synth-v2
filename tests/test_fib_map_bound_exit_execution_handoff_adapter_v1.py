@@ -157,12 +157,13 @@ def test_different_strategy_id_yields_distinct_id_no_cross_strategy_collision() 
     )
 
 
-def test_id_is_traceable_to_trading_account_trade_and_decision() -> None:
+def test_bounded_existing_plan_reference_keeps_legacy_traceable_format() -> None:
     plan = _plan()
     reference_id = derive_fib_map_bound_exit_plan_reference_id_v1(plan)
     assert str(plan.trading_account_id) in reference_id
     assert plan.trade_id in reference_id
     assert plan.decision_id in reference_id
+    assert len(reference_id) <= 128
 
 
 # --- Fail-closed malformed-plan rejection -------------------------------
@@ -206,3 +207,15 @@ def test_rejects_missing_lineage_identity() -> None:
     plan = replace(_plan(), trade_id="")
     with pytest.raises(FibMapBoundExitPlanAdapterError, match="PLAN_IDENTITY_FIELD_EMPTY"):
         adapt_fib_map_bound_exit_plan_to_approved_execution_plan_v1(plan)
+
+
+def test_plan_reference_id_is_bounded_for_persistence_contract() -> None:
+    binding = _binding(
+        trade_id="trade-" + ("x" * 512),
+        binding_id="binding-" + ("b" * 512),
+    )
+    plan = _plan(binding=binding)
+    reference_id = derive_fib_map_bound_exit_plan_reference_id_v1(plan)
+    assert reference_id.startswith("fib_map_bound_exit_v1:")
+    assert len(reference_id) <= 128
+    assert reference_id == derive_fib_map_bound_exit_plan_reference_id_v1(plan)
