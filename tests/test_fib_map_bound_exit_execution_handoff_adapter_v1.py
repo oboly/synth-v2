@@ -157,18 +157,13 @@ def test_different_strategy_id_yields_distinct_id_no_cross_strategy_collision() 
     )
 
 
-def test_id_is_sensitive_to_trading_account_trade_and_decision_identity() -> None:
+def test_bounded_existing_plan_reference_keeps_legacy_traceable_format() -> None:
     plan = _plan()
     reference_id = derive_fib_map_bound_exit_plan_reference_id_v1(plan)
-    assert derive_fib_map_bound_exit_plan_reference_id_v1(
-        replace(plan, trading_account_id=plan.trading_account_id + 1)
-    ) != reference_id
-    assert derive_fib_map_bound_exit_plan_reference_id_v1(
-        replace(plan, trade_id=plan.trade_id + "-other")
-    ) != reference_id
-    assert derive_fib_map_bound_exit_plan_reference_id_v1(
-        replace(plan, decision_id=plan.decision_id + "-other")
-    ) != reference_id
+    assert str(plan.trading_account_id) in reference_id
+    assert plan.trade_id in reference_id
+    assert plan.decision_id in reference_id
+    assert len(reference_id) <= 128
 
 
 # --- Fail-closed malformed-plan rejection -------------------------------

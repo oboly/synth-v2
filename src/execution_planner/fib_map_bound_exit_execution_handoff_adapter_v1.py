@@ -162,6 +162,12 @@ def derive_fib_map_bound_exit_plan_reference_id_v1(plan: FibMapBoundExitPlanV1) 
     payload = _plan_identity_payload(plan)
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     content_hash = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    legacy_reference_id = (
+        f"fib_map_bound_exit_v1:{plan.trading_account_id}:{plan.trade_id}:"
+        f"{plan.decision_id}:{content_hash}"
+    )
+    if len(legacy_reference_id) <= 128:
+        return legacy_reference_id
     return f"fib_map_bound_exit_v1:{content_hash}"
 
 
