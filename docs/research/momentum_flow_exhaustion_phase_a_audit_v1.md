@@ -190,7 +190,19 @@ delta-based absorption
 
 Phase A therefore rejects any implementation that infers these values from candle direction and labels them as order flow.
 
-A final DB-schema/coverage confirmation should be run on gurkdb before filing a data-foundation issue, because devlap has no local MySQL service and this audit intentionally did not access production remotely. If gurkdb confirms no hidden canonical aggressor-side table/coverage, create a separate market-data issue for append-only public trade ingestion and replay-safe aggregation.
+A read-only gurkdb schema/coverage confirmation was completed on 2026-09-06. `obs_market_candle` has the expected OHLCV columns plus nullable `trade_count`, but `trade_count` has zero non-null rows across every stored interval checked:
+
+```text
+15m rows=2,116,833 trade_count_nonnull=0
+1h  rows=2,112,132 trade_count_nonnull=0
+4h  rows=632,789   trade_count_nonnull=0
+1d  rows=149,536   trade_count_nonnull=0
+1w  rows=60,340    trade_count_nonnull=0
+```
+
+The same read-only audit searched table names for trade/orderbook/tick/aggressor candidates. Matches were execution/strategy/research artifacts (`trade_lot`, `trade_setup_filter_observation`, `bt_trade_scratch`, archives/previews, plus `obs_venue_ticker_24h`), not a canonical raw public-trade/aggressor-side market-data substrate.
+
+Therefore the repository finding is confirmed against live schema/coverage: true delta/CVD v1 requires a separate market-data foundation if/when prioritized. No production DB mutation was performed.
 
 ## Replay / outcome infrastructure
 
@@ -240,7 +252,7 @@ Phase C can then run multi-asset replay/ablation with discovery/validation/holdo
 - [x] Trade-count historical limitation identified in Bitvavo candle backfill.
 - [x] Existing replay/outcome patterns identified for reuse.
 - [x] Reporting/morphology/Fib Reach ownership boundaries preserved.
-- [ ] gurkdb schema/coverage confirmation for any non-repo aggressor-side source.
+- [x] gurkdb schema/coverage confirmation: no canonical aggressor-side source; `trade_count` non-null coverage is zero across stored intervals.
 - [ ] v0 feature definitions frozen in code/tests.
 - [ ] historical replay/ablation completed.
 - [ ] any production promotion decision made.
