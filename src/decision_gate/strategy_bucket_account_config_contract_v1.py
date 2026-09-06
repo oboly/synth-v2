@@ -64,6 +64,8 @@ class StrategyBucketAccountConfigRowV1:
     effective_from_ts_utc: datetime
     effective_until_ts_utc: datetime | None
     source_provenance: str
+    allocation_target_pct: Decimal | None = None
+    allocation_max_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,8 @@ class StrategyBucketAccountConfigV1:
     max_open_positions: int | None
     allow_new_entries: bool
     allow_reduce_reviews: bool
+    allocation_target_pct: Decimal | None = None
+    allocation_max_pct: Decimal | None = None
 
 
 def _is_aware(value: datetime) -> bool:
@@ -110,6 +114,34 @@ def _is_nonempty_string(value: object) -> bool:
 
 def _is_positive_decimal(value: Decimal | None) -> bool:
     return value is None or (isinstance(value, Decimal) and value.is_finite() and value > 0)
+
+
+def _is_fraction(value: Decimal | None, *, allow_zero: bool) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, Decimal) or not value.is_finite():
+        return False
+    lower_ok = value >= 0 if allow_zero else value > 0
+    return lower_ok and value <= 1
+
+
+def effective_bucket_ceiling_eur_v1(
+    config: "StrategyBucketAccountConfigV1", *, account_equity_eur: Decimal,
+) -> Decimal | None:
+    """Return the hard bucket capital ceiling, if configured.
+
+    Percentage ceilings are fractions of current account equity (0..1). When
+    both percentage and absolute EUR ceilings exist, the stricter bound wins.
+    Advisory target percentages never participate in authorization.
+    """
+    if not isinstance(account_equity_eur, Decimal) or not account_equity_eur.is_finite() or account_equity_eur < 0:
+        raise StrategyBucketAccountConfigError("INVALID_ACCOUNT_EQUITY_FOR_STRATEGY_BUCKET_CEILING")
+    ceilings: list[Decimal] = []
+    if config.allocation_max_pct is not None:
+        ceilings.append(account_equity_eur * config.allocation_max_pct)
+    if config.max_bucket_amount_eur is not None:
+        ceilings.append(config.max_bucket_amount_eur)
+    return min(ceilings) if ceilings else None
 
 
 def _validate_window(row: StrategyBucketAccountConfigRowV1) -> None:
@@ -238,6 +270,49 @@ def resolve_strategy_bucket_account_config_v1(
         isinstance(row.max_open_positions, bool) or not isinstance(row.max_open_positions, int) or row.max_open_positions <= 0
     ):
         raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_MAX_OPEN_POSITIONS")
+    if not _is_fraction(row.allocation_target_pct, allow_zero=True):
+        raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_TARGET_PCT")
+    if not _is_fraction(row.allocation_max_pct, allow_zero=False):
+        raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_MAX_PCT")
+    if (
+        row.allocation_target_pct is not None
+        and row.allocation_max_pct is not None
+        and row.allocation_target_pct > row.allocation_max_pct
+    ):
+        raise StrategyBucketAccountConfigError("STRATEGY_BUCKET_ALLOCATION_TARGET_EXCEEDS_MAX")
+
+    # Validate the complete active account configuration set, not just the
+    # requested bucket. Hard sleeve maxima above 100% are ambiguous account
+    # authority and therefore fail closed rather than being normalized.
+    active_account_rows = tuple(
+        candidate
+        for candidate in all_rows
+        if candidate.trading_account_id == trading_account_id
+        and candidate.is_enabled
+        and _active_at(candidate, at=at)
+        and not _revoked_at(
+            candidate.strategy_bucket_account_config_id,
+            revocations=relevant_revocations,
+            at=at,
+        )
+    )
+    for candidate in active_account_rows:
+        if not _is_fraction(candidate.allocation_target_pct, allow_zero=True):
+            raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_TARGET_PCT")
+        if not _is_fraction(candidate.allocation_max_pct, allow_zero=False):
+            raise StrategyBucketAccountConfigError("INVALID_STRATEGY_BUCKET_ALLOCATION_MAX_PCT")
+        if (
+            candidate.allocation_target_pct is not None
+            and candidate.allocation_max_pct is not None
+            and candidate.allocation_target_pct > candidate.allocation_max_pct
+        ):
+            raise StrategyBucketAccountConfigError("STRATEGY_BUCKET_ALLOCATION_TARGET_EXCEEDS_MAX")
+    configured_max_total = sum(
+        (candidate.allocation_max_pct for candidate in active_account_rows if candidate.allocation_max_pct is not None),
+        Decimal("0"),
+    )
+    if configured_max_total > Decimal("1"):
+        raise StrategyBucketAccountConfigError("STRATEGY_BUCKET_ALLOCATION_OVERCOMMITTED")
 
     return StrategyBucketAccountConfigV1(
         trading_account_id=row.trading_account_id,
@@ -250,4 +325,6 @@ def resolve_strategy_bucket_account_config_v1(
         max_open_positions=row.max_open_positions,
         allow_new_entries=row.allow_new_entries,
         allow_reduce_reviews=row.allow_reduce_reviews,
+        allocation_target_pct=row.allocation_target_pct,
+        allocation_max_pct=row.allocation_max_pct,
     )

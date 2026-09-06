@@ -89,6 +89,8 @@ class StrategyBucketAccountConfigProvisioningRequestV1:
     allow_reduce_reviews: bool
     effective_from_ts_utc: datetime
     source_provenance: str
+    allocation_target_pct: Decimal | None = None
+    allocation_max_pct: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,8 @@ def _candidate_row(
         effective_from_ts_utc=request.effective_from_ts_utc,
         effective_until_ts_utc=None,
         source_provenance=request.source_provenance,
+        allocation_target_pct=request.allocation_target_pct,
+        allocation_max_pct=request.allocation_max_pct,
     )
 
 
@@ -254,6 +258,8 @@ def _same_values(
         and existing.effective_from_ts_utc == request.effective_from_ts_utc
         and existing.effective_until_ts_utc is None
         and existing.source_provenance == request.source_provenance
+        and existing.allocation_target_pct == request.allocation_target_pct
+        and existing.allocation_max_pct == request.allocation_max_pct
     )
 
 
@@ -332,19 +338,33 @@ def provision_strategy_bucket_account_config_v1(
     ):
         raise StrategyBucketAccountConfigConflictError("FUTURE_STRATEGY_BUCKET_ACCOUNT_CONFIG_OVERLAP")
 
+    # Validate account-wide sleeve authority with the candidate included.
+    # This is the fail-closed provisioning gate for configured maxima >100%.
+    try:
+        resolve_strategy_bucket_account_config_v1(
+            (*existing_rows, candidate), existing_revocations,
+            trading_account_id=trading_account_id,
+            strategy_bucket_id=request.strategy_bucket_id,
+            at=request.effective_from_ts_utc,
+        )
+    except StrategyBucketAccountConfigError as exc:
+        reason = exc.args[0] if exc.args else "INVALID_STRATEGY_BUCKET_ACCOUNT_CONFIG"
+        raise StrategyBucketAccountConfigProvisioningError(reason) from exc
+
     insert_sql = """
     INSERT INTO strategy_bucket_account_config_v1 (
         trading_account_id, strategy_bucket_id, config_version, is_enabled, risk_profile,
         max_position_amount_eur, max_bucket_amount_eur, max_asset_exposure_pct, max_open_positions,
         allow_new_entries, allow_reduce_reviews, effective_from_ts_utc, effective_until_ts_utc,
-        source_provenance
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        source_provenance, allocation_target_pct, allocation_max_pct
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     params = (
         trading_account_id, request.strategy_bucket_id, CONFIG_CONTRACT_VERSION, request.is_enabled,
         request.risk_profile, request.max_position_amount_eur, request.max_bucket_amount_eur,
         request.max_asset_exposure_pct, request.max_open_positions, request.allow_new_entries,
         request.allow_reduce_reviews, request.effective_from_ts_utc, None, request.source_provenance,
+        request.allocation_target_pct, request.allocation_max_pct,
     )
     with conn.cursor() as cur:
         cur.execute(insert_sql, params)

@@ -367,3 +367,33 @@ def test_no_broker_executor_or_order_import() -> None:
         lowered = line.lower()
         for forbidden in ("broker", "executor", "order_submission", "credential"):
             assert forbidden not in lowered, line
+
+
+def test_provisioning_rejects_account_wide_allocation_overcommit() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn, account_id=4, account_code="hugo-bitvavo", venue="bitvavo", account_mode="paper")
+    insert_bucket_config(
+        conn,
+        account_id=4,
+        strategy_bucket_id="EXISTING_BUCKET",
+        effective_from_ts_utc=TS,
+        allocation_target_pct=Decimal("0.50"),
+        allocation_max_pct=Decimal("0.60"),
+    )
+
+    with pytest.raises(
+        StrategyBucketAccountConfigProvisioningError,
+        match="STRATEGY_BUCKET_ALLOCATION_OVERCOMMITTED",
+    ):
+        provision_strategy_bucket_account_config_v1(
+            conn,
+            request=_request(
+                strategy_bucket_id="SHORT_TERM_ROTATION",
+                allocation_target_pct=Decimal("0.30"),
+                allocation_max_pct=Decimal("0.50"),
+            ),
+        )
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS c FROM strategy_bucket_account_config_v1", ())
+        assert cur.fetchone()["c"] == 1
