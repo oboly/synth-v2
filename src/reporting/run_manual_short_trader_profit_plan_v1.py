@@ -830,6 +830,7 @@ def summarize_native_short_snapshot_evidence(
         for symbol in market_symbols
         if (symbol not in supported_symbols or symbol not in available_symbols)
         and symbol not in canonical_symbols
+        and symbol not in stale_supported_symbols
     ]
     return {
         "canonical_snapshot_status": status,
@@ -863,6 +864,7 @@ def native_short_snapshot_banner(evidence: Mapping[str, Any]) -> str:
     supported = int(evidence["native_context_supported_count"])
     total = int(evidence["native_context_total_count"])
     stale = int(evidence["supported_context_stale_count"])
+    stale_markets = list(evidence.get("supported_context_stale_markets", ()))
     unavailable = list(evidence["unsupported_or_unavailable_markets"])
     canonical_count = int(evidence.get("canonical_navigation_supported_count", 0))
     details = [
@@ -871,7 +873,12 @@ def native_short_snapshot_banner(evidence: Mapping[str, Any]) -> str:
         f"Canonical 4h navigation coverage: {canonical_count} contexts (read-only, non-native).",
     ]
     if stale:
-        details.append(f"Supported context stale: {stale}.")
+        stale_suffix = (
+            " (" + ", ".join(html.escape(symbol) for symbol in stale_markets) + ")"
+            if stale_markets
+            else ""
+        )
+        details.append(f"Supported context stale: {stale}{stale_suffix}.")
     if unavailable:
         details.append(
             "Unsupported/unavailable markets: "
