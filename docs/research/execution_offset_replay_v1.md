@@ -9,6 +9,8 @@ Each immutable episode preserves market identity, source map identity, canonical
 
 Only candles strictly after `issued_ts_utc` and no later than `valid_until_ts_utc` may label an episode. Future candles are labels only.
 
+When one OHLC candle spans both the candidate execution price and invalidation price before any prior fill, intrabar ordering is unknowable. The replay records `same_candle_fill_invalidation_ambiguous=true`, claims neither fill nor invalidation-before-fill, and stops that episode rather than inventing an order of events.
+
 ## Baseline policies
 
 - `EXACT_LEVEL`: execution price equals canonical market level.

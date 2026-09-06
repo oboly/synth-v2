@@ -52,12 +52,23 @@ def test_sell_near_miss_exact_but_static_buffer_fills() -> None:
     assert buffered.execution_price == Decimal("99.00")
 
 
-def test_future_only_and_invalidated_before_fill() -> None:
+def test_same_candle_sell_fill_and_invalidation_is_ambiguous() -> None:
     row = replay_episode(
         episode(), [candle(1, "95", "111")],
         ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
     )
-    assert row.invalidated_before_fill is True
+    assert row.same_candle_fill_invalidation_ambiguous is True
+    assert row.invalidated_before_fill is False
+    assert row.filled is False
+
+
+def test_same_candle_buy_fill_and_invalidation_is_ambiguous() -> None:
+    row = replay_episode(
+        episode(SIDE_BUY), [candle(1, "89", "105")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.same_candle_fill_invalidation_ambiguous is True
+    assert row.invalidated_before_fill is False
     assert row.filled is False
 
 

@@ -68,6 +68,7 @@ class ExecutionOffsetReplayRowV1:
     max_favorable_excursion_pct: Decimal | None
     max_adverse_excursion_pct: Decimal | None
     invalidated_before_fill: bool
+    same_candle_fill_invalidation_ambiguous: bool
 
 def validate_policy(policy: ExecutionOffsetPolicyV1) -> None:
     if policy.policy_id not in SUPPORTED_POLICIES:
@@ -135,6 +136,7 @@ def replay_episode(
 
     fill_ts: datetime | None = None
     invalidated_before_fill = False
+    same_candle_fill_invalidation_ambiguous = False
     touched = False
     closest = None
     post_fill: list[ReplayCandle] = []
@@ -150,6 +152,9 @@ def replay_episode(
             fill = candle.high_price >= execution_price
             invalidated = episode.invalidation_price is not None and candle.high_price >= episode.invalidation_price
         closest = distance if closest is None else min(closest, distance)
+        if fill_ts is None and fill and invalidated:
+            same_candle_fill_invalidation_ambiguous = True
+            break
         if fill_ts is None and invalidated:
             invalidated_before_fill = True
             break
@@ -175,4 +180,5 @@ def replay_episode(
         time_to_fill_seconds=int((fill_ts - episode.issued_ts_utc).total_seconds()) if fill_ts else None,
         max_favorable_excursion_pct=mfe, max_adverse_excursion_pct=mae,
         invalidated_before_fill=invalidated_before_fill,
+        same_candle_fill_invalidation_ambiguous=same_candle_fill_invalidation_ambiguous,
     )
