@@ -14,7 +14,7 @@ For the exact policy, an unambiguous raw target hit/touch requires `0` percentag
 
 ## Candidate economics
 
-For each candidate the report includes resolved sample count, candidate ambiguity count/rate, fill/capture rate, capture-rate uplift versus exact, average foregone upside among filled episodes, expected foregone-upside contribution across resolved episodes, expected captured-return proxy, and delta versus exact.
+For each candidate the report includes resolved sample count, candidate geometry-exclusion count/rate, candidate ambiguity count/rate, fill/capture rate, capture-rate uplift versus exact, average foregone upside among filled episodes, expected foregone-upside contribution across resolved episodes, expected captured-return proxy, and delta versus exact. A non-zero candidate that would cross or equal the immutable invalidation boundary is impossible for that episode and is explicitly excluded from that candidate cohort with `INVALID_INVALIDATION_GEOMETRY`; it does not abort the whole calibration report.
 
 Expected captured return is normalized to the immutable #555 reference price: bullish SELL target `(execution_price-reference_price)/reference_price*100`; bearish BUY target `(reference_price-execution_price)/reference_price*100`; unresolved/non-filled rows contribute zero. Foregone upside is the absolute raw-to-executable target displacement as a percentage of raw target.
 

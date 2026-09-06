@@ -10,17 +10,18 @@ from decimal import Decimal
 from typing import Any, Final, Iterable, Mapping, Sequence
 
 from src.market_data.fib_navigation_map_v1 import DIRECTION_BEARISH, DIRECTION_BULLISH
-from src.research.execution_offset_replay_report_v1 import build_replay_dataset
 from src.research.execution_offset_replay_v1 import (
     ExecutionOffsetEpisodeV1,
     ExecutionOffsetPolicyV1,
     ExecutionOffsetReplayRowV1,
+    ExecutionOffsetReplayError,
     POLICY_EXACT_LEVEL,
     POLICY_STATIC_BUFFER,
     ReplayCandle,
     SIDE_BUY,
     SIDE_SELL,
     policy_fingerprint,
+    replay_episode,
 )
 from src.research.target_capture_calibration_adapter_v1 import TargetEpisodeAnalysisContextV1
 
@@ -211,15 +212,21 @@ def _analyze_segment(
     exact_capture_rate: Decimal | None = None
     for policy in policies:
         fingerprint = policy_fingerprint(policy)
-        rows = [rows_by_identity[(item.episode.episode_id, fingerprint)] for item in items]
+        available_rows = [
+            rows_by_identity[(item.episode.episode_id, fingerprint)]
+            for item in items
+            if (item.episode.episode_id, fingerprint) in rows_by_identity
+        ]
+        available_ids = {row.episode_id for row in available_rows}
+        candidate_geometry_excluded_ids = exact_resolved_ids - available_ids
         candidate_ambiguous_ids = {
             row.episode_id
-            for row in rows
+            for row in available_rows
             if row.episode_id in exact_resolved_ids and row.same_candle_fill_invalidation_ambiguous
         }
         resolved_rows = [
             row
-            for row in rows
+            for row in available_rows
             if row.episode_id in exact_resolved_ids and row.episode_id not in candidate_ambiguous_ids
         ]
         filled_rows = [row for row in resolved_rows if row.filled]
@@ -242,6 +249,8 @@ def _analyze_segment(
                 "buffer_pct_fraction": policy.buffer_pct,
                 "buffer_pct_points": policy.buffer_pct * Decimal("100"),
                 "resolved_sample_count": len(resolved_rows),
+                "candidate_geometry_excluded_count": len(candidate_geometry_excluded_ids),
+                "candidate_geometry_excluded_rate_pct": _rate_pct(len(candidate_geometry_excluded_ids), len(exact_resolved_ids)),
                 "candidate_ambiguity_count": len(candidate_ambiguous_ids),
                 "candidate_ambiguity_rate_pct": _rate_pct(len(candidate_ambiguous_ids), len(exact_resolved_ids)),
                 "filled_count": len(filled_rows),
@@ -346,7 +355,23 @@ def build_calibration_report(
     policies = candidate_policies()
     episodes = [item.episode for item in ordered]
     candles_by_episode = {item.episode.episode_id: item.candles for item in ordered}
-    rows = build_replay_dataset(episodes, candles_by_episode, policies)
+    rows: list[ExecutionOffsetReplayRowV1] = []
+    candidate_geometry_exclusions: list[dict[str, Any]] = []
+    for episode in episodes:
+        candles = candles_by_episode[episode.episode_id]
+        for policy in policies:
+            try:
+                rows.append(replay_episode(episode, candles, policy))
+            except ExecutionOffsetReplayError as exc:
+                if policy.policy_id != POLICY_EXACT_LEVEL and str(exc) == "INVALID_INVALIDATION_GEOMETRY":
+                    candidate_geometry_exclusions.append({
+                        "episode_id": episode.episode_id,
+                        "policy_fingerprint": policy_fingerprint(policy),
+                        "buffer_pct_fraction": policy.buffer_pct,
+                        "reason": "INVALID_INVALIDATION_GEOMETRY",
+                    })
+                    continue
+                raise
     rows_by_identity = {(row.episode_id, row.policy_fingerprint): row for row in rows}
 
     overall = _analyze_segment(ordered, rows_by_identity, policies, min_sample_threshold)
@@ -390,6 +415,10 @@ def build_calibration_report(
         "disposition_reason": reason,
         "selected_buffer_pct_fraction": selected_buffer,
         "evidence_rows": evidence_rows,
+        "candidate_geometry_exclusions": sorted(
+            candidate_geometry_exclusions,
+            key=lambda item: (item["episode_id"], item["policy_fingerprint"]),
+        ),
     }
     canonical = _canonical_json(report)
     report["report_fingerprint"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
