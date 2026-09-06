@@ -90,9 +90,8 @@ live_authority_changes=0
 production_runtime_activation=0
 ```
 
-## Next slice (B3, not in this PR)
+## Next slice (B3)
 
-Wiring this decision output into `execution_planner` as execution intent
-(passive/urgent/ladder plan construction) is out of scope for B2 and is
-left as Phase B3. B2 intentionally stops at the pure decision seam so the
-planner integration can be reviewed as its own bounded change.
+Wiring this decision output into `execution_planner` as execution intent and
+into the shared executor handoff is Phase B3, documented separately in
+`docs/architecture/fib_map_bound_exit_execution_handoff_v1.md`.
