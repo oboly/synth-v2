@@ -1,0 +1,46 @@
+{
+  "contract_name": "cq_v2_fresh_temporal_cohort_v1",
+  "contract_version": "1.0.0",
+  "timezone": "UTC",
+  "cadence": "1d",
+  "prior_consumed_terminal_asof": "2026-08-31T00:00:00Z",
+  "first_asof_ts_utc": "2026-09-01T00:00:00Z",
+  "last_asof_ts_utc": "2026-10-15T00:00:00Z",
+  "expected_unique_asofs": 45,
+  "split": {
+    "discovery": {
+      "first_asof_ts_utc": "2026-09-01T00:00:00Z",
+      "last_asof_ts_utc": "2026-09-27T00:00:00Z",
+      "expected_unique_asofs": 27
+    },
+    "validation": {
+      "first_asof_ts_utc": "2026-09-28T00:00:00Z",
+      "last_asof_ts_utc": "2026-10-06T00:00:00Z",
+      "expected_unique_asofs": 9
+    },
+    "holdout": {
+      "first_asof_ts_utc": "2026-10-07T00:00:00Z",
+      "last_asof_ts_utc": "2026-10-15T00:00:00Z",
+      "expected_unique_asofs": 9
+    }
+  },
+  "forward_horizons": ["1h", "4h", "24h"],
+  "label_source_interval": "15m",
+  "population_outcome_blind": true,
+  "feature_registry_frozen_before_score_materialization": true,
+  "candidate_family_frozen_before_forward_labels": true,
+  "final_holdout_opened_last": true,
+  "reuse_684_rows": false,
+  "state": "FRESH_DATA_REQUIRED",
+  "safety": {
+    "research_only": 1,
+    "market_only": 1,
+    "account_awareness": 0,
+    "outcomes_opened": 0,
+    "model_retuning": 0,
+    "candidate_selection": 0,
+    "production_ranking_changes": 0,
+    "db_writes": 0,
+    "runtime_activation": 0
+  }
+}
