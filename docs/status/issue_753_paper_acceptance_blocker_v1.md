@@ -1,18 +1,15 @@
-# Issue #753 — exact-path PAPER acceptance: blocked on PAPER ACTIVE -> FILLED reconciliation
+# Issue #753 — exact-path PAPER acceptance: technically PASS pending PR #806 merge
 
 ## Status
 
-B5.5 (the PAPER order-placement adapter gap), B6 (the
-`fib_map_bound_trade_v1` repository), B7 (the first-fill binding adapter),
-and now B7.5 (resting-order `ACTIVE -> FILLED` reconciliation) are resolved
--- see Update 5 below. B8 (the exact-path PAPER acceptance harness) is now
-**technically runnable**: a real automatic-BUY PAPER order can reach
-`FILLED` end-to-end for the first time. B8 itself is **not yet built or
-run** and is not accepted by this update -- see Update 5 for exactly what is
-and is not proven.
-Documenting the precise remaining gap instead of inventing a shortcut, per
-task contract and `AGENTS.md` (do not fabricate ownership from wallet
-balance, do not invent parallel logic, do not revive #707/#723).
+B5.5, B6, B7, B7.5, and B7.6 are resolved and merged. B8 is now built and
+run on PR #806 using the exact production PAPER paths for BUY and SELL fill
+reconciliation, with all ten #753 acceptance cases covered. The current B8
+head is **technically PASS**: canonical + adjacent suite 146 passed, no direct
+fill-reconciliation/inventory-event shortcut remains in the acceptance test,
+and no LIVE/broker/wallet authority is activated. #753 must not be treated as
+technically complete until PR #806 itself clears final review and is merged.
+See Updates 5-7 below for the progression and exact evidence.
 
 **Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
 by Phase B4, see
