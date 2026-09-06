@@ -178,9 +178,10 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
     def test_main_emits_failed_once_without_traceback(self) -> None:
         from unittest.mock import patch
         from src.research import run_historical_market_breath_source_recompute_v1 as mod
-        with patch.object(mod, "get_connection", side_effect=RuntimeError("boom")):
-            with patch("builtins.print") as mocked_print:
-                rc = mod.main(["--symbols", "BTC", "--max-rows", "1"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(mod, "get_connection", side_effect=RuntimeError("boom")):
+                with patch("builtins.print") as mocked_print:
+                    rc = mod.main(["--symbols", "BTC", "--max-rows", "1", "--output-dir", tmp])
         self.assertEqual(rc, 1)
         terminal = [str(call) for call in mocked_print.call_args_list if "FAILED runner=" in str(call) or "INTERRUPTED runner=" in str(call) or "FINISHED runner=" in str(call)]
         self.assertEqual(len(terminal), 1)
@@ -191,15 +192,73 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
         from unittest.mock import patch
         from src.research import run_historical_market_breath_source_recompute_v1 as mod
         previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
-        with patch.object(mod, "get_connection", side_effect=mod._RunnerInterrupted(signal.SIGTERM)):
-            with patch("builtins.print") as mocked_print:
-                rc = mod.main(["--symbols", "BTC", "--max-rows", "1"])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(mod, "get_connection", side_effect=mod._RunnerInterrupted(signal.SIGTERM)):
+                with patch("builtins.print") as mocked_print:
+                    rc = mod.main(["--symbols", "BTC", "--max-rows", "1", "--output-dir", tmp])
+            checkpoint = json.loads((Path(tmp) / mod.CHECKPOINT_JSON).read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["terminal_state"], "INTERRUPTED")
+            self.assertEqual(checkpoint["rows_written"], 0)
         self.assertEqual(rc, 130)
         terminal = [str(call) for call in mocked_print.call_args_list if "FAILED runner=" in str(call) or "INTERRUPTED runner=" in str(call) or "FINISHED runner=" in str(call)]
         self.assertEqual(len(terminal), 1)
         self.assertIn("INTERRUPTED runner=", terminal[0])
         for sig, handler in previous.items():
             self.assertIs(signal.getsignal(sig), handler)
+
+    def test_interrupted_run_resumes_from_next_checkpointed_timestamp(self) -> None:
+        from datetime import datetime
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+
+        first_row = {"symbol": "BTC", "asof_ts_utc": "2026-01-01T00:00:00Z"}
+        second_row = {"symbol": "BTC", "asof_ts_utc": "2026-01-01T04:00:00Z"}
+        first_ts = datetime(2026, 1, 1, 0, 0)
+        second_ts = datetime(2026, 1, 1, 4, 0)
+
+        def interrupted_recompute(**kwargs):
+            kwargs["checkpoint_callback"](1, first_ts, [first_row], 1)
+            raise mod._RunnerInterrupted(mod.signal.SIGTERM)
+
+        def resumed_recompute(**kwargs):
+            self.assertEqual(kwargs["start_timestamp_index"], 1)
+            self.assertEqual(kwargs["initial_rows"], [first_row])
+            kwargs["checkpoint_callback"](2, second_ts, [second_row], 2)
+            return [first_row, second_row], {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = SimpleNamespace(close=lambda: None)
+            with patch.object(mod, "get_connection", return_value=conn), patch.object(mod, "recompute_rows", side_effect=interrupted_recompute), patch("builtins.print"):
+                rc1 = mod.main(["--symbols", "BTC", "--output", "json", "--output-dir", tmp])
+            self.assertEqual(rc1, 130)
+            cp1 = json.loads((Path(tmp) / mod.CHECKPOINT_JSON).read_text(encoding="utf-8"))
+            self.assertEqual(cp1["timestamps_completed"], 1)
+            self.assertEqual(cp1["rows_written"], 1)
+
+            with patch.object(mod, "get_connection", return_value=conn), patch.object(mod, "recompute_rows", side_effect=resumed_recompute), patch("builtins.print"):
+                rc2 = mod.main(["--symbols", "BTC", "--output", "json", "--output-dir", tmp, "--resume"])
+            self.assertEqual(rc2, 0)
+            cp2 = json.loads((Path(tmp) / mod.CHECKPOINT_JSON).read_text(encoding="utf-8"))
+            self.assertEqual(cp2["terminal_state"], "FINISHED")
+            self.assertEqual(cp2["timestamps_completed"], 2)
+            self.assertEqual(cp2["rows_written"], 2)
+            partial = [json.loads(line) for line in (Path(tmp) / mod.PARTIAL_ROWS_JSONL).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(partial, [first_row, second_row])
+
+    def test_partial_rows_reconcile_to_checkpoint_boundary(self) -> None:
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / mod.PARTIAL_ROWS_JSONL
+            path.write_text('\n'.join(json.dumps({"i": i}) for i in range(3)) + '\n', encoding='utf-8')
+            rows = mod._read_checkpointed_rows(path, 2)
+            self.assertEqual(rows, [{"i": 0}, {"i": 1}])
+            self.assertEqual(len(path.read_text(encoding='utf-8').splitlines()), 2)
+
+    def test_resume_identity_mismatch_fails_closed(self) -> None:
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        with self.assertRaisesRegex(ValueError, "resume identity mismatch"):
+            mod._validate_checkpoint_identity({"runner": REPORT_NAME, "interval": "1h"}, {"runner": REPORT_NAME, "interval": "4h"})
 
     def test_no_forbidden_imports(self) -> None:
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))

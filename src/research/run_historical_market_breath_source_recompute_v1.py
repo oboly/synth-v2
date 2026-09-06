@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import os
 import signal
 from collections import Counter
 from dataclasses import asdict
@@ -50,6 +51,8 @@ DEFAULT_OUTPUT_DIR = Path("data/research/historical_market_breath_source_recompu
 ROWS_CSV = "historical_market_breath_source_recomputed_rows_v1.csv"
 ROWS_JSONL = "historical_market_breath_source_recomputed_rows_v1.jsonl"
 MANIFEST_JSON = "manifest_v1.json"
+CHECKPOINT_JSON = "checkpoint_v1.json"
+PARTIAL_ROWS_JSONL = "partial_rows_v1.jsonl"
 DEFAULT_LOOKBACK_CANDLES = 120
 
 
@@ -61,6 +64,73 @@ class _RunnerInterrupted(Exception):
 
 def _signal_handler(signum: int, _frame: Any) -> None:
     raise _RunnerInterrupted(signum)
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, sort_keys=True, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+
+
+def _checkpoint_identity(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "runner": REPORT_NAME,
+        "version": REPORT_VERSION,
+        "venue": str(args.venue).lower(),
+        "interval": str(args.interval),
+        "symbols": parse_symbols_arg(args.symbols) or [],
+        "start_ts": args.start_ts,
+        "end_ts": args.end_ts,
+        "max_rows": int(args.max_rows or 0),
+        "breadth_scope": str(args.breadth_scope),
+        "lookback_candles": DEFAULT_LOOKBACK_CANDLES,
+    }
+
+
+def _validate_checkpoint_identity(checkpoint: dict[str, Any], identity: dict[str, Any]) -> None:
+    for key, expected in identity.items():
+        actual = checkpoint.get(key)
+        if actual != expected:
+            raise ValueError(f"resume identity mismatch for {key}: checkpoint={actual!r} expected={expected!r}")
+
+
+def _read_checkpointed_rows(path: Path, rows_written: int) -> list[dict[str, Any]]:
+    if rows_written < 0:
+        raise ValueError("rows_written must be nonnegative")
+    if rows_written == 0:
+        if path.exists() and path.stat().st_size:
+            path.write_text("", encoding="utf-8")
+        return []
+    if not path.exists():
+        raise ValueError("checkpoint references rows but partial_rows_v1.jsonl is missing")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if len(lines) < rows_written:
+        raise ValueError(f"partial row count {len(lines)} is below checkpoint rows_written={rows_written}")
+    rows = [json.loads(line) for line in lines[:rows_written]]
+    if len(lines) > rows_written:
+        with path.open("w", encoding="utf-8") as handle:
+            for line in lines[:rows_written]:
+                handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        print(f"RESUME_RECONCILE action=truncate_partial_rows to_rows={rows_written}", flush=True)
+    return rows
+
+
+def _append_partial_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, ensure_ascii=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -77,6 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-ts", default=None)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--breadth-scope", choices=("selected", "all-enabled"), default="selected")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -323,6 +394,9 @@ def recompute_rows(
     max_rows: int = 0,
     lookback_candles: int = DEFAULT_LOOKBACK_CANDLES,
     breadth_scope: str = "selected",
+    start_timestamp_index: int = 0,
+    initial_rows: list[dict[str, Any]] | None = None,
+    checkpoint_callback: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_assets, btc_asset = resolve_assets(conn, requested_symbols=symbols)
     timestamps = fetch_timestamp_spine(
@@ -358,15 +432,18 @@ def recompute_rows(
     elif breadth_scope != "selected":
         raise ValueError(f"unsupported breadth_scope: {breadth_scope}")
 
-    rows: list[dict[str, Any]] = []
+    if start_timestamp_index < 0 or start_timestamp_index > len(timestamps):
+        raise ValueError("start_timestamp_index outside timestamp spine")
+    rows: list[dict[str, Any]] = list(initial_rows or [])
     print(
-        f"PHASE_STARTED phase=replay timestamps={len(timestamps)} assets={len(selected_assets)} interval={interval}",
+        f"PHASE_STARTED phase=replay timestamps={len(timestamps)} assets={len(selected_assets)} interval={interval} resume_from={start_timestamp_index}",
         flush=True,
     )
     progress_every = max(1, len(timestamps) // 10)
-    for timestamp_index, asof_ts in enumerate(timestamps, start=1):
-        rows.extend(
-            replay_rows_for_timestamp(
+    for zero_index in range(start_timestamp_index, len(timestamps)):
+        timestamp_index = zero_index + 1
+        asof_ts = timestamps[zero_index]
+        batch_rows = replay_rows_for_timestamp(
                 conn,
                 selected_assets=selected_assets,
                 btc_asset=btc_asset,
@@ -376,14 +453,18 @@ def recompute_rows(
                 asof_ts=asof_ts,
                 breadth_history=breadth_history,
             )
-        )
+        remaining = None if max_rows <= 0 else max(0, max_rows - len(rows))
+        if remaining is not None:
+            batch_rows = batch_rows[:remaining]
+        rows.extend(batch_rows)
+        if checkpoint_callback is not None:
+            checkpoint_callback(timestamp_index, asof_ts, batch_rows, len(rows))
         if timestamp_index == 1 or timestamp_index % progress_every == 0 or timestamp_index == len(timestamps):
             print(
                 f"PHASE_PROGRESS phase=replay timestamp_index={timestamp_index}/{len(timestamps)} rows={len(rows)} asof_ts_utc={fmt_ts(asof_ts)}",
                 flush=True,
             )
         if max_rows > 0 and len(rows) >= max_rows:
-            rows = rows[:max_rows]
             break
 
     print(f"PHASE_FINISHED phase=replay rows={len(rows)}", flush=True)
@@ -465,32 +546,90 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signum, _signal_handler)
 
     print(
-        f"STARTED runner={REPORT_NAME} version={REPORT_VERSION} venue={args.venue} interval={args.interval} start_ts={args.start_ts} end_ts={args.end_ts}",
+        f"STARTED runner={REPORT_NAME} version={REPORT_VERSION} mode={'RESUME' if args.resume else 'FRESH'} "
+        f"venue={args.venue} interval={args.interval} start_ts={args.start_ts} end_ts={args.end_ts}",
         flush=True,
     )
+    output_dir = Path(args.output_dir)
+    checkpoint_path = output_dir / CHECKPOINT_JSON
+    partial_rows_path = output_dir / PARTIAL_ROWS_JSONL
+    identity = _checkpoint_identity(args)
+    conn = None
     try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if args.resume:
+            if not checkpoint_path.exists():
+                raise ValueError("--resume requires checkpoint_v1.json")
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if not isinstance(checkpoint, dict):
+                raise ValueError("checkpoint must be a JSON object")
+            _validate_checkpoint_identity(checkpoint, identity)
+            terminal_state = str(checkpoint.get("terminal_state") or "")
+            if terminal_state == "FINISHED":
+                print(
+                    f"FINISHED runner={REPORT_NAME} resume_noop=1 rows={int(checkpoint.get('rows_written', 0))}",
+                    flush=True,
+                )
+                return 0
+            if terminal_state not in {"RUNNING", "INTERRUPTED", "FAILED"}:
+                raise ValueError(f"unsupported checkpoint terminal_state={terminal_state!r}")
+            start_timestamp_index = int(checkpoint.get("timestamps_completed", 0))
+            rows_written = int(checkpoint.get("rows_written", 0))
+            initial_rows = _read_checkpointed_rows(partial_rows_path, rows_written)
+            print(
+                f"RESUME timestamps_completed={start_timestamp_index} rows_written={rows_written} "
+                f"last_asof_ts_utc={checkpoint.get('last_asof_ts_utc')}",
+                flush=True,
+            )
+        else:
+            protected = [checkpoint_path, partial_rows_path]
+            if args.write_files:
+                protected.extend([output_dir / ROWS_CSV, output_dir / ROWS_JSONL, output_dir / MANIFEST_JSON])
+            if any(path.exists() for path in protected):
+                raise ValueError("output directory already contains replay artifacts; use --resume or a new output directory")
+            start_timestamp_index = 0
+            initial_rows = []
+            _atomic_json(
+                checkpoint_path,
+                {**identity, "terminal_state": "RUNNING", "timestamps_completed": 0, "rows_written": 0, "last_asof_ts_utc": None},
+            )
+
         symbols = parse_symbols_arg(args.symbols)
         venue = str(args.venue).lower()
         interval = str(args.interval)
-        output_dir = Path(args.output_dir)
         start_ts = parse_ts(args.start_ts)
         end_ts = parse_ts(args.end_ts)
 
+        def checkpoint_callback(completed: int, asof_ts: datetime, batch_rows: list[dict[str, Any]], total_rows: int) -> None:
+            _append_partial_rows(partial_rows_path, batch_rows)
+            _atomic_json(
+                checkpoint_path,
+                {
+                    **identity,
+                    "terminal_state": "RUNNING",
+                    "timestamps_completed": completed,
+                    "rows_written": total_rows,
+                    "last_asof_ts_utc": fmt_ts(asof_ts),
+                },
+            )
+
         print("PHASE_STARTED phase=db_recompute", flush=True)
         conn = get_connection()
-        try:
-            rows, measures = recompute_rows(
-                conn=conn,
-                symbols=symbols,
-                venue=venue,
-                interval=interval,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                max_rows=int(args.max_rows or 0),
-                breadth_scope=args.breadth_scope,
-            )
-        finally:
-            conn.close()
+        rows, measures = recompute_rows(
+            conn=conn,
+            symbols=symbols,
+            venue=venue,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            max_rows=int(args.max_rows or 0),
+            breadth_scope=args.breadth_scope,
+            start_timestamp_index=start_timestamp_index,
+            initial_rows=initial_rows,
+            checkpoint_callback=checkpoint_callback,
+        )
+        conn.close()
+        conn = None
         print(f"PHASE_FINISHED phase=db_recompute rows={len(rows)}", flush=True)
 
         output_paths: dict[str, str] = {}
@@ -501,11 +640,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path = output_dir / MANIFEST_JSON
             write_csv(csv_path, rows)
             write_jsonl(jsonl_path, rows)
-            output_paths = {
-                "csv": str(csv_path),
-                "jsonl": str(jsonl_path),
-                "manifest": str(manifest_path),
-            }
+            output_paths = {"csv": str(csv_path), "jsonl": str(jsonl_path), "manifest": str(manifest_path)}
             manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
             write_json(manifest_path, manifest)
             print(f"PHASE_FINISHED phase=write_outputs output_dir={output_dir}", flush=True)
@@ -516,21 +651,52 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"rows": rows, "manifest": manifest}, indent=2, sort_keys=True))
         else:
             print_summary(rows=rows, measures=measures)
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        _atomic_json(
+            checkpoint_path,
+            {**identity, "terminal_state": "FINISHED", "timestamps_completed": int(checkpoint.get("timestamps_completed", 0)), "rows_written": len(rows), "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc")},
+        )
     except _RunnerInterrupted as exc:
+        checkpoint: dict[str, Any] = {}
+        if checkpoint_path.exists():
+            raw = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                checkpoint = raw
+        _atomic_json(
+            checkpoint_path,
+            {**identity, "terminal_state": "INTERRUPTED", "signal": signal.Signals(exc.signum).name, "timestamps_completed": int(checkpoint.get("timestamps_completed", 0)), "rows_written": int(checkpoint.get("rows_written", 0)), "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc")},
+        )
         print(
-            f"INTERRUPTED runner={REPORT_NAME} signal={signal.Signals(exc.signum).name} "
-            "db_writes=0 broker_calls=0 order_submission=0",
+            f"INTERRUPTED runner={REPORT_NAME} signal={signal.Signals(exc.signum).name} resumable=1 "
+            f"rows_written={int(checkpoint.get('rows_written', 0))} db_writes=0 broker_calls=0 order_submission=0",
             flush=True,
         )
         return 130
     except Exception as exc:
+        checkpoint: dict[str, Any] = {}
+        if checkpoint_path.exists():
+            try:
+                raw = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    checkpoint = raw
+            except Exception:
+                checkpoint = {}
+        try:
+            _atomic_json(
+                checkpoint_path,
+                {**identity, "terminal_state": "FAILED", "error_type": type(exc).__name__, "timestamps_completed": int(checkpoint.get("timestamps_completed", 0)), "rows_written": int(checkpoint.get("rows_written", 0)), "last_asof_ts_utc": checkpoint.get("last_asof_ts_utc")},
+            )
+        except Exception:
+            pass
         print(
-            f"FAILED runner={REPORT_NAME} error_type={type(exc).__name__} error={str(exc)!r} "
+            f"FAILED runner={REPORT_NAME} error_type={type(exc).__name__} error={str(exc)!r} resumable={1 if checkpoint else 0} "
             "db_writes=0 broker_calls=0 order_submission=0",
             flush=True,
         )
         return 1
     finally:
+        if conn is not None:
+            conn.close()
         for signum, previous in previous_handlers.items():
             signal.signal(signum, previous)
 
