@@ -16,6 +16,10 @@ from src.common.db_core_v1 import get_connection
 MODEL_VERSION: Final[str] = "momentum_flow_exhaustion_phase_d_context_v1"
 UNKNOWN: Final[str] = "UNKNOWN"
 DEFAULT_MAX_CONTEXT_AGE_HOURS: Final[int] = 4
+REGIME_REPORT_NAME: Final[str] = "regime_selector_backtest_v1"
+REGIME_REPORT_VERSION: Final[str] = "1.1"
+REGIME_SELECTOR_MODE: Final[str] = "GLOBAL"
+REGIME_HORIZON_HOURS: Final[int] = 4
 
 
 def _utc(value: datetime | str) -> datetime:
@@ -111,17 +115,22 @@ def build_interaction_summary(rows: list[dict[str, Any]], horizons: tuple[int, .
 
 def fetch_regime_rows(conn: Any, *, symbols: list[str], interval: str, start_ts: datetime, end_ts: datetime) -> list[dict[str, Any]]:
     symbol_sql = ""
-    params: list[Any] = [interval, start_ts, end_ts]
+    params: list[Any] = [
+        REGIME_REPORT_NAME, REGIME_REPORT_VERSION, REGIME_SELECTOR_MODE,
+        REGIME_HORIZON_HOURS, interval, start_ts, end_ts,
+    ]
     if symbols:
         symbol_sql = " AND symbol IN (" + ",".join(["%s"] * len(symbols)) + ")"
         params.extend(symbols)
     sql = f"""
     SELECT symbol, interval_code, asof_ts_utc, global_regime, asset_class_regime,
-           global_class_regime, asset_class
+           global_class_regime, asset_class, regime_selector_backtest_observation_v1_id
     FROM regime_selector_backtest_observation_v1
-    WHERE interval_code=%s AND asof_ts_utc >= %s AND asof_ts_utc <= %s
+    WHERE report_name=%s AND report_version=%s AND selector_mode=%s
+      AND horizon_hours=%s AND interval_code=%s
+      AND asof_ts_utc >= %s AND asof_ts_utc <= %s
     {symbol_sql}
-    ORDER BY symbol, asof_ts_utc
+    ORDER BY symbol, asof_ts_utc, regime_selector_backtest_observation_v1_id
     """
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -148,21 +157,35 @@ def main() -> None:
     p.add_argument("--interval", default="4h"); p.add_argument("--max-context-age-hours", type=int, default=4)
     p.add_argument("--output-dir", required=True)
     args = p.parse_args()
+    print(f"STARTED runner={MODEL_VERSION} interval={args.interval} max_context_age_hours={args.max_context_age_hours}", flush=True)
+    print("PHASE_STARTED phase=read_input", flush=True)
     rows = read_csv(Path(args.input_csv))
+    print(f"PHASE_FINISHED phase=read_input rows={len(rows)}", flush=True)
     if not rows:
-        write_outputs([], build_interaction_summary([]), Path(args.output_dir)); return
+        write_outputs([], build_interaction_summary([]), Path(args.output_dir))
+        print("FINISHED rows=0 known_context=0", flush=True)
+        return
     symbols = sorted({str(row["market"]).upper() for row in rows})
     asofs = [_utc(row["asof_ts_utc"]) for row in rows]
     padding = timedelta(hours=args.max_context_age_hours)
+    print(
+        f"PHASE_STARTED phase=fetch_regime_context source={REGIME_REPORT_NAME}:{REGIME_REPORT_VERSION}:{REGIME_SELECTOR_MODE}:{REGIME_HORIZON_HOURS}h",
+        flush=True,
+    )
     conn = get_connection(database=args.database)
     try:
         regimes = fetch_regime_rows(conn, symbols=symbols, interval=args.interval, start_ts=min(asofs)-padding, end_ts=max(asofs))
     finally:
         conn.close()
+    print(f"PHASE_FINISHED phase=fetch_regime_context rows={len(regimes)}", flush=True)
+    print("PHASE_STARTED phase=enrich_and_summarize", flush=True)
     enriched = enrich_with_regime_context(rows, regimes, max_context_age=padding)
     summary = build_interaction_summary(enriched)
+    print(f"PHASE_FINISHED phase=enrich_and_summarize known_context={summary['known_context_count']}", flush=True)
+    print("PHASE_STARTED phase=write_outputs", flush=True)
     write_outputs(enriched, summary, Path(args.output_dir))
-    print(f"rows={len(enriched)} known_context={summary['known_context_count']} output={args.output_dir}")
+    print(f"PHASE_FINISHED phase=write_outputs output={args.output_dir}", flush=True)
+    print(f"FINISHED rows={len(enriched)} known_context={summary['known_context_count']} output={args.output_dir}", flush=True)
 
 
 if __name__ == "__main__":

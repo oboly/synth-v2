@@ -3,6 +3,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from src.research.run_momentum_flow_exhaustion_phase_d_context_v1 import (
+    REGIME_HORIZON_HOURS,
+    REGIME_REPORT_NAME,
+    REGIME_REPORT_VERSION,
+    REGIME_SELECTOR_MODE,
     UNKNOWN,
     build_interaction_summary,
     enrich_with_regime_context,
@@ -60,3 +64,17 @@ def test_summary_keeps_buyer_and_seller_separate():
 def test_negative_max_age_is_rejected():
     with pytest.raises(ValueError):
         enrich_with_regime_context([_exhaustion()], [], max_context_age=timedelta(seconds=-1))
+
+
+def test_regime_source_identity_is_explicit_and_single_lane():
+    assert REGIME_REPORT_NAME == "regime_selector_backtest_v1"
+    assert REGIME_REPORT_VERSION == "1.1"
+    assert REGIME_SELECTOR_MODE == "GLOBAL"
+    assert REGIME_HORIZON_HOURS == 4
+
+
+def test_duplicate_timestamp_rows_have_deterministic_last_row_precedence():
+    first = _regime(BASE-timedelta(hours=1), "FIRST")
+    second = _regime(BASE-timedelta(hours=1), "SECOND")
+    rows = enrich_with_regime_context([_exhaustion()], [first, second])
+    assert rows[0]["global_regime"] == "SECOND"
