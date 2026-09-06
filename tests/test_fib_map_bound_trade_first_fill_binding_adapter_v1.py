@@ -193,20 +193,17 @@ def test_stale_map_evidence_fails_closed():
 
 
 
-def test_caller_cannot_relax_canonical_map_freshness_limit():
+
+def test_canonical_map_freshness_boundary_is_fixed_at_12h():
     fill = _fill_event()
-    evidence = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=13))
+    at_limit = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=12))
+    beyond_limit = _map_evidence(map_asof_ts_utc=FILL_TS - timedelta(hours=12, microseconds=1))
 
-    with pytest.raises(
-        FibMapBoundTradeBindingAdapterError,
-        match="FIB_MAP_EVIDENCE_MAX_AGE_EXCEEDS_CANONICAL_LIMIT",
-    ):
-        build_fib_map_bound_trade_v1_from_first_fill(
-            fill_event=fill,
-            map_evidence=evidence,
-            max_map_evidence_age_seconds=13 * 3600,
-        )
+    bound = build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=at_limit)
+    assert bound.map_asof_ts_utc == at_limit.map_asof_ts_utc
 
+    with pytest.raises(FibMapBoundTradeBindingAdapterError, match="FIB_MAP_EVIDENCE_STALE"):
+        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=beyond_limit)
 
 
 def test_future_map_evidence_relative_to_fill_fails_closed():
