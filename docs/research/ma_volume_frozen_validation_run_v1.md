@@ -186,7 +186,7 @@ The broad run remains read-only against the database.
 
 ## Frozen result
 
-The completed empirical result is canonical in `docs/research/ma_volume_frozen_validation_result_v1.md`.
+The completed empirical result is canonical in `docs/research/ma_volume_frozen_validation_results_v1.md`.
 
 ## Result disposition
 
