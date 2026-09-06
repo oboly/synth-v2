@@ -162,10 +162,10 @@ def replay_episode(
     _validate_episode(episode)
     execution_price = execution_price_for_policy(episode, policy)
     if episode.invalidation_price is not None:
-        canonical_delta = episode.canonical_level - episode.invalidation_price
-        execution_delta = execution_price - episode.invalidation_price
-        if canonical_delta == 0 or execution_delta == 0 or canonical_delta * execution_delta < 0:
-            raise ExecutionOffsetReplayError("INVALID_INVALIDATION_GEOMETRY")
+        if episode.side == SIDE_BUY and episode.invalidation_price >= execution_price:
+            raise ExecutionOffsetReplayError("INVALID_INVALIDATION_DIRECTION")
+        if episode.side == SIDE_SELL and episode.invalidation_price <= execution_price:
+            raise ExecutionOffsetReplayError("INVALID_INVALIDATION_DIRECTION")
     candle_rows = list(candles)
     for candle in candle_rows:
         _validate_candle(candle)
@@ -195,16 +195,11 @@ def replay_episode(
         if episode.side == SIDE_BUY:
             distance = max(Decimal("0"), candle.low_price - execution_price)
             fill = candle.low_price <= execution_price
+            invalidated = episode.invalidation_price is not None and candle.low_price <= episode.invalidation_price
         else:
             distance = max(Decimal("0"), execution_price - candle.high_price)
             fill = candle.high_price >= execution_price
-
-        if episode.invalidation_price is None:
-            invalidated = False
-        elif episode.invalidation_price < execution_price:
-            invalidated = candle.low_price <= episode.invalidation_price
-        else:
-            invalidated = candle.high_price >= episode.invalidation_price
+            invalidated = episode.invalidation_price is not None and candle.high_price >= episode.invalidation_price
         touched = touched or fill
         closest = distance if closest is None else min(closest, distance)
         if fill_ts is None and fill and invalidated:
