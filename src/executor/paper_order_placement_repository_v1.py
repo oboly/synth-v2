@@ -46,6 +46,7 @@ live_orders=0
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -59,6 +60,32 @@ _RECORDABLE_ACK_STATES = frozenset({BrokerAckStateV1.ACTIVE, BrokerAckStateV1.RE
 
 class PaperOrderPlacementConflictError(RuntimeError):
     """``client_order_id`` was reused for a different order identity."""
+
+
+@dataclass(frozen=True)
+class PaperOrderPlacementRecordV1:
+    """Immutable read model of one persisted placement decision: exact
+    identity, the acknowledgement this adapter recorded, and the durable
+    ``created_ts_utc`` this placement was recorded at. Issue #753 B7.5 uses
+    ``created_ts_utc`` as authoritative resting-since evidence -- a fresh
+    quote must be observed strictly after this timestamp for reconciliation
+    to trust it. This is a narrow, additional read of the existing immutable
+    ``executor_paper_order_placement`` table; it never mutates that table or
+    its schema."""
+
+    market: str
+    client_order_id: str
+    side: str
+    price: Decimal
+    quantity: Decimal
+    ack: OrderAckV1
+    created_ts_utc: datetime
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
@@ -156,11 +183,31 @@ class PaperOrderPlacementRepositoryV1:
         row = self._find_row(market=market, client_order_id=client_order_id)
         return None if row is None else _row_to_ack(row)
 
+    def find_placement_record(
+        self, *, market: str, client_order_id: str
+    ) -> PaperOrderPlacementRecordV1 | None:
+        """Narrow, immutable read of exact identity + ack + ``created_ts_utc``
+        for one placement. Read-only: never mutates
+        ``executor_paper_order_placement`` or its schema."""
+        row = self._find_row(market=market, client_order_id=client_order_id)
+        if row is None:
+            return None
+        return PaperOrderPlacementRecordV1(
+            market=market,
+            client_order_id=client_order_id,
+            side=str(row["side"]),
+            price=Decimal(str(row["price"])),
+            quantity=Decimal(str(row["quantity"])),
+            ack=_row_to_ack(row),
+            created_ts_utc=_aware_utc(row["created_ts_utc"]),
+        )
+
     def _find_row(self, *, market: str, client_order_id: str) -> Any | None:
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)
             cursor.execute(
-                "SELECT side, price, quantity, state, broker_order_id, broker_raw_status "
+                "SELECT side, price, quantity, state, broker_order_id, broker_raw_status, "
+                "created_ts_utc "
                 "FROM executor_paper_order_placement "
                 "WHERE market=%s AND client_order_id=%s",
                 [market, client_order_id],

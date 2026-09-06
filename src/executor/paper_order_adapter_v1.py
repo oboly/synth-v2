@@ -77,10 +77,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from src.executor.broker_ack_classification_v1 import BrokerAckStateV1, OrderAckV1
 from src.executor.execution_leg_v1 import FILLED, ExecutionLegV1
+
+if TYPE_CHECKING:
+    from src.executor.paper_order_placement_repository_v1 import PaperOrderPlacementRecordV1
 
 SIDE_BUY = "BUY"
 SIDE_SELL = "SELL"
@@ -130,6 +133,10 @@ class PaperOrderPlacementRepository(Protocol):
     def find_order_by_client_order_id(
         self, *, market: str, client_order_id: str
     ) -> OrderAckV1 | None: ...
+
+    def find_placement_record(
+        self, *, market: str, client_order_id: str
+    ) -> "PaperOrderPlacementRecordV1 | None": ...
 
 
 def _aware(value: object) -> bool:

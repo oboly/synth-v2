@@ -305,6 +305,43 @@ class ExecutionLegRepositoryV1:
             raise LookupError("EXECUTION_LEG_NOT_FOUND")
         return leg, won
 
+    def mark_active_filled_price_through_v1(
+        self, leg_id: int, *, expected_broker_order_id: str, broker_raw_status: str,
+    ) -> ExecutionLegV1:
+        """Issue #753 B7.5: guarded ``ACTIVE`` -> ``FILLED`` for one resting
+        PAPER leg whose resting limit price the market has strictly priced
+        through. Leaves ``broker_order_id`` and ``restatement_reason``
+        untouched (no COALESCE needed: this SQL never writes them), unlike
+        ``_resolved_transition_from`` which is for broker-ack resolution, not
+        resting-order reconciliation. The ``WHERE`` clause requires the
+        caller's own already-persisted ``broker_order_id`` to still match,
+        an explicit compare-and-swap identity guard against a leg whose
+        underlying broker identity changed between the caller's read and this
+        write. Replaying an already-``FILLED`` leg with the identical
+        ``broker_order_id`` is idempotent; any other current state, or a
+        ``broker_order_id`` mismatch, is a conflict, matching the schema
+        trigger's own transition allow-list."""
+        if not isinstance(expected_broker_order_id, str) or not expected_broker_order_id.strip():
+            raise ValueError("expected_broker_order_id required")
+        if not isinstance(broker_raw_status, str) or not broker_raw_status.strip():
+            raise ValueError("broker_raw_status required")
+        now = trusted_clock.utc_now()
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_leg SET state=%s, broker_raw_status=%s, "
+                "last_reconciled_ts_utc=%s, updated_ts_utc=%s "
+                "WHERE executor_execution_leg_id=%s AND state=%s AND broker_order_id=%s",
+                [FILLED, broker_raw_status, now, now, leg_id, ACTIVE, expected_broker_order_id],
+            )
+            won = cursor.rowcount == 1
+        leg = self.find(leg_id)
+        if leg is None:
+            raise LookupError("EXECUTION_LEG_NOT_FOUND")
+        if won or (leg.state == FILLED and leg.broker_order_id == expected_broker_order_id):
+            return leg
+        raise ExecutionLegConflictError("ACTIVE_FILLED_PRICE_THROUGH_TRANSITION_CONFLICT")
+
     def find_by_handoff_and_index(self, handoff_id: int, leg_index: int) -> ExecutionLegV1 | None:
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)

@@ -35,7 +35,10 @@ from src.executor.execution_leg_v1 import (
 )
 from src.executor.broker_ack_classification_v1 import BrokerAckStateV1
 from src.executor.paper_order_adapter_v1 import PaperMarketQuoteV1
-from src.executor.paper_order_placement_repository_v1 import PaperOrderPlacementConflictError
+from src.executor.paper_order_placement_repository_v1 import (
+    PaperOrderPlacementConflictError,
+    PaperOrderPlacementRecordV1,
+)
 from tests.automatic_buy_account_allocation_evidence_fixtures_v1 import FakeConnection
 
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
@@ -184,6 +187,19 @@ class MemoryLegRepository:
             leg_id = self.ids_by_key.get((handoff_id, leg_index))
             return None if leg_id is None else self.rows[leg_id]
 
+    def mark_active_filled_price_through_v1(
+        self, leg_id: int, *, expected_broker_order_id: str, broker_raw_status: str,
+    ) -> ExecutionLegV1:
+        with self.lock:
+            leg = self.rows[leg_id]
+            if leg.state == FILLED and leg.broker_order_id == expected_broker_order_id:
+                return leg
+            if leg.state != ACTIVE or leg.broker_order_id != expected_broker_order_id:
+                raise ExecutionLegConflictError("ACTIVE_FILLED_PRICE_THROUGH_TRANSITION_CONFLICT")
+            resolved = replace(leg, state=FILLED, broker_raw_status=broker_raw_status)
+            self.rows[leg_id] = resolved
+            return resolved
+
 
 class MemoryPlacementRepository:
     """In-memory double for ``PaperOrderPlacementRepositoryV1``, standing in
@@ -200,7 +216,10 @@ class MemoryPlacementRepository:
             if (existing["side"], existing["price"], existing["quantity"]) != (side, price, quantity):
                 raise PaperOrderPlacementConflictError("PAPER_ORDER_CLIENT_ORDER_ID_IDENTITY_CONFLICT")
             return existing["ack"]
-        self.rows[key] = {"side": side, "price": price, "quantity": quantity, "ack": ack}
+        self.rows[key] = {
+            "side": side, "price": price, "quantity": quantity, "ack": ack,
+            "created_ts_utc": NOW - timedelta(seconds=10),
+        }
         return ack
 
     def recover_existing_placement(self, *, market, client_order_id, side, price, quantity):
@@ -214,6 +233,16 @@ class MemoryPlacementRepository:
     def find_order_by_client_order_id(self, *, market, client_order_id):
         row = self.rows.get((market, client_order_id))
         return None if row is None else row["ack"]
+
+    def find_placement_record(self, *, market, client_order_id):
+        row = self.rows.get((market, client_order_id))
+        if row is None:
+            return None
+        return PaperOrderPlacementRecordV1(
+            market=market, client_order_id=client_order_id,
+            side=row["side"], price=row["price"], quantity=row["quantity"],
+            ack=row["ack"], created_ts_utc=row["created_ts_utc"],
+        )
 
 
 class CrashOnceAfterAckLegRepository(MemoryLegRepository):
@@ -241,6 +270,17 @@ class FixedQuoteProvider:
         return self.quote
 
 
+class SequencedQuoteProvider:
+    def __init__(self, quotes: tuple[PaperMarketQuoteV1, ...]) -> None:
+        self.quotes = quotes
+        self.calls = 0
+
+    def latest_quote(self, *, market: str) -> PaperMarketQuoteV1 | None:
+        quote = self.quotes[min(self.calls, len(self.quotes) - 1)]
+        self.calls += 1
+        return quote
+
+
 def _marketable_quote(market: str = "BTC-EUR") -> PaperMarketQuoteV1:
     return PaperMarketQuoteV1(market=market, best_bid=Decimal("99"), best_ask=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=5))
 
@@ -253,9 +293,11 @@ def _run(
     conn: FakeConnection | None = None,
     quote: PaperMarketQuoteV1 | None = "default",  # type: ignore[assignment]
     placement_repository: MemoryPlacementRepository | None = None,
+    quote_provider=None,
 ):
     if quote == "default":
         quote = _marketable_quote(plan.market)
+    provider = quote_provider or FixedQuoteProvider(quote)
     return submit_and_reconcile_automatic_buy_paper_plan_v1(
         plan=plan,
         handoff=handoff,
@@ -263,7 +305,7 @@ def _run(
         handoff_repository=MemoryHandoffRepository(handoff),
         leg_repository=leg_repository or MemoryLegRepository(),
         conn=conn or FakeConnection(),
-        quote_provider=FixedQuoteProvider(quote),
+        quote_provider=provider,
         max_quote_age_seconds=30,
         now_fn=lambda: NOW,
         placement_repository=placement_repository or MemoryPlacementRepository(),
@@ -406,3 +448,94 @@ def test_sell_side_plan_is_rejected_before_the_plan_adapter_runs() -> None:
     handoff = _handoff(_plan())  # any structurally valid BUY handoff; must never be reached
     with pytest.raises(AutomaticBuyPaperFillExecutionError, match="PLAN_SIDE_NOT_BUY"):
         _run(plan, handoff)
+
+
+
+def test_newly_placed_active_leg_is_not_reconciled_in_same_invocation() -> None:
+    """Even if a provider could return a through-price on a second read in
+    the same call, a leg created ACTIVE by that call is not eligible until a
+    later invocation."""
+    plan = _plan()
+    handoff = _handoff(plan)
+    conn = FakeConnection()
+    leg_repository = MemoryLegRepository()
+    placement_repository = MemoryPlacementRepository()
+    provider = SequencedQuoteProvider((
+        PaperMarketQuoteV1(
+            market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("110"),
+            observed_ts_utc=NOW - timedelta(seconds=5),
+        ),
+        PaperMarketQuoteV1(
+            market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("99"),
+            observed_ts_utc=NOW - timedelta(seconds=4),
+        ),
+    ))
+
+    result = _run(
+        plan, handoff, leg_repository=leg_repository, conn=conn,
+        placement_repository=placement_repository, quote_provider=provider,
+    )
+
+    leg_id = leg_repository.ids_by_key[(handoff.handoff_id, 1)]
+    assert leg_repository.rows[leg_id].state == ACTIVE
+    assert result.fills == ()
+    assert provider.calls == 1
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
+
+def test_later_invocations_require_price_through_before_fill_and_bridge_ownership() -> None:
+    """#753 B7.5: placement rests ACTIVE; exact touch remains ACTIVE because
+    queue priority is unknown; only a later strict price-through may produce
+    FILLED and bridge exactly one #752 ownership event."""
+    plan = _plan()
+    handoff = _handoff(plan)
+    conn = FakeConnection()
+    leg_repository = MemoryLegRepository()
+    placement_repository = MemoryPlacementRepository()
+    resting_quote = PaperMarketQuoteV1(
+        market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("110"),
+        observed_ts_utc=NOW - timedelta(seconds=5),
+    )
+
+    first = _run(
+        plan, handoff, leg_repository=leg_repository, conn=conn,
+        quote=resting_quote, placement_repository=placement_repository,
+    )
+    assert first.submission.leg_states == (ACTIVE,)
+    assert first.fills == ()
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
+
+    touch_quote = PaperMarketQuoteV1(
+        market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("100"),
+        observed_ts_utc=NOW - timedelta(seconds=4),
+    )
+    second = _run(
+        plan, handoff, leg_repository=leg_repository, conn=conn,
+        quote=touch_quote, placement_repository=placement_repository,
+    )
+    leg_id = leg_repository.ids_by_key[(handoff.handoff_id, 1)]
+    assert leg_repository.rows[leg_id].state == ACTIVE
+    assert second.fills == ()
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
+
+    through_quote = PaperMarketQuoteV1(
+        market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("99.99"),
+        observed_ts_utc=NOW - timedelta(seconds=3),
+    )
+    third = _run(
+        plan, handoff, leg_repository=leg_repository, conn=conn,
+        quote=through_quote, placement_repository=placement_repository,
+    )
+    reconciled_leg = leg_repository.rows[leg_id]
+    assert reconciled_leg.state == FILLED
+    assert reconciled_leg.broker_order_id == f"paper-{reconciled_leg.client_order_id}"
+    assert third.fills[0].leg_index == 1
+    assert third.fills[0].event is not None
+    assert len(load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)) == 1
+
+    fourth = _run(
+        plan, handoff, leg_repository=leg_repository, conn=conn,
+        quote=through_quote, placement_repository=placement_repository,
+    )
+    assert fourth.fills[0].event is None
+    assert len(load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)) == 1
+    assert len(placement_repository.rows) == 1
