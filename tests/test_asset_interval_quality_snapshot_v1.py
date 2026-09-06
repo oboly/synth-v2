@@ -248,3 +248,21 @@ def test_main_interrupt_emits_one_terminal_summary(monkeypatch, capsys):
     assert output.count("INTERRUPTED runner=asset_interval_quality_snapshot") == 1
     assert "FINISHED runner=" not in output
     assert conn.closed
+
+
+def test_main_sigterm_emits_interrupted_terminal_summary(monkeypatch, capsys):
+    conn = _Connection()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt("SIGTERM")
+
+    monkeypatch.setattr(runner, "fetch_quality_rows", interrupt)
+
+    assert runner.main(["--output", "none"]) == 130
+
+    output = capsys.readouterr().out
+    assert output.count("INTERRUPTED runner=asset_interval_quality_snapshot") == 1
+    assert "signal=SIGTERM" in output
+    assert "FINISHED runner=" not in output
+    assert conn.closed

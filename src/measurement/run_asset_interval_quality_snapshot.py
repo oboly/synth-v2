@@ -588,14 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "write" if args.write_db else "dry-run"
     started = time.monotonic()
     conn = None
-    interrupt_signal = "SIGINT"
-
-    def handle_sigterm(_signum, _frame) -> None:
-        nonlocal interrupt_signal
-        interrupt_signal = "SIGTERM"
-        raise KeyboardInterrupt
-
-    previous_sigterm_handler = signal.signal(signal.SIGTERM, handle_sigterm)
+    previous_handlers = _install_signal_handlers()
     print(
         f"STARTED runner={ENGINE_NAME} version={ENGINE_VERSION} "
         f"mode={mode} venue={args.venue} snapshot_ts_utc={snapshot_ts_utc.isoformat(sep=' ')}",
@@ -652,9 +645,10 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 0
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         print(
-            f"INTERRUPTED runner={ENGINE_NAME} signal={interrupt_signal} elapsed={_elapsed(started)}",
+            f"INTERRUPTED runner={ENGINE_NAME} signal={_interruption_signal(exc)} "
+            f"elapsed={_elapsed(started)}",
             flush=True,
         )
         return 130
@@ -666,9 +660,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
-        signal.signal(signal.SIGTERM, previous_sigterm_handler)
         if conn is not None:
             conn.close()
+        _restore_signal_handlers(previous_handlers)
 
 
 if __name__ == "__main__":
