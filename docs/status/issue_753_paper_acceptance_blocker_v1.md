@@ -9,9 +9,15 @@ parallel logic, do not revive #707/#723).
 
 **Update:** gaps 1 and 2 below (`AutomaticBuyPlanV1` identity) are resolved
 by Phase B4, see
-`docs/architecture/automatic_buy_trade_lineage_identity_v1.md`. Gaps 3 and 4
-(fill -> ownership wiring, `fib_map_bound_trade_v1` repository) remain open
-for B5/B6.
+`docs/architecture/automatic_buy_trade_lineage_identity_v1.md`. Gap 3
+(fill -> ownership wiring) is partially resolved by Phase B5, see
+`docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md`: the
+reconciliation bridge (including the RE_ENTER lineage-continuity decision B4
+deferred) is built and tested, but B5 also surfaced a **new, deeper blocker**
+-- no PAPER order-placement adapter exists anywhere in the shared executor
+handoff path automatic-BUY plans flow through, so there is still no real
+`BrokerCumulativeFillEvidenceV1` to call the new bridge with. Gap 4
+(`fib_map_bound_trade_v1` repository) remains open for B6.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -57,14 +63,20 @@ decision:
    copies it again from the decision. Both flow into the shared execution
    handoff's identity payload.
 
-3. **No code creates a `StrategyOwnedInventoryEventV1` from a BUY fill.**
-   `grep -rn "StrategyOwnedInventoryEventV1("` across `src/` matches only
-   inside `strategy_owned_fill_reconciliation_v1.py:165` (the #752
-   reconciliation module itself, which requires the lineage from gap 1/2 as
-   input) and `strategy_owned_inventory_repository_v1.py:21` (row decoding).
-   Nothing under `src/execution_planner/automatic_buy_*` or
-   `src/decision_gate/automatic_buy_*` calls into #752's reconciliation to
-   turn a PAPER fill into an ownership event.
+3. ~~**No code creates a `StrategyOwnedInventoryEventV1` from a BUY fill.**~~
+   PARTIALLY RESOLVED by B5:
+   `src/decision_gate/automatic_buy_fill_reconciliation_v1.py` and
+   `..._persistence_v1.py` now bridge a caller-supplied automatic-BUY plan
+   identity + `BrokerCumulativeFillEvidenceV1` into a persisted
+   `StrategyOwnedInventoryEventV1`, resolving RE_ENTER continuity via #752's
+   inventory projection. See
+   `docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md`. What
+   remains open: nothing in reviewed code produces a real
+   `BrokerCumulativeFillEvidenceV1` for an automatic-BUY PAPER order --
+   `src/executor/shared_execution_runtime_v1.py` explicitly raises
+   `PAPER_ADAPTER_NOT_CONFIGURED` for PAPER mode, and no other seam exists.
+   That PAPER order-placement adapter is its own unresolved architectural
+   decision, out of scope for B5.
 
 4. **`fib_map_bound_trade_v1` has a DB schema
    (`db/migrations/20260906_fib_map_bound_trade_v1.sql`) but zero Python
@@ -106,17 +118,24 @@ the existing B1/B2/B3 unit tests already prove).
    and the automatic_buy execution handoff payload; document the `trade_id`
    generation rule.~~ DONE, see
    `docs/architecture/automatic_buy_trade_lineage_identity_v1.md`.
-2. `#753 B5` — wire automatic_buy PAPER fill handling to #752 reconciliation
-   so a real fill produces a `StrategyOwnedInventoryEventV1`.
+2. ~~`#753 B5` — wire automatic_buy PAPER fill handling to #752
+   reconciliation so a real fill produces a `StrategyOwnedInventoryEventV1`.~~
+   PARTIALLY DONE, see
+   `docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md`: the
+   reconciliation bridge is built, tested, and reusable, but B5 surfaced that
+   no PAPER order-placement adapter exists to actually trigger it. **New
+   recommended slice `#753 B5.5`** — design and build a reviewed PAPER
+   order-placement adapter for the shared executor handoff path (decide the
+   truthful-fill simulation contract), then wire it to call the B5 bridge.
 3. `#753 B6` — add a `fib_map_bound_trade_v1` repository
    (insert-at-first-fill, load-by-lineage) matching the existing migration's
-   unique keys.
+   unique keys. Independent of B5.5.
 4. `#753 B7` — adapter that constructs a `FibMapBoundTradeV1` from a
    strategy-owned inventory position + canonical Fib map evidence at first
    fill, using B4-B6.
 5. `#753 B8` — the exact-path PAPER acceptance harness this task was asked to
-   build, once B4-B7 give it a real (not fabricated) identity bridge to
-   exercise.
+   build, once B5.5-B7 give it a real (not fabricated) identity bridge to
+   exercise end-to-end.
 
 ## Safety markers
 
