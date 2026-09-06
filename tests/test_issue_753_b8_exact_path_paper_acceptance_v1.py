@@ -73,6 +73,7 @@ from tests.test_automatic_buy_plan_handoff_identity_v1 import (
     _planning_context as automatic_buy_planning_context,
 )
 from tests.test_fib_map_bound_exit_execution_handoff_application_v1 import (
+    MemoryCursor as ExitHandoffMemoryCursor,
     MemoryDatabase as ExitHandoffMemoryDatabase,
     _repository as exit_handoff_repository,
 )
@@ -83,6 +84,38 @@ from tests.test_fib_map_bound_trade_first_fill_binding_adapter_v1 import (
 ACCOUNT_ID = 7
 MARKET = "SOL-EUR"
 BUCKET = "SHORT_TERM_ROTATION"
+
+
+class B8ExitHandoffMemoryCursor(ExitHandoffMemoryCursor):
+    def execute(self, sql: str, params: list[object]) -> None:
+        if "WHERE executor_execution_handoff_id=%s" in sql:
+            wanted = int(params[0])
+            self.selected = next(
+                (
+                    row
+                    for row in self.database.rows.values()
+                    if int(row["executor_execution_handoff_id"]) == wanted
+                ),
+                None,
+            )
+            return
+        super().execute(sql, params)
+
+
+class B8ExitHandoffMemoryContext:
+    def __init__(self, database: "B8ExitHandoffMemoryDatabase") -> None:
+        self.cursor = B8ExitHandoffMemoryCursor(database)
+
+    def __enter__(self) -> B8ExitHandoffMemoryCursor:
+        return self.cursor
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+
+class B8ExitHandoffMemoryDatabase(ExitHandoffMemoryDatabase):
+    def cursor_factory(self, **_kwargs) -> B8ExitHandoffMemoryContext:
+        return B8ExitHandoffMemoryContext(self)
 
 
 def _candidate_gate_plan(*, bucket: str = BUCKET, identity_suffix: str = ""):
@@ -217,8 +250,6 @@ def _execute_paper_sell(
     )
     leg_repo = MemoryLegRepository()
     placement_repo = MemoryPlacementRepository()
-    handoff_repo = MemoryHandoffRepository(handoff)
-
     resting_quote = PaperMarketQuoteV1(
         market=MARKET,
         best_bid=exit_plan.legs[0].limit_price - Decimal("1"),
@@ -229,7 +260,7 @@ def _execute_paper_sell(
         plan=exit_plan,
         handoff=handoff,
         operator_id=73,
-        handoff_repository=handoff_repo,
+        handoff_repository=exit_handoff_repo,
         leg_repository=leg_repo,
         conn=inventory_conn,
         quote_provider=FixedQuoteProvider(resting_quote),
@@ -252,7 +283,7 @@ def _execute_paper_sell(
         plan=exit_plan,
         handoff=handoff,
         operator_id=73,
-        handoff_repository=handoff_repo,
+        handoff_repository=exit_handoff_repo,
         leg_repository=leg_repo,
         conn=inventory_conn,
         quote_provider=FixedQuoteProvider(through_quote),
@@ -268,7 +299,7 @@ def _execute_paper_sell(
         plan=exit_plan,
         handoff=handoff,
         operator_id=73,
-        handoff_repository=handoff_repo,
+        handoff_repository=exit_handoff_repo,
         leg_repository=leg_repo,
         conn=inventory_conn,
         quote_provider=FixedQuoteProvider(through_quote),
@@ -360,7 +391,7 @@ def test_b8_exact_path_paper_acceptance_matrix() -> None:
         context=_exit_context(NOW + timedelta(seconds=1)),
     )
     assert target1_plan.final_quantity_base <= owned_before_exit.owned_base_quantity
-    exit_handoff_db = ExitHandoffMemoryDatabase()
+    exit_handoff_db = B8ExitHandoffMemoryDatabase()
     exit_repo = exit_handoff_repository(database=exit_handoff_db)
     target1_handoff, target1_filled, _ = _execute_paper_sell(
         exit_plan=target1_plan,
