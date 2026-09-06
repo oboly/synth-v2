@@ -37,7 +37,6 @@ from src.decision_gate.fib_map_bound_trade_repository_v1 import (
     FibMapBoundTradeRepositoryV1,
 )
 from src.decision_gate.strategy_owned_inventory_repository_v1 import (
-    append_strategy_owned_inventory_event_v1,
     load_strategy_owned_inventory_events_v1,
 )
 from src.decision_gate.strategy_owned_inventory_v1 import project_strategy_owned_inventory_v1
@@ -86,21 +85,21 @@ MARKET = "SOL-EUR"
 BUCKET = "SHORT_TERM_ROTATION"
 
 
-def _candidate_gate_plan():
+def _candidate_gate_plan(*, bucket: str = BUCKET, identity_suffix: str = ""):
     setup = AutomaticBuySetupContextV1(
         venue="bitvavo",
         asset_id=42,
         market=MARKET,
         strategy_id="strat-1",
         strategy_version="1",
-        setup_id="setup-1",
+        setup_id=f"setup-1{identity_suffix}",
         setup_ready=True,
         current_price=Decimal("95"),
         entry_zone_low=Decimal("90"),
         entry_zone_high=Decimal("100"),
         re_entry_zone_low=None,
         re_entry_zone_high=None,
-        evidence_id="evidence-1",
+        evidence_id=f"evidence-1{identity_suffix}",
         observed_ts_utc=NOW,
     )
     candidate_eval = evaluate_automatic_buy_candidate_v1(
@@ -108,9 +107,17 @@ def _candidate_gate_plan():
         evaluation_ts_utc=NOW,
     )
     assert candidate_eval.candidate is not None
+    gate_context = automatic_buy_gate_context()
+    if bucket != BUCKET:
+        row = replace(gate_context.strategy_bucket_config_rows[0], strategy_bucket_id=bucket)
+        gate_context = replace(
+            gate_context,
+            strategy_bucket_id=bucket,
+            strategy_bucket_config_rows=(row,),
+        )
     gate = evaluate_automatic_buy_candidate_permission_v1(
         candidate=candidate_eval.candidate,
-        context=automatic_buy_gate_context(),
+        context=gate_context,
     )
     assert gate.state == STATE_APPROVED
     plan = build_automatic_buy_plan_v1(
@@ -494,36 +501,53 @@ def test_b8_exact_path_paper_acceptance_matrix() -> None:
             repository=restarted_fib_repo,
         )
 
-    # Case 9: a second bucket may own the same asset but cannot authorize a
-    # SELL against this binding; its owned quantity survives this trade's exit.
-    other_bucket_buy = replace(
-        earliest_buy,
-        event_id="b8-other-bucket-buy-event",
-        strategy_bucket_id="LONG_TERM_MOONSHOT",
-        trade_id="b8-other-bucket-trade",
-        source_execution_plan_id="b8-other-bucket-plan",
-        source_fill_id="b8-other-bucket-fill",
-        filled_base_quantity=Decimal("0.2"),
-        occurred_ts_utc=NOW + timedelta(milliseconds=500),
+    # Case 9: a second bucket earns ownership through the same real BUY PAPER
+    # path, then cannot authorize a SELL against the first bucket's binding.
+    other_bucket = "LONG_TERM_MOONSHOT"
+    _, other_gate, other_plan = _candidate_gate_plan(
+        bucket=other_bucket, identity_suffix="-other-bucket"
     )
-    append_strategy_owned_inventory_event_v1(inventory_conn, event=other_bucket_buy)
+    assert other_gate.strategy_bucket_id == other_bucket
+    assert other_plan.strategy_bucket_id == other_bucket
+    other_handoff = automatic_buy_handoff(other_plan)
+    other_leg_repo = MemoryLegRepository()
+    other_placement_repo = MemoryPlacementRepository()
+    other_first = run_automatic_buy_paper(
+        other_plan,
+        other_handoff,
+        leg_repository=other_leg_repo,
+        conn=inventory_conn,
+        quote=_buy_resting_quote(),
+        placement_repository=other_placement_repo,
+    )
+    assert all(state == "ACTIVE" for state in other_first.submission.leg_states)
+    assert other_first.fills == ()
+    other_second = run_automatic_buy_paper(
+        other_plan,
+        other_handoff,
+        leg_repository=other_leg_repo,
+        conn=inventory_conn,
+        quote=_buy_through_quote(),
+        placement_repository=other_placement_repo,
+    )
+    assert other_second.fills and all(outcome.event is not None for outcome in other_second.fills)
     isolated_events = load_strategy_owned_inventory_events_v1(
         inventory_conn, trading_account_id=ACCOUNT_ID
     )
     other_position = _position(
         isolated_events,
-        bucket="LONG_TERM_MOONSHOT",
-        trade_id="b8-other-bucket-trade",
+        bucket=other_bucket,
+        trade_id=other_plan.trade_id,
     )
     denied = _decision(binding, other_position, price=Decimal("120"))
     assert denied.state == STATE_FAIL_CLOSED
     assert denied.reason_code == REASON_OWNERSHIP_MISMATCH
-    assert other_position.owned_base_quantity == Decimal("0.2")
+    assert other_position.owned_base_quantity == other_plan.final_quantity_base
     assert restarted_fib_repo.load_by_lineage(
         trading_account_id=ACCOUNT_ID,
         venue=binding.venue,
         market=binding.market,
-        strategy_bucket_id="LONG_TERM_MOONSHOT",
+        strategy_bucket_id=other_bucket,
         strategy_id=binding.strategy_id,
         strategy_version=binding.strategy_version,
         trade_id=binding.trade_id,
