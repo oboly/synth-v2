@@ -2,14 +2,14 @@
 
 ## Status
 
-BLOCKED for the exact-path PAPER acceptance harness (B8) only. B5.5 (the
-PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
-B6 (the `fib_map_bound_trade_v1` repository) is also now resolved -- see
-Update 3 below. B7 (the first-fill binding adapter) is now resolved -- see
-Update 4 below. B8 remains BLOCKED: no code path yet produces a real
-automatic-BUY PAPER fill reaching `FILLED` (B5.5's adapter is explicitly
-submission-time-only and never returns `FILLED`), so B8's harness still has
-no real end-to-end fill to exercise B7 with.
+B5.5 (the PAPER order-placement adapter gap), B6 (the
+`fib_map_bound_trade_v1` repository), B7 (the first-fill binding adapter),
+and now B7.5 (resting-order `ACTIVE -> FILLED` reconciliation) are resolved
+-- see Update 5 below. B8 (the exact-path PAPER acceptance harness) is now
+**technically runnable**: a real automatic-BUY PAPER order can reach
+`FILLED` end-to-end for the first time. B8 itself is **not yet built or
+run** and is not accepted by this update -- see Update 5 for exactly what is
+and is not proven.
 Documenting the precise remaining gap instead of inventing a shortcut, per
 task contract and `AGENTS.md` (do not fabricate ownership from wallet
 balance, do not invent parallel logic, do not revive #707/#723).
@@ -68,13 +68,37 @@ using deterministic `(occurred_ts_utc, event_id)` ordering; build/bind accept on
 no-rebind backstop. The full target ladder is frozen verbatim -- B7 never
 filters to currently-active or unconsumed targets. See
 `docs/architecture/fib_map_bound_trade_first_fill_binding_adapter_v1.md`.
-**B8 remains BLOCKED** -- B7 only closes the construct+persist path from a
-real `StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`; it does not
-and cannot produce the real automatic-BUY PAPER fill B8's harness needs,
-because B5.5's PAPER order-placement adapter is explicitly
-submission-time-only and never returns `FILLED` -- there is still no
-`ACTIVE -> FILLED` PAPER reconciliation anywhere in the shared executor
-handoff path. Do not treat B7 as unblocking B8.
+At the time of Update 4, B8 remained BLOCKED because B7 only closes the
+construct+persist path from a real `StrategyOwnedInventoryEventV1` to a
+`FibMapBoundTradeV1`; it could not yet produce the real automatic-BUY PAPER
+fill B8's harness needs. That specific gap is closed by Update 5 below.
+
+**Update 5:** B7.5
+(`src/executor/paper_resting_order_reconciliation_v1.py`,
+`ExecutionLegRepositoryV1.mark_active_filled_on_touch`) is built and tested:
+the resting-order `ACTIVE -> FILLED` reconciliation gap B5.5 explicitly
+deferred is now closed. Deterministic full-fill-on-touch only (BUY fills
+when `best_ask <= price`; SELL fills when `best_bid >= price`; no partial
+fill, no queue-position claim), reusing B5.5's own quote-validation
+fail-closed rules verbatim so the two paths cannot diverge on what counts as
+valid evidence. `executor_paper_order_placement` (B5.5's immutable placement-
+ack history) is untouched by this phase; only `executor_execution_leg` gains
+the new guarded transition, using the existing schema trigger unchanged.
+`src/entry_policy/automatic_buy_paper_fill_execution_v1.py` now reconciles an
+`ACTIVE` leg found for the current handoff before its existing FILLED-leg ->
+#752 bridge loop, so a second invocation for the same plan/handoff is the
+point a resting automatic-BUY PAPER order actually reaches `FILLED` and gets
+bridged into #752 ownership. See
+`docs/architecture/paper_resting_order_active_fill_reconciliation_v1.md`.
+
+**B8 is now technically runnable, but is explicitly NOT accepted by this
+update.** B7.5 proves the individual seams (placement, resting,
+reconciliation, #752 bridge, B6/B7 binding) compose in isolation, each with
+its own focused/unit tests. It does not itself build or run B8's exact-path
+harness -- the single, real, end-to-end wiring of handoff -> placement ->
+resting -> reconciliation -> #752 event -> B7 binding, exercised as one path
+rather than as independently-tested units. Do not treat B7.5 as B8 having
+passed; B8 remains a separate, not-yet-started phase.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -104,6 +128,12 @@ handoff path. Do not treat B7 as unblocking B8.
   Verifies the earliest BUY against authoritative persisted #752 history,
   then constructs and persists one `FibMapBoundTradeV1` from that verified
   fill plus caller-supplied `CanonicalFibMapEvidenceV1`, through B6.
+- B7.5 `src/executor/paper_resting_order_reconciliation_v1.py` +
+  `ExecutionLegRepositoryV1.mark_active_filled_on_touch` —
+  deterministic, fail-closed `ACTIVE -> FILLED` reconciliation for one
+  resting PAPER leg, reusing B5.5's own quote-validation rules verbatim.
+  Wired into `automatic_buy_paper_fill_execution_v1.py` ahead of its
+  existing FILLED-leg -> #752 bridge loop.
 
 The B1→B2→B3 chain, given a `FibMapBoundTradeV1` and a
 `StrategyOwnedInventoryPositionV1`, already produces a correct, idempotent,
@@ -205,9 +235,13 @@ the existing B1/B2/B3 unit tests already prove).
    strategy-owned inventory position + canonical Fib map evidence at first
    fill, using B4-B6.~~ DONE, see
    `src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`.
+4b. ~~`#753 B7.5` — resting-order `ACTIVE -> FILLED` PAPER reconciliation,
+   the gap B5.5 explicitly deferred and B7's own status update named as
+   still blocking B8.~~ DONE, see
+   `docs/architecture/paper_resting_order_active_fill_reconciliation_v1.md`.
 5. `#753 B8` — the exact-path PAPER acceptance harness this task was asked to
-   build, once B7 gives it a real (not fabricated) identity bridge to
-   exercise end-to-end.
+   build: now technically runnable given B7.5's real fill path, but not yet
+   built or run. Do not treat B7.5 as B8 having passed.
 
 ## Safety markers
 

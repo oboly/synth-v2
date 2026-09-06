@@ -305,6 +305,33 @@ class ExecutionLegRepositoryV1:
             raise LookupError("EXECUTION_LEG_NOT_FOUND")
         return leg, won
 
+    def mark_active_filled_on_touch(self, leg_id: int, *, broker_raw_status: str) -> ExecutionLegV1:
+        """Issue #753 B7.5: guarded ``ACTIVE`` -> ``FILLED`` for one resting
+        PAPER leg touched by fresh market evidence. Leaves ``broker_order_id``
+        and ``restatement_reason`` untouched (no COALESCE needed: this SQL
+        never writes them), unlike ``_resolved_transition_from`` which is for
+        broker-ack resolution, not resting-order touch reconciliation. Replaying
+        an already-``FILLED`` leg is idempotent; any other current state is a
+        conflict, matching the schema trigger's own transition allow-list."""
+        if not isinstance(broker_raw_status, str) or not broker_raw_status.strip():
+            raise ValueError("broker_raw_status required")
+        now = trusted_clock.utc_now()
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_leg SET state=%s, broker_raw_status=%s, "
+                "last_reconciled_ts_utc=%s, updated_ts_utc=%s "
+                "WHERE executor_execution_leg_id=%s AND state=%s",
+                [FILLED, broker_raw_status, now, now, leg_id, ACTIVE],
+            )
+            won = cursor.rowcount == 1
+        leg = self.find(leg_id)
+        if leg is None:
+            raise LookupError("EXECUTION_LEG_NOT_FOUND")
+        if won or leg.state == FILLED:
+            return leg
+        raise ExecutionLegConflictError("ACTIVE_FILLED_ON_TOUCH_TRANSITION_CONFLICT")
+
     def find_by_handoff_and_index(self, handoff_id: int, leg_index: int) -> ExecutionLegV1 | None:
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)

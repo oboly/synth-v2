@@ -184,6 +184,17 @@ class MemoryLegRepository:
             leg_id = self.ids_by_key.get((handoff_id, leg_index))
             return None if leg_id is None else self.rows[leg_id]
 
+    def mark_active_filled_on_touch(self, leg_id: int, *, broker_raw_status: str) -> ExecutionLegV1:
+        with self.lock:
+            leg = self.rows[leg_id]
+            if leg.state == FILLED:
+                return leg
+            if leg.state != ACTIVE:
+                raise ExecutionLegConflictError("ACTIVE_FILLED_ON_TOUCH_TRANSITION_CONFLICT")
+            resolved = replace(leg, state=FILLED, broker_raw_status=broker_raw_status)
+            self.rows[leg_id] = resolved
+            return resolved
+
 
 class MemoryPlacementRepository:
     """In-memory double for ``PaperOrderPlacementRepositoryV1``, standing in
@@ -406,3 +417,41 @@ def test_sell_side_plan_is_rejected_before_the_plan_adapter_runs() -> None:
     handoff = _handoff(_plan())  # any structurally valid BUY handoff; must never be reached
     with pytest.raises(AutomaticBuyPaperFillExecutionError, match="PLAN_SIDE_NOT_BUY"):
         _run(plan, handoff)
+
+
+def test_second_invocation_reconciles_resting_active_leg_to_filled_and_bridges_ownership() -> None:
+    """#753 B7.5: the first invocation rests a non-crossing post-only BUY
+    ACTIVE (B5.5 never fills at placement); a second invocation, given fresh
+    market evidence that has since touched the resting limit, must reconcile
+    that same leg to FILLED and bridge it into #752 ownership -- without a
+    second placement (the placement repository sees only one recorded ack)."""
+    plan = _plan()
+    handoff = _handoff(plan)
+    conn = FakeConnection()
+    leg_repository = MemoryLegRepository()
+    placement_repository = MemoryPlacementRepository()
+    resting_quote = PaperMarketQuoteV1(market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("110"), observed_ts_utc=NOW - timedelta(seconds=5))
+
+    first = _run(plan, handoff, leg_repository=leg_repository, conn=conn, quote=resting_quote, placement_repository=placement_repository)
+    assert first.submission.leg_states == (ACTIVE,)
+    assert first.fills == ()
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
+
+    touched_quote = PaperMarketQuoteV1(market=plan.market, best_bid=Decimal("90"), best_ask=Decimal("100"), observed_ts_utc=NOW - timedelta(seconds=5))
+    second = _run(plan, handoff, leg_repository=leg_repository, conn=conn, quote=touched_quote, placement_repository=placement_repository)
+
+    leg_id = leg_repository.ids_by_key[(handoff.handoff_id, 1)]
+    reconciled_leg = leg_repository.rows[leg_id]
+    assert reconciled_leg.state == FILLED
+    assert reconciled_leg.broker_order_id == f"paper-{reconciled_leg.client_order_id}"
+    assert second.fills[0].leg_index == 1
+    assert second.fills[0].event is not None
+    persisted = load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)
+    assert len(persisted) == 1
+
+    # A third invocation must replay idempotently: no duplicate placement and
+    # no duplicate ownership delta.
+    third = _run(plan, handoff, leg_repository=leg_repository, conn=conn, quote=touched_quote, placement_repository=placement_repository)
+    assert third.fills[0].event is None
+    assert len(load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)) == 1
+    assert len(placement_repository.rows) == 1
