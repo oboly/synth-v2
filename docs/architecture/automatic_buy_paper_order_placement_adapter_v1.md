@@ -232,11 +232,14 @@ paper_adapter_not_configured_guard=unchanged (shared_execution_runtime_v1.py)
 
 ## Next slice
 
-B6 (`fib_map_bound_trade_v1` repository) and B7 (binding adapter) remain
-next per `docs/status/issue_753_paper_acceptance_blocker_v1.md`'s original
-sequencing and do not depend on this phase. Note the post-review scope correction above: this V1 adapter never returns
-`FILLED` at all (a crossing quote is `REJECTED`; a non-crossing quote rests
-`ACTIVE` with no later reconciliation), so B8 (the exact-path PAPER
-acceptance harness) cannot exercise a real automatic-BUY PAPER fill
-end-to-end until a later phase adds real resting-order (`ACTIVE -> FILLED`)
-reconciliation for PAPER.
+B6 (`fib_map_bound_trade_v1` repository), B7 (binding adapter), and B8's
+resting-order `ACTIVE -> FILLED` reconciliation sub-blocker are now all
+resolved -- see `docs/status/issue_753_paper_acceptance_blocker_v1.md`
+Updates 3-5 and `docs/architecture/paper_resting_order_reconciliation_v1.md`.
+This V1 adapter itself still never returns `FILLED` at placement time (a
+crossing quote is `REJECTED`; a non-crossing quote rests `ACTIVE`) -- that
+part of this document's contract is unchanged -- but a resting `ACTIVE` leg
+placed by this adapter is no longer a dead end: a later invocation can now
+reconcile it to a real `FILLED` through the separate module referenced
+above. B8 (the exact-path PAPER acceptance harness) itself remains a
+separate, not-yet-built phase.

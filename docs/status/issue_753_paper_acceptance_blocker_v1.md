@@ -2,14 +2,18 @@
 
 ## Status
 
-BLOCKED for the exact-path PAPER acceptance harness (B8) only. B5.5 (the
-PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
-B6 (the `fib_map_bound_trade_v1` repository) is also now resolved -- see
-Update 3 below. B7 (the first-fill binding adapter) is now resolved -- see
-Update 4 below. B8 remains BLOCKED: no code path yet produces a real
-automatic-BUY PAPER fill reaching `FILLED` (B5.5's adapter is explicitly
-submission-time-only and never returns `FILLED`), so B8's harness still has
-no real end-to-end fill to exercise B7 with.
+PARTIALLY UNBLOCKED. B5.5 (the PAPER order-placement adapter gap) is
+resolved -- see Update 2 below. B6 (the `fib_map_bound_trade_v1` repository)
+is resolved -- see Update 3 below. B7 (the first-fill binding adapter) is
+resolved -- see Update 4 below. B8's specific remaining sub-blocker -- no
+code path produced a real automatic-BUY PAPER fill reaching `FILLED` -- is
+now resolved by Update 5: a real PAPER resting-order `ACTIVE -> FILLED`
+reconciliation path exists and is exercised end-to-end (submission `ACTIVE`
+-> later price-through -> `FILLED` -> one persisted ownership event,
+idempotent on replay). **B8 itself -- the exact-path PAPER acceptance
+harness -- is not yet built and is not being claimed as accepted here.**
+This phase closes the identity/fill-mechanism gap the harness needs; it does
+not construct the harness.
 Documenting the precise remaining gap instead of inventing a shortcut, per
 task contract and `AGENTS.md` (do not fabricate ownership from wallet
 balance, do not invent parallel logic, do not revive #707/#723).
@@ -68,13 +72,45 @@ using deterministic `(occurred_ts_utc, event_id)` ordering; build/bind accept on
 no-rebind backstop. The full target ladder is frozen verbatim -- B7 never
 filters to currently-active or unconsumed targets. See
 `docs/architecture/fib_map_bound_trade_first_fill_binding_adapter_v1.md`.
-**B8 remains BLOCKED** -- B7 only closes the construct+persist path from a
-real `StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`; it does not
-and cannot produce the real automatic-BUY PAPER fill B8's harness needs,
-because B5.5's PAPER order-placement adapter is explicitly
-submission-time-only and never returns `FILLED` -- there is still no
-`ACTIVE -> FILLED` PAPER reconciliation anywhere in the shared executor
-handoff path. Do not treat B7 as unblocking B8.
+B7 only closes the construct+persist path from a real
+`StrategyOwnedInventoryEventV1` to a `FibMapBoundTradeV1`; on its own it did
+not produce the real automatic-BUY PAPER fill B8's harness needs, because
+B5.5's PAPER order-placement adapter is explicitly submission-time-only and
+never returns `FILLED`. Update 5 below closes exactly that remaining
+`ACTIVE -> FILLED` PAPER reconciliation gap. Do not treat B7 alone as
+unblocking B8 -- see Update 5 for what actually closes it.
+
+**Update 5:** the PAPER resting-order `ACTIVE -> FILLED` reconciliation gap
+B5.5 and this document's Updates 2/4 both called out is now resolved --
+see `docs/architecture/paper_resting_order_reconciliation_v1.md`. A leg
+that rests `ACTIVE` after B5.5's submission-time-only adapter is now given
+one resting-fill reconciliation attempt on each later invocation of
+`src/entry_policy/automatic_buy_paper_fill_execution_v1.py`:
+fill-on-through only (never fill-on-touch), evidence-gated against a
+repository-backed `PaperMarketQuoteV1` that must be valid, same-market,
+aware, non-future, within a bounded max age, and strictly later than the
+leg's own persisted resting-since time
+(`executor_paper_order_placement.created_ts_utc`, reused unchanged -- no
+schema change). Evidence failures raise a typed
+`PaperMarketEvidenceUnavailableError`, which the caller catches and leaves
+the leg's persisted `ACTIVE` state untouched
+(`docs/ops/state_model_discipline_v1.md`: temporary evidence health is not
+lifecycle state). The only lifecycle mutation is a new, explicit,
+PAPER-specific-by-naming CAS,
+`ExecutionLegRepositoryV1.resolve_paper_resting_fill_v1` -- idempotent on
+replay, conflict-safe on incompatible current state/identity, and requiring
+no schema change because the existing migration's leg-state trigger already
+permits `ACTIVE -> FILLED`. A leg first placed `ACTIVE` by a given
+invocation's own submission is never eligible for resting reconciliation in
+that same invocation -- only a strictly later call can observe it as
+pre-existing `ACTIVE`. Once `FILLED` by either path, the existing, unchanged
+#753 B5 bridge (`paper_broker_cumulative_fill_evidence_from_leg_v1` +
+`reconcile_and_persist_automatic_buy_paper_fill_v1`) persists exactly one
+ownership event, replay-idempotent as before.
+
+This closes B8's specific fill-mechanism sub-blocker. **B8 itself -- the
+exact-path PAPER acceptance harness -- remains a separate, not-yet-built
+phase.** Do not treat this update as full B8 acceptance.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -205,9 +241,14 @@ the existing B1/B2/B3 unit tests already prove).
    strategy-owned inventory position + canonical Fib map evidence at first
    fill, using B4-B6.~~ DONE, see
    `src/decision_gate/fib_map_bound_trade_first_fill_binding_adapter_v1.py`.
+4b. Resting-order `ACTIVE -> FILLED` PAPER reconciliation, the sub-blocker
+   B5.5/Update 4 called out. DONE, see
+   `docs/architecture/paper_resting_order_reconciliation_v1.md` and Update 5
+   above.
 5. `#753 B8` — the exact-path PAPER acceptance harness this task was asked to
-   build, once B7 gives it a real (not fabricated) identity bridge to
-   exercise end-to-end.
+   build. B7 and 4b together now give it a real (not fabricated) identity
+   bridge and a real fill mechanism to exercise end-to-end; the harness
+   itself is still not built.
 
 ## Safety markers
 

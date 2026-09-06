@@ -1,6 +1,15 @@
-"""Issue #753 B5.5: submit an approved automatic-BUY PAPER plan through the
-shared executor handoff path and, for each leg that truthfully fills, bridge
+"""Issue #753 B5.5/B8: submit an approved automatic-BUY PAPER plan through
+the shared executor handoff path and, for each leg that truthfully fills
+(at submission time, or later via B8 resting-order reconciliation), bridge
 the result into #752/#753-B5 strategy-owned-inventory reconciliation.
+
+B8 addition: a leg already resting ``ACTIVE`` *before* this call's
+submission attempt is also given one PAPER resting-order ``ACTIVE ->
+FILLED`` reconciliation attempt via
+``src/executor/paper_resting_order_reconciliation_v1.py`` (fill-on-through
+only, evidence-gated, fail-closed on bad evidence). A leg newly placed
+``ACTIVE`` by this same invocation's submission is never eligible in that
+same call.
 
 This module composes three already-reviewed, unchanged seams:
 
@@ -57,16 +66,20 @@ from src.executor.execution_handoff_v1 import (
     ExecutionHandoffRepositoryV1,
     ExecutionHandoffV1,
 )
-from src.executor.execution_leg_v1 import FILLED, ExecutionLegRepositoryV1
+from src.executor.execution_leg_v1 import ACTIVE, FILLED, ExecutionLegRepositoryV1
 from src.executor.execution_submission_orchestrator_v1 import (
     ExecutionSubmissionResultV1,
     submit_execution_plan,
 )
 from src.executor.paper_order_adapter_v1 import (
+    PaperMarketEvidenceUnavailableError,
     PaperMarketQuoteProviderV1,
     PaperOrderPlacementAdapterV1,
     PaperOrderPlacementRepository,
     paper_broker_cumulative_fill_evidence_from_leg_v1,
+)
+from src.executor.paper_resting_order_reconciliation_v1 import (
+    reconcile_paper_resting_order_fill_v1,
 )
 
 SIDE_BUY = "BUY"
@@ -103,6 +116,22 @@ def _plan_fill_identity_v1(
         source_execution_plan_id=plan_reference_id,
         source_order_id=broker_order_id,
     )
+
+
+def _pre_existing_active_leg_indices_v1(
+    leg_repository: ExecutionLegRepositoryV1, *, handoff_id: int, leg_count: int,
+) -> set[int]:
+    """Issue #753 B8: the set of leg indices already resting ``ACTIVE``
+    *before* this call's ``submit_execution_plan``. A leg first placed
+    ``ACTIVE`` by this same invocation must never be eligible for resting
+    reconciliation in that same invocation -- only a later call can observe
+    it as pre-existing."""
+    indices: set[int] = set()
+    for leg_index in range(1, leg_count + 1):
+        existing = leg_repository.find_by_handoff_and_index(handoff_id, leg_index)
+        if existing is not None and existing.state == ACTIVE:
+            indices.add(leg_index)
+    return indices
 
 
 def submit_and_reconcile_automatic_buy_paper_plan_v1(
@@ -143,6 +172,10 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
     ):
         raise AutomaticBuyPaperFillExecutionError("HANDOFF_PLAN_IDENTITY_MISMATCH")
 
+    pre_existing_active_leg_indices = _pre_existing_active_leg_indices_v1(
+        leg_repository, handoff_id=handoff.handoff_id or 0, leg_count=len(approved_plan.legs),
+    )
+
     adapter = PaperOrderPlacementAdapterV1(
         quote_provider=quote_provider,
         max_quote_age_seconds=max_quote_age_seconds,
@@ -161,7 +194,35 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
     fills: list[AutomaticBuyPaperLegFillOutcomeV1] = []
     for leg_index in range(1, len(approved_plan.legs) + 1):
         leg = leg_repository.find_by_handoff_and_index(handoff.handoff_id or 0, leg_index)
-        if leg is None or leg.state != FILLED:
+        if leg is None:
+            continue
+        if leg.state == ACTIVE and leg_index in pre_existing_active_leg_indices:
+            # Issue #753 B8: only a leg that was already resting ACTIVE
+            # before this call's submission attempt is eligible for
+            # resting-order reconciliation -- a leg newly placed ACTIVE by
+            # the submission above must not fill in this same invocation.
+            try:
+                placement_created_ts_utc = placement_repository.find_placement_created_ts_utc(
+                    market=leg.market, client_order_id=leg.client_order_id,
+                )
+                if placement_created_ts_utc is None:
+                    raise PaperMarketEvidenceUnavailableError(
+                        "PAPER_RESTING_FILL_PLACEMENT_EVIDENCE_MISSING"
+                    )
+                leg = reconcile_paper_resting_order_fill_v1(
+                    leg=leg,
+                    placement_created_ts_utc=placement_created_ts_utc,
+                    quote_provider=quote_provider,
+                    max_quote_age_seconds=max_quote_age_seconds,
+                    now=now_fn(),
+                    leg_repository=leg_repository,
+                )
+            except PaperMarketEvidenceUnavailableError:
+                # Evidence health, not lifecycle state (state_model_
+                # discipline_v1): leave the leg's persisted ACTIVE state
+                # untouched and skip reconciliation for this invocation.
+                continue
+        if leg.state != FILLED:
             continue
         assert leg.broker_order_id is not None  # FILLED always carries broker_order_id
         identity = _plan_fill_identity_v1(

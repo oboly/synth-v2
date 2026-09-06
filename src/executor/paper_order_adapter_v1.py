@@ -131,6 +131,15 @@ class PaperOrderPlacementRepository(Protocol):
         self, *, market: str, client_order_id: str
     ) -> OrderAckV1 | None: ...
 
+    def find_placement_created_ts_utc(
+        self, *, market: str, client_order_id: str
+    ) -> datetime | None:
+        """Issue #753 B8: authoritative resting-since time for one
+        placement, reused (no new schema) by
+        ``paper_resting_order_reconciliation_v1.py`` to require resting-fill
+        quote evidence strictly later than submission."""
+        ...
+
 
 def _aware(value: object) -> bool:
     return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None

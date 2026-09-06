@@ -46,6 +46,7 @@ live_orders=0
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -155,6 +156,25 @@ class PaperOrderPlacementRepositoryV1:
     ) -> OrderAckV1 | None:
         row = self._find_row(market=market, client_order_id=client_order_id)
         return None if row is None else _row_to_ack(row)
+
+    def find_placement_created_ts_utc(
+        self, *, market: str, client_order_id: str
+    ) -> datetime | None:
+        """Issue #753 B8: read-only lookup of this placement's own immutable
+        ``created_ts_utc`` -- the authoritative resting-since time reused
+        (no new schema) by ``paper_resting_order_reconciliation_v1.py``."""
+        with self.cursor_factory() as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "SELECT created_ts_utc FROM executor_paper_order_placement "
+                "WHERE market=%s AND client_order_id=%s",
+                [market, client_order_id],
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        value = row["created_ts_utc"]
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
     def _find_row(self, *, market: str, client_order_id: str) -> Any | None:
         with self.cursor_factory() as db_obj:

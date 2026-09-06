@@ -305,6 +305,43 @@ class ExecutionLegRepositoryV1:
             raise LookupError("EXECUTION_LEG_NOT_FOUND")
         return leg, won
 
+    def resolve_paper_resting_fill_v1(
+        self, leg_id: int, *, broker_order_id: str, broker_raw_status: str,
+    ) -> ExecutionLegV1:
+        """Issue #753 B8: PAPER-only CAS transition ACTIVE -> FILLED for a
+        resting order reconciled by
+        ``src/executor/paper_resting_order_reconciliation_v1.py``'s
+        deterministic fill-on-through evidence. Not used by TEST/LIVE broker
+        reconciliation, which owns ``persist_accepted``/``persist_closed``
+        instead -- this method exists so PAPER resting-fill reconciliation
+        has its own explicit, narrowly named transition rather than reusing
+        a broker-ack-shaped path no PAPER order ever goes through.
+
+        Idempotent for the identical ``broker_order_id``: replaying against
+        an already-``FILLED`` leg with the same ``broker_order_id`` returns
+        it unchanged. Any other current state, or a different
+        ``broker_order_id``, is a conflict -- never a silent overwrite.
+        ``broker_order_id`` itself is never rewritten by this transition.
+        """
+        if not isinstance(broker_order_id, str) or not broker_order_id.strip():
+            raise ValueError("broker_order_id required")
+        now = trusted_clock.utc_now()
+        with self.cursor_factory(commit=True) as db_obj:
+            cursor = _cursor(db_obj)
+            cursor.execute(
+                "UPDATE executor_execution_leg SET state=%s, broker_raw_status=%s, "
+                "last_reconciled_ts_utc=%s, updated_ts_utc=%s "
+                "WHERE executor_execution_leg_id=%s AND state=%s AND broker_order_id=%s",
+                [FILLED, broker_raw_status, now, now, leg_id, ACTIVE, broker_order_id],
+            )
+            won = cursor.rowcount == 1
+        leg = self.find(leg_id)
+        if leg is None:
+            raise LookupError("EXECUTION_LEG_NOT_FOUND")
+        if won or (leg.state == FILLED and leg.broker_order_id == broker_order_id):
+            return leg
+        raise ExecutionLegConflictError("PAPER_RESTING_FILL_TRANSITION_CONFLICT")
+
     def find_by_handoff_and_index(self, handoff_id: int, leg_index: int) -> ExecutionLegV1 | None:
         with self.cursor_factory() as db_obj:
             cursor = _cursor(db_obj)
