@@ -273,6 +273,37 @@ def test_db_core_uses_exact_binding_and_forbids_database_override(
         db_core_v1.get_connection(database="other")
 
 
+def test_db_core_allows_bounded_timeout_override_for_dedicated_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    secret = _secret(tmp_path)
+    for key, value in _environment(secret, DB_USER="synth").items():
+        monkeypatch.setenv(key, value)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        db_core_v1,
+        "load_chain_database_binding",
+        lambda: _load(_environment(secret, DB_USER="synth")),
+    )
+    monkeypatch.setattr(
+        db_core_v1.pymysql,
+        "connect",
+        lambda **kwargs: captured.update(kwargs) or object(),
+    )
+
+    db_core_v1.get_connection(read_timeout=180, write_timeout=90)
+
+    assert captured["read_timeout"] == 180
+    assert captured["write_timeout"] == 90
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_db_core_rejects_invalid_timeout_override(value: object) -> None:
+    with pytest.raises(ValueError, match="read_timeout must be a positive integer"):
+        db_core_v1.get_connection(read_timeout=value)  # type: ignore[arg-type]
+
+
 def test_repository_unit_and_environment_preflight_are_exactly_equivalent(
     tmp_path: Path,
 ) -> None:

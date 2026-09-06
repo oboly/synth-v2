@@ -10,6 +10,7 @@ from src.common.db import get_connection
 
 ENGINE_NAME = "asset_interval_quality_snapshot"
 ENGINE_VERSION = "1.0"
+QUALITY_QUERY_READ_TIMEOUT_SECONDS = 180
 
 
 def _utc_now_naive_seconds() -> datetime:
@@ -211,7 +212,7 @@ def main() -> int:
 
     snapshot_ts_utc = _utc_now_naive_seconds()
 
-    conn = get_connection()
+    conn = get_connection(read_timeout=QUALITY_QUERY_READ_TIMEOUT_SECONDS)
     try:
         rows = fetch_quality_rows(conn, venue=args.venue)
 

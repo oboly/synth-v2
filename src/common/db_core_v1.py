@@ -52,7 +52,16 @@ def get_db_connection():
     return get_connection()
 
 
-def get_connection(database: str | None = None):
+def get_connection(
+    database: str | None = None,
+    *,
+    read_timeout: int | None = None,
+    write_timeout: int | None = None,
+):
+    for name, value in (("read_timeout", read_timeout), ("write_timeout", write_timeout)):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            raise ValueError(f"{name} must be a positive integer when provided")
+
     if dedicated_binding_requested():
         binding = load_chain_database_binding()
         if database is not None and database != binding.database:
@@ -73,8 +82,8 @@ def get_connection(database: str | None = None):
             cursorclass=DictCursor,
             autocommit=False,
             connect_timeout=10,
-            read_timeout=60,
-            write_timeout=60,
+            read_timeout=read_timeout if read_timeout is not None else 60,
+            write_timeout=write_timeout if write_timeout is not None else 60,
         )
 
     charset = _db_charset()
@@ -92,8 +101,12 @@ def get_connection(database: str | None = None):
         cursorclass=DictCursor,
         autocommit=False,
         connect_timeout=_env_int("DB_CONNECT_TIMEOUT", default=10),
-        read_timeout=_env_int("DB_READ_TIMEOUT", default=60),
-        write_timeout=_env_int("DB_WRITE_TIMEOUT", default=60),
+        read_timeout=(
+            read_timeout if read_timeout is not None else _env_int("DB_READ_TIMEOUT", default=60)
+        ),
+        write_timeout=(
+            write_timeout if write_timeout is not None else _env_int("DB_WRITE_TIMEOUT", default=60)
+        ),
     )
 
 
