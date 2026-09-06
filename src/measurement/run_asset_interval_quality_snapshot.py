@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,29 @@ def _utc_now_naive_seconds() -> datetime:
 
 def _elapsed(started: float) -> str:
     return f"{time.monotonic() - started:.3f}s"
+
+
+def _install_signal_handlers() -> dict[int, signal.Handlers]:
+    previous = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt(signal.Signals(signum).name)
+
+    for signum in previous:
+        signal.signal(signum, interrupt)
+    return previous
+
+
+def _restore_signal_handlers(previous: dict[int, signal.Handlers]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
+def _interruption_signal(exc: KeyboardInterrupt) -> str:
+    name = str(exc)
+    return name if name in {"SIGINT", "SIGTERM"} else "SIGINT"
 
 
 def _fmt(value: Any) -> str:
@@ -564,6 +588,14 @@ def main(argv: list[str] | None = None) -> int:
     mode = "write" if args.write_db else "dry-run"
     started = time.monotonic()
     conn = None
+    interrupt_signal = "SIGINT"
+
+    def handle_sigterm(_signum, _frame) -> None:
+        nonlocal interrupt_signal
+        interrupt_signal = "SIGTERM"
+        raise KeyboardInterrupt
+
+    previous_sigterm_handler = signal.signal(signal.SIGTERM, handle_sigterm)
     print(
         f"STARTED runner={ENGINE_NAME} version={ENGINE_VERSION} "
         f"mode={mode} venue={args.venue} snapshot_ts_utc={snapshot_ts_utc.isoformat(sep=' ')}",
@@ -622,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         print(
-            f"INTERRUPTED runner={ENGINE_NAME} signal=SIGINT elapsed={_elapsed(started)}",
+            f"INTERRUPTED runner={ENGINE_NAME} signal={interrupt_signal} elapsed={_elapsed(started)}",
             flush=True,
         )
         return 130
@@ -634,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
         if conn is not None:
             conn.close()
 
