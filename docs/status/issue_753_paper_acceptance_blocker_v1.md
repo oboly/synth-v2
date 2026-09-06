@@ -2,8 +2,10 @@
 
 ## Status
 
-BLOCKED for the exact-path PAPER acceptance harness (B8) and for B6/B7. B5.5
+BLOCKED for the exact-path PAPER acceptance harness (B8) and for B7. B5.5
 (the PAPER order-placement adapter gap) is now resolved -- see Update 2 below.
+B6 (the `fib_map_bound_trade_v1` repository) is also now resolved -- see
+Update 3 below.
 Documenting the precise remaining gap instead of inventing a shortcut, per
 task contract and `AGENTS.md` (do not fabricate ownership from wallet
 balance, do not invent parallel logic, do not revive #707/#723).
@@ -31,9 +33,19 @@ quote rests `ACTIVE` with the adapter explicitly documented and enforced as
 submission-time-only -- this V1 adapter never returns `FILLED`. A real
 automatic-BUY PAPER fill therefore still requires a later phase that adds
 resting-order (`ACTIVE -> FILLED`) reconciliation before B8's harness can
-exercise one end-to-end. Gap 4 (`fib_map_bound_trade_v1` repository) remains
-open for B6; B7 and B8 (the exact-path PAPER acceptance harness this
-document was originally about) remain separate, not-yet-started phases.
+exercise one end-to-end. Gap 4 (`fib_map_bound_trade_v1` repository) is now
+resolved by B6.
+
+**Update 3:** B6 (`src/decision_gate/fib_map_bound_trade_repository_v1.py`)
+is built and tested: insert-at-first-fill semantics, exact-lineage load
+(`uq_fib_map_bound_trade_lineage`), exact-source-fill load
+(`uq_fib_map_bound_trade_source_fill`), deterministic row conversion with
+`Decimal`-fidelity JSON target levels and UTC-aware timestamp restoration,
+and fail-closed conflict errors for lineage/source-fill/binding-id reuse
+with different immutable content. No schema change was needed; the existing
+migration's unique keys were sufficient. B7 and B8 (the exact-path PAPER
+acceptance harness this document was originally about) remain separate,
+not-yet-started phases.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -53,6 +65,11 @@ document was originally about) remain separate, not-yet-started phases.
   the same `ExecutionHandoffRepositoryV1` (`src/executor/execution_handoff_v1.py`)
   used by the BUY side. Deterministic `plan_reference_id` prevents duplicate
   handoff on replay.
+- B6 `src/decision_gate/fib_map_bound_trade_repository_v1.py` —
+  `FibMapBoundTradeRepositoryV1.record_fib_map_bound_trade_v1` (insert-at-
+  first-fill, idempotent replay) + `load_by_binding_id` / `load_by_lineage` /
+  `load_by_source_fill` against the existing
+  `db/migrations/20260906_fib_map_bound_trade_v1.sql` unique keys.
 
 The B1→B2→B3 chain, given a `FibMapBoundTradeV1` and a
 `StrategyOwnedInventoryPositionV1`, already produces a correct, idempotent,
@@ -146,14 +163,15 @@ the existing B1/B2/B3 unit tests already prove).
    (post-only-correct: crossed = `REJECTED`, non-crossed = `ACTIVE`,
    submission-time-only, never `FILLED`), see
    `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`.
-3. `#753 B6` — add a `fib_map_bound_trade_v1` repository
+3. ~~`#753 B6` — add a `fib_map_bound_trade_v1` repository
    (insert-at-first-fill, load-by-lineage) matching the existing migration's
-   unique keys. Independent of B5.5.
+   unique keys. Independent of B5.5.~~ DONE, see
+   `src/decision_gate/fib_map_bound_trade_repository_v1.py`.
 4. `#753 B7` — adapter that constructs a `FibMapBoundTradeV1` from a
    strategy-owned inventory position + canonical Fib map evidence at first
    fill, using B4-B6.
 5. `#753 B8` — the exact-path PAPER acceptance harness this task was asked to
-   build, once B5.5-B7 give it a real (not fabricated) identity bridge to
+   build, once B7 gives it a real (not fabricated) identity bridge to
    exercise end-to-end.
 
 ## Safety markers
