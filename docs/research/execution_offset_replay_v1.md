@@ -1,0 +1,18 @@
+# Execution Offset Replay v1
+
+Issue #224 owns the shared research substrate for execution-offset studies.
+This contract is research-only and does not change planner, executor, broker, or live behavior.
+
+## Episode contract
+
+Each immutable episode preserves market identity, source map identity, canonical Fib level, side, horizon, issuance time, validity window, invalidation, ATR-at-issue, and optional regime context.
+
+Only candles strictly after `issued_ts_utc` and no later than `valid_until_ts_utc` may label an episode. Future candles are labels only.
+
+## Baseline policies
+
+- `EXACT_LEVEL`: execution price equals canonical market level.
+- `STATIC_BUFFER`: BUY moves above the level; SELL moves below the level by a fixed fraction.
+- `VOLATILITY_SCALED_BUFFER`: same side semantics, with offset derived from ATR known at issuance.
+
+The canonical Fib level is never rewritten.
