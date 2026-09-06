@@ -6555,6 +6555,7 @@ def render_full_html(
     writer_instance_id: str | None = None,
     pipeline_banner_html: str | None = None,
     rotation_projection: RotationProfitPlanProjection | None = None,
+    orders_by_symbol: Mapping[str, tuple[tuple[Any, ...], tuple[Any, ...]]] | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
@@ -6575,6 +6576,8 @@ def render_full_html(
     cards_html = "\n".join(
         render_plan_card(
             c,
+            buy_orders=(orders_by_symbol or {}).get(c.symbol, ((), ()))[0],
+            sell_orders=(orders_by_symbol or {}).get(c.symbol, ((), ()))[1],
             monitor_link=monitor_link,
             rotation_market_projection=(
                 get_market_projection(rotation_projection, c.market)

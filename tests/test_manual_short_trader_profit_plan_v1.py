@@ -8388,3 +8388,28 @@ def test_detail_panel_is_account_wallet_not_duplicate_evidence() -> None:
     assert "Account / Wallet" in detail_js
     assert "Open SELL orders" in detail_js
     assert "<h3>Evidence</h3>" not in detail_js
+
+
+def test_render_full_html_threads_existing_orders_to_card_ladder() -> None:
+    from types import SimpleNamespace
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    order = SimpleNamespace(
+        order_id="broker-e2e-777",
+        limit_price=Decimal("0.620000"),
+        side="sell",
+        amount=Decimal("13.25"),
+        remaining_amount=Decimal("12.75"),
+        status="NEW",
+        created_at_ms=1000,
+    )
+    html = render_full_html(
+        [card],
+        rendered_at="now",
+        broker_mode="test",
+        orders_by_symbol={card.symbol: ((), (order,))},
+    )
+    assert "broker-e2e-777" in html
+    assert "13.25" in html
+    assert "12.75" in html
+    assert ">Remove</button>" in html
