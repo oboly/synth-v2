@@ -170,8 +170,16 @@ def _validate_map_evidence_freshness(
     *,
     map_evidence: CanonicalFibMapEvidenceV1,
     bound_ts_utc: datetime,
-    max_map_evidence_age_seconds: int,
 ) -> None:
+    if (
+        not isinstance(max_map_evidence_age_seconds, int)
+        or isinstance(max_map_evidence_age_seconds, bool)
+        or max_map_evidence_age_seconds <= 0
+        or max_map_evidence_age_seconds > DEFAULT_MAX_MAP_EVIDENCE_AGE_SECONDS
+    ):
+        raise FibMapBoundTradeBindingAdapterError(
+            "FIB_MAP_EVIDENCE_MAX_AGE_EXCEEDS_CANONICAL_LIMIT"
+        )
     for value in (
         map_evidence.map_asof_ts_utc, map_evidence.map_published_at_utc,
         map_evidence.anchor_start_ts_utc, map_evidence.anchor_end_ts_utc,
@@ -181,7 +189,7 @@ def _validate_map_evidence_freshness(
         if value > bound_ts_utc:
             raise FibMapBoundTradeBindingAdapterError("FIB_MAP_EVIDENCE_FROM_THE_FUTURE")
     age = bound_ts_utc - map_evidence.map_asof_ts_utc
-    if age < timedelta(0) or age > timedelta(seconds=max_map_evidence_age_seconds):
+    if age < timedelta(0) or age > timedelta(seconds=DEFAULT_MAX_MAP_EVIDENCE_AGE_SECONDS):
         raise FibMapBoundTradeBindingAdapterError("FIB_MAP_EVIDENCE_STALE")
 
 
@@ -189,7 +197,6 @@ def build_fib_map_bound_trade_v1_from_first_fill(
     *,
     fill_event: StrategyOwnedInventoryEventV1,
     map_evidence: CanonicalFibMapEvidenceV1,
-    max_map_evidence_age_seconds: int = DEFAULT_MAX_MAP_EVIDENCE_AGE_SECONDS,
 ) -> FibMapBoundTradeV1:
     """Pure construction: no I/O, no repository, no execution intent.
 
@@ -206,7 +213,6 @@ def build_fib_map_bound_trade_v1_from_first_fill(
     _validate_map_evidence_freshness(
         map_evidence=map_evidence,
         bound_ts_utc=bound_ts_utc,
-        max_map_evidence_age_seconds=max_map_evidence_age_seconds,
     )
 
     binding = FibMapBoundTradeV1(
@@ -248,7 +254,6 @@ def bind_fib_map_bound_trade_on_first_fill_v1(
     fill_event: StrategyOwnedInventoryEventV1,
     map_evidence: CanonicalFibMapEvidenceV1,
     repository: FibMapBoundTradeRepositoryV1,
-    max_map_evidence_age_seconds: int = DEFAULT_MAX_MAP_EVIDENCE_AGE_SECONDS,
 ) -> FibMapBoundTradeV1:
     """Construct the immutable binding, then persist it through B6.
 
@@ -259,6 +264,5 @@ def bind_fib_map_bound_trade_on_first_fill_v1(
     binding = build_fib_map_bound_trade_v1_from_first_fill(
         fill_event=fill_event,
         map_evidence=map_evidence,
-        max_map_evidence_age_seconds=max_map_evidence_age_seconds,
     )
     return repository.record_fib_map_bound_trade_v1(binding=binding)
