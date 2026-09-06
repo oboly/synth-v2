@@ -73,32 +73,9 @@ construct+persist path from a real `StrategyOwnedInventoryEventV1` to a
 `FibMapBoundTradeV1`; it could not yet produce the real automatic-BUY PAPER
 fill B8's harness needs. That specific gap is closed by Update 5 below.
 
-**Update 5:** B7.5
-(`src/executor/paper_resting_order_reconciliation_v1.py`,
-`ExecutionLegRepositoryV1.mark_active_filled_on_touch`) is built and tested:
-the resting-order `ACTIVE -> FILLED` reconciliation gap B5.5 explicitly
-deferred is now closed. Deterministic full-fill-on-touch only (BUY fills
-when `best_ask <= price`; SELL fills when `best_bid >= price`; no partial
-fill, no queue-position claim), reusing B5.5's own quote-validation
-fail-closed rules verbatim so the two paths cannot diverge on what counts as
-valid evidence. `executor_paper_order_placement` (B5.5's immutable placement-
-ack history) is untouched by this phase; only `executor_execution_leg` gains
-the new guarded transition, using the existing schema trigger unchanged.
-`src/entry_policy/automatic_buy_paper_fill_execution_v1.py` now reconciles an
-`ACTIVE` leg found for the current handoff before its existing FILLED-leg ->
-#752 bridge loop, so a second invocation for the same plan/handoff is the
-point a resting automatic-BUY PAPER order actually reaches `FILLED` and gets
-bridged into #752 ownership. See
-`docs/architecture/paper_resting_order_active_fill_reconciliation_v1.md`.
+**Update 5:** B7.5 (`src/executor/paper_resting_order_reconciliation_v1.py`) is built and tested. The B5.5 resting-order gap is closed with conservative PAPER-only semantics: BUY fills only after a later `best_ask < resting price`, SELL only after `best_bid > resting price`; equality remains `ACTIVE` because queue priority is unknown. Reconciliation requires the exact PAPER handoff, an identity-matching persisted `ACTIVE` placement from `executor_paper_order_placement`, and a valid quote observed strictly after that placement. Temporary/missing/conflicting evidence never changes structural `ACTIVE` state. The executor leg write is an explicit broker-order-id-guarded CAS `ACTIVE -> FILLED`; placement history remains immutable. `automatic_buy_paper_fill_execution_v1.py` reconciles only legs that were already ACTIVE before the current submission call, then routes a resulting persisted FILLED leg through the unchanged #752/B5 ownership bridge. Replay emits no duplicate ownership event. See `docs/architecture/paper_resting_order_active_fill_reconciliation_v1.md`.
 
-**B8 is now technically runnable, but is explicitly NOT accepted by this
-update.** B7.5 proves the individual seams (placement, resting,
-reconciliation, #752 bridge, B6/B7 binding) compose in isolation, each with
-its own focused/unit tests. It does not itself build or run B8's exact-path
-harness -- the single, real, end-to-end wiring of handoff -> placement ->
-resting -> reconciliation -> #752 event -> B7 binding, exercised as one path
-rather than as independently-tested units. Do not treat B7.5 as B8 having
-passed; B8 remains a separate, not-yet-started phase.
+**B8 is now technically runnable, but explicitly NOT accepted by Update 5.** A real automatic-BUY PAPER path can now produce persisted `FILLED` plus strategy-owned inventory without fixture mutation. B8 still must build and run the single exact-path acceptance lifecycle required by #753; do not treat B7.5 as that acceptance having passed.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
 
@@ -129,11 +106,12 @@ passed; B8 remains a separate, not-yet-started phase.
   then constructs and persists one `FibMapBoundTradeV1` from that verified
   fill plus caller-supplied `CanonicalFibMapEvidenceV1`, through B6.
 - B7.5 `src/executor/paper_resting_order_reconciliation_v1.py` +
-  `ExecutionLegRepositoryV1.mark_active_filled_on_touch` —
-  deterministic, fail-closed `ACTIVE -> FILLED` reconciliation for one
-  resting PAPER leg, reusing B5.5's own quote-validation rules verbatim.
-  Wired into `automatic_buy_paper_fill_execution_v1.py` ahead of its
-  existing FILLED-leg -> #752 bridge loop.
+  `ExecutionLegRepositoryV1.mark_active_filled_price_through_v1` —
+  conservative, fail-closed PAPER `ACTIVE -> FILLED` reconciliation with
+  persisted placement identity/time proof, strict price-through semantics,
+  PAPER-handoff enforcement, and broker-order-id CAS. Wired into
+  `automatic_buy_paper_fill_execution_v1.py` only for pre-existing ACTIVE
+  legs ahead of its existing FILLED-leg -> #752 bridge loop.
 
 The B1→B2→B3 chain, given a `FibMapBoundTradeV1` and a
 `StrategyOwnedInventoryPositionV1`, already produces a correct, idempotent,

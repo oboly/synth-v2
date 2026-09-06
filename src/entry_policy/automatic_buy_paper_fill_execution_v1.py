@@ -2,13 +2,15 @@
 the shared executor handoff path and, for each leg that truthfully fills,
 bridge the result into #752/#753-B5 strategy-owned-inventory reconciliation.
 
-#753 B7.5 adds one step before the existing FILLED-leg bridge loop: an
-already-``ACTIVE`` resting leg from a prior invocation is first reconciled
-against fresh market evidence via
-``src/executor/paper_resting_order_reconciliation_v1.py`` (deterministic
-full-fill-on-touch only, fail-closed on bad evidence). This makes a second
-invocation of this same function the place a resting automatic-BUY PAPER
-order actually reaches ``FILLED`` and gets bridged into #752 ownership.
+#753 B7.5 adds one step before the existing FILLED-leg bridge loop: a leg
+already ``ACTIVE`` *before this invocation's own submission call* (i.e.
+resting from a strictly earlier invocation, never a leg this same call just
+placed) is reconciled against fresh market evidence via
+``src/executor/paper_resting_order_reconciliation_v1.py`` (deterministic,
+strict price-through only -- not touch -- fail-closed on bad evidence). This
+makes a second invocation of this same function the place a resting
+automatic-BUY PAPER order actually reaches ``FILLED`` and gets bridged into
+#752 ownership.
 
 This module composes three already-reviewed, unchanged seams:
 
@@ -71,12 +73,17 @@ from src.executor.execution_submission_orchestrator_v1 import (
     submit_execution_plan,
 )
 from src.executor.paper_order_adapter_v1 import (
+    PaperMarketEvidenceUnavailableError,
     PaperMarketQuoteProviderV1,
     PaperOrderPlacementAdapterV1,
     PaperOrderPlacementRepository,
     paper_broker_cumulative_fill_evidence_from_leg_v1,
 )
-from src.executor.paper_resting_order_reconciliation_v1 import reconcile_paper_resting_leg_v1
+from src.executor.paper_resting_order_reconciliation_v1 import (
+    PaperRestingHandoffMismatchError,
+    PaperRestingPlacementEvidenceError,
+    reconcile_paper_resting_leg_v1,
+)
 
 SIDE_BUY = "BUY"
 
@@ -152,6 +159,22 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
     ):
         raise AutomaticBuyPaperFillExecutionError("HANDOFF_PLAN_IDENTITY_MISMATCH")
 
+    # #753 B7.5: capture which legs were already ACTIVE *before* this
+    # invocation's own submission call, by handoff/index. A leg this
+    # invocation's own ``submit_execution_plan`` call newly places ACTIVE
+    # must never be reconciled to FILLED in the same invocation -- it has no
+    # placement-since evidence yet distinguishable from "just placed", and
+    # collapsing "just rested" and "rested since a prior invocation" into one
+    # pass would let a single call both place and fill its own order, which
+    # is not a real resting-order fill. Only a leg already resting from a
+    # strictly earlier invocation is eligible for this invocation's
+    # reconciliation step below.
+    pre_submit_active_leg_indices: set[int] = set()
+    for leg_index in range(1, len(approved_plan.legs) + 1):
+        existing = leg_repository.find_by_handoff_and_index(handoff.handoff_id or 0, leg_index)
+        if existing is not None and existing.state == ACTIVE:
+            pre_submit_active_leg_indices.add(leg_index)
+
     adapter = PaperOrderPlacementAdapterV1(
         quote_provider=quote_provider,
         max_quote_age_seconds=max_quote_age_seconds,
@@ -172,17 +195,30 @@ def submit_and_reconcile_automatic_buy_paper_plan_v1(
         leg = leg_repository.find_by_handoff_and_index(handoff.handoff_id or 0, leg_index)
         if leg is None:
             continue
-        if leg.state == ACTIVE:
-            # #753 B7.5: a prior invocation's non-crossing post-only BUY may
-            # still be resting; reconcile it against fresh market evidence
+        if leg.state == ACTIVE and leg_index in pre_submit_active_leg_indices:
+            # #753 B7.5: a prior invocation's non-crossing post-only BUY is
+            # still resting; reconcile it against fresh market evidence
             # before deciding whether this invocation has a fill to bridge.
-            leg = reconcile_paper_resting_leg_v1(
-                leg,
-                quote_provider=quote_provider,
-                max_quote_age_seconds=max_quote_age_seconds,
-                now_fn=now_fn,
-                leg_repository=leg_repository,
-            )
+            # Evidence that fails closed (bad/stale/pre-placement quote,
+            # missing/conflicting placement proof, non-PAPER handoff) is a
+            # temporary-health condition, not a structural one: the leg stays
+            # ACTIVE and this invocation simply has nothing to bridge for it.
+            try:
+                leg = reconcile_paper_resting_leg_v1(
+                    leg,
+                    handoff_repository=handoff_repository,
+                    quote_provider=quote_provider,
+                    placement_repository=placement_repository,
+                    max_quote_age_seconds=max_quote_age_seconds,
+                    now_fn=now_fn,
+                    leg_repository=leg_repository,
+                )
+            except (
+                PaperMarketEvidenceUnavailableError,
+                PaperRestingPlacementEvidenceError,
+                PaperRestingHandoffMismatchError,
+            ):
+                continue
         if leg.state != FILLED:
             continue
         assert leg.broker_order_id is not None  # FILLED always carries broker_order_id
