@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from typing import Final, Iterable
@@ -60,6 +61,9 @@ class ExecutionOffsetReplayRowV1:
     episode_id: str
     policy_id: str
     policy_version: str
+    policy_buffer_pct: Decimal
+    policy_atr_multiple: Decimal
+    policy_fingerprint: str
     canonical_level: Decimal
     execution_price: Decimal
     touched: bool
@@ -86,6 +90,18 @@ def validate_policy(policy: ExecutionOffsetPolicyV1) -> None:
     if policy.policy_id == POLICY_VOLATILITY_SCALED_BUFFER and policy.atr_multiple <= 0:
         raise ExecutionOffsetReplayError("ATR_MULTIPLE_REQUIRED")
 
+
+
+
+def policy_fingerprint(policy: ExecutionOffsetPolicyV1) -> str:
+    validate_policy(policy)
+    payload = "|".join((
+        policy.policy_id,
+        policy.version,
+        format(policy.buffer_pct, "f"),
+        format(policy.atr_multiple, "f"),
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 def execution_price_for_policy(
     episode: ExecutionOffsetEpisodeV1,
@@ -210,6 +226,8 @@ def replay_episode(
 
     return ExecutionOffsetReplayRowV1(
         episode_id=episode.episode_id, policy_id=policy.policy_id, policy_version=policy.version,
+        policy_buffer_pct=policy.buffer_pct, policy_atr_multiple=policy.atr_multiple,
+        policy_fingerprint=policy_fingerprint(policy),
         canonical_level=episode.canonical_level, execution_price=execution_price,
         touched=touched, canonical_level_touched=canonical_level_touched,
         filled=fill_ts is not None, near_miss_distance_pct=near_miss,

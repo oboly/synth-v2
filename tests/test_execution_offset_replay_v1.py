@@ -7,7 +7,7 @@ import pytest
 from src.research.execution_offset_replay_v1 import (
     ExecutionOffsetEpisodeV1, ExecutionOffsetPolicyV1, ExecutionOffsetReplayError,
     POLICY_EXACT_LEVEL, POLICY_STATIC_BUFFER, POLICY_VOLATILITY_SCALED_BUFFER,
-    ReplayCandle, SIDE_BUY, SIDE_SELL, execution_price_for_policy, replay_episode,
+    ReplayCandle, SIDE_BUY, SIDE_SELL, execution_price_for_policy, policy_fingerprint, replay_episode,
 )
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -188,3 +188,16 @@ def test_sell_invalidation_must_be_above_execution_price() -> None:
     bad = replace(episode(SIDE_SELL), invalidation_price=Decimal("100"))
     with pytest.raises(ExecutionOffsetReplayError, match="INVALID_INVALIDATION_DIRECTION"):
         replay_episode(bad, [candle(1, "99", "101")], ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"))
+
+
+def test_policy_parameters_are_reproducible_in_row_identity() -> None:
+    first_policy = ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("0.01"))
+    second_policy = ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("0.02"))
+    first = replay_episode(episode(), [candle(1, "97", "98.5")], first_policy)
+    second = replay_episode(episode(), [candle(1, "97", "97.5")], second_policy)
+    assert first.policy_buffer_pct == Decimal("0.01")
+    assert second.policy_buffer_pct == Decimal("0.02")
+    assert first.policy_atr_multiple == Decimal("0")
+    assert first.policy_fingerprint == policy_fingerprint(first_policy)
+    assert second.policy_fingerprint == policy_fingerprint(second_policy)
+    assert first.policy_fingerprint != second.policy_fingerprint
