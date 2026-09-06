@@ -653,16 +653,25 @@ class TargetHistoryCandle:
 
 @dataclass(frozen=True)
 class OrderRow:
-    """One selectable row in the order ladder display."""
-    row_id: str         # stable UUID4 within a render
-    render_id: str      # parent card render_id
-    state: str          # MISSING | ARMED | STALE | HISTORICAL | DATA_UNAVAILABLE
-    reason_code: str    # machine code for tooltip/filtering
-    reason_label: str   # human-readable tooltip text
-    side: str           # buy | sell
+    """One price-sorted row in the combined suggested/existing order ladder."""
+    row_id: str
+    render_id: str
+    state: str
+    reason_code: str
+    reason_label: str
+    side: str
     price: Decimal | None
     distance_pct: Decimal | None
-    zone_role: str      # zone description e.g. "sell target 1.272" or "buy zone r382"
+    zone_role: str
+    broker_order_id: str | None = None
+    quantity: Decimal | None = None
+    remaining_quantity: Decimal | None = None
+    broker_status: str | None = None
+    created_at_ms: int | None = None
+
+    @property
+    def is_existing_order(self) -> bool:
+        return bool(self.broker_order_id)
 
 
 # ---------------------------------------------------------------------------
@@ -4936,13 +4945,28 @@ _CSS = """
       font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
       color: var(--muted); margin-bottom: 4px;
     }
+    .order-ladder-columns {
+      display:grid;
+      grid-template-columns: 18px 42px minmax(88px,.8fr) minmax(72px,.7fr) minmax(72px,.7fr) 64px 74px minmax(120px,1fr) auto;
+      gap:6px; padding:0 8px 2px; font-size:9px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;
+    }
     .order-ladder-row {
       display: grid;
-      grid-template-columns: 18px 42px 1fr 64px 74px 1fr;
+      grid-template-columns: 18px 42px minmax(88px,.8fr) minmax(72px,.7fr) minmax(72px,.7fr) 64px 74px minmax(120px,1fr) auto;
       align-items: center; gap: 6px;
       padding: 5px 8px; margin: 3px 0;
       border-radius: 8px; cursor: pointer; font-size: 12px;
     }
+    .order-row-qty, .order-row-remaining { font-family: ui-monospace, monospace; text-align: right; }
+    .order-remove-btn { padding: 3px 7px; min-width: 58px; }
+    .order-remove-btn.disabled { opacity: .45; cursor: not-allowed; }
+    .event-timeline { margin: 7px 0 9px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: rgba(0,0,0,.12); }
+    .event-timeline-head { display:flex; justify-content:space-between; gap:8px; margin-bottom:4px; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+    .event-timeline-row { display:grid; grid-template-columns: 28px 1fr; gap:7px; padding:2px 0; font-size:11px; }
+    .event-seq { color:var(--blue); font-family:ui-monospace, monospace; }
+    .account-detail-grid { display:grid; grid-template-columns:1fr; gap:7px; }
+    .account-detail-row { display:flex; justify-content:space-between; gap:10px; border-bottom:1px solid rgba(41,57,87,.55); padding-bottom:5px; }
+    .account-detail-row span:first-child { color:var(--muted); }
     .order-row-missing  { background: rgba(0,0,0,.14); border: 1px dashed rgba(147,164,194,.2); }
     .order-row-missing .order-row-side,
     .order-row-missing .order-row-price,
@@ -5253,23 +5277,37 @@ def _build_client_js(storage_scope: str) -> str:
     var panel = document.getElementById('profit-plan-detail-panel');
     if (!panel) return;
     var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
-    var action = card.dataset.filterActionLabel || card.dataset.filterAction || '—';
-    var setup = card.dataset.filterSetup || '—';
-    var planningPpp = card.dataset.planningPpp || '—';
-    var actionablePpp = card.dataset.actionablePpp || '—';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
-    var evidenceGroups = _ppParseEvidenceGroups(card);
+    var held = card.dataset.accountHeldAmount || '—';
+    var heldValue = card.dataset.accountHeldValue || '—';
+    var costBasis = card.dataset.accountCostBasis || '—';
+    var walletStatus = card.dataset.accountWalletStatus || '—';
+    var positionStatus = card.dataset.accountPositionStatus || '—';
+    var orderTs = card.dataset.accountOrderSnapshotTs || '—';
+    var openBuys = card.dataset.accountOpenBuyOrders || '0';
+    var openSells = card.dataset.accountOpenSellOrders || '0';
+    var rows = [
+      ['Held amount', held],
+      ['Held value', heldValue === 'DATA_UNAVAILABLE' ? heldValue : ('€' + heldValue)],
+      ['Cost basis', costBasis === 'DATA_UNAVAILABLE' ? costBasis : ('€' + costBasis)],
+      ['Wallet snapshot', walletStatus],
+      ['Position snapshot', positionStatus],
+      ['Open BUY orders', openBuys],
+      ['Open SELL orders', openSells],
+      ['Order snapshot', orderTs]
+    ];
+    var rowsHtml = rows.map(function(row) {{
+      return "<div class='account-detail-row'><span>" + _ppEscapeHtml(row[0]) +
+        "</span><code>" + _ppEscapeHtml(row[1]) + "</code></div>";
+    }}).join('');
     panel.innerHTML =
-      "<h3>" + symbol + "</h3>" +
-      "<div class='small muted' style='margin-bottom:10px'>" + market + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Action: </span>" + action + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Setup: </span>" + setup + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Planning PPP: </span>" + planningPpp + "</div>" +
-      "<div style='margin-bottom:14px'><span class='muted small'>Actionable PPP: </span>" + actionablePpp + "</div>" +
-      "<h3>Evidence</h3>" +
-      "<div style='margin-bottom:6px'>" + _ppEvidenceGroupsHtml(evidenceGroups) + "</div>";
+      "<h3>Account / Wallet</h3>" +
+      "<div style='font-size:18px;font-weight:700;margin-bottom:2px'>" + _ppEscapeHtml(symbol) + "</div>" +
+      "<div class='small muted' style='margin-bottom:12px'>" + _ppEscapeHtml(market) + "</div>" +
+      "<div class='account-detail-grid'>" + rowsHtml + "</div>";
   }}
+
 
   function selectProfitPlanCard(renderId) {{
     document.querySelectorAll('#profit-plan-main .plan-card').forEach(function(card) {{
@@ -5795,191 +5833,210 @@ def build_order_rows(
     buy_orders: tuple[Any, ...],
     sell_orders: tuple[Any, ...],
 ) -> tuple[OrderRow, ...]:
-    rows: list[OrderRow] = []
-    covered_sell_order_prices: set[str] = set()
-    covered_buy_order_prices: set[str] = set()
+    """Merge canonical ladder levels and real open orders into one price ladder.
 
-    # One row per active sell target level
-    for level in target_level_statuses:
-        if level.lifecycle_state not in {"UPCOMING", "NEAR"}:
-            continue
-        matching = [
-            o for o in sell_orders
-            if _near(o.limit_price, level.level, ORDER_MATCH_TOLERANCE_PCT)
-        ]
-        dist = _distance_to_level_pct(current_price, level.level)
-        zone_role = f"sell target {_fmt_p(level.level)} ({level.lifecycle_state})"
-        if matching:
-            for o in matching:
-                covered_sell_order_prices.add(str(o.limit_price))
-            state = "ARMED"
-            reason_code = "SELL_ORDER_AT_ACTIVE_TARGET"
-            reason_label = (
-                f"Sell order at active target {_fmt_p(level.level)} "
-                f"({level.lifecycle_state}); "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
-        elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
-            state = "MISSING"
-            reason_code = "NO_SELL_ORDER_AT_ACTIVE_TARGET"
-            reason_label = (
-                f"No sell order at active target {_fmt_p(level.level)} "
-                f"({level.lifecycle_state}); "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
-        else:
-            state = "HISTORICAL"
-            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
-            reason_label = (
-                f"No sell order at {_fmt_p(level.level)} ({level.lifecycle_state}) — "
-                f"reference only; card is {actionability_state}"
-            )
+    Existing broker orders remain individually identifiable. Suggested/missing
+    rows never acquire broker identity. Rows are returned highest-price first,
+    which keeps targets above current price and reloads below it in one natural
+    vertical ladder.
+    """
+    rows: list[OrderRow] = []
+    covered_sell_order_ids: set[int] = set()
+    covered_buy_order_ids: set[int] = set()
+
+    def _existing_fields(order: Any) -> dict[str, Any]:
+        raw_order_id = getattr(order, "order_id", None)
+        amount = getattr(order, "amount", None)
+        filled_amount = getattr(order, "filled_amount", None)
+        remaining = getattr(order, "remaining_amount", None)
+        if remaining is None and amount is not None and filled_amount is not None:
+            remaining = max(Decimal(0), amount - filled_amount)
+        return {
+            "broker_order_id": str(raw_order_id).strip() if raw_order_id else None,
+            "quantity": amount,
+            "remaining_quantity": remaining,
+            "broker_status": getattr(order, "status", None),
+            "created_at_ms": getattr(order, "created_at_ms", None),
+        }
+
+    def _append_existing(
+        *, order: Any, state: str, reason_code: str, reason_label: str, zone_role: str
+    ) -> None:
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
             render_id=card_render_id,
             state=state,
             reason_code=reason_code,
             reason_label=reason_label,
-            side="sell",
-            price=level.level,
-            distance_pct=dist,
+            side=str(getattr(order, "side", "")).lower(),
+            price=getattr(order, "limit_price", None),
+            distance_pct=_distance_to_level_pct(current_price, getattr(order, "limit_price", None)),
             zone_role=zone_role,
+            **_existing_fields(order),
         ))
 
-    # One row per buy zone level
+    # Active SELL targets: one row per covering real order, otherwise one
+    # canonical missing/reference row at the target price.
+    for level in target_level_statuses:
+        if level.lifecycle_state not in {"UPCOMING", "NEAR"}:
+            continue
+        matching = [
+            (idx, order) for idx, order in enumerate(sell_orders)
+            if _near(order.limit_price, level.level, ORDER_MATCH_TOLERANCE_PCT)
+        ]
+        dist = _distance_to_level_pct(current_price, level.level)
+        zone_role = f"sell target {_fmt_p(level.level)} ({level.lifecycle_state})"
+        if matching:
+            for idx, order in matching:
+                covered_sell_order_ids.add(idx)
+                _append_existing(
+                    order=order,
+                    state="ARMED",
+                    reason_code="SELL_ORDER_AT_ACTIVE_TARGET",
+                    reason_label=(
+                        f"Sell order at active target {_fmt_p(level.level)} "
+                        f"({level.lifecycle_state}); distance {_pct(dist)} "
+                        f"from {_fmt_p(current_price)}"
+                    ),
+                    zone_role=zone_role,
+                )
+            continue
+        state = "MISSING" if actionability_state == CARD_ACTIONABILITY_ACTIVE else "HISTORICAL"
+        reason_code = (
+            "NO_SELL_ORDER_AT_ACTIVE_TARGET"
+            if state == "MISSING"
+            else "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+        )
+        reason_label = (
+            f"No sell order at active target {_fmt_p(level.level)} ({level.lifecycle_state}); "
+            f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            if state == "MISSING"
+            else f"No sell order at {_fmt_p(level.level)} ({level.lifecycle_state}) — reference only; card is {actionability_state}"
+        )
+        rows.append(OrderRow(
+            row_id=str(uuid.uuid4()), render_id=card_render_id, state=state,
+            reason_code=reason_code, reason_label=reason_label, side="sell",
+            price=level.level, distance_pct=dist, zone_role=zone_role,
+        ))
+
+    # Reload BUY levels follow the same rule.
     for buy_level in buy_zone:
         matching = [
-            o for o in buy_orders
-            if _near(o.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT)
+            (idx, order) for idx, order in enumerate(buy_orders)
+            if _near(order.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT)
         ]
         dist = _distance_to_level_pct(current_price, buy_level)
         zone_role = f"buy zone {_fmt_p(buy_level)}"
         if matching:
-            for o in matching:
-                covered_buy_order_prices.add(str(o.limit_price))
-            state = "ARMED"
-            reason_code = "BUY_ORDER_AT_ZONE"
-            reason_label = (
-                f"Buy order at reload zone {_fmt_p(buy_level)}; "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
-        elif actionability_state == CARD_ACTIONABILITY_ACTIVE and current_price is not None and buy_level >= current_price:
-            state = "ABOVE_CURRENT_BUY"
-            reason_code = "BUY_ABOVE_CURRENT_PRICE"
+            for idx, order in matching:
+                covered_buy_order_ids.add(idx)
+                _append_existing(
+                    order=order,
+                    state="ARMED",
+                    reason_code="BUY_ORDER_AT_ZONE",
+                    reason_label=(
+                        f"Buy order at reload zone {_fmt_p(buy_level)}; "
+                        f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+                    ),
+                    zone_role=zone_role,
+                )
+            continue
+        if actionability_state == CARD_ACTIONABILITY_ACTIVE and current_price is not None and buy_level >= current_price:
+            state, reason_code = "ABOVE_CURRENT_BUY", "BUY_ABOVE_CURRENT_PRICE"
             reason_label = (
                 f"Buy reload level is above current price — reference only. "
                 f"Level {_fmt_p(buy_level)} is at or above current {_fmt_p(current_price)}"
             )
         elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
-            state = "MISSING"
-            reason_code = "NO_BUY_ORDER_AT_ZONE"
+            state, reason_code = "MISSING", "NO_BUY_ORDER_AT_ZONE"
             reason_label = (
                 f"No buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
             )
         else:
-            state = "HISTORICAL"
-            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+            state, reason_code = "HISTORICAL", "NO_ACTIVE_ORDER_REFERENCE_ONLY"
             reason_label = (
-                f"No buy order at reload zone {_fmt_p(buy_level)} — "
-                f"reference only; card is {actionability_state}"
+                f"No buy order at reload zone {_fmt_p(buy_level)} — reference only; "
+                f"card is {actionability_state}"
             )
         rows.append(OrderRow(
-            row_id=str(uuid.uuid4()),
-            render_id=card_render_id,
-            state=state,
-            reason_code=reason_code,
-            reason_label=reason_label,
-            side="buy",
-            price=buy_level,
-            distance_pct=dist,
-            zone_role=zone_role,
+            row_id=str(uuid.uuid4()), render_id=card_render_id, state=state,
+            reason_code=reason_code, reason_label=reason_label, side="buy",
+            price=buy_level, distance_pct=dist, zone_role=zone_role,
         ))
 
-    # Remaining sell orders not at any active target → HISTORICAL or STALE
-    for o in sell_orders:
-        if str(o.limit_price) in covered_sell_order_prices:
+    # Every real order not covering a current level remains visible in the same
+    # ladder, still carrying its broker identity and quantity.
+    for idx, order in enumerate(sell_orders):
+        if idx in covered_sell_order_ids:
             continue
         classification = _classify_order_for_zone_coverage(
-            o.limit_price, target_level_statuses, buy_zone
+            order.limit_price, target_level_statuses, buy_zone
         )
-        dist = _distance_to_level_pct(current_price, o.limit_price)
+        dist = _distance_to_level_pct(current_price, order.limit_price)
         if classification == "HISTORICAL":
             state = "HISTORICAL"
-            if actionability_state == CARD_ACTIONABILITY_ACTIVE:
-                reason_code = "SELL_ORDER_AT_PASSED_TARGET"
-                reason_label = (
-                    f"Sell order at {_fmt_p(o.limit_price)} is at a passed/completed target; "
-                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-                )
-            else:
-                reason_code = "MAP_COMPLETED_ORDER_REVIEW_NEEDED"
-                reason_label = (
-                    f"Review existing sell order at {_fmt_p(o.limit_price)} against a historical/passed target; "
-                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-                )
+            reason_code = (
+                "SELL_ORDER_AT_PASSED_TARGET"
+                if actionability_state == CARD_ACTIONABILITY_ACTIVE
+                else "MAP_COMPLETED_ORDER_REVIEW_NEEDED"
+            )
+            reason_label = (
+                f"Sell order at {_fmt_p(order.limit_price)} is at a passed/completed target; "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
             zone_role = "passed sell target"
         else:
             state = "STALE"
-            if actionability_state == CARD_ACTIONABILITY_ACTIVE:
-                reason_code = "SELL_ORDER_NOT_AT_ANY_ZONE"
-                reason_label = (
-                    f"Sell order at {_fmt_p(o.limit_price)} does not match any active zone "
-                    f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
-                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-                )
-                zone_role = "unmatched sell order"
-            else:
-                reason_code = "STALE_FOR_ACTIVE_SHORT_SWING"
-                reason_label = (
-                    f"Review existing sell order at {_fmt_p(o.limit_price)} — it does not match the current "
-                    f"active short-swing map and is reference only here."
-                )
-                zone_role = "review unmatched sell order"
-        rows.append(OrderRow(
-            row_id=str(uuid.uuid4()),
-            render_id=card_render_id,
-            state=state,
-            reason_code=reason_code,
-            reason_label=reason_label,
-            side="sell",
-            price=o.limit_price,
-            distance_pct=dist,
-            zone_role=zone_role,
-        ))
+            reason_code = (
+                "SELL_ORDER_NOT_AT_ANY_ZONE"
+                if actionability_state == CARD_ACTIONABILITY_ACTIVE
+                else "STALE_FOR_ACTIVE_SHORT_SWING"
+            )
+            reason_label = (
+                f"Sell order at {_fmt_p(order.limit_price)} does not match any active zone "
+                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); distance {_pct(dist)} "
+                f"from {_fmt_p(current_price)}"
+                if actionability_state == CARD_ACTIONABILITY_ACTIVE
+                else f"Review existing sell order at {_fmt_p(order.limit_price)} — it does not match the current active short-swing map."
+            )
+            zone_role = "unmatched sell order"
+        _append_existing(
+            order=order, state=state, reason_code=reason_code,
+            reason_label=reason_label, zone_role=zone_role,
+        )
 
-    # Remaining buy orders not at any zone → STALE
-    for o in buy_orders:
-        if str(o.limit_price) in covered_buy_order_prices:
+    for idx, order in enumerate(buy_orders):
+        if idx in covered_buy_order_ids:
             continue
-        dist = _distance_to_level_pct(current_price, o.limit_price)
-        if actionability_state == CARD_ACTIONABILITY_ACTIVE:
-            reason_code = "BUY_ORDER_NOT_AT_ANY_ZONE"
-            reason_label = (
-                f"Buy order at {_fmt_p(o.limit_price)} does not match any reload zone "
-                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
-            zone_role = "unmatched buy order"
-        else:
-            reason_code = "RUNNER_REFERENCE_ONLY"
-            reason_label = (
-                f"Review existing buy order at {_fmt_p(o.limit_price)} — reference only until a fresh active map exists."
-            )
-            zone_role = "review unmatched buy order"
-        rows.append(OrderRow(
-            row_id=str(uuid.uuid4()),
-            render_id=card_render_id,
-            state="STALE",
-            reason_code=reason_code,
-            reason_label=reason_label,
-            side="buy",
-            price=o.limit_price,
-            distance_pct=dist,
-            zone_role=zone_role,
-        ))
+        dist = _distance_to_level_pct(current_price, order.limit_price)
+        reason_code = (
+            "BUY_ORDER_NOT_AT_ANY_ZONE"
+            if actionability_state == CARD_ACTIONABILITY_ACTIVE
+            else "RUNNER_REFERENCE_ONLY"
+        )
+        reason_label = (
+            f"Buy order at {_fmt_p(order.limit_price)} does not match any reload zone "
+            f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); distance {_pct(dist)} "
+            f"from {_fmt_p(current_price)}"
+            if actionability_state == CARD_ACTIONABILITY_ACTIVE
+            else f"Review existing buy order at {_fmt_p(order.limit_price)} — reference only until a fresh active map exists."
+        )
+        _append_existing(
+            order=order, state="STALE", reason_code=reason_code,
+            reason_label=reason_label, zone_role="unmatched buy order",
+        )
 
-    return tuple(rows)
+    return tuple(sorted(
+        rows,
+        key=lambda row: (
+            row.price is not None,
+            row.price if row.price is not None else Decimal("-Infinity"),
+            row.is_existing_order,
+            row.broker_order_id or "",
+        ),
+        reverse=True,
+    ))
 
 
 _ORDER_ROW_STATUS_LABEL: dict[str, str] = {
@@ -6021,20 +6078,35 @@ def _order_rows_html(
         status_label = _ORDER_ROW_STATUS_LABEL.get(row.state, row.state.replace("_", " ").title())
         status_cls = _ORDER_ROW_STATUS_CSS_CLASS.get(row.state, "unavailable")
         tooltip = esc(row.reason_label)
+        qty = _fmt_p(row.quantity) if row.quantity is not None else "—"
+        remaining = _fmt_p(row.remaining_quantity) if row.remaining_quantity is not None else "—"
+        broker_status = esc(row.broker_status or status_label)
+        broker_id_attr = esc(row.broker_order_id or "")
+        remove_html = (
+            f"<button type='button' class='toggle-btn small order-remove-btn disabled' disabled "
+            f"data-broker-order-id='{broker_id_attr}' "
+            f"title='Cancellation command backend is not enabled yet'>Remove</button>"
+            if row.is_existing_order else "<span></span>"
+        )
         rows_html.append(
-            f"<label class='order-ladder-row {css}'"
+            f"<div class='order-ladder-row {css}'"
             f" title='{tooltip}'"
             f" data-row-id='{esc(row.row_id)}'"
             f" data-state='{esc(row.state)}'"
+            f" data-existing-order='{str(row.is_existing_order).lower()}'"
+            f" data-broker-order-id='{broker_id_attr}'"
             f" data-render-id='{esc(card_render_id)}'>"
             f"<input type='checkbox' class='order-row-check'"
             f" data-row-id='{esc(row.row_id)}' data-state='{esc(row.state)}'>"
             f"<span class='order-row-side'>{esc(row.side.upper())}</span>"
             f"<span class='order-row-price mono'>{esc(price_str)}</span>"
+            f"<span class='order-row-qty' title='Original quantity'>{esc(qty)}</span>"
+            f"<span class='order-row-remaining' title='Remaining quantity'>{esc(remaining)}</span>"
             f"<span class='order-row-dist'>{esc(dist_str)}</span>"
-            f"<span class='order-row-status {status_cls}'>{esc(status_label)}</span>"
+            f"<span class='order-row-status {status_cls}' title='Broker/status state'>{broker_status}</span>"
             f"<span class='order-row-reason'>{esc(row.zone_role)}</span>"
-            f"</label>"
+            f"{remove_html}"
+            f"</div>"
         )
     select_menu = (
         "<div class='order-ladder-menu'>"
@@ -6046,10 +6118,36 @@ def _order_rows_html(
     )
     return (
         "<div class='order-ladder'>"
-        "<div class='order-ladder-label'>Order ladder</div>"
+        "<div class='order-ladder-label'>Order ladder · price high → low</div>"
+        "<div class='order-ladder-columns'><span></span><span>Side</span><span>Price</span><span>Qty</span><span>Remain</span><span>Δ</span><span>Status</span><span>Context</span><span>Action</span></div>"
         + "".join(rows_html)
         + select_menu
         + "</div>"
+    )
+
+
+def _event_timeline_html(card: ProfitPlanCard) -> str:
+    if not card.reasons:
+        return ""
+    observed = card.evidence.update_ts_utc
+    if _is_unavailable(observed):
+        observed = card.evidence.generation_ts_utc
+    observed_text = "snapshot sequence" if _is_unavailable(observed) else f"snapshot {observed}"
+    rows = "".join(
+        "<div class='event-timeline-row'>"
+        f"<span class='event-seq'>#{index:02d}</span>"
+        f"<span>{esc(reason)}</span>"
+        "</div>"
+        for index, reason in enumerate(card.reasons, start=1)
+    )
+    return (
+        "<div class='event-timeline'>"
+        "<div class='event-timeline-head'>"
+        "<span>Plan / event notes</span>"
+        f"<span>{esc(observed_text)}</span>"
+        "</div>"
+        f"{rows}"
+        "</div>"
     )
 
 
@@ -6304,10 +6402,12 @@ def render_plan_card(
             card_render_id=card.render_id,
             actionability_state=card.actionability_state,
         ).replace("Order ladder", order_ladder_label, 1)
+        event_timeline_html = _event_timeline_html(card)
         order_section_html = (
             f"<div class='order-section'>"
             f"{order_section_header}"
             f"{order_secondary_state_html}"
+            f"{event_timeline_html}"
             f"{order_rows_html}"
             f"</div>"
         )
@@ -6318,7 +6418,13 @@ def render_plan_card(
             actionability_state=card.actionability_state,
         )
 
-    reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
+    reasons_html = (
+        "".join(f"<li>{esc(reason)}</li>" for reason in card.reasons)
+        if card.presentation_mode in _NO_ACCOUNT_STATE_MODES
+        else ""
+    )
+    reasons_block_html = f"<ul class='reasons'>{reasons_html}</ul>" if reasons_html else ""
+
     # evidence_rows already built above (single source of truth for both the
     # Fibonacci/Account summary lines and the grouped Evidence section).
     evidence_html = _card_evidence_html(evidence_rows, card)
@@ -6399,6 +6505,14 @@ def render_plan_card(
         f" data-delta-types='{esc(','.join(card.delta.material_delta_types))}'"
         f" data-evidence-rows='{esc(evidence_rows_json_attr)}'"
         f" data-evidence-groups='{esc(evidence_groups_json_attr)}'"
+        f" data-account-held-amount='{esc(card.evidence.held_amount)}'"
+        f" data-account-held-value='{esc(card.evidence.held_eur_value)}'"
+        f" data-account-cost-basis='{esc(card.evidence.cost_basis_price_eur)}'"
+        f" data-account-wallet-status='{esc(card.evidence.wallet_snapshot_status)}'"
+        f" data-account-position-status='{esc(card.evidence.position_snapshot_status)}'"
+        f" data-account-order-snapshot-ts='{esc(card.evidence.order_snapshot_ts_utc)}'"
+        f" data-account-open-buy-orders='{esc(card.order_summary.open_buy_orders)}'"
+        f" data-account-open-sell-orders='{esc(card.order_summary.open_sell_orders)}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -6427,7 +6541,7 @@ def render_plan_card(
         f"{order_section_html}"
         f"{open_orders_html}"
         f"{evidence_html}"
-        f"<ul class='reasons'>{reasons_html}</ul>"
+        f"{reasons_block_html}"
         "<div class='manual-only muted'>MANUAL_ONLY — read-only snapshot, no automatic placement</div>"
         "</section>"
     )
@@ -6446,6 +6560,7 @@ def render_full_html(
     writer_instance_id: str | None = None,
     pipeline_banner_html: str | None = None,
     rotation_projection: RotationProfitPlanProjection | None = None,
+    orders_by_symbol: Mapping[str, tuple[tuple[Any, ...], tuple[Any, ...]]] | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
@@ -6466,6 +6581,8 @@ def render_full_html(
     cards_html = "\n".join(
         render_plan_card(
             c,
+            buy_orders=(orders_by_symbol or {}).get(c.symbol, ((), ()))[0],
+            sell_orders=(orders_by_symbol or {}).get(c.symbol, ((), ()))[1],
             monitor_link=monitor_link,
             rotation_market_projection=(
                 get_market_projection(rotation_projection, c.market)

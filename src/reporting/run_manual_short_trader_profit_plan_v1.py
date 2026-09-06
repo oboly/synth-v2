@@ -2340,6 +2340,7 @@ def main() -> int:
         writer_instance_id=writer_instance_id,
         pipeline_banner_html=pipeline_banner_html,
         rotation_projection=rotation_projection,
+        orders_by_symbol=orders_by_symbol,
     )
     json_content = json.dumps(
         build_json_snapshot(

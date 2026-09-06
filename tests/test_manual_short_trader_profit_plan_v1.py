@@ -8317,3 +8317,127 @@ def test_renderer_does_not_recompute_lifecycle_from_timestamps_for_attention() -
     render_source = source[render_start:render_end]
     assert "recompute_transition_state" not in render_source
     assert "classify_attention(" not in render_source
+
+
+def test_existing_broker_orders_are_individual_price_sorted_ladder_rows() -> None:
+    from types import SimpleNamespace
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    sell_orders = (
+        SimpleNamespace(order_id="broker-low", limit_price=Decimal("0.500000"), side="sell", amount=Decimal("12"), remaining_amount=Decimal("10"), status="open", created_at_ms=1000),
+        SimpleNamespace(order_id="broker-high", limit_price=Decimal("0.620000"), side="sell", amount=Decimal("7"), remaining_amount=Decimal("7"), status="open", created_at_ms=2000),
+    )
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=sell_orders,
+    )
+
+    priced = [row.price for row in rows if row.price is not None]
+    assert priced == sorted(priced, reverse=True)
+    existing = [row for row in rows if row.is_existing_order]
+    assert {row.broker_order_id for row in existing} == {"broker-low", "broker-high"}
+    high = next(row for row in existing if row.broker_order_id == "broker-high")
+    assert high.quantity == Decimal("7")
+    assert high.remaining_quantity == Decimal("7")
+    assert high.broker_status == "open"
+
+
+def test_existing_order_ladder_html_shows_quantity_remaining_and_remove_affordance() -> None:
+    from types import SimpleNamespace
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(SimpleNamespace(order_id="broker-123", limit_price=Decimal("0.620000"), side="sell", amount=Decimal("9.5"), remaining_amount=Decimal("8.25"), status="open", created_at_ms=1000),),
+    )
+    html = _order_rows_html(rows, card_render_id=card.render_id)
+    assert "9.5" in html
+    assert "8.25" in html
+    assert "broker-123" in html
+    assert ">Remove</button>" in html
+    assert "Cancellation command backend is not enabled yet" in html
+
+
+def test_account_card_reasons_move_to_numbered_timeline_above_ladder() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    timeline_pos = html.find("class='event-timeline'")
+    ladder_pos = html.find("class='order-ladder'")
+    assert timeline_pos != -1
+    assert ladder_pos != -1
+    assert timeline_pos < ladder_pos
+    assert "class='event-seq'>#01" in html
+    assert "class='event-seq'>#02" in html
+    assert "<ul class='reasons'>" not in html
+
+
+def test_detail_panel_is_account_wallet_not_duplicate_evidence() -> None:
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    start = html.index("function _ppUpdateDetailPanel")
+    end = html.index("function selectProfitPlanCard", start)
+    detail_js = html[start:end]
+    assert "Account / Wallet" in detail_js
+    assert "Open SELL orders" in detail_js
+    assert "<h3>Evidence</h3>" not in detail_js
+
+
+def test_render_full_html_threads_existing_orders_to_card_ladder() -> None:
+    from types import SimpleNamespace
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    order = SimpleNamespace(
+        order_id="broker-e2e-777",
+        limit_price=Decimal("0.620000"),
+        side="sell",
+        amount=Decimal("13.25"),
+        remaining_amount=Decimal("12.75"),
+        status="NEW",
+        created_at_ms=1000,
+    )
+    html = render_full_html(
+        [card],
+        rendered_at="now",
+        broker_mode="test",
+        orders_by_symbol={card.symbol: ((), (order,))},
+    )
+    assert "broker-e2e-777" in html
+    assert "13.25" in html
+    assert "12.75" in html
+    assert ">Remove</button>" in html
+
+
+def test_real_ladder_order_row_derives_remaining_quantity_in_rendered_html() -> None:
+    from src.reporting.manual_short_trader_dashboard_v1 import LadderOrderRow
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    order = LadderOrderRow(
+        order_id="broker-real-row-1",
+        market=card.market,
+        side="sell",
+        limit_price=Decimal("0.620000"),
+        amount=Decimal("20"),
+        filled_amount=Decimal("3.5"),
+        quote_value=Decimal("12.4"),
+        distance_pct=Decimal("40.9"),
+        status="NEW",
+        labels=("MANUAL_ONLY",),
+    )
+    html = render_full_html(
+        [card],
+        rendered_at="now",
+        broker_mode="test",
+        orders_by_symbol={card.symbol: ((), (order,))},
+    )
+    assert "broker-real-row-1" in html
+    assert "20" in html
+    assert "16.5" in html
+    assert "NEW" in html
