@@ -138,6 +138,25 @@ CREATE TABLE strategy_bucket_account_config_v1 (
     allocation_max_pct TEXT
 );
 
+CREATE TABLE strategy_owned_inventory_event_v1 (
+    strategy_owned_inventory_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    trading_account_id INTEGER NOT NULL,
+    venue TEXT NOT NULL,
+    market TEXT NOT NULL,
+    strategy_bucket_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    trade_id TEXT NOT NULL,
+    source_execution_plan_id TEXT NOT NULL,
+    source_fill_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    filled_base_quantity TEXT NOT NULL,
+    fill_notional_eur TEXT,
+    occurred_ts_utc TEXT NOT NULL,
+    UNIQUE(trading_account_id, venue, source_fill_id)
+);
+
 CREATE TABLE strategy_bucket_account_config_revocation_v1 (
     strategy_bucket_account_config_revocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_bucket_account_config_id INTEGER NOT NULL,
