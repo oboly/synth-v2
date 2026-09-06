@@ -14,11 +14,12 @@ OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-/tmp/synth-linked-profile-runtime-orchestrator.lock}"
+LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock}"
 
 # Manual/acceptance-only legacy path shares the canonical orchestrator lock.
 # It must never render linked-profile outputs concurrently with the scheduled
 # owner; if the owner is active, fail closed by skipping this legacy run.
+mkdir -p "$(dirname "${LOCK_FILE}")"
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
   echo "Skipped: canonical linked-profile runtime orchestrator is already running."

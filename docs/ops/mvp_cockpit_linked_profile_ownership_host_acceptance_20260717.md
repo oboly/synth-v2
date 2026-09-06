@@ -149,3 +149,6 @@ into the linked-profile orchestrator journal. The logging-redaction repair
 removes only that operational output. It does not change internal constant-time
 fingerprint verification, credential resolution, broker calls, snapshot writes,
 rendering, authentication, or systemd ownership.
+
+
+#201 lock hardening: the manual/acceptance linked-profile refresh and the canonical scheduled orchestrator share `${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock`, which remains visible across systemd `PrivateTmp=true`. Concurrent legacy runs skip fail-closed.

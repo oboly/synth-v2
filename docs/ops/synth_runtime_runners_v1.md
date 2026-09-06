@@ -971,3 +971,6 @@ assuming it from this document.
 - No private broker polling inside any renderer script.
 - No re-enabling `synth-paper-advice-lifecycle-refresh.timer` before backlog
   item P0-A is verified.
+
+
+#201 lock hardening: the manual/acceptance linked-profile refresh and the canonical scheduled orchestrator share `${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock`, which remains visible across systemd `PrivateTmp=true`. Concurrent legacy runs skip fail-closed.

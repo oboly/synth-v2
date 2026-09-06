@@ -9,6 +9,9 @@ ExecStart may invoke it. This test fails if such a caller is introduced later.
 """
 
 from pathlib import Path
+import os
+import subprocess
+
 
 
 REFRESH_SCRIPT_NAME = "run_linked_profile_dashboard_refresh_once.sh"
@@ -89,13 +92,43 @@ def test_no_systemd_unit_owns_refresh() -> None:
 def test_manual_refresh_shares_canonical_orchestrator_lock_domain() -> None:
     manual = REFRESH_SCRIPT.read_text(encoding="utf-8")
     orchestrator = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh").read_text(encoding="utf-8")
-    default_lock = "/tmp/synth-linked-profile-runtime-orchestrator.lock"
-    assert default_lock in manual
-    assert default_lock in orchestrator
+    shared_suffix = "/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock"
+    assert shared_suffix in manual
+    assert shared_suffix in orchestrator
+    assert "/tmp/synth-linked-profile-runtime-orchestrator.lock" not in manual
+    assert "/tmp/synth-linked-profile-runtime-orchestrator.lock" not in orchestrator
     assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in manual
     assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in orchestrator
     assert "flock -n 9" in manual
     assert "flock -n 9" in orchestrator
+
+
+def test_manual_refresh_behaviorally_contends_on_shared_lock(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    lock = home / ".local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock"
+    lock.parent.mkdir(parents=True)
+    holder = subprocess.Popen(
+        ["flock", str(lock), "sleep", "10"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["SYNTH_REPO_DIR"] = str(tmp_path / "must-not-be-entered")
+        result = subprocess.run(
+            ["bash", str(REFRESH_SCRIPT.resolve())],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 0
+        assert "canonical linked-profile runtime orchestrator is already running" in result.stdout
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
 
 def main() -> None:
     for test in (
@@ -105,6 +138,7 @@ def main() -> None:
         test_key_runtime_scripts_do_not_invoke_refresh,
         test_no_systemd_unit_owns_refresh,
         test_manual_refresh_shares_canonical_orchestrator_lock_domain,
+        test_manual_refresh_behaviorally_contends_on_shared_lock,
     ):
         test()
     print("ok")
