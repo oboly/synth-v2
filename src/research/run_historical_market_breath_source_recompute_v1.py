@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import signal
 from collections import Counter
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -50,6 +51,16 @@ ROWS_CSV = "historical_market_breath_source_recomputed_rows_v1.csv"
 ROWS_JSONL = "historical_market_breath_source_recomputed_rows_v1.jsonl"
 MANIFEST_JSON = "manifest_v1.json"
 DEFAULT_LOOKBACK_CANDLES = 120
+
+
+class _RunnerInterrupted(Exception):
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _signal_handler(signum: int, _frame: Any) -> None:
+    raise _RunnerInterrupted(signum)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -449,57 +460,80 @@ def print_summary(*, rows: list[dict[str, Any]], measures: dict[str, Any]) -> No
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    previous_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    for signum in previous_handlers:
+        signal.signal(signum, _signal_handler)
+
     print(
         f"STARTED runner={REPORT_NAME} version={REPORT_VERSION} venue={args.venue} interval={args.interval} start_ts={args.start_ts} end_ts={args.end_ts}",
         flush=True,
     )
-    symbols = parse_symbols_arg(args.symbols)
-    venue = str(args.venue).lower()
-    interval = str(args.interval)
-    output_dir = Path(args.output_dir)
-    start_ts = parse_ts(args.start_ts)
-    end_ts = parse_ts(args.end_ts)
-
-    print("PHASE_STARTED phase=db_recompute", flush=True)
-    conn = get_connection()
     try:
-        rows, measures = recompute_rows(
-            conn=conn,
-            symbols=symbols,
-            venue=venue,
-            interval=interval,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            max_rows=int(args.max_rows or 0),
-            breadth_scope=args.breadth_scope,
+        symbols = parse_symbols_arg(args.symbols)
+        venue = str(args.venue).lower()
+        interval = str(args.interval)
+        output_dir = Path(args.output_dir)
+        start_ts = parse_ts(args.start_ts)
+        end_ts = parse_ts(args.end_ts)
+
+        print("PHASE_STARTED phase=db_recompute", flush=True)
+        conn = get_connection()
+        try:
+            rows, measures = recompute_rows(
+                conn=conn,
+                symbols=symbols,
+                venue=venue,
+                interval=interval,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                max_rows=int(args.max_rows or 0),
+                breadth_scope=args.breadth_scope,
+            )
+        finally:
+            conn.close()
+        print(f"PHASE_FINISHED phase=db_recompute rows={len(rows)}", flush=True)
+
+        output_paths: dict[str, str] = {}
+        if args.write_files:
+            print("PHASE_STARTED phase=write_outputs", flush=True)
+            csv_path = output_dir / ROWS_CSV
+            jsonl_path = output_dir / ROWS_JSONL
+            manifest_path = output_dir / MANIFEST_JSON
+            write_csv(csv_path, rows)
+            write_jsonl(jsonl_path, rows)
+            output_paths = {
+                "csv": str(csv_path),
+                "jsonl": str(jsonl_path),
+                "manifest": str(manifest_path),
+            }
+            manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
+            write_json(manifest_path, manifest)
+            print(f"PHASE_FINISHED phase=write_outputs output_dir={output_dir}", flush=True)
+        else:
+            manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
+
+        if args.output == "json":
+            print(json.dumps({"rows": rows, "manifest": manifest}, indent=2, sort_keys=True))
+        else:
+            print_summary(rows=rows, measures=measures)
+    except _RunnerInterrupted as exc:
+        print(
+            f"INTERRUPTED runner={REPORT_NAME} signal={signal.Signals(exc.signum).name} "
+            "db_writes=0 broker_calls=0 order_submission=0",
+            flush=True,
         )
+        return 130
+    except Exception as exc:
+        print(
+            f"FAILED runner={REPORT_NAME} error_type={type(exc).__name__} error={str(exc)!r} "
+            "db_writes=0 broker_calls=0 order_submission=0",
+            flush=True,
+        )
+        return 1
     finally:
-        conn.close()
-    print(f"PHASE_FINISHED phase=db_recompute rows={len(rows)}", flush=True)
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
-    output_paths: dict[str, str] = {}
-    if args.write_files:
-        print("PHASE_STARTED phase=write_outputs", flush=True)
-        csv_path = output_dir / ROWS_CSV
-        jsonl_path = output_dir / ROWS_JSONL
-        manifest_path = output_dir / MANIFEST_JSON
-        write_csv(csv_path, rows)
-        write_jsonl(jsonl_path, rows)
-        output_paths = {
-            "csv": str(csv_path),
-            "jsonl": str(jsonl_path),
-            "manifest": str(manifest_path),
-        }
-        manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
-        write_json(manifest_path, manifest)
-        print(f"PHASE_FINISHED phase=write_outputs output_dir={output_dir}", flush=True)
-    else:
-        manifest = build_manifest(args=args, rows=rows, measures=measures, output_paths=output_paths)
-
-    if args.output == "json":
-        print(json.dumps({"rows": rows, "manifest": manifest}, indent=2, sort_keys=True))
-    else:
-        print_summary(rows=rows, measures=measures)
     print(f"FINISHED runner={REPORT_NAME} rows={len(rows)}", flush=True)
     return 0
 

@@ -175,6 +175,32 @@ class HistoricalMarketBreathSourceRecomputeV1Tests(unittest.TestCase):
         self.assertEqual([asset.symbol for asset in selected], ["BTC", "ETH"])
         self.assertEqual(btc.symbol, "BTC")
 
+    def test_main_emits_failed_once_without_traceback(self) -> None:
+        from unittest.mock import patch
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        with patch.object(mod, "get_connection", side_effect=RuntimeError("boom")):
+            with patch("builtins.print") as mocked_print:
+                rc = mod.main(["--symbols", "BTC", "--max-rows", "1"])
+        self.assertEqual(rc, 1)
+        terminal = [str(call) for call in mocked_print.call_args_list if "FAILED runner=" in str(call) or "INTERRUPTED runner=" in str(call) or "FINISHED runner=" in str(call)]
+        self.assertEqual(len(terminal), 1)
+        self.assertIn("FAILED runner=", terminal[0])
+
+    def test_main_emits_interrupted_once_and_restores_handlers(self) -> None:
+        import signal
+        from unittest.mock import patch
+        from src.research import run_historical_market_breath_source_recompute_v1 as mod
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        with patch.object(mod, "get_connection", side_effect=mod._RunnerInterrupted(signal.SIGTERM)):
+            with patch("builtins.print") as mocked_print:
+                rc = mod.main(["--symbols", "BTC", "--max-rows", "1"])
+        self.assertEqual(rc, 130)
+        terminal = [str(call) for call in mocked_print.call_args_list if "FAILED runner=" in str(call) or "INTERRUPTED runner=" in str(call) or "FINISHED runner=" in str(call)]
+        self.assertEqual(len(terminal), 1)
+        self.assertIn("INTERRUPTED runner=", terminal[0])
+        for sig, handler in previous.items():
+            self.assertIs(signal.getsignal(sig), handler)
+
     def test_no_forbidden_imports(self) -> None:
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
         imports: list[str] = []
