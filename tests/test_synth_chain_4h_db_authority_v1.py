@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +17,6 @@ from src.operations.synth_chain_4h_db_authority_v1 import (
     audit_grants,
     parse_grant_statement,
 )
-
 
 SQL_ARTIFACT = Path("db/dba/synth_chain_4h_writer_v1.sql")
 
@@ -85,6 +84,11 @@ def test_reachable_upsert_targets_require_select() -> None:
     )
 
 
+def test_quality_snapshot_no_longer_requires_legacy_quality_view() -> None:
+    assert "v_asset_interval_quality_v3" not in REQUIRED_OBJECT_PRIVILEGES
+    assert REQUIRED_OBJECT_PRIVILEGES["obs_market_candle"] == {"SELECT"}
+
+
 def test_exact_grant_set_is_accepted() -> None:
     audit = _audit(_exact_grants())
     assert audit.passed
@@ -95,9 +99,7 @@ def test_exact_grant_set_is_accepted() -> None:
 
 def test_missing_required_select_is_rejected() -> None:
     grants = [
-        grant
-        for grant in _exact_grants()
-        if "`.`market_price_snapshot`" not in grant
+        grant for grant in _exact_grants() if "`.`market_price_snapshot`" not in grant
     ]
     audit = _audit(grants)
     assert not audit.passed
@@ -118,12 +120,7 @@ def test_missing_required_writer_privilege_is_rejected() -> None:
 def test_all_privileges_is_rejected() -> None:
     audit = _audit(
         _exact_grants()
-        + [
-            (
-                "GRANT ALL PRIVILEGES ON *.* "
-                f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
-            )
-        ]
+        + [(f"GRANT ALL PRIVILEGES ON *.* TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`")]
     )
     assert not audit.passed
     assert any("GLOBAL_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
@@ -132,12 +129,7 @@ def test_all_privileges_is_rejected() -> None:
 def test_schema_wildcard_is_rejected() -> None:
     audit = _audit(
         _exact_grants()
-        + [
-            (
-                "GRANT SELECT ON `synth`.* "
-                f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
-            )
-        ]
+        + [(f"GRANT SELECT ON `synth`.* TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`")]
     )
     assert not audit.passed
     assert any("SCHEMA_WILDCARD_FORBIDDEN" in item for item in audit.violations)
@@ -209,7 +201,7 @@ def test_dba_artifact_grants_exact_contract_without_plaintext_password() -> None
     assert "GRANT ALL PRIVILEGES" not in text
     assert "QUOTE(@synth_chain_4h_writer_password)" in text
     assert "MYSQL_PWD" not in text
-    assert f"TO 'synth'@" not in text
+    assert "TO 'synth'@" not in text
     assert text.count(f"'{IDENTITY_NAME}'@'{IDENTITY_HOST}'") >= 1
 
 
@@ -265,8 +257,7 @@ class _FakeCursor:
     def fetchall(self):
         assert self.current == "SHOW GRANTS"
         return [
-            {f"Grants for {EXPECTED_GRANT_IDENTITY}": grant}
-            for grant in self.grants
+            {f"Grants for {EXPECTED_GRANT_IDENTITY}": grant} for grant in self.grants
         ]
 
 
@@ -317,7 +308,15 @@ def test_preflight_executes_only_read_only_commands_and_rolls_back() -> None:
     assert connection.close_count == 1
     assert captured_kwargs["autocommit"] is False
 
-    mutating_tokens = ("INSERT ", "UPDATE ", "DELETE ", "CREATE ", "ALTER ", "GRANT ", "REVOKE ")
+    mutating_tokens = (
+        "INSERT ",
+        "UPDATE ",
+        "DELETE ",
+        "CREATE ",
+        "ALTER ",
+        "GRANT ",
+        "REVOKE ",
+    )
     assert not any(
         command.upper().startswith(mutating_tokens)
         for command in connection.cursor_instance.commands
@@ -356,7 +355,7 @@ TARGET_EVENT_COVERAGE_TABLE = "native_short_map_level_target_event_coverage_v1"
 TARGET_EVENT_TABLE = "native_short_map_level_target_event_v1"
 TARGET_EVENT_VIEW = "native_short_map_level_target_event_current_state_v1"
 
-EXPECTED_REQUIRED_OBJECT_COUNT = 38
+EXPECTED_REQUIRED_OBJECT_COUNT = 37
 
 
 def test_target_event_tables_are_part_of_canonical_required_object_set() -> None:
@@ -389,7 +388,9 @@ def test_grant_preflight_fails_when_target_event_table_privileges_absent() -> No
     assert f"synth.{TARGET_EVENT_TABLE}:INSERT" in audit.missing
 
 
-def test_grant_preflight_passes_with_complete_minimum_grants_via_run_preflight() -> None:
+def test_grant_preflight_passes_with_complete_minimum_grants_via_run_preflight() -> (
+    None
+):
     """End-to-end via the real ``run_preflight`` entrypoint (not just
     ``audit_grants`` directly), proving the complete canonical grant set --
     including the two new target-event objects -- is accepted as PASS."""
@@ -423,7 +424,9 @@ def test_target_event_coverage_insert_beyond_select_is_rejected_as_unexpected() 
     assert f"synth.{TARGET_EVENT_COVERAGE_TABLE}:INSERT" in audit.unexpected
 
 
-def test_target_event_table_update_beyond_insert_select_is_rejected_as_unexpected() -> None:
+def test_target_event_table_update_beyond_insert_select_is_rejected_as_unexpected() -> (
+    None
+):
     """Both target-event tables are append-only by design (no code path ever
     issues UPDATE/DELETE); a grant beyond SELECT/INSERT must be flagged."""
     grants = [
@@ -461,7 +464,10 @@ SCOPE_ADMIN_OPERATION_TABLE = "native_short_scope_admin_operation_v1"
 
 
 def test_scope_admin_operation_table_is_part_of_canonical_required_object_set() -> None:
-    assert REQUIRED_OBJECT_PRIVILEGES[SCOPE_ADMIN_OPERATION_TABLE] == {"SELECT", "INSERT"}
+    assert REQUIRED_OBJECT_PRIVILEGES[SCOPE_ADMIN_OPERATION_TABLE] == {
+        "SELECT",
+        "INSERT",
+    }
 
 
 def test_grant_preflight_fails_when_scope_admin_operation_select_absent() -> None:
@@ -499,7 +505,9 @@ def test_grant_preflight_fails_when_scope_admin_operation_insert_absent() -> Non
     assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:INSERT" in audit.missing
 
 
-def test_grant_preflight_passes_with_scope_admin_operation_grant_via_run_preflight() -> None:
+def test_grant_preflight_passes_with_scope_admin_operation_grant_via_run_preflight() -> (
+    None
+):
     """End-to-end via the real run_preflight entrypoint, proving the complete
     canonical grant set -- including the new scope-admin-operation object --
     is accepted as PASS."""
@@ -514,7 +522,9 @@ def test_grant_preflight_passes_with_scope_admin_operation_grant_via_run_preflig
     assert result.audit.unexpected == ()
 
 
-def test_scope_admin_operation_update_beyond_select_insert_is_rejected_as_unexpected() -> None:
+def test_scope_admin_operation_update_beyond_select_insert_is_rejected_as_unexpected() -> (
+    None
+):
     """No code path ever issues UPDATE/DELETE against this ledger table
     (rows are immutable once committed); a grant beyond SELECT/INSERT must be
     flagged."""
@@ -533,14 +543,20 @@ def test_scope_admin_operation_update_beyond_select_insert_is_rejected_as_unexpe
     assert f"synth.{SCOPE_ADMIN_OPERATION_TABLE}:UPDATE" in audit.unexpected
 
 
-def test_scope_admin_operation_table_is_not_forbidden_or_account_execution_authority() -> None:
-    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+def test_scope_admin_operation_table_is_not_forbidden_or_account_execution_authority() -> (
+    None
+):
+    from src.operations.synth_chain_4h_db_authority_v1 import (
+        FORBIDDEN_AUTHORITY_OBJECTS,
+    )
 
     assert SCOPE_ADMIN_OPERATION_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     audit = _audit(_exact_grants())
     assert audit.passed
     assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
-    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+    assert not any(
+        "ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations
+    )
 
 
 MAP_SCOPE_TABLE = "native_short_map_scope_v1"
@@ -556,9 +572,7 @@ def test_grant_preflight_fails_when_map_scope_insert_absent() -> None:
     via _insert_scope_supported, so SELECT-only must fail closed rather than
     defer the failure to runtime."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{MAP_SCOPE_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT ON `synth`.`{MAP_SCOPE_TABLE}` "
@@ -577,9 +591,7 @@ def test_grant_preflight_fails_when_map_scope_update_absent() -> None:
     the existing NOT_APPLICABLE row via _update_scope_promote, so
     SELECT+INSERT alone must still fail closed."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{MAP_SCOPE_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT, INSERT ON `synth`.`{MAP_SCOPE_TABLE}` "
@@ -592,7 +604,9 @@ def test_grant_preflight_fails_when_map_scope_update_absent() -> None:
     assert f"synth.{MAP_SCOPE_TABLE}:INSERT" not in audit.missing
 
 
-def test_grant_preflight_passes_with_map_scope_select_insert_update_via_run_preflight() -> None:
+def test_grant_preflight_passes_with_map_scope_select_insert_update_via_run_preflight() -> (
+    None
+):
     """End-to-end via the real run_preflight entrypoint, proving the complete
     canonical grant set -- including the widened native_short_map_scope_v1
     grant -- is accepted as PASS."""
@@ -607,14 +621,14 @@ def test_grant_preflight_passes_with_map_scope_select_insert_update_via_run_pref
     assert result.audit.unexpected == ()
 
 
-def test_map_scope_delete_beyond_select_insert_update_is_rejected_as_unexpected() -> None:
+def test_map_scope_delete_beyond_select_insert_update_is_rejected_as_unexpected() -> (
+    None
+):
     """No action reachable from AUTO_ONBOARD_SCOPE issues a SQL DELETE against
     this table (REMOVE_SCOPE's soft-delete UPDATE is not reachable from this
     chain); a grant beyond SELECT/INSERT/UPDATE must be flagged."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{MAP_SCOPE_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{MAP_SCOPE_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT, INSERT, UPDATE, DELETE ON `synth`.`{MAP_SCOPE_TABLE}` "
@@ -627,20 +641,26 @@ def test_map_scope_delete_beyond_select_insert_update_is_rejected_as_unexpected(
 
 
 def test_map_scope_table_is_not_forbidden_or_account_execution_authority() -> None:
-    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+    from src.operations.synth_chain_4h_db_authority_v1 import (
+        FORBIDDEN_AUTHORITY_OBJECTS,
+    )
 
     assert MAP_SCOPE_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     audit = _audit(_exact_grants())
     assert audit.passed
     assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
-    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+    assert not any(
+        "ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations
+    )
 
 
 CADENCE_CONFIG_TABLE = "native_short_scope_cadence_config_v1"
 SUPPORT_EVENT_TABLE = "native_short_scope_support_event_v1"
 
 
-def test_cadence_and_support_event_tables_require_select_insert_not_update_or_delete() -> None:
+def test_cadence_and_support_event_tables_require_select_insert_not_update_or_delete() -> (
+    None
+):
     assert REQUIRED_OBJECT_PRIVILEGES[CADENCE_CONFIG_TABLE] == {"SELECT", "INSERT"}
     assert REQUIRED_OBJECT_PRIVILEGES[SUPPORT_EVENT_TABLE] == {"SELECT", "INSERT"}
 
@@ -650,9 +670,7 @@ def test_grant_preflight_fails_when_cadence_config_insert_absent() -> None:
     native_short_map_scope_v1 also call _insert_active_cadence, so
     SELECT-only must fail closed rather than defer the failure to runtime."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT ON `synth`.`{CADENCE_CONFIG_TABLE}` "
@@ -669,9 +687,7 @@ def test_grant_preflight_fails_when_support_event_insert_absent() -> None:
     _insert_support_event, so SELECT-only must fail closed rather than defer
     the failure to runtime."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT ON `synth`.`{SUPPORT_EVENT_TABLE}` "
@@ -683,7 +699,9 @@ def test_grant_preflight_fails_when_support_event_insert_absent() -> None:
     assert f"synth.{SUPPORT_EVENT_TABLE}:INSERT" in audit.missing
 
 
-def test_grant_preflight_passes_with_cadence_and_support_event_inserts_via_run_preflight() -> None:
+def test_grant_preflight_passes_with_cadence_and_support_event_inserts_via_run_preflight() -> (
+    None
+):
     """End-to-end via the real run_preflight entrypoint, proving the complete
     canonical grant set -- including the widened cadence-config and
     support-event grants -- is accepted as PASS."""
@@ -704,9 +722,7 @@ def test_cadence_config_update_beyond_select_insert_is_rejected_as_unexpected() 
     REMOVE_SCOPE, never via AUTO_ONBOARD_SCOPE; a grant beyond SELECT/INSERT
     must be flagged."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{CADENCE_CONFIG_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT, INSERT, UPDATE ON `synth`.`{CADENCE_CONFIG_TABLE}` "
@@ -722,9 +738,7 @@ def test_support_event_update_beyond_select_insert_is_rejected_as_unexpected() -
     """This table is append-only by design -- no code path ever issues UPDATE
     or DELETE; a grant beyond SELECT/INSERT must be flagged."""
     grants = [
-        grant
-        for grant in _exact_grants()
-        if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
+        grant for grant in _exact_grants() if f"`.`{SUPPORT_EVENT_TABLE}`" not in grant
     ] + [
         (
             f"GRANT SELECT, INSERT, UPDATE ON `synth`.`{SUPPORT_EVENT_TABLE}` "
@@ -736,15 +750,21 @@ def test_support_event_update_beyond_select_insert_is_rejected_as_unexpected() -
     assert f"synth.{SUPPORT_EVENT_TABLE}:UPDATE" in audit.unexpected
 
 
-def test_cadence_and_support_event_tables_are_not_forbidden_or_account_execution_authority() -> None:
-    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+def test_cadence_and_support_event_tables_are_not_forbidden_or_account_execution_authority() -> (
+    None
+):
+    from src.operations.synth_chain_4h_db_authority_v1 import (
+        FORBIDDEN_AUTHORITY_OBJECTS,
+    )
 
     assert CADENCE_CONFIG_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     assert SUPPORT_EVENT_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     audit = _audit(_exact_grants())
     assert audit.passed
     assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
-    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+    assert not any(
+        "ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations
+    )
 
 
 def test_target_event_tables_are_not_forbidden_or_account_execution_authority() -> None:
@@ -753,11 +773,15 @@ def test_target_event_tables_are_not_forbidden_or_account_execution_authority() 
     must not appear in the semantic deny-list, and the exact accepted grant
     set for this identity must still contain zero forbidden-authority
     objects overall."""
-    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+    from src.operations.synth_chain_4h_db_authority_v1 import (
+        FORBIDDEN_AUTHORITY_OBJECTS,
+    )
 
     assert TARGET_EVENT_COVERAGE_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     assert TARGET_EVENT_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
     audit = _audit(_exact_grants())
     assert audit.passed
     assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
-    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)
+    assert not any(
+        "ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations
+    )

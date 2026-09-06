@@ -2,10 +2,9 @@ from __future__ import annotations
 
 """Exact MariaDB authority contract for the market-only 4h processing chain."""
 
-from dataclasses import dataclass
 import re
-from typing import Iterable, Mapping
-
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 IDENTITY_NAME = "synth_chain_4h_writer"
 IDENTITY_HOST = "192.168.1.%"
@@ -127,7 +126,6 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "strategy_runtime_snapshot": _privileges(INSERT),
     "trade_setup_filter_observation": _privileges(SELECT, INSERT, UPDATE),
     "trade_setup_policy_preview_observation": _privileges(SELECT, INSERT, UPDATE),
-    "v_asset_interval_quality_v3": _privileges(SELECT),
     "venue_market": _privileges(SELECT),
     "vw_paper_advice_execution_zone_context_v1": _privileges(SELECT),
     "zone_observation_v2": _privileges(SELECT, INSERT, UPDATE),
@@ -305,9 +303,7 @@ def audit_grants(
             continue
 
         if parsed.object_name == "*":
-            violations.add(
-                f"SCHEMA_WILDCARD_FORBIDDEN scope={parsed.database}.*"
-            )
+            violations.add(f"SCHEMA_WILDCARD_FORBIDDEN scope={parsed.database}.*")
             continue
 
         if parsed.database != OPERATIONAL_DATABASE:
