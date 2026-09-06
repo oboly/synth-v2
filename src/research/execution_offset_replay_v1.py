@@ -63,6 +63,7 @@ class ExecutionOffsetReplayRowV1:
     canonical_level: Decimal
     execution_price: Decimal
     touched: bool
+    canonical_level_touched: bool
     filled: bool
     near_miss_distance_pct: Decimal | None
     time_to_fill_seconds: int | None
@@ -160,11 +161,12 @@ def replay_episode(
     invalidated_before_fill = False
     same_candle_fill_invalidation_ambiguous = False
     touched = False
+    canonical_level_touched = False
     closest = None
     post_fill: list[ReplayCandle] = []
     for candle in future:
         raw_touched = candle.low_price <= episode.canonical_level <= candle.high_price
-        touched = touched or raw_touched
+        canonical_level_touched = canonical_level_touched or raw_touched
         if episode.side == SIDE_BUY:
             distance = max(Decimal("0"), candle.low_price - execution_price)
             fill = candle.low_price <= execution_price
@@ -173,6 +175,7 @@ def replay_episode(
             distance = max(Decimal("0"), execution_price - candle.high_price)
             fill = candle.high_price >= execution_price
             invalidated = episode.invalidation_price is not None and candle.high_price >= episode.invalidation_price
+        touched = touched or fill
         closest = distance if closest is None else min(closest, distance)
         if fill_ts is None and fill and invalidated:
             same_candle_fill_invalidation_ambiguous = True
@@ -199,7 +202,8 @@ def replay_episode(
     return ExecutionOffsetReplayRowV1(
         episode_id=episode.episode_id, policy_id=policy.policy_id, policy_version=policy.version,
         canonical_level=episode.canonical_level, execution_price=execution_price,
-        touched=touched, filled=fill_ts is not None, near_miss_distance_pct=near_miss,
+        touched=touched, canonical_level_touched=canonical_level_touched,
+        filled=fill_ts is not None, near_miss_distance_pct=near_miss,
         time_to_fill_seconds=int((fill_ts - episode.issued_ts_utc).total_seconds()) if fill_ts else None,
         max_favorable_excursion_pct=mfe, max_adverse_excursion_pct=mae,
         invalidated_before_fill=invalidated_before_fill,
