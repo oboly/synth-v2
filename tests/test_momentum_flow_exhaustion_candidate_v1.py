@@ -148,3 +148,13 @@ def test_rejects_unsupported_interval() -> None:
     df = _base().assign(interval="2h")
     with pytest.raises(ExhaustionCandidateInputError, match="unsupported interval"):
         build_exhaustion_candidate(df, asof_ts_utc=df["end_ts"].max())
+
+
+def test_prepended_history_beyond_required_warmup_does_not_change_candidate() -> None:
+    df = _base(count=60, direction=1)
+    prev = float(df.iloc[-2]["close"])
+    df = _set_last(df, open_price=prev+0.05, high=prev+1.4, low=prev-0.15, close=prev+0.08, volume=5000)
+    asof = df.iloc[-1]["end_ts"]
+    full = build_exhaustion_candidate(df, asof_ts_utc=asof)
+    tail = build_exhaustion_candidate(df.tail(20).reset_index(drop=True), asof_ts_utc=asof)
+    pd.testing.assert_frame_equal(full, tail)
