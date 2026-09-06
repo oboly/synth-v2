@@ -260,6 +260,40 @@ def test_target_levels_decimal_fidelity_round_trips_through_json():
     assert all(isinstance(level, Decimal) for level in loaded.target_levels)
 
 
+def test_decimal_36_18_boundary_prices_persist_exactly():
+    repo, database = make_repository()
+    binding = _binding(
+        anchor_low_price=Decimal("1.000000000000000001"),
+        anchor_high_price=Decimal("999999999999999998"),
+        breakout_gate_price=Decimal("999999999999999999.999999999999999999"),
+        invalidation_price=Decimal("0.000000000000000001"),
+        target_levels=(Decimal("1000000000000000000"),),
+    )
+    repo.record_fib_map_bound_trade_v1(binding=binding)
+    persisted = database.by_binding_id["bind-1"]
+    assert persisted["breakout_gate_price"] == binding.breakout_gate_price
+    assert persisted["invalidation_price"] == binding.invalidation_price
+
+
+def test_price_with_excess_scale_fails_before_insert():
+    repo, database = make_repository()
+    binding = _binding(invalidation_price=Decimal("0.0000000000000000001"))
+    with pytest.raises(FibMapBoundTradeRepositoryError, match="FIB_MAP_BOUND_TRADE_PRICE_OUT_OF_RANGE"):
+        repo.record_fib_map_bound_trade_v1(binding=binding)
+    assert database.by_binding_id == {}
+
+
+def test_price_with_excess_integer_digits_fails_before_insert():
+    repo, database = make_repository()
+    binding = _binding(
+        breakout_gate_price=Decimal("1000000000000000000"),
+        target_levels=(Decimal("1000000000000000001"),),
+    )
+    with pytest.raises(FibMapBoundTradeRepositoryError, match="FIB_MAP_BOUND_TRADE_PRICE_OUT_OF_RANGE"):
+        repo.record_fib_map_bound_trade_v1(binding=binding)
+    assert database.by_binding_id == {}
+
+
 def test_non_utc_offset_timestamps_normalize_before_insert_and_replay_idempotently():
     repo, database = make_repository()
     plus_two = timezone(timedelta(hours=2))

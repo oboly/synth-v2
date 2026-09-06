@@ -115,6 +115,23 @@ def _naive_utc_for_db(value: Any) -> datetime:
     return _aware_utc(value).replace(tzinfo=None)
 
 
+def _decimal_36_18_for_db(value: Any) -> Decimal:
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise FibMapBoundTradeRepositoryError("FIB_MAP_BOUND_TRADE_PRICE_OUT_OF_RANGE")
+    digits = list(value.as_tuple().digits)
+    exponent = value.as_tuple().exponent
+    while digits and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    if not digits:
+        return value
+    scale = max(-exponent, 0)
+    integer_digits = max(len(digits) + exponent, 0)
+    if scale > 18 or integer_digits > 18:
+        raise FibMapBoundTradeRepositoryError("FIB_MAP_BOUND_TRADE_PRICE_OUT_OF_RANGE")
+    return value
+
+
 def _encode_target_levels(target_levels: tuple[Decimal, ...]) -> str:
     return json.dumps([str(level) for level in target_levels])
 
@@ -186,6 +203,15 @@ class FibMapBoundTradeRepositoryV1:
 
     def record_fib_map_bound_trade_v1(self, *, binding: FibMapBoundTradeV1) -> FibMapBoundTradeV1:
         validate_fib_map_bound_trade_v1(binding)
+        persisted_prices = tuple(
+            _decimal_36_18_for_db(value)
+            for value in (
+                binding.anchor_low_price,
+                binding.anchor_high_price,
+                binding.breakout_gate_price,
+                binding.invalidation_price,
+            )
+        )
         params = (
             binding.binding_id, binding.trading_account_id, binding.venue, binding.market,
             binding.strategy_bucket_id, binding.strategy_id, binding.strategy_version,
@@ -196,8 +222,7 @@ class FibMapBoundTradeRepositoryV1:
             _naive_utc_for_db(binding.map_published_at_utc),
             _naive_utc_for_db(binding.anchor_start_ts_utc),
             _naive_utc_for_db(binding.anchor_end_ts_utc),
-            binding.anchor_low_price, binding.anchor_high_price,
-            binding.breakout_gate_price, binding.invalidation_price,
+            *persisted_prices,
             _encode_target_levels(binding.target_levels),
             binding.target_ladder_semantics_version,
             _naive_utc_for_db(binding.bound_ts_utc),
