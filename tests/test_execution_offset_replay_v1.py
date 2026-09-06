@@ -84,3 +84,31 @@ def test_duplicate_forward_candle_timestamp_fails_closed_independent_of_input_or
     for rows in ([duplicate_a, duplicate_b], [duplicate_b, duplicate_a]):
         with pytest.raises(ExecutionOffsetReplayError, match="DUPLICATE_FORWARD_CANDLE_TIMESTAMP"):
             replay_episode(episode(), rows, policy)
+
+
+def test_buffered_sell_near_miss_uses_execution_price() -> None:
+    row = replay_episode(
+        episode(), [candle(1, "97", "98.5")],
+        ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("0.01")),
+    )
+    assert row.filled is False
+    assert row.near_miss_distance_pct == (Decimal("0.5") / Decimal("99") * Decimal("100"))
+
+
+def test_buffered_buy_near_miss_uses_execution_price() -> None:
+    row = replay_episode(
+        episode(SIDE_BUY), [candle(1, "101.5", "103")],
+        ExecutionOffsetPolicyV1(POLICY_STATIC_BUFFER, "v1", buffer_pct=Decimal("0.01")),
+    )
+    assert row.filled is False
+    assert row.near_miss_distance_pct == (Decimal("0.5") / Decimal("101") * Decimal("100"))
+
+
+def test_excursions_exclude_fill_candle() -> None:
+    row = replay_episode(
+        episode(), [candle(1, "90", "100"), candle(2, "99", "101")],
+        ExecutionOffsetPolicyV1(POLICY_EXACT_LEVEL, "v1"),
+    )
+    assert row.filled is True
+    assert row.max_favorable_excursion_pct == Decimal("1")
+    assert row.max_adverse_excursion_pct == Decimal("1")

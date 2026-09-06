@@ -144,11 +144,11 @@ def replay_episode(
         raw_touched = candle.low_price <= episode.canonical_level <= candle.high_price
         touched = touched or raw_touched
         if episode.side == SIDE_BUY:
-            distance = max(Decimal("0"), candle.low_price - episode.canonical_level)
+            distance = max(Decimal("0"), candle.low_price - execution_price)
             fill = candle.low_price <= execution_price
             invalidated = episode.invalidation_price is not None and candle.low_price <= episode.invalidation_price
         else:
-            distance = max(Decimal("0"), episode.canonical_level - candle.high_price)
+            distance = max(Decimal("0"), execution_price - candle.high_price)
             fill = candle.high_price >= execution_price
             invalidated = episode.invalidation_price is not None and candle.high_price >= episode.invalidation_price
         closest = distance if closest is None else min(closest, distance)
@@ -160,10 +160,11 @@ def replay_episode(
             break
         if fill_ts is None and fill:
             fill_ts = candle.close_ts_utc
+            continue
         if fill_ts is not None:
             post_fill.append(candle)
 
-    near_miss = None if touched else (closest / episode.canonical_level * Decimal("100") if closest is not None else None)
+    near_miss = None if touched else (closest / execution_price * Decimal("100") if closest is not None else None)
     mfe = mae = None
     if fill_ts is not None and post_fill:
         if episode.side == SIDE_BUY:

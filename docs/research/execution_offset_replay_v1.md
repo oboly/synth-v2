@@ -18,3 +18,5 @@ When one OHLC candle spans both the candidate execution price and invalidation p
 - `VOLATILITY_SCALED_BUFFER`: same side semantics, with offset derived from ATR known at issuance.
 
 The canonical Fib level is never rewritten.
+
+Near-miss distance is policy-specific: it is measured against the candidate `execution_price`, while the raw canonical level remains separately preserved for audit. MFE/MAE starts only on candles strictly after the fill candle because OHLC cannot establish whether an excursion inside the fill candle occurred before or after the fill.
