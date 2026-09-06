@@ -440,14 +440,50 @@ def test_explicit_lock_file_override_is_not_rejected_even_under_tmp(
     assert len(calls) == 1
 
 
+def test_banner_partitions_supported_stale_from_unavailable_markets(
+    tmp_path: Path,
+) -> None:
+    from src.reporting.run_manual_short_trader_profit_plan_v1 import (
+        native_short_snapshot_banner,
+        summarize_native_short_snapshot_evidence,
+    )
+
+    stale_row = {field: "" for field in CSV_FIELDS}
+    stale_row.update(
+        {
+            "symbol": "SXT",
+            "context_status": "CONTEXT_INVALID_OR_STALE",
+            "context_freshness_status": "STALE",
+            "scope_support_state": "SUPPORTED",
+        }
+    )
+    rows_path = tmp_path / "rows.csv"
+    rows_path.write_bytes(render_rows_csv([stale_row]))
+
+    evidence = summarize_native_short_snapshot_evidence(
+        markets=["BILL-EUR", "DGB-EUR", "SXT-EUR"],
+        rows_path=rows_path,
+        canonical_status="loaded",
+        snapshot_id="nsctx-v1-test",
+        canonical_supported_symbols={"DGB"},
+    )
+    banner = native_short_snapshot_banner(evidence)
+
+    assert evidence["supported_context_stale_markets"] == ["SXT"]
+    assert evidence["unsupported_or_unavailable_markets"] == ["BILL"]
+    assert "Supported context stale: 1 (SXT)" in banner
+    assert "Unsupported/unavailable markets: BILL" in banner
+    assert "SXT" not in banner.split("Unsupported/unavailable markets:")[-1]
+
+
 def test_banner_separates_native_and_canonical_coverage_and_excludes_canonical_supported(
     tmp_path: Path,
 ) -> None:
     """Issue #223: a canonical-4h-supported symbol (e.g. AAVE) must not be listed
     as unsupported/unavailable in the top coverage banner. Native lifecycle
     coverage and canonical navigation coverage must be reported as separate,
-    numerically correct counts, and explicit missing/stale/invalid symbols must
-    remain in the unavailable list."""
+    numerically correct counts, and explicit missing symbols must remain in the
+    unavailable list."""
     from src.reporting.run_manual_short_trader_profit_plan_v1 import (
         native_short_snapshot_banner,
         summarize_native_short_snapshot_evidence,
