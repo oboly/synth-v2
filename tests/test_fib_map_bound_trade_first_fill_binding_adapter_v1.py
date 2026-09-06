@@ -208,6 +208,22 @@ def test_structurally_invalid_map_evidence_fails_closed_via_b1_validator():
         build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
 
 
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"event_id": ""},
+        {"filled_base_quantity": Decimal("0")},
+        {"filled_base_quantity": Decimal("-1")},
+    ),
+)
+def test_malformed_first_fill_event_fails_closed_before_binding(changes: dict[str, object]):
+    fill = _fill_event(**changes)
+    evidence = _map_evidence()
+
+    with pytest.raises(FibMapBoundTradeBindingAdapterError, match="INVALID_FIRST_FILL_EVENT"):
+        build_fib_map_bound_trade_v1_from_first_fill(fill_event=fill, map_evidence=evidence)
+
 def test_source_fill_that_is_not_a_buy_fails_closed():
     fill = _fill_event(side="SELL")
     evidence = _map_evidence()

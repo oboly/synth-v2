@@ -56,7 +56,11 @@ from src.decision_gate.fib_map_bound_trade_v1 import (
     FibMapBoundTradeV1,
     validate_fib_map_bound_trade_v1,
 )
-from src.decision_gate.strategy_owned_inventory_v1 import StrategyOwnedInventoryEventV1
+from src.decision_gate.strategy_owned_inventory_v1 import (
+    StrategyOwnedInventoryError,
+    StrategyOwnedInventoryEventV1,
+    validate_strategy_owned_inventory_event_v1,
+)
 from src.market_data.native_short_fib_context_v1 import DEFAULT_PRIMARY_STALE_HOURS
 
 BINDING_ID_PREFIX: Final[str] = "fib_map_bound_trade_v1"
@@ -145,17 +149,10 @@ def derive_fib_map_bound_trade_binding_id_v1(
 def _validate_fill_event_for_binding(fill_event: StrategyOwnedInventoryEventV1) -> None:
     if not isinstance(fill_event, StrategyOwnedInventoryEventV1):
         raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_EVENT")
-    if fill_event.trading_account_id <= 0:
-        raise FibMapBoundTradeBindingAdapterError("INVALID_TRADING_ACCOUNT_ID")
-    for value in (
-        fill_event.venue, fill_event.market, fill_event.strategy_bucket_id,
-        fill_event.strategy_id, fill_event.strategy_version, fill_event.trade_id,
-        fill_event.source_execution_plan_id, fill_event.source_fill_id,
-    ):
-        if not _nonempty(value):
-            raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_LINEAGE_IDENTITY")
-    if not _aware(fill_event.occurred_ts_utc):
-        raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_TIMESTAMP")
+    try:
+        validate_strategy_owned_inventory_event_v1(fill_event)
+    except StrategyOwnedInventoryError as exc:
+        raise FibMapBoundTradeBindingAdapterError("INVALID_FIRST_FILL_EVENT") from exc
     if fill_event.side != SOURCE_FILL_SIDE_BUY:
         raise FibMapBoundTradeBindingAdapterError("SOURCE_FILL_NOT_BUY_SIDE")
 
