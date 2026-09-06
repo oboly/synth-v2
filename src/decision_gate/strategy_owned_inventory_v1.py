@@ -82,6 +82,11 @@ def _validate_event(event: StrategyOwnedInventoryEventV1) -> None:
         raise StrategyOwnedInventoryError("INVALID_STRATEGY_INVENTORY_TIMESTAMP")
 
 
+def validate_strategy_owned_inventory_event_v1(event: StrategyOwnedInventoryEventV1) -> None:
+    """Public fail-closed validator for one immutable strategy-owned fill fact."""
+    _validate_event(event)
+
+
 def project_strategy_owned_inventory_v1(
     events: Iterable[StrategyOwnedInventoryEventV1],
 ) -> tuple[StrategyOwnedInventoryPositionV1, ...]:
