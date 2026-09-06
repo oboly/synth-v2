@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
@@ -22,6 +23,10 @@ _EXPECTED_ROWS_BY_INTERVAL = {"1h": 720, "4h": 540, "1d": 365}
 
 def _utc_now_naive_seconds() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+
+
+def _elapsed(started: float) -> str:
+    return f"{time.monotonic() - started:.3f}s"
 
 
 def _fmt(value: Any) -> str:
@@ -532,20 +537,37 @@ def print_table(rows: list[dict[str, Any]], *, snapshot_ts_utc: datetime) -> Non
         )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Materialize latest asset interval quality into asset_interval_quality."
     )
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=["table", "none"], default="table")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     snapshot_ts_utc = _utc_now_naive_seconds()
-
-    conn = get_connection()
+    mode = "write" if args.write_db else "dry-run"
+    started = time.monotonic()
+    conn = None
+    print(
+        f"STARTED runner={ENGINE_NAME} version={ENGINE_VERSION} "
+        f"mode={mode} venue={args.venue} snapshot_ts_utc={snapshot_ts_utc.isoformat(sep=' ')}",
+        flush=True,
+    )
     try:
+        conn = get_connection()
+        phase_started = time.monotonic()
+        print(
+            f"PHASE_START runner={ENGINE_NAME} phase=fetch_quality_rows",
+            flush=True,
+        )
         rows = fetch_quality_rows(conn, venue=args.venue, now_utc=snapshot_ts_utc)
+        print(
+            f"PHASE_END runner={ENGINE_NAME} phase=fetch_quality_rows "
+            f"rows={len(rows)} elapsed={_elapsed(phase_started)}",
+            flush=True,
+        )
 
         if args.output == "table":
             print_table(rows, snapshot_ts_utc=snapshot_ts_utc)
@@ -559,18 +581,28 @@ def main() -> int:
             )
 
         print(
-            "[DONE] "
-            f"engine={ENGINE_NAME} "
-            f"version={ENGINE_VERSION} "
-            f"venue={args.venue} "
-            f"snapshot_ts_utc={snapshot_ts_utc.isoformat(sep=' ')} "
-            f"rows={len(rows)} "
-            f"written={written} "
-            f"write_db={args.write_db}"
+            f"FINISHED runner={ENGINE_NAME} version={ENGINE_VERSION} "
+            f"mode={mode} venue={args.venue} rows={len(rows)} written={written} "
+            f"elapsed={_elapsed(started)}",
+            flush=True,
         )
         return 0
+    except KeyboardInterrupt:
+        print(
+            f"INTERRUPTED runner={ENGINE_NAME} signal=SIGINT elapsed={_elapsed(started)}",
+            flush=True,
+        )
+        return 130
+    except Exception as exc:  # noqa: BLE001 - runner boundary must emit FAILED
+        print(
+            f"FAILED runner={ENGINE_NAME} error_type={type(exc).__name__} "
+            f"elapsed={_elapsed(started)}",
+            flush=True,
+        )
+        return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

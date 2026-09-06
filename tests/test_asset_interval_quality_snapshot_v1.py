@@ -123,9 +123,13 @@ class _Cursor:
 class _Connection:
     def __init__(self):
         self.cur = _Cursor()
+        self.closed = False
 
     def cursor(self):
         return self.cur
+
+    def close(self):
+        self.closed = True
 
 
 def test_fetch_uses_exact_market_keys_and_never_reads_legacy_view():
@@ -153,3 +157,54 @@ def test_fetch_uses_exact_market_keys_and_never_reads_legacy_view():
         _dt(2026, 9, 6, 21),
     )
     assert "FORCE INDEX (ix_market_candle_lookup)" in sql_text
+
+
+def test_main_emits_flushed_phase_and_single_finished_summary(monkeypatch, capsys):
+    conn = _Connection()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(runner, "fetch_quality_rows", lambda *_args, **_kwargs: [])
+
+    assert runner.main(["--output", "none"]) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("STARTED runner=asset_interval_quality_snapshot") == 1
+    assert output.count("PHASE_START runner=asset_interval_quality_snapshot") == 1
+    assert output.count("PHASE_END runner=asset_interval_quality_snapshot") == 1
+    assert output.count("FINISHED runner=asset_interval_quality_snapshot") == 1
+    assert "FAILED runner=" not in output
+    assert conn.closed
+
+
+def test_main_failure_emits_one_terminal_summary(monkeypatch, capsys):
+    conn = _Connection()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runner, "fetch_quality_rows", fail)
+
+    assert runner.main(["--output", "none"]) == 1
+
+    output = capsys.readouterr().out
+    assert output.count("FAILED runner=asset_interval_quality_snapshot") == 1
+    assert "error_type=RuntimeError" in output
+    assert "FINISHED runner=" not in output
+    assert conn.closed
+
+
+def test_main_interrupt_emits_one_terminal_summary(monkeypatch, capsys):
+    conn = _Connection()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "fetch_quality_rows", interrupt)
+
+    assert runner.main(["--output", "none"]) == 130
+
+    output = capsys.readouterr().out
+    assert output.count("INTERRUPTED runner=asset_interval_quality_snapshot") == 1
+    assert "FINISHED runner=" not in output
+    assert conn.closed
