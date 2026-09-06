@@ -12,16 +12,35 @@ hold that identity and submit synchronously.
 
 V1 fill semantics, deliberately minimal and deterministic:
 
-- A leg fills fully (its whole immutable, already-approved ``quantity``) or
-  not at all. There is no partial-fill simulation: ``ExecutionLegV1`` itself
-  carries no partial-filled-quantity field to record one, and inventing a
-  parallel field would be exactly the kind of hidden state this phase must
-  avoid.
-- Whether a leg fills is decided by one caller-supplied, repository-backed
-  market quote per market (``PaperMarketQuoteProviderV1``), never by wallet
-  balance, broker state, or hidden adapter memory. A BUY leg fills only when
-  the quote price is at or below the leg's limit price (marketable); a SELL
-  leg fills only when the quote price is at or above it.
+- Every leg this adapter ever receives is a post-only limit order: every
+  execution planner in this repository (``automatic_buy_planner_v1``,
+  ``automatic_exit_planner_v1``, ``fib_map_bound_exit_planner_v1``,
+  ``contract_preview_v1``) hardcodes ``post_only=True`` and no planner ever
+  sets it to ``False``. The shared, side-neutral ``OrderPlacementAdapter``
+  protocol (``execution_submission_orchestrator_v1.py``) does not carry a
+  ``post_only`` flag through to ``place_order`` at all, so this adapter does
+  not need one plumbed in: it truthfully models *every* order it is asked to
+  place as post-only, matching the only orders that ever reach it.
+- A real post-only order can never fill at placement: an exchange rejects a
+  post-only order outright if it would immediately cross the book (that is
+  what "post-only" means), it never fills it synchronously. So when the
+  caller-supplied, repository-backed market quote for the leg's market
+  (``PaperMarketQuoteProviderV1``) shows the order would cross on arrival --
+  a BUY leg whose limit price is at or above the quote, or a SELL leg whose
+  limit price is at or below it -- ``place_order`` returns ``REJECTED``, not
+  a synthetic ``FILLED``. This adapter never invents a fill; ``FILLED`` is
+  never returned by ``place_order``.
+- A quote that would not cross is a legitimate business outcome (a passive
+  limit order simply rests on the book), not a failure: the leg stays
+  ``ACTIVE``. This is a submission-time-only snapshot decision: this V1
+  adapter does not later re-poll or re-evaluate a resting ``ACTIVE`` PAPER
+  leg against fresh market evidence to transition it to ``FILLED`` -- exactly
+  like the existing shared executor has no automatic later re-reconciliation
+  of an ``ACTIVE`` leg for TEST/LIVE either (only ``SUBMISSION_UNCERTAIN``/
+  ``RECONCILIATION_REQUIRED`` legs are ever re-resolved, by
+  ``execution_order_reconciliation_v1.py``). Any later ladder/reprice/
+  fill-on-touch behavior for a resting PAPER order is out of scope for B5.5
+  and belongs to a later phase (B6/B7/B8).
 - Missing, mismatched, future-dated, or stale (older than
   ``max_quote_age_seconds``) evidence fails closed: ``place_order`` raises
   rather than guessing, which the shared submission orchestrator already
@@ -29,9 +48,11 @@ V1 fill semantics, deliberately minimal and deterministic:
   really placed) ``RECONCILIATION_REQUIRED`` on the next attempt -- the same
   reviewed terminal safety state used for a real ambiguous broker failure,
   not a new bespoke state.
-- A non-marketable-but-valid quote is a legitimate business outcome (a
-  passive limit order simply has not crossed yet), not a failure: the leg
-  stays ``ACTIVE``.
+
+``paper_broker_cumulative_fill_evidence_from_leg_v1`` remains a pure
+FILLED-leg -> fill-evidence converter, preserved for forward compatibility
+with any later phase that persists a real FILLED PAPER leg (e.g. B6/B7
+ladder/reprice fill-on-touch); this V1 adapter itself never produces one.
 
 No network, credential, or broker call is made anywhere in this module.
 
@@ -54,8 +75,8 @@ from src.executor.execution_leg_v1 import FILLED, ExecutionLegV1
 SIDE_BUY = "BUY"
 SIDE_SELL = "SELL"
 
-PAPER_RAW_STATUS_FILLED = "PAPER_FILLED_AT_MARKET_EVIDENCE"
-PAPER_RAW_STATUS_ACTIVE = "PAPER_ACTIVE_AWAITING_MARKETABLE_EVIDENCE"
+PAPER_RAW_STATUS_ACTIVE = "PAPER_ACTIVE_SUBMISSION_TIME_ONLY_NOT_CROSSED"
+PAPER_RAW_STATUS_REJECTED_POST_ONLY_WOULD_CROSS = "PAPER_REJECTED_POST_ONLY_WOULD_CROSS"
 
 
 class PaperMarketEvidenceUnavailableError(RuntimeError):
@@ -90,7 +111,10 @@ def _valid_quote_shape(quote: PaperMarketQuoteV1) -> bool:
     )
 
 
-def _marketable(*, side: str, order_price: Decimal, quote_price: Decimal) -> bool:
+def _would_cross(*, side: str, order_price: Decimal, quote_price: Decimal) -> bool:
+    """True when a post-only order at ``order_price`` would immediately cross
+    the book against ``quote_price`` -- the condition a real exchange rejects
+    a post-only order for, rather than filling it."""
     if side == SIDE_BUY:
         return quote_price <= order_price
     if side == SIDE_SELL:
@@ -146,15 +170,17 @@ class PaperOrderPlacementAdapterV1:
             raise PaperMarketEvidenceUnavailableError("PAPER_MARKET_EVIDENCE_FUTURE_TIMESTAMP")
         if age_seconds > self.max_quote_age_seconds:
             raise PaperMarketEvidenceUnavailableError("PAPER_MARKET_EVIDENCE_STALE")
-        broker_order_id = f"paper-{client_order_id}"
-        if _marketable(side=side, order_price=price, quote_price=quote.price):
+        if _would_cross(side=side, order_price=price, quote_price=quote.price):
+            # A real exchange rejects a crossing post-only order outright; it
+            # never fills it synchronously. No broker order was ever really
+            # placed, so there is no broker_order_id to report.
             return OrderAckV1(
-                broker_order_id=broker_order_id,
-                state=BrokerAckStateV1.FILLED,
-                broker_raw_status=PAPER_RAW_STATUS_FILLED,
+                broker_order_id=None,
+                state=BrokerAckStateV1.REJECTED,
+                broker_raw_status=PAPER_RAW_STATUS_REJECTED_POST_ONLY_WOULD_CROSS,
             )
         return OrderAckV1(
-            broker_order_id=broker_order_id,
+            broker_order_id=f"paper-{client_order_id}",
             state=BrokerAckStateV1.ACTIVE,
             broker_raw_status=PAPER_RAW_STATUS_ACTIVE,
         )

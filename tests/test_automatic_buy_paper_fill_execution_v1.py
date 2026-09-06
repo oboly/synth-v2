@@ -28,6 +28,7 @@ from src.executor.execution_leg_v1 import (
     FILLED,
     PREPARED,
     RECONCILIATION_REQUIRED,
+    REJECTED,
     SUBMISSION_UNCERTAIN,
     ExecutionLegConflictError,
     ExecutionLegV1,
@@ -217,34 +218,44 @@ def _run(
     )
 
 
-def test_paper_handoff_fills_and_emits_deterministic_stable_fill_evidence() -> None:
+def test_crossed_post_only_buy_quote_is_rejected_and_reconciles_nothing() -> None:
+    """#753 B5.5 review fix: automatic-BUY legs are always post-only, so a
+    quote that would cross the book must be rejected, never fabricated as a
+    fill -- and reconciliation must not run against a leg that never
+    reached FILLED."""
     plan = _plan()
     handoff = _handoff(plan)
     conn = FakeConnection()
-    result = _run(plan, handoff, conn=conn)
+    result = _run(plan, handoff, conn=conn)  # default quote crosses the leg's limit price
 
-    assert result.submission.leg_states == (FILLED,)
-    assert len(result.fills) == 1
-    outcome = result.fills[0]
-    assert outcome.leg_index == 1
-    assert outcome.event is not None
-    assert outcome.event.trade_id == plan.trade_id
-    assert outcome.event.filled_base_quantity == Decimal("0.01")
-
-    persisted = load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)
-    assert len(persisted) == 1
-    assert persisted[0].event_id == outcome.event.event_id
+    assert result.submission.leg_states == (REJECTED,)
+    assert result.fills == ()
+    assert load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID) == ()
 
 
-def test_replaying_the_same_filled_handoff_does_not_duplicate_ownership_delta() -> None:
+def test_replaying_an_already_filled_leg_does_not_duplicate_ownership_delta() -> None:
+    """This V1 PAPER adapter never itself returns FILLED (see above), but the
+    reconciliation bridge must still replay idempotently for any leg that is
+    FILLED by whatever means -- this seeds one directly (bypassing the
+    adapter's placement decision) to cover that bridge behavior independently
+    of order-placement semantics."""
     plan = _plan()
     handoff = _handoff(plan)
     conn = FakeConnection()
     leg_repository = MemoryLegRepository()
 
+    rejected = _run(plan, handoff, leg_repository=leg_repository, conn=conn)
+    assert rejected.submission.leg_states == (REJECTED,)
+    leg_id = leg_repository.ids_by_key[(handoff.handoff_id, 1)]
+    rejected_leg = leg_repository.rows[leg_id]
+    leg_repository.rows[leg_id] = replace(
+        rejected_leg, state=FILLED, broker_order_id=f"paper-{rejected_leg.client_order_id}",
+    )
+
     first = _run(plan, handoff, leg_repository=leg_repository, conn=conn)
     second = _run(plan, handoff, leg_repository=leg_repository, conn=conn)
 
+    assert first.submission.leg_states == (FILLED,)
     assert first.fills[0].fact.fact_id == second.fills[0].fact.fact_id
     assert second.fills[0].event is None  # replay emits no new delta
     persisted = load_strategy_owned_inventory_events_v1(conn, trading_account_id=ACCOUNT_ID)

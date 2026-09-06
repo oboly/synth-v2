@@ -44,12 +44,15 @@ def _place(adapter: PaperOrderPlacementAdapterV1, *, side: str = "BUY", price: D
     )
 
 
-def test_marketable_buy_fills_deterministically() -> None:
+def test_crossed_post_only_buy_is_rejected_not_filled() -> None:
+    """Every leg reaching this adapter is post-only (#753 B5.5 review fix):
+    a BUY quote at or below the limit price would cross the book, so a real
+    exchange rejects the post-only order outright instead of filling it."""
     quote = PaperMarketQuoteV1(market=MARKET, price=Decimal("99"), observed_ts_utc=NOW - timedelta(seconds=5))
     adapter = _adapter(quote)
     ack = _place(adapter, side="BUY", price=Decimal("100"))
-    assert ack.state == BrokerAckStateV1.FILLED
-    assert ack.broker_order_id == "paper-client-1"
+    assert ack.state == BrokerAckStateV1.REJECTED
+    assert ack.broker_order_id is None
 
 
 def test_non_marketable_buy_stays_active() -> None:
@@ -59,11 +62,12 @@ def test_non_marketable_buy_stays_active() -> None:
     assert ack.state == BrokerAckStateV1.ACTIVE
 
 
-def test_marketable_sell_fills_deterministically() -> None:
+def test_crossed_post_only_sell_is_rejected_not_filled() -> None:
     quote = PaperMarketQuoteV1(market=MARKET, price=Decimal("101"), observed_ts_utc=NOW - timedelta(seconds=5))
     adapter = _adapter(quote)
     ack = _place(adapter, side="SELL", price=Decimal("100"))
-    assert ack.state == BrokerAckStateV1.FILLED
+    assert ack.state == BrokerAckStateV1.REJECTED
+    assert ack.broker_order_id is None
 
 
 @pytest.mark.parametrize(

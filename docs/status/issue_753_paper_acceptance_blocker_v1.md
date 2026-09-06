@@ -22,8 +22,17 @@ handoff path automatic-BUY plans flow through, so there is still no real
 **Update 2:** the B5.5 PAPER order-placement adapter this new blocker called
 for is now built, tested, and wired to the B5 bridge -- see
 `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`. Gap 3
-is now fully resolved for PAPER. Gap 4 (`fib_map_bound_trade_v1` repository)
-remains open for B6; B7 and B8 (the exact-path PAPER acceptance harness this
+is resolved for PAPER only up to a real `FILLED` leg: automated PR review
+(`gh pr view 776`) found the initial version falsely treated a crossed
+post-only quote as an instant fill and left a resting `ACTIVE` leg with no
+reconciliation path back to `FILLED`. Both are now fixed: a crossing quote is
+`REJECTED` (matching real post-only exchange behavior) and a non-crossing
+quote rests `ACTIVE` with the adapter explicitly documented and enforced as
+submission-time-only -- this V1 adapter never returns `FILLED`. A real
+automatic-BUY PAPER fill therefore still requires a later phase that adds
+resting-order (`ACTIVE -> FILLED`) reconciliation before B8's harness can
+exercise one end-to-end. Gap 4 (`fib_map_bound_trade_v1` repository) remains
+open for B6; B7 and B8 (the exact-path PAPER acceptance harness this
 document was originally about) remain separate, not-yet-started phases.
 
 ## What already composes safely (reviewed, unit-tested, no changes needed)
@@ -133,7 +142,9 @@ the existing B1/B2/B3 unit tests already prove).
    no PAPER order-placement adapter exists to actually trigger it.
 2b. ~~`#753 B5.5` — design and build a reviewed PAPER order-placement
    adapter for the shared executor handoff path (decide the truthful-fill
-   simulation contract), then wire it to call the B5 bridge.~~ DONE, see
+   simulation contract), then wire it to call the B5 bridge.~~ DONE
+   (post-only-correct: crossed = `REJECTED`, non-crossed = `ACTIVE`,
+   submission-time-only, never `FILLED`), see
    `docs/architecture/automatic_buy_paper_order_placement_adapter_v1.md`.
 3. `#753 B6` — add a `fib_map_bound_trade_v1` repository
    (insert-at-first-fill, load-by-lineage) matching the existing migration's

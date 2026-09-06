@@ -43,25 +43,45 @@ all unchanged.
 
 ## The truthful-fill simulation contract (V1)
 
-Deliberately the smallest deterministic rule that is honest about what PAPER
-mode can know, chosen over three explicitly-considered alternatives that
-`docs/architecture/automatic_buy_paper_fill_reconciliation_v1.md` left open
-("fill at plan price on ack? read latest market price? partial fills over
-time?"):
+**Update (post-review fix):** the initial version of this phase treated a
+crossed/marketable quote as an immediate `FILLED`. Automated review
+(`gh pr view 776`) correctly flagged this as false: every leg this adapter
+ever receives is post-only (every planner in this repository hardcodes
+`post_only=True`; none ever sets it `False`), and a real exchange rejects a
+crossing post-only order outright rather than filling it. The corrected V1
+contract below reflects that fix; see `src/executor/paper_order_adapter_v1.py`
+for the enforced rule.
 
-- **A leg fills fully or not at all.** `ExecutionLegV1` has no
-  partial-filled-quantity field; simulating partial fills would require
-  either fabricating one (a new, undiscussed persisted field, out of scope)
-  or tracking fill state only in adapter memory (hidden state this phase must
-  avoid). V1 never returns `PARTIALLY_FILLED`.
-- **Fill is gated by a caller-supplied, repository-backed market quote per
-  market**, never by wallet balance, broker state, or an assumption that
-  every order is instantly marketable. A BUY leg fills only when the quote
-  price is at or below the leg's limit price; a SELL leg only when at or
-  above. This is "read latest market price" from the three alternatives
-  above, chosen because it is the only one of the three that does not
-  require either inventing a new field or assuming away realism (fill on ack
-  regardless of price) for the sake of simplicity.
+Deliberately the smallest deterministic rule that is honest about what PAPER
+mode can know:
+
+- **A leg fills fully or not at all; `PARTIALLY_FILLED` is never returned.**
+  `ExecutionLegV1` has no partial-filled-quantity field; simulating partial
+  fills would require either fabricating one (a new, undiscussed persisted
+  field, out of scope) or tracking fill state only in adapter memory (hidden
+  state this phase must avoid).
+- **Every order is modeled as post-only, because every order that reaches
+  this adapter is post-only.** A quote that would cross the book on arrival
+  (a BUY leg whose limit price is at or above the quote; a SELL leg whose
+  limit price is at or below it) is `REJECTED`, matching the real exchange
+  behavior for a crossing post-only order. `place_order` never returns
+  `FILLED`: a post-only order cannot fill synchronously at placement, so V1
+  does not invent one.
+- **A non-crossing quote is not a failure.** The leg legitimately stays
+  `ACTIVE`, exactly like a real passive limit order resting on the book. This
+  is a **submission-time-only snapshot decision**: this V1 adapter does not
+  later re-poll or re-evaluate a resting `ACTIVE` PAPER leg against fresh
+  market evidence to transition it to `FILLED` -- there is no persisted or
+  polled reconciliation path for `ACTIVE` legs anywhere in the shared
+  executor for any mode today (`execution_order_reconciliation_v1.py` only
+  ever re-resolves `SUBMISSION_UNCERTAIN`/`RECONCILIATION_REQUIRED` legs, and
+  the leg repository's own transition set has no `ACTIVE -> FILLED` path to
+  reconcile into). Building one would be a new, shared, TEST/LIVE-affecting
+  state-machine capability, not a bounded PAPER-only slice, so it is
+  deliberately deferred to a later phase (B6/B7/B8) rather than fabricated
+  here. Consequence: in V1, an automatic-BUY PAPER submission either
+  `REJECTED`s immediately (crossed) or rests `ACTIVE` forever (not crossed);
+  it never reaches `FILLED` through this adapter alone.
 - **Missing, mismatched, future-dated, or stale evidence fails closed.**
   `place_order` raises `PaperMarketEvidenceUnavailableError` rather than
   guessing. The existing, unchanged submission orchestrator already turns an
@@ -71,18 +91,19 @@ time?"):
   then resolves to `RECONCILIATION_REQUIRED` -- the same reviewed terminal
   safety state already used for a real ambiguous broker failure, not a new
   bespoke state.
-- **A non-marketable-but-valid quote is not a failure.** The leg legitimately
-  stays `ACTIVE`, exactly like a real passive limit order that has not
-  crossed yet.
 
-`executor_execution_leg` itself is the repository-backed PAPER fill-quantity
-read authority this phase establishes: once a leg is persisted `FILLED`, its
-immutable `quantity` is, by this V1 contract, the full cumulative filled
-amount. `paper_broker_cumulative_fill_evidence_from_leg_v1` derives
-`source_snapshot_id` as a stable hash of the leg's own persisted
-identity/state/quantity, so replaying the same persisted leg always yields
-the same snapshot id and quantity -- exactly the idempotent-replay input
-#752's `reconcile_cumulative_fill_v1` already requires.
+`paper_broker_cumulative_fill_evidence_from_leg_v1` is preserved unchanged as
+a pure FILLED-leg -> fill-evidence converter for forward compatibility with a
+later phase that persists a real FILLED PAPER leg (e.g. a B6/B7 ladder/
+reprice/fill-on-touch mechanism); this V1 adapter itself never produces the
+`FILLED` state that would trigger it. `executor_execution_leg` remains the
+repository-backed PAPER fill-quantity read authority for whenever that
+happens: once a leg is persisted `FILLED`, its immutable `quantity` is, by
+this contract, the full cumulative filled amount, and
+`source_snapshot_id` is a stable hash of the leg's own persisted
+identity/state/quantity so replaying the same persisted leg always yields
+the same snapshot id and quantity -- the idempotent-replay input #752's
+`reconcile_cumulative_fill_v1` requires.
 
 ## Why this composes in `entry_policy`, not `executor` or the shared runtime
 
@@ -152,6 +173,9 @@ paper_adapter_not_configured_guard=unchanged (shared_execution_runtime_v1.py)
 
 B6 (`fib_map_bound_trade_v1` repository) and B7 (binding adapter) remain
 next per `docs/status/issue_753_paper_acceptance_blocker_v1.md`'s original
-sequencing and do not depend on this phase. B8 (the exact-path PAPER
-acceptance harness) can now use a real, non-fabricated PAPER fill
-end-to-end once B6/B7 land.
+sequencing and do not depend on this phase. Note the post-review scope correction above: this V1 adapter never returns
+`FILLED` at all (a crossing quote is `REJECTED`; a non-crossing quote rests
+`ACTIVE` with no later reconciliation), so B8 (the exact-path PAPER
+acceptance harness) cannot exercise a real automatic-BUY PAPER fill
+end-to-end until a later phase adds real resting-order (`ACTIVE -> FILLED`)
+reconciliation for PAPER.
