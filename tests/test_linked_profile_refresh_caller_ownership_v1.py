@@ -135,8 +135,8 @@ def test_manual_refresh_behaviorally_contends_on_shared_lock(tmp_path: Path) -> 
             timeout=5,
             check=False,
         )
-        assert result.returncode == 0
-        assert "canonical linked-profile runtime orchestrator is already running" in result.stdout
+        assert result.returncode == 75
+        assert "canonical linked-profile runtime orchestrator is already running" in result.stderr
     finally:
         holder.terminate()
         holder.wait(timeout=5)

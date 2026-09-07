@@ -22,8 +22,8 @@ LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-${HOME}/.local/state/synth/runti
 mkdir -p "$(dirname "${LOCK_FILE}")"
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
-  echo "Skipped: canonical linked-profile runtime orchestrator is already running."
-  exit 0
+  echo "Blocked: canonical linked-profile runtime orchestrator is already running." >&2
+  exit 75
 fi
 
 echo "linked_profile_dashboard_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
