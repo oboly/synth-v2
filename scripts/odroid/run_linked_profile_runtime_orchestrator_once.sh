@@ -15,7 +15,7 @@ REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
-LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-/tmp/synth-linked-profile-runtime-orchestrator.lock}"
+LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT_REFRESH_SCRIPT="${SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_refresh_once.sh}"
 PROFILE_RENDER_SCRIPT="${SYNTH_LINKED_PROFILE_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_snapshot_dashboard_render_once.sh}"
@@ -323,6 +323,7 @@ else
   exit 1
 fi
 
+mkdir -p "$(dirname "${LOCK_FILE}")"
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
   echo "Skipped: another linked-profile runtime orchestrator is already running."

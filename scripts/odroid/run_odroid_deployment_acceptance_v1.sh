@@ -129,10 +129,13 @@ ACCEPTANCE_START_EPOCH="$(date +%s)"
 echo ""
 echo "PHASE_STARTED phase=linked_profile_dashboard_refresh ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 phase_epoch="$(date +%s)"
-SYNTH_REPO_DIR="${REPO_DIR}" \
-SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
-SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
-bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh"
+if ! SYNTH_REPO_DIR="${REPO_DIR}" \
+     SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
+     SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
+     bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh"; then
+  echo "[abort] linked-profile dashboard refresh did not run successfully" >&2
+  exit 1
+fi
 echo "PHASE_FINISHED phase=linked_profile_dashboard_refresh elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # -- Verify linked profile outputs: must exist AND be newer than acceptance start --

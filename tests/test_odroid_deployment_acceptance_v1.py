@@ -283,6 +283,18 @@ def test_acceptance_start_epoch_recorded_before_refresh() -> None:
     )
 
 
+
+def test_refresh_failure_aborts_before_freshness_attribution() -> None:
+    refresh_pos = ACCEPTANCE_SOURCE.find('bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh"')
+    abort_pos = ACCEPTANCE_SOURCE.find('[abort] linked-profile dashboard refresh did not run successfully')
+    verify_pos = ACCEPTANCE_SOURCE.find('verify_file_fresh()')
+    assert refresh_pos != -1
+    assert abort_pos != -1
+    assert verify_pos != -1
+    assert 'if ! SYNTH_REPO_DIR=' in ACCEPTANCE_SOURCE
+    assert refresh_pos < abort_pos < verify_pos
+
+
 def test_verify_uses_verify_file_fresh_function() -> None:
     assert "verify_file_fresh" in ACCEPTANCE_SOURCE
 
@@ -325,6 +337,7 @@ def main() -> None:
     test_freshness_check_accepts_file_written_after_start()
     test_freshness_check_fails_on_missing_file()
     test_acceptance_start_epoch_recorded_before_refresh()
+    test_refresh_failure_aborts_before_freshness_attribution()
     test_verify_uses_verify_file_fresh_function()
     test_no_secrets_printed_in_script()
     test_safety_markers_present()

@@ -9,6 +9,9 @@ ExecStart may invoke it. This test fails if such a caller is introduced later.
 """
 
 from pathlib import Path
+import os
+import subprocess
+
 
 
 REFRESH_SCRIPT_NAME = "run_linked_profile_dashboard_refresh_once.sh"
@@ -85,6 +88,59 @@ def test_no_systemd_unit_owns_refresh() -> None:
     assert not offenders, f"systemd unit(s) must not own the refresh pipeline: {offenders}"
 
 
+
+def test_manual_refresh_shares_canonical_orchestrator_lock_domain() -> None:
+    manual = REFRESH_SCRIPT.read_text(encoding="utf-8")
+    orchestrator = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh").read_text(encoding="utf-8")
+    shared_suffix = "/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock"
+    assert shared_suffix in manual
+    assert shared_suffix in orchestrator
+    assert "/tmp/synth-linked-profile-runtime-orchestrator.lock" not in manual
+    assert "/tmp/synth-linked-profile-runtime-orchestrator.lock" not in orchestrator
+    assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in manual
+    assert "SYNTH_LINKED_PROFILE_RUNTIME_LOCK" in orchestrator
+    assert "flock -n 9" in manual
+    assert "flock -n 9" in orchestrator
+
+
+def test_manual_refresh_behaviorally_contends_on_shared_lock(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    lock = home / ".local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock"
+    lock.parent.mkdir(parents=True)
+    ready = tmp_path / "holder-ready"
+    holder = subprocess.Popen(
+        [
+            "bash", "-c",
+            'exec 9>"$1"; flock 9; : > "$2"; sleep 10',
+            "bash", str(lock), str(ready),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            import time
+            time.sleep(0.01)
+        assert ready.exists(), "lock holder did not acquire the shared lock"
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["SYNTH_REPO_DIR"] = str(tmp_path / "must-not-be-entered")
+        result = subprocess.run(
+            ["bash", str(REFRESH_SCRIPT.resolve())],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 75
+        assert "canonical linked-profile runtime orchestrator is already running" in result.stderr
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
 def main() -> None:
     for test in (
         test_refresh_script_still_present,
@@ -92,6 +148,8 @@ def main() -> None:
         test_allowed_caller_actually_calls_it_and_is_acceptance_only,
         test_key_runtime_scripts_do_not_invoke_refresh,
         test_no_systemd_unit_owns_refresh,
+        test_manual_refresh_shares_canonical_orchestrator_lock_domain,
+        test_manual_refresh_behaviorally_contends_on_shared_lock,
     ):
         test()
     print("ok")

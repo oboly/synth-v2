@@ -761,7 +761,7 @@ not a source that `decision_gate` reads from.
   no scheduled/runtime caller; its only executable caller is the acceptance
   script `scripts/odroid/run_odroid_deployment_acceptance_v1.sh`. A guard test
   (`tests/test_linked_profile_refresh_caller_ownership_v1.py`) fails if a
-  scheduled/runtime caller is added.
+  scheduled/runtime caller is added. The manual/acceptance path also shares the canonical `SYNTH_LINKED_PROFILE_RUNTIME_LOCK` / `${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock` lock domain and skips when the scheduled owner is active, preventing concurrent legacy writes.
 - **MVP cockpit:** `synth-mvp-readonly-cockpit.timer` →
   `run_mvp_dashboard_render_once.sh` owns only the market-only entry-candidate
   dashboard and about page. As of PR #117 it no longer invokes the
@@ -971,3 +971,6 @@ assuming it from this document.
 - No private broker polling inside any renderer script.
 - No re-enabling `synth-paper-advice-lifecycle-refresh.timer` before backlog
   item P0-A is verified.
+
+
+#201 lock hardening: the manual/acceptance linked-profile refresh and the canonical scheduled orchestrator share `${HOME}/.local/state/synth/runtime/locks/linked-profile-runtime-orchestrator.lock`, which remains visible across systemd `PrivateTmp=true`. Concurrent legacy runs skip fail-closed.
